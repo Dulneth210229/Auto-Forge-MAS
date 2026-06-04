@@ -16,11 +16,7 @@ class OllamaProvider(BaseLLMProvider):
         self.client = Client(host=settings.ollama_base_url)
         self.model = settings.ollama_model
 
-    def _build_messages(
-        self,
-        user_message: str,
-        system_prompt: str | None = None,
-    ) -> list[dict[str, str]]:
+    def _build_messages(self, user_message: str, system_prompt: str | None = None ) -> list[dict[str, str]]:
         messages = []
 
         if system_prompt:
@@ -40,11 +36,7 @@ class OllamaProvider(BaseLLMProvider):
 
         return messages
 
-    def generate_response(
-        self,
-        user_message: str,
-        system_prompt: str | None = None,
-    ) -> str:
+    def generate_response(self, user_message: str, system_prompt: str | None = None ) -> str:
         try:
             response = self.client.chat(
                 model=self.model,
@@ -61,11 +53,7 @@ class OllamaProvider(BaseLLMProvider):
                 f"Ollama provider failed. Make sure Ollama is running and model '{self.model}' is pulled. Error: {error}"
             ) from error
 
-    def stream_response(
-        self,
-        user_message: str,
-        system_prompt: str | None = None,
-    ) -> Generator[str, None, None]:
+    def stream_response(self, user_message: str, system_prompt: str | None = None ) -> Generator[str, None, None]:
         try:
             stream = self.client.chat(
                 model=self.model,
