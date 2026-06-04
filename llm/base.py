@@ -14,17 +14,9 @@ class BaseLLMProvider(ABC):
     """
 
     @abstractmethod
-    def generate_response(
-        self,
-        user_message: str,
-        system_prompt: str | None = None,
-    ) -> str:
+    def generate_response(self, user_message: str, system_prompt: str | None = None,) -> str:
         pass
 
     @abstractmethod
-    def stream_response(
-        self,
-        user_message: str,
-        system_prompt: str | None = None,
-    ) -> Generator[str, None, None]:
+    def stream_response(self, user_message: str, system_prompt: str | None = None,) -> Generator[str, None, None]:
         pass
