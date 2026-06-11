@@ -1,35 +1,27 @@
 """
 Application configuration file.
 
-This file reads environment variables and exposes them through
-a single settings object.
-
-The LLM provider layer depends on this file to know:
-- default provider
-- default model
-- Ollama URL
-- OpenAI API URL
-- timeout
-- generation settings
+This file loads environment variables from the .env file.
 
 Important:
-Do not hardcode API keys in source code.
-Use .env for local development.
+The .env file must control the default LLM model.
+llm_schema.py should only define API request/response shapes.
 """
 
+from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+# This finds the backend root folder:
+# services/agentic_service/
+BASE_DIR = Path(__file__).resolve().parents[2]
+
+# This points directly to:
+# services/agentic_service/.env
+ENV_FILE_PATH = BASE_DIR / ".env"
+
+
 class Settings(BaseSettings):
-    """
-    Main application settings.
-
-    Values are loaded from:
-    1. Environment variables
-    2. .env file if available
-    3. Default values written below
-    """
-
     APP_NAME: str = "AutoForge Agentic SDLC Backend"
     APP_ENV: str = "development"
     APP_VERSION: str = "0.1.0"
@@ -37,29 +29,22 @@ class Settings(BaseSettings):
     API_PREFIX: str = "/api/v1"
     OUTPUT_DIR: str = "outputs"
 
-    # -----------------------------
-    # LLM Provider Defaults
-    # -----------------------------
-
+    # LLM settings
     DEFAULT_LLM_PROVIDER: str = "ollama"
-    DEFAULT_LLM_MODEL: str = "gemma4"
-
-    # Ollama runs locally by default.
+    DEFAULT_LLM_MODEL: str = "llama4"  # This is just a placeholder. The real default model must come from .env.
     OLLAMA_BASE_URL: str = "http://localhost:11434"
 
-    # OpenAI-compatible settings.
     OPENAI_API_KEY: str | None = None
     OPENAI_BASE_URL: str = "https://api.openai.com/v1"
     OPENAI_MODEL: str = "gpt-4o-mini"
 
-    # Common generation settings.
-    LLM_TEMPERATURE: float = 0.2
+    LLM_TEMPERATURE: float = 0.1
     LLM_MAX_TOKENS: int = 4096
     LLM_TIMEOUT_SECONDS: int = 120
     LLM_STREAMING_ENABLED: bool = True
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(ENV_FILE_PATH),
         env_file_encoding="utf-8"
     )
 
