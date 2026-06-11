@@ -4,10 +4,17 @@ Application configuration file.
 This file reads environment variables and exposes them through
 a single settings object.
 
-Why this file exists:
-- Avoid hardcoding configuration values.
-- Keep app name, API prefix, output directory, and LLM settings centralized.
-- Make it easier to switch between development, testing, and production.
+The LLM provider layer depends on this file to know:
+- default provider
+- default model
+- Ollama URL
+- OpenAI API URL
+- timeout
+- generation settings
+
+Important:
+Do not hardcode API keys in source code.
+Use .env for local development.
 """
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -28,16 +35,28 @@ class Settings(BaseSettings):
     APP_VERSION: str = "0.1.0"
 
     API_PREFIX: str = "/api/v1"
-
-    # Root folder where generated artifacts will be saved.
     OUTPUT_DIR: str = "outputs"
 
-    # Default LLM configuration.
-    # Later this will be moved to database-based LLM settings.
+    # -----------------------------
+    # LLM Provider Defaults
+    # -----------------------------
+
     DEFAULT_LLM_PROVIDER: str = "ollama"
     DEFAULT_LLM_MODEL: str = "llama3.1"
+
+    # Ollama runs locally by default.
     OLLAMA_BASE_URL: str = "http://localhost:11434"
+
+    # OpenAI-compatible settings.
     OPENAI_API_KEY: str | None = None
+    OPENAI_BASE_URL: str = "https://api.openai.com/v1"
+    OPENAI_MODEL: str = "gpt-4o-mini"
+
+    # Common generation settings.
+    LLM_TEMPERATURE: float = 0.2
+    LLM_MAX_TOKENS: int = 4096
+    LLM_TIMEOUT_SECONDS: int = 120
+    LLM_STREAMING_ENABLED: bool = True
 
     model_config = SettingsConfigDict(
         env_file=".env",
