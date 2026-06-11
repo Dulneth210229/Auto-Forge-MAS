@@ -24,7 +24,7 @@ class LLMSettings(BaseModel):
 
     model:
         model name, for example:
-        - llama3.1
+        - gemma4
         - qwen2.5-coder
         - gpt-4o-mini
 
@@ -39,7 +39,7 @@ class LLMSettings(BaseModel):
     """
 
     provider: str = Field(default="ollama", example="ollama")
-    model: str = Field(default="llama3.1", example="llama3.1")
+    model: str = Field(default="gemma4", example="gemma4")
     base_url: str = Field(default="http://localhost:11434")
     api_key_reference: str | None = Field(
         default=None,
@@ -59,7 +59,7 @@ class LLMSettingsUpdateRequest(BaseModel):
     """
 
     provider: str | None = Field(default=None, example="ollama")
-    model: str | None = Field(default=None, example="llama3.1")
+    model: str | None = Field(default=None, example="gemma4")
     base_url: str | None = Field(default=None, example="http://localhost:11434")
     api_key: str | None = Field(
         default=None,

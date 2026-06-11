@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     # -----------------------------
 
     DEFAULT_LLM_PROVIDER: str = "ollama"
-    DEFAULT_LLM_MODEL: str = "llama3.1"
+    DEFAULT_LLM_MODEL: str = "gemma4"
 
     # Ollama runs locally by default.
     OLLAMA_BASE_URL: str = "http://localhost:11434"
