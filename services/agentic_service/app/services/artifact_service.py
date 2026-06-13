@@ -10,6 +10,18 @@ This service is responsible for:
 
 Agents should not directly manage files.
 They should call this service.
+
+Important:
+A single agent run may create multiple artifact files with the same version.
+
+Example:
+Requirement Agent creates:
+- SRS_v1.md
+- SRS_v1.json
+
+Both files should be version 1.
+That is why save_text_artifact() and save_json_artifact()
+support version_override.
 """
 
 from datetime import datetime
@@ -39,16 +51,12 @@ class ArtifactService:
         AgentName.DEPLOYMENT: "06_deployment",
     }
 
-    def create_feature_artifact_root(
-        self,
-        project_name: str,
-        feature_name: str
-    ) -> Path:
+    def create_feature_artifact_root(self,project_name: str,feature_name: str) -> Path:
         """
         Create the base artifact folders for a feature.
 
         Example:
-        outputs/e-commerce-platform/feature-login/
+            outputs/e-commerce-platform/feature-login/
         """
         project_slug = slugify(project_name)
         feature_slug = f"feature-{slugify(feature_name)}"
@@ -60,29 +68,19 @@ class ArtifactService:
 
         return root
 
-    def get_stage_folder(
-        self,
-        project_name: str,
-        feature_name: str,
-        agent_name: AgentName
-    ) -> Path:
+    def get_stage_folder(self, project_name: str, feature_name: str, agent_name: AgentName ) -> Path:
         """
         Get the correct artifact folder for a specific agent.
         """
         root = self.create_feature_artifact_root(project_name, feature_name)
         return root / self.STAGE_FOLDER_MAP[agent_name]
 
-    def get_next_version(
-        self,
-        feature_id: str,
-        agent_name: AgentName,
-        artifact_type: ArtifactType
-    ) -> int:
+    def get_next_version(self, feature_id: str, agent_name: AgentName, artifact_type: ArtifactType) -> int:
         """
-        Find the next version number for a new artifact.
+        Find the next version number for a new artifact group.
 
         Example:
-        If SRS_v1 already exists, next version will be 2.
+            If SRS_v1 already exists, next version will be 2.
         """
         existing_versions = [
             artifact["version"]
@@ -97,20 +95,24 @@ class ArtifactService:
 
         return max(existing_versions) + 1
 
-    def save_text_artifact(
-        self,
-        project: dict[str, Any],
+    def save_text_artifact(self, project: dict[str, Any],
         feature: dict[str, Any],
         agent_name: AgentName,
         artifact_type: ArtifactType,
         artifact_format: ArtifactFormat,
         filename: str,
-        content: str
+        content: str,
+        version_override: int | None = None
     ) -> ArtifactResponse:
         """
         Save a text-based artifact and register metadata.
+
+        version_override lets multiple files share the same version.
+
+        Example:
+            SRS_v1.md and SRS_v1.json should both be version 1.
         """
-        version = self.get_next_version(
+        version = version_override or self.get_next_version(
             feature_id=feature["feature_id"],
             agent_name=agent_name,
             artifact_type=artifact_type
@@ -142,12 +144,16 @@ class ArtifactService:
         agent_name: AgentName,
         artifact_type: ArtifactType,
         filename: str,
-        data: dict[str, Any]
+        data: dict[str, Any],
+        version_override: int | None = None
     ) -> ArtifactResponse:
         """
         Save a JSON artifact and register metadata.
+
+        version_override lets this JSON file share the same version
+        as the related Markdown artifact.
         """
-        version = self.get_next_version(
+        version = version_override or self.get_next_version(
             feature_id=feature["feature_id"],
             agent_name=agent_name,
             artifact_type=artifact_type
@@ -183,7 +189,7 @@ class ArtifactService:
         version: int
     ) -> ArtifactResponse:
         """
-        Create artifact metadata and store it.
+        Create artifact metadata and store it in the temporary in-memory store.
         """
         artifact_id = generate_id("artifact")
         created_at = datetime.utcnow()
