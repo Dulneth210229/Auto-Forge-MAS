@@ -52,3 +52,19 @@ class ApprovalStatus(str, Enum):
     APPROVED = "approved"
     REJECTED = "rejected"
     REVISION_REQUESTED = "revision_requested"
+
+class ArchitectureStyle(str, Enum):
+    """
+    Preferred architecture style selected by the user or BA.
+
+    Important:
+    In Requirement Agent, this is only captured as a requirement/design preference.
+    The actual Software Design Specification will be generated later by Architecture Agent.
+    """
+
+    MODULAR = "modular"
+    MONOLITHIC = "monolithic"
+    MVC = "mvc"
+    MICROSERVICES = "microservices"
+    LAYERED = "layered"
+    CLEAN_ARCHITECTURE = "clean_architecture"
