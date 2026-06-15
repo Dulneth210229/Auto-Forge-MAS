@@ -231,6 +231,114 @@ class ArtifactService:
             return None
 
         return ArtifactResponse(**artifact)
+    def save_binary_artifact(
+        self,
+        project: dict[str, Any],
+        feature: dict[str, Any],
+        agent_name: AgentName,
+        artifact_type: ArtifactType,
+        artifact_format: ArtifactFormat,
+        filename: str,
+        binary_content: bytes
+    ) -> ArtifactResponse:
+        """
+        Save a binary artifact.
 
+        This is mainly used for PNG diagrams generated from PlantUML.
+
+        Example:
+            usecase_v1.png
+        """
+        version = self.get_next_version(
+            feature_id=feature["feature_id"],
+            agent_name=agent_name,
+            artifact_type=artifact_type
+        )
+
+        stage_folder = self.get_stage_folder(
+            project_name=project["project_name"],
+            feature_name=feature["feature_name"],
+            agent_name=agent_name
+        )
+
+        file_path = stage_folder / filename.replace("{version}", str(version))
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+
+        file_path.write_bytes(binary_content)
+
+        return self._register_artifact(
+            project_id=project["project_id"],
+            feature_id=feature["feature_id"],
+            agent_name=agent_name,
+            artifact_type=artifact_type,
+            artifact_format=artifact_format,
+            file_path=str(file_path),
+            version=version
+        )
+
+    def get_latest_approved_artifact(
+        self,
+        feature_id: str,
+        agent_name: AgentName,
+        artifact_type: ArtifactType,
+        artifact_format: ArtifactFormat | None = None
+    ) -> ArtifactResponse | None:
+        """
+        Return the latest approved artifact for a feature and agent.
+
+        This is important for approval gates.
+
+        Example:
+        Architecture Agent should only run if:
+        - approved SRS exists
+        - approved Enhanced SRS exists
+        """
+        matching_artifacts = []
+
+        for artifact in store.artifacts.values():
+            is_same_feature = artifact["feature_id"] == feature_id
+            is_same_agent = artifact["agent_name"] == agent_name
+            is_same_type = artifact["artifact_type"] == artifact_type
+            is_approved = artifact["approval_status"] == ApprovalStatus.APPROVED
+
+            if not all([
+                is_same_feature,
+                is_same_agent,
+                is_same_type,
+                is_approved
+            ]):
+                continue
+
+            if artifact_format is not None:
+                if artifact["artifact_format"] != artifact_format:
+                    continue
+
+            matching_artifacts.append(artifact)
+
+        if not matching_artifacts:
+            return None
+
+        latest = max(matching_artifacts, key=lambda item: item["version"])
+        return ArtifactResponse(**latest)
+
+    def read_artifact_content(self, artifact_id: str) -> str:
+        """
+        Read artifact file content as text.
+
+        This is used by agents to load previous approved artifacts.
+
+        For now, Architecture Agent reads:
+        - approved SRS markdown
+        - approved Enhanced SRS markdown
+        """
+        artifact = store.artifacts.get(artifact_id)
+
+        if not artifact:
+            raise ValueError(f"Artifact not found: {artifact_id}")
+
+        file_path = artifact["file_path"]
+
+        with open(file_path, "r", encoding="utf-8") as file:
+            return file.read()
 
 artifact_service = ArtifactService()

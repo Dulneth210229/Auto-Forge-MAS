@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     LLM_TIMEOUT_SECONDS: int = 120
     LLM_STREAMING_ENABLED: bool = True
 
+
+    # PlantUML configuration.
+    # This is used by Architecture Agent to render use case diagrams.
+    PLANTUML_JAR_PATH: str = "tools/plantuml.jar"
+
     model_config = SettingsConfigDict(
         env_file=str(ENV_FILE_PATH),
         env_file_encoding="utf-8"
