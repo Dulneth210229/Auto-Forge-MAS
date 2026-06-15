@@ -31,8 +31,12 @@ class AgentName(str, Enum):
 class ArtifactType(str, Enum):
     SRS = "srs"
     ENHANCED_SRS = "enhanced_srs"
+    
+    # Architecture Agent artifacts
     SDS = "sds"
     USE_CASE_DIAGRAM = "use_case_diagram"
+    ARCHITECTURE_TRACEABILITY = "architecture_traceability"
+
     UI_DESIGN = "ui_design"
     CODE = "code"
     DEPLOYMENT = "deployment"
