@@ -80,7 +80,7 @@ def run_domain_agent(feature_id: str, request: AgentRunRequest):
 @router.post("/architecture/run", response_model=AgentRunResponse)
 async def run_architecture_agent(
     feature_id: str,
-    request: AgentRunRequest
+    request: AgentRunRequest = Body(default=AgentRunRequest())
 ):
     """
     Run the Architecture Agent.
@@ -267,8 +267,9 @@ async def run_architecture_agent(
             status_code=500,
             detail=f"Architecture Agent failed: {str(error)}"
         )
-
-
+    # ----------------------------------------------------
+    # Ui/UX  Agent
+    # ----------------------------------------------------
 @router.post("/uiux/run", response_model=AgentRunResponse)
 def run_uiux_agent(feature_id: str, request: AgentRunRequest):
     """
