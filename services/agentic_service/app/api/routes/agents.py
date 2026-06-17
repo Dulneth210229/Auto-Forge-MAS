@@ -19,12 +19,13 @@ from fastapi import APIRouter, HTTPException, Body
 from app.core.enums import AgentName
 from app.schemas.agent_schema import AgentRunRequest, AgentRunResponse
 from app.services.in_memory_store import store
-
+from app.agents.requirement_agent.agent import requirement_agent
 from app.agents.architecture_agent.agent import ArchitectureAgent
 from app.agents.architecture_agent.schemas import ArchitectureAgentInput
 from app.core.enums import AgentName, ArtifactType, ArtifactFormat
 from app.schemas.agent_schema import AgentRunRequest, AgentRunResponse
 from app.services.artifact_service import artifact_service
+from app.schemas.requirement_schema import RequirementAgentRunRequest
 from app.services.in_memory_store import store
 from app.services.plantuml_service import plantuml_service
 
@@ -44,25 +45,41 @@ def _validate_feature(feature_id: str):
 
 
 @router.post("/requirement/run", response_model=AgentRunResponse)
-def run_requirement_agent(feature_id: str, request: AgentRunRequest):
+async def run_requirement_agent(
+    feature_id: str,
+    request: RequirementAgentRunRequest
+):
     """
-    Placeholder endpoint for Requirement Agent.
+    Run the Requirement Agent.
 
-    Real SRS generation will be added in the next step.
+    This endpoint:
+    - receives structured BA input
+    - supports architectural_style input
+    - calls the selected LLM provider
+    - generates SRS Markdown and SRS JSON
+    - saves both files as artifacts
+    - returns artifact IDs
+
+    Human approval is required after this.
     """
     _validate_feature(feature_id)
 
-    return AgentRunResponse(
-        feature_id=feature_id,
-        agent_name=AgentName.REQUIREMENT,
-        status="not_implemented_yet",
-        message="Requirement Agent endpoint is ready. Real logic will be added next.",
-        artifact_ids=[]
-    )
+    try:
+        return await requirement_agent.run(
+            feature_id=feature_id,
+            request=request
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Requirement Agent failed: {str(error)}"
+        )
 
 
 @router.post("/domain/run", response_model=AgentRunResponse)
-def run_domain_agent(feature_id: str, request: AgentRunRequest):
+async def run_domain_agent(feature_id: str, request: AgentRunRequest):
     """
     Placeholder endpoint for Domain Agent.
     """
