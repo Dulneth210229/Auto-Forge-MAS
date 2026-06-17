@@ -14,7 +14,7 @@ Later, each endpoint will call the real agent class:
 At this foundation step, we only verify the API structure.
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Body
 
 from app.core.enums import AgentName
 from app.schemas.agent_schema import AgentRunRequest, AgentRunResponse
