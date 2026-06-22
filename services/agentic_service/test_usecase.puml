@@ -24,7 +24,7 @@ rectangle "E-commerce Authentication Module" {
   usecase "Send Welcome Email" as UC_WelcomeEmail
 
   ' Login Feature
-  usecase "Login to Account" as UC_Login
+  usecase "Login to Account" as UC_Login 
   usecase "Enter Email and Password" as UC_EnterLogin
   usecase "Validate Login Credentials" as UC_ValidateLogin
   usecase "Generate JWT Token" as UC_GenerateToken

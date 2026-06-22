@@ -6,8 +6,8 @@ The Architecture Agent converts approved requirement artifacts into
 architecture design artifacts.
 
 Input:
-- Approved SRS Markdown
-- Approved Enhanced SRS Markdown
+- Approved SRS JSON
+- Approved Enhanced SRS JSON
 - Project type
 - Feature name
 - Target stack
@@ -36,8 +36,8 @@ class ArchitectureAgent:
     Architecture Agent class.
 
     This class is responsible only for architecture documentation.
-    It should not know about FastAPI routes or artifact saving.
 
+    It does not save artifacts directly.
     Artifact saving happens in the API route/service layer.
     """
 
@@ -49,7 +49,7 @@ class ArchitectureAgent:
         Run Architecture Agent.
 
         Steps:
-        1. Build prompt using approved SRS and Enhanced SRS.
+        1. Build prompt using approved SRS JSON and Enhanced SRS JSON.
         2. Call selected LLM provider.
         3. Parse and validate response.
         4. Return structured ArchitectureAgentOutput.
@@ -73,11 +73,12 @@ class ArchitectureAgent:
         """
         Build the user prompt sent to the LLM.
 
-        The prompt includes:
-        - project context
-        - approved SRS
-        - approved Enhanced SRS
-        - human revision comment if available
+        This version uses approved JSON artifacts as input.
+
+        Why JSON is used:
+        - SRS JSON contains stable requirement IDs like FR-001 and AC-001.
+        - Enhanced SRS JSON contains domain rules, edge cases, and improved acceptance criteria.
+        - Architecture traceability can map requirement IDs to design decisions clearly.
         """
 
         revision_section = ""
@@ -94,11 +95,11 @@ Project Type: {agent_input.project_type}
 Feature Name: {agent_input.feature_name}
 Target Stack: {agent_input.target_stack}
 
-APPROVED SRS:
-{agent_input.approved_srs_markdown}
+APPROVED SRS JSON:
+{agent_input.approved_srs_json}
 
-APPROVED ENHANCED SRS:
-{agent_input.approved_enhanced_srs_markdown}
+APPROVED ENHANCED SRS JSON:
+{agent_input.approved_enhanced_srs_json}
 
 {revision_section}
 
@@ -106,6 +107,8 @@ TASK:
 Generate the Architecture Agent output for this feature.
 
 Remember:
+- Use the approved SRS JSON and Enhanced SRS JSON as the main source of truth.
+- Use stable requirement IDs such as FR-001, NFR-001, AC-001, and BR-001 in traceability.
 - Generate SDS Markdown.
 - Generate SDS JSON.
 - Generate PlantUML Use Case Diagram.

@@ -1,13 +1,14 @@
 """
 Architecture Agent internal schemas.
 
-These schemas are used only inside the Architecture Agent.
+The Architecture Agent receives approved JSON artifacts from:
+- Requirement Agent: SRS JSON
+- Domain Agent: Enhanced SRS JSON
 
-The agent receives approved SRS and Enhanced SRS.
-It outputs SDS and Use Case Diagram artifacts.
-
-Important:
-This version does NOT generate API contract or OpenAPI YAML.
+Why JSON?
+- JSON is machine-readable.
+- JSON contains stable requirement IDs such as FR-001, AC-001, BR-001.
+- Architecture traceability should be based on these IDs.
 """
 
 from pydantic import BaseModel, Field
@@ -16,29 +17,29 @@ from pydantic import BaseModel, Field
 class ArchitectureAgentInput(BaseModel):
     """
     Input required to run the Architecture Agent.
+
+    This version uses JSON artifacts, not Markdown artifacts.
     """
 
     project_id: str
     feature_id: str
 
-    # Approved artifacts from previous agents.
-    approved_srs_markdown: str
-    approved_enhanced_srs_markdown: str
+    # Approved JSON artifacts from previous agents.
+    approved_srs_json: dict
+    approved_enhanced_srs_json: dict
 
     # Basic project context.
     project_type: str
     feature_name: str
     target_stack: str
 
-    # Optional human revision comment.
+    # Optional comment only for revision cases.
     human_comment: str | None = None
 
 
 class ArchitectureAgentOutput(BaseModel):
     """
     Output returned by the Architecture Agent.
-
-    These fields are saved as versioned artifacts.
     """
 
     sds_markdown: str = Field(
@@ -58,5 +59,5 @@ class ArchitectureAgentOutput(BaseModel):
 
     traceability_json: dict = Field(
         ...,
-        description="Mapping between requirements and architecture decisions."
+        description="Mapping between requirement IDs and architecture decisions."
     )
