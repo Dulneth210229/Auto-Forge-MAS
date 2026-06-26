@@ -128,12 +128,15 @@ Allow registered users to securely access their account.
 - The user account already exists in the database before login is attempted.
 - A secure mechanism for hashing passwords (e.g., bcrypt) is available and implemented.
 - The backend service responsible for user data is available and functional.
+- Revision requested by human_user: Add forgot username requirement and related acceptance criteria.
+- Fallback revision was used because LLM revision failed: Expecting ',' delimiter: line 167 column 5 (char 5436)
 
 ---
 
 ## 18. Risks
 
 - {'risk': 'Credential stuffing or brute force attacks.', 'mitigation': 'Implement rate limiting and account lockout mechanisms.'}
+- This fallback revision should be reviewed carefully before approval.
 
 ---
 
@@ -154,6 +157,14 @@ Allow registered users to securely access their account.
   - Notes: Security requirement for session management.
 - **FR-004** → Acceptance Criteria: AC-003
   - Notes: Handles user recovery flow initiation.
+
+---
+
+## Revision Metadata
+
+- **Revision Type:** srs_revision
+- **Revised By:** human_user
+- **Revision Comment:** Add forgot username requirement and related acceptance criteria.
 
 
 ---

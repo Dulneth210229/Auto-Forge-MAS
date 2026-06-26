@@ -159,13 +159,16 @@
   "assumptions": [
     "The user account already exists in the database before login is attempted.",
     "A secure mechanism for hashing passwords (e.g., bcrypt) is available and implemented.",
-    "The backend service responsible for user data is available and functional."
+    "The backend service responsible for user data is available and functional.",
+    "Revision requested by human_user: Add forgot username requirement and related acceptance criteria.",
+    "Fallback revision was used because LLM revision failed: Expecting ',' delimiter: line 167 column 5 (char 5436)"
   ],
   "risks": [
     {
       "risk": "Credential stuffing or brute force attacks.",
       "mitigation": "Implement rate limiting and account lockout mechanisms."
-    }
+    },
+    "This fallback revision should be reviewed carefully before approval."
   ],
   "dependencies": [
     "User Service/Database Layer (for credential validation)",
@@ -201,5 +204,12 @@
       ],
       "notes": "Handles user recovery flow initiation."
     }
-  ]
+  ],
+  "revision_metadata": {
+    "revision_type": "srs_revision",
+    "revision_comment": "Add forgot username requirement and related acceptance criteria.",
+    "revised_by": "human_user",
+    "fallback_used": true,
+    "fallback_reason": "Expecting ',' delimiter: line 167 column 5 (char 5436)"
+  }
 }

@@ -24,15 +24,22 @@ from app.agents.requirement_agent.prompt import (
     REQUIREMENT_AGENT_SYSTEM_PROMPT,
     build_json_repair_prompt,
     build_requirement_user_prompt,
+    REQUIREMENT_REVISION_SYSTEM_PROMPT,
+    build_requirement_revision_prompt,
 )
+from datetime import datetime, timezone
 from app.agents.requirement_agent.schemas import RequirementAgentOutput
 from app.core.enums import AgentName, ArtifactFormat, ArtifactType, FeatureStatus
 from app.schemas.agent_schema import AgentRunResponse
-from app.schemas.requirement_schema import RequirementAgentRunRequest
+from app.schemas.requirement_schema import (RequirementAgentRunRequest, RequirementAgentReviseRequest)
 from app.services.artifact_service import artifact_service
 from app.services.in_memory_store import store
 from app.services.llm_provider_service import llm_provider_service
 from app.utils.logger import get_logger
+# from app.schemas.requirement_schema import RequirementAgentReviseRequest
+from app.core.enums import ApprovalStatus
+from app.utils.file_manager import read_json_file, write_json_file, write_text_file
+from app.utils.id_generator import generate_id
 
 logger = get_logger(__name__)
 
@@ -163,13 +170,7 @@ class RequirementAgent:
             ]
         )
 
-    async def _generate_requirement_output(
-        self,
-        project: dict,
-        feature: dict,
-        ba_input: dict,
-        human_comment: str | None
-    ) -> RequirementAgentOutput:
+    async def _generate_requirement_output(self, project: dict, feature: dict, ba_input: dict, human_comment: str | None) -> RequirementAgentOutput:
         """
         Generate SRS output.
 
@@ -328,12 +329,7 @@ class RequirementAgent:
                 if not item.get("description"):
                     raise ValueError(f"{section_name}[{index}] missing description.")
 
-    def _complete_ba_input(
-        self,
-        project: dict,
-        feature: dict,
-        ba_input: dict
-    ) -> dict:
+    def _complete_ba_input(self, project: dict, feature: dict, ba_input: dict) -> dict:
         """
         Fill missing BA input using project and feature metadata.
         """
@@ -362,13 +358,7 @@ class RequirementAgent:
 
         return completed
 
-    def _build_fallback_srs_json(
-        self,
-        project: dict,
-        feature: dict,
-        ba_input: dict,
-        reason: str
-    ) -> dict:
+    def _build_fallback_srs_json(self, project: dict, feature: dict, ba_input: dict, reason: str) -> dict:
         """
         Build fallback SRS JSON if LLM JSON generation fails.
 
@@ -452,13 +442,7 @@ class RequirementAgent:
             ]
         }
 
-    def _make_requirement_items(
-        self,
-        prefix: str,
-        items: list[str],
-        extra_key: str | None = None,
-        extra_value: str | None = None
-    ) -> list[dict[str, Any]]:
+    def _make_requirement_items(self, prefix: str, items: list[str], extra_key: str | None = None,  extra_value: str | None = None) -> list[dict[str, Any]]:
         """
         Convert simple strings into requirement objects with stable IDs.
         """
@@ -500,6 +484,274 @@ class RequirementAgent:
             })
 
         return stories
+
+    async def revise(self, feature_id: str, request: RequirementAgentReviseRequest) -> AgentRunResponse:
+        """
+        Revise the latest SRS for a feature.
+
+        Steps:
+        1. Find the feature.
+        2. Find the project.
+        3. Load the latest SRS JSON artifact.
+        4. Send existing SRS + revision comment to LLM.
+        5. Validate revised SRS JSON.
+        6. Build revised SRS Markdown.
+        7. Save new SRS version.
+        8. Return new artifact IDs.
+        """
+
+        logger.info("Requirement Agent revision started for feature_id=%s", feature_id)
+
+        feature = store.features.get(feature_id)
+
+        if not feature:
+            raise ValueError("Feature not found.")
+
+        project = store.projects.get(feature["project_id"])
+
+        if not project:
+            raise ValueError("Project not found for this feature.")
+
+        latest_srs_artifact = self._find_latest_srs_json_artifact(feature_id)
+
+        if not latest_srs_artifact:
+            raise ValueError(
+                "No existing SRS JSON artifact found. "
+                "Run Requirement Agent first before requesting revision."
+            )
+
+        existing_srs_json = read_json_file(latest_srs_artifact["file_path"])
+
+        revised_output = await self._revise_srs_json(
+            project=project,
+            feature=feature,
+            existing_srs_json=existing_srs_json,
+            revision_comment=request.revision_comment,
+            revised_by=request.revised_by
+        )
+
+        artifact_ids = self._save_revised_srs_artifacts(
+            project=project,
+            feature=feature,
+            srs_json=revised_output.srs_json,
+            srs_markdown=revised_output.srs_markdown
+        )
+
+        logger.info(
+            "Requirement Agent revision completed for feature_id=%s artifacts=%s",
+            feature_id,
+            artifact_ids
+        )
+
+        return AgentRunResponse(
+            feature_id=feature_id,
+            agent_name=AgentName.REQUIREMENT,
+            status="revised",
+            message=(
+                "SRS revised successfully. "
+                "A new SRS version was created and requires human approval."
+            ),
+            artifact_ids=artifact_ids
+        )
+
+#Adding helper method to find the latest SRS JSON artifact for a given feature.
+    def _find_latest_srs_json_artifact(self, feature_id: str) -> dict | None:
+        """
+        Find the latest SRS JSON artifact for this feature.
+
+        Why:
+        Revision must be based on the latest generated SRS JSON.
+        """
+
+        matching_artifacts = []
+
+        for artifact in store.artifacts.values():
+            is_same_feature = artifact["feature_id"] == feature_id
+            is_requirement_agent = (
+                artifact["agent_name"] == AgentName.REQUIREMENT
+                or artifact["agent_name"] == AgentName.REQUIREMENT.value
+            )
+            is_srs = (
+                artifact["artifact_type"] == ArtifactType.SRS
+                or artifact["artifact_type"] == ArtifactType.SRS.value
+            )
+            is_json = (
+                artifact["artifact_format"] == ArtifactFormat.JSON
+                or artifact["artifact_format"] == ArtifactFormat.JSON.value
+            )
+
+            if is_same_feature and is_requirement_agent and is_srs and is_json:
+                matching_artifacts.append(artifact)
+
+        if not matching_artifacts:
+            return None
+
+        return max(matching_artifacts, key=lambda item: item["version"])
+
+#Adding helper method ( Use the LLM to revise the existing SRS JSON.If LLM revision fails, fallback revision is created safely.)
+    async def _revise_srs_json(self, project: dict, feature: dict, existing_srs_json: dict, revision_comment: str, revised_by: str) -> RequirementAgentOutput:
+        """
+        Use the LLM to revise the existing SRS JSON.
+
+        If LLM revision fails, fallback revision is created safely.
+        """
+
+        provider = llm_provider_service.get_provider()
+
+        prompt = build_requirement_revision_prompt(
+            project=project,
+            feature=feature,
+            existing_srs_json=existing_srs_json,
+            revision_comment=revision_comment,
+            revised_by=revised_by
+        )
+
+        raw_output = await provider.invoke_agent([
+            {
+                "role": "system",
+                "content": REQUIREMENT_REVISION_SYSTEM_PROMPT
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ])
+
+        try:
+            revised_srs_json = self._parse_and_validate_json(raw_output)
+
+        except Exception as error:
+            logger.warning("LLM SRS revision failed. Using fallback revision. Error=%s", error)
+
+            revised_srs_json = self._fallback_revise_srs_json(
+                existing_srs_json=existing_srs_json,
+                revision_comment=revision_comment,
+                revised_by=revised_by,
+                reason=str(error)
+            )
+
+            raw_output = str(revised_srs_json)
+
+        revised_markdown = self.markdown_builder.build(revised_srs_json)
+
+        return RequirementAgentOutput(
+            srs_json=revised_srs_json,
+            srs_markdown=revised_markdown,
+            raw_llm_output=raw_output
+        )
+
+#Adding a fallback revision method to create a safe revision of the existing SRS JSON if LLM revision fails.
+    def _fallback_revise_srs_json(self, existing_srs_json: dict, revision_comment: str, revised_by: str, reason: str) -> dict:
+        """
+        Create a safe fallback revision if the LLM fails.
+
+        This does not overwrite existing SRS.
+        It appends revision information and adds a review note.
+        """
+
+        revised = dict(existing_srs_json)
+
+        revised["revision_metadata"] = {
+            "revision_type": "srs_revision",
+            "revision_comment": revision_comment,
+            "revised_by": revised_by,
+            "fallback_used": True,
+            "fallback_reason": reason
+        }
+
+        assumptions = revised.get("assumptions", [])
+
+        if not isinstance(assumptions, list):
+            assumptions = []
+
+        assumptions.append(
+            f"Revision requested by {revised_by}: {revision_comment}"
+        )
+
+        assumptions.append(
+            f"Fallback revision was used because LLM revision failed: {reason}"
+        )
+
+        revised["assumptions"] = assumptions
+
+        risks = revised.get("risks", [])
+
+        if not isinstance(risks, list):
+            risks = []
+
+        risks.append(
+            "This fallback revision should be reviewed carefully before approval."
+        )
+
+        revised["risks"] = risks
+
+        return revised
+    
+#Addding artifact saving method inside Requirement Agent to save revised SRS JSON and Markdown artifacts.
+    def _save_revised_srs_artifacts(self, project: dict, feature: dict,  srs_json: dict,srs_markdown: str) -> list[str]:
+        """
+        Save revised SRS Markdown and JSON using the same version number.
+
+        This method is Requirement-Agent-specific.
+
+        Why not change artifact_service.py?
+        Because artifact_service.py is common for every agent.
+        This keeps the SRS revision fix isolated to Requirement Agent.
+        """
+
+        version = artifact_service.get_next_version(
+            feature_id=feature["feature_id"],
+            agent_name=AgentName.REQUIREMENT,
+            artifact_type=ArtifactType.SRS
+        )
+
+        stage_folder = artifact_service.get_stage_folder(
+            project_name=project["project_name"],
+            feature_name=feature["feature_name"],
+            agent_name=AgentName.REQUIREMENT
+        )
+
+        markdown_path = stage_folder / f"SRS_v{version}.md"
+        json_path = stage_folder / f"SRS_v{version}.json"
+
+        saved_markdown_path = write_text_file(markdown_path, srs_markdown)
+        saved_json_path = write_json_file(json_path, srs_json)
+
+        markdown_artifact_id = generate_id("artifact")
+        json_artifact_id = generate_id("artifact")
+        created_at = datetime.now(timezone.utc)
+
+        store.artifacts[markdown_artifact_id] = {
+            "artifact_id": markdown_artifact_id,
+            "project_id": project["project_id"],
+            "feature_id": feature["feature_id"],
+            "agent_name": AgentName.REQUIREMENT,
+            "artifact_type": ArtifactType.SRS,
+            "artifact_format": ArtifactFormat.MARKDOWN,
+            "file_path": saved_markdown_path,
+            "version": version,
+            "approval_status": ApprovalStatus.PENDING,
+            "created_at": created_at,
+        }
+
+        store.artifacts[json_artifact_id] = {
+            "artifact_id": json_artifact_id,
+            "project_id": project["project_id"],
+            "feature_id": feature["feature_id"],
+            "agent_name": AgentName.REQUIREMENT,
+            "artifact_type": ArtifactType.SRS,
+            "artifact_format": ArtifactFormat.JSON,
+            "file_path": saved_json_path,
+            "version": version,
+            "approval_status": ApprovalStatus.PENDING,
+            "created_at": created_at,
+        }
+
+        return [
+            markdown_artifact_id,
+            json_artifact_id
+        ]
+
 
 
 requirement_agent = RequirementAgent()

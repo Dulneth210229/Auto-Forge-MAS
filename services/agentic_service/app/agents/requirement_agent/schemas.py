@@ -9,7 +9,7 @@ API request schemas are usually kept in:
     app/schemas/requirement_schema.py
 """
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class RequirementAgentInput(BaseModel):
@@ -34,7 +34,6 @@ class RequirementAgentInput(BaseModel):
     ba_input: dict
     human_comment: str | None = None
 
-
 class RequirementAgentOutput(BaseModel):
     """
     Internal output returned by RequirementAgent.
@@ -52,3 +51,4 @@ class RequirementAgentOutput(BaseModel):
     srs_json: dict
     srs_markdown: str
     raw_llm_output: str
+

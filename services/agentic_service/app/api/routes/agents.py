@@ -25,9 +25,13 @@ from app.agents.architecture_agent.schemas import ArchitectureAgentInput
 from app.core.enums import AgentName, ArtifactType, ArtifactFormat
 from app.schemas.agent_schema import AgentRunRequest, AgentRunResponse
 from app.services.artifact_service import artifact_service
-from app.schemas.requirement_schema import RequirementAgentRunRequest
+from app.schemas.requirement_schema import (
+    RequirementAgentRunRequest,
+    RequirementAgentReviseRequest,
+)
 from app.services.in_memory_store import store
 from app.services.plantuml_service import plantuml_service
+import traceback
 
 router = APIRouter(prefix="/features/{feature_id}/agents", tags=["Agents"])
 
@@ -72,11 +76,46 @@ async def run_requirement_agent(
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:
+        print("========== REQUIREMENT AGENT ERROR ==========")
+        print(traceback.format_exc())
+        print("============================================")
+
         raise HTTPException(
             status_code=500,
             detail=f"Requirement Agent failed: {str(error)}"
         )
 
+@router.post("/requirement/revise", response_model=AgentRunResponse)
+async def revise_requirement_agent(
+    feature_id: str,
+    request: RequirementAgentReviseRequest
+):
+    """
+    Revise the latest Requirement Agent SRS.
+
+    This endpoint:
+    - loads the latest SRS JSON artifact
+    - applies the human revision comment
+    - creates a new SRS version
+    - keeps previous versions unchanged
+    """
+
+    _validate_feature(feature_id)
+
+    try:
+        return await requirement_agent.revise(
+            feature_id=feature_id,
+            request=request
+        )
+
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Requirement Agent revision failed: {str(error)}"
+        )
 
 @router.post("/domain/run", response_model=AgentRunResponse)
 async def run_domain_agent(feature_id: str, request: AgentRunRequest):

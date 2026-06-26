@@ -25,7 +25,27 @@ class RequirementSRSMarkdownBuilder:
     This class belongs only to the Requirement Agent.
     It should not be used by Domain Agent or Architecture Agent.
     """
+    def _revision_metadata_section(self, srs_json: dict[str, Any]) -> str:
+        """
+        Build revision metadata section if the SRS was revised.
 
+        This section appears only when revision_metadata exists.
+        """
+
+        revision_metadata = srs_json.get("revision_metadata")
+
+        if not revision_metadata:
+            return ""
+
+        return f"""
+---
+
+## Revision Metadata
+
+- **Revision Type:** {revision_metadata.get("revision_type", "srs_revision")}
+- **Revised By:** {revision_metadata.get("revised_by", "N/A")}
+- **Revision Comment:** {revision_metadata.get("revision_comment", "N/A")}
+"""
     def build(self, srs_json: dict[str, Any]) -> str:
         """
         Build the full SRS Markdown document from structured SRS JSON.
@@ -156,6 +176,7 @@ class RequirementSRSMarkdownBuilder:
 ## 20. Requirement Traceability Summary
 
 {self._traceability_list(srs_json.get("traceability", []))}
+{self._revision_metadata_section(srs_json)}
 
 ---
 

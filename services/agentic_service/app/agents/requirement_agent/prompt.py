@@ -110,6 +110,29 @@ Rules:
 - Preserve the original meaning.
 """
 
+REQUIREMENT_REVISION_SYSTEM_PROMPT = """
+You are the Requirement Agent in AutoForge.
+
+Your task is to revise an existing Software Requirements Specification JSON.
+
+Rules:
+- Return only valid JSON.
+- Do not return Markdown.
+- Do not return code fences.
+- Do not add explanation.
+- Preserve the existing feature scope.
+- Preserve existing requirement IDs when possible.
+- Add new IDs only for newly added requirements.
+- Do not remove existing requirements unless the revision comment clearly asks for removal.
+- Do not generate code.
+- Do not generate UI.
+- Do not generate SDS.
+- Do not generate architecture diagrams.
+- Include the revision change inside revision_metadata.
+
+The returned JSON must be the full revised SRS JSON, not only a patch.
+"""
+
 
 def build_requirement_user_prompt(project: dict, feature: dict, ba_input: dict, human_comment: str | None = None) -> str:
     """
@@ -166,3 +189,50 @@ Repair this malformed JSON and return only valid JSON:
 
 {raw_output}
 """
+def build_requirement_revision_prompt(project: dict, feature: dict, existing_srs_json: dict, revision_comment: str, revised_by: str) -> str:
+    """
+    Build the user prompt for SRS revision.
+
+    existing_srs_json:
+        Latest SRS JSON artifact.
+
+    revision_comment:
+        Human feedback explaining what should be changed.
+
+    revised_by:
+        User who requested the revision.
+    """
+
+    return f"""
+      Revise the following existing SRS JSON.
+
+      Project:
+      {project}
+
+      Feature:
+      {feature}
+
+      Existing SRS JSON:
+      {existing_srs_json}
+
+      Revision comment:
+      {revision_comment}
+
+      Revised by:
+      {revised_by}
+
+      Instructions:
+      - Return the full revised SRS JSON.
+      - Keep the same project_id and feature_id.
+      - Keep existing requirement IDs where possible.
+      - Add new requirement IDs only for new requirements.
+      - Add this object to the JSON:
+
+      "revision_metadata": {{
+        "revision_comment": "{revision_comment}",
+        "revised_by": "{revised_by}",
+        "revision_type": "srs_revision"
+      }}
+
+      Return only valid JSON.
+    """

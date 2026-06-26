@@ -203,3 +203,25 @@ class RequirementAgentRunRequest(BaseModel):
         default=None,
         example="Add forgot password requirement."
     )
+
+class RequirementAgentReviseRequest(BaseModel):
+    """
+    Request body for revising an existing SRS.
+
+    This is used when the user reviews the SRS and asks for changes.
+
+    Example:
+        "Add forgot password requirement."
+        "Add account lockout after 5 failed attempts."
+        "Change architecture preference from MVC to modular."
+    """
+
+    revision_comment: str = Field(
+        ...,
+        example="Add forgot password requirement and related acceptance criteria."
+    )
+
+    revised_by: str = Field(
+        default="human_user",
+        example="human_user"
+    )
