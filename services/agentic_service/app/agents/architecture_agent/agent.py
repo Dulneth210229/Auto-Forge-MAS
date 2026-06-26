@@ -323,7 +323,7 @@ class ArchitectureAgent:
                     reason=str(second_error)
                 )
 
-                raw_output = json.dumps(parsed, indent=2)
+                raw_output = json.dumps(parsed, indent=2, default=str)
 
         sds_json = parsed["sds_json"]
         usecase_analysis_json = parsed["usecase_analysis_json"]
@@ -350,7 +350,7 @@ class ArchitectureAgent:
                 reason=str(validation_error)
             )
 
-            raw_output = json.dumps(parsed, indent=2)
+            raw_output = json.dumps(parsed, indent=2, default=str)
 
             sds_json = parsed["sds_json"]
             usecase_analysis_json = parsed["usecase_analysis_json"]

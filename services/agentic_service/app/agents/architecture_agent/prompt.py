@@ -242,6 +242,17 @@ The user requested:
 
 import json
 
+def safe_json_dumps(data: dict) -> str:
+    """
+    Convert Python dictionary into JSON string safely.
+
+    Why:
+    MongoDB/project/feature data may contain datetime objects.
+    Normal json.dumps() cannot serialize datetime.
+    default=str converts datetime into string.
+    """
+
+    return json.dumps(data, indent=2, default=str)
 
 ARCHITECTURE_AGENT_SYSTEM_PROMPT = """
 You are the Architecture Agent in AutoForge.
@@ -471,19 +482,19 @@ def build_architecture_user_prompt(
     enhanced_text = "No approved Enhanced SRS is available."
 
     if enhanced_srs_json:
-        enhanced_text = json.dumps(enhanced_srs_json, indent=2)
+        enhanced_text = safe_json_dumps(enhanced_srs_json)
 
     return f"""
 Generate SDS JSON, usecase_analysis_json, and usecase_json for this feature only.
 
 Project:
-{json.dumps(project, indent=2)}
+{safe_json_dumps(project)}
 
 Feature:
-{json.dumps(feature, indent=2)}
+{safe_json_dumps(feature)}
 
 Approved SRS JSON:
-{json.dumps(srs_json, indent=2)}
+{safe_json_dumps(srs_json)}
 
 Approved Enhanced SRS JSON if available:
 {enhanced_text}
