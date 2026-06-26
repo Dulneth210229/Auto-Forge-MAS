@@ -125,11 +125,7 @@ class ArchitectureAgent:
         self.usecase_builder = ArchitectureUseCasePlantUMLBuilder()
         self.diagram_renderer = UseCaseDiagramRenderer()
 
-    async def run(
-        self,
-        feature_id: str,
-        request: ArchitectureAgentRunRequest
-    ) -> AgentRunResponse:
+    async def run(self,feature_id: str, request: ArchitectureAgentRunRequest) -> AgentRunResponse:
         """
         Run Architecture Agent for one feature.
 
@@ -216,10 +212,7 @@ class ArchitectureAgent:
             artifact_ids=artifact_ids
         )
 
-    async def _generate_architecture_output(
-        self,
-        agent_input: ArchitectureAgentInput
-    ) -> ArchitectureAgentOutput:
+    async def _generate_architecture_output(self, agent_input: ArchitectureAgentInput) -> ArchitectureAgentOutput:
         """
         Generate Architecture Agent output.
 
