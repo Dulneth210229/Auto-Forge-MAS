@@ -40,10 +40,15 @@ class Settings(BaseSettings):
 
     LLM_TEMPERATURE: float = 0.1
     LLM_MAX_TOKENS: int = 4096
-    LLM_TIMEOUT_SECONDS: int = 120
+    LLM_TIMEOUT_SECONDS: int = 320
     LLM_STREAMING_ENABLED: bool = True
+    # MongoDB connection URI.
+    # For local MongoDB: mongodb://localhost:27017
+    # For MongoDB Atlas: mongodb+srv://username:password@cluster.mongodb.net
+    MONGODB_URI: str = "mongodb://localhost:27017"
 
-
+    # MongoDB database name used by AutoForge MAS.
+    MONGODB_DATABASE: str = "autoforge_mas"
     # PlantUML configuration.
     # This is used by Architecture Agent to render use case diagrams.
     PLANTUML_JAR_PATH: str = "tools/plantuml.jar"
