@@ -2,14 +2,13 @@
 Architecture Agent Use Case Validator.
 
 Purpose:
-- Validate generated UML Use Case model before PlantUML rendering.
-- Keep validation feature-independent.
-- Avoid false failures when the SRS out-of-scope section contains clarifying text such as:
-  "Password reset via email verification (Only the initiation flow is in scope)."
+Validate generated UML Use Case model before PlantUML rendering.
 
 Important:
-This validator does not use a quality score.
-It is a pass/fail rule validator.
+- Feature-independent pass/fail validation.
+- No quality score file.
+- No hardcoded feature names such as Login, Cart, Payment, LMS.
+- No domain-specific exception such as password reset special cases.
 """
 
 from __future__ import annotations
@@ -27,58 +26,31 @@ class UseCaseValidationError(Exception):
 class UseCaseQualityValidator:
     """
     Feature-independent validator for UML Use Case Diagram JSON.
-
-    The validator checks:
-    - basic structure
-    - actor correctness
-    - use case naming quality
-    - relationship correctness
-    - requirement traceability
-    - out-of-scope leakage
-
-    It intentionally avoids hardcoded feature lists such as cart/checkout/payment/signup,
-    because those may be valid feature names in another iteration.
     """
 
     TECHNICAL_ACTOR_TERMS = [
-        "database",
-        "mongodb",
-        "mysql",
-        "postgres",
-        "collection",
-        "table",
-        "api",
-        "endpoint",
-        "controller",
-        "service",
-        "repository",
-        "model",
-        "schema",
-        "server",
-        "backend",
-        "frontend",
-        "react",
-        "node",
-        "express",
-        "mongoose",
-        "jwt",
-        "token",
-        "library",
-        "middleware",
-        "component",
-        "page",
-        "form",
+        "database", "mongodb", "mysql", "postgres", "collection", "table",
+        "api", "endpoint", "controller", "service", "repository", "model",
+        "schema", "server", "backend", "frontend", "react", "node",
+        "express", "mongoose", "jwt", "token", "library", "middleware",
+        "component", "page", "form",
     ]
 
     GENERIC_USE_CASE_NAMES = [
-        "use feature",
-        "use system",
-        "manage feature",
-        "access feature",
-        "perform feature",
-        "do feature",
-        "feature action",
+        "use feature", "use system", "manage feature", "access feature",
+        "perform feature", "do feature", "feature action",
     ]
+
+    NON_UML_USE_CASE_TERMS = [
+        "response time", "performance", "responsive ui", "mern stack", "mvc",
+        "architecture style", "database collection", "api endpoint",
+    ]
+
+    STOPWORDS = {
+        "the", "a", "an", "and", "or", "to", "via", "by", "for", "of",
+        "in", "on", "with", "only", "is", "are", "be", "this", "that",
+        "flow", "feature", "scope", "out", "from", "as", "at", "using",
+    }
 
     def validate(
         self,
@@ -87,13 +59,6 @@ class UseCaseQualityValidator:
         usecase_analysis_json: dict[str, Any],
         usecase_json: dict[str, Any],
     ) -> None:
-        """
-        Validate final usecase_json.
-
-        Raises:
-            UseCaseValidationError if the use case model is invalid.
-        """
-
         errors: list[str] = []
 
         errors.extend(self._validate_basic_structure(usecase_json))
@@ -106,24 +71,13 @@ class UseCaseQualityValidator:
         if errors:
             raise UseCaseValidationError("; ".join(errors))
 
-    # ------------------------------------------------------------------
-    # Basic structure validation
-    # ------------------------------------------------------------------
-
     def _validate_basic_structure(self, usecase_json: dict[str, Any]) -> list[str]:
         errors: list[str] = []
 
         if not isinstance(usecase_json, dict):
             return ["usecase_json must be a JSON object."]
 
-        required_keys = [
-            "system_boundary",
-            "diagram_title",
-            "actors",
-            "use_cases",
-            "relationships",
-            "notes",
-        ]
+        required_keys = ["system_boundary", "diagram_title", "actors", "use_cases", "relationships", "notes"]
 
         for key in required_keys:
             if key not in usecase_json:
@@ -146,17 +100,11 @@ class UseCaseQualityValidator:
 
         return errors
 
-    # ------------------------------------------------------------------
-    # Actor validation
-    # ------------------------------------------------------------------
-
     def _validate_actors(self, usecase_json: dict[str, Any]) -> list[str]:
         errors: list[str] = []
-        actors = usecase_json.get("actors", [])
-
         seen_actor_names: set[str] = set()
 
-        for actor in actors:
+        for actor in usecase_json.get("actors", []):
             if not isinstance(actor, dict):
                 errors.append("Each actor must be a JSON object.")
                 continue
@@ -172,7 +120,6 @@ class UseCaseQualityValidator:
 
             if normalized_name in seen_actor_names:
                 errors.append(f"Duplicate actor name found: {actor_name}")
-
             seen_actor_names.add(normalized_name)
 
             if self._contains_any(normalized_name, self.TECHNICAL_ACTOR_TERMS):
@@ -180,17 +127,11 @@ class UseCaseQualityValidator:
 
         return errors
 
-    # ------------------------------------------------------------------
-    # Use case validation
-    # ------------------------------------------------------------------
-
     def _validate_use_cases(self, usecase_json: dict[str, Any]) -> list[str]:
         errors: list[str] = []
-        use_cases = usecase_json.get("use_cases", [])
-
         seen_usecase_names: set[str] = set()
 
-        for use_case in use_cases:
+        for use_case in usecase_json.get("use_cases", []):
             if not isinstance(use_case, dict):
                 errors.append("Each use case must be a JSON object.")
                 continue
@@ -206,29 +147,20 @@ class UseCaseQualityValidator:
 
             if normalized_name in seen_usecase_names:
                 errors.append(f"Duplicate use case name found: {use_case_name}")
-
             seen_usecase_names.add(normalized_name)
 
-            if normalized_name in self.GENERIC_USE_CASE_NAMES:
+            if normalized_name in self.GENERIC_USE_CASE_NAMES or re.fullmatch(r"use .+ feature", normalized_name):
                 errors.append(f"Use case name is too generic: {use_case_name}")
 
-            if re.fullmatch(r"use .+ feature", normalized_name):
-                errors.append(f"Use case name is too generic: {use_case_name}")
-
-            # NFRs/constraints should usually be notes, not normal use cases.
-            if self._contains_any(
-                normalized_name,
-                ["response time", "performance", "responsive ui", "mern stack", "mvc", "architecture style"],
-            ):
+            if self._contains_any(normalized_name, self.NON_UML_USE_CASE_TERMS):
                 errors.append(
                     f"Non-functional requirement or technical constraint used as a normal use case: {use_case_name}"
                 )
 
-        return errors
+            if len(use_case_name.split()) > 6:
+                errors.append(f"Use case name is too long for a standard diagram: {use_case_name}")
 
-    # ------------------------------------------------------------------
-    # Relationship validation
-    # ------------------------------------------------------------------
+        return errors
 
     def _validate_relationships(self, usecase_json: dict[str, Any]) -> list[str]:
         errors: list[str] = []
@@ -268,29 +200,16 @@ class UseCaseQualityValidator:
                 errors.append(f"Invalid use case relationship type: {relation_type}")
                 continue
 
-            if relation_type == "association":
-                if source not in actor_ids or target not in use_case_ids:
-                    errors.append(
-                        "Association relationship must be actor -> use case."
-                    )
+            if relation_type == "association" and (source not in actor_ids or target not in use_case_ids):
+                errors.append("Association relationship must be actor -> use case.")
 
-            if relation_type == "include":
-                if source not in use_case_ids or target not in use_case_ids:
-                    errors.append(
-                        "Include relationship must be base use case -> included use case."
-                    )
+            if relation_type == "include" and (source not in use_case_ids or target not in use_case_ids):
+                errors.append("Include relationship must be base use case -> included use case.")
 
-            if relation_type == "extend":
-                if source not in use_case_ids or target not in use_case_ids:
-                    errors.append(
-                        "Extend relationship must be extension use case -> base use case."
-                    )
+            if relation_type == "extend" and (source not in use_case_ids or target not in use_case_ids):
+                errors.append("Extend relationship must be extension use case -> base use case.")
 
         return errors
-
-    # ------------------------------------------------------------------
-    # Traceability validation
-    # ------------------------------------------------------------------
 
     def _validate_traceability(
         self,
@@ -298,16 +217,7 @@ class UseCaseQualityValidator:
         usecase_analysis_json: dict[str, Any],
         usecase_json: dict[str, Any],
     ) -> list[str]:
-        """
-        Ensure important functional requirements are mapped.
-
-        This check is intentionally practical, not too strict:
-        - If the main use case maps all FR IDs, it is accepted.
-        - If relationships/notes map IDs, they are also accepted.
-        """
-
         errors: list[str] = []
-
         fr_ids = self._collect_ids(srs_json.get("functional_requirements", []))
 
         if not fr_ids:
@@ -323,10 +233,6 @@ class UseCaseQualityValidator:
             if isinstance(relationship, dict):
                 covered_ids.update(map(str, relationship.get("related_requirements", []) or []))
 
-        for note in usecase_json.get("notes", []):
-            if isinstance(note, dict):
-                covered_ids.update(map(str, note.get("related_requirements", []) or []))
-
         for trace in usecase_analysis_json.get("traceability", []):
             if isinstance(trace, dict) and trace.get("source_id"):
                 covered_ids.add(str(trace["source_id"]))
@@ -338,33 +244,14 @@ class UseCaseQualityValidator:
 
         return errors
 
-    # ------------------------------------------------------------------
-    # Out-of-scope validation
-    # ------------------------------------------------------------------
-
-    def _validate_out_of_scope(
-        self,
-        srs_json: dict[str, Any],
-        usecase_json: dict[str, Any],
-    ) -> list[str]:
+    def _validate_out_of_scope(self, srs_json: dict[str, Any], usecase_json: dict[str, Any]) -> list[str]:
         """
-        Validate that the diagram does not include out-of-scope functionality.
+        Generic out-of-scope validation.
 
-        Important fix:
-        We do NOT compare the full out-of-scope sentence against the full diagram JSON.
-        That caused false failures for cases like:
-            "Password reset via email verification (Only the initiation flow is in scope)."
-
-        In that case, the diagram is allowed to include:
-            "Initiate Forgot Password"
-            "Initiate Password Recovery"
-            "Initiate Password Reset Flow"
-
-        But it must not include full reset/email verification behaviours such as:
-            "Verify Email"
-            "Send Reset Email"
-            "Set New Password"
-            "Complete Password Reset"
+        It does not contain password/login-specific logic. It compares executable
+        use case elements against SRS out_of_scope items using meaningful token
+        overlap. If the SRS says "Only X is in scope", elements matching X are
+        allowed while the broader forbidden item is still blocked.
         """
 
         errors: list[str] = []
@@ -373,164 +260,143 @@ class UseCaseQualityValidator:
         if not out_of_scope_items:
             return errors
 
-        # Only validate executable diagram elements.
-        # Notes are intentionally excluded because notes may quote boundaries/out-of-scope text.
-        core_text = self._diagram_core_text(usecase_json)
+        executable_elements = self._diagram_executable_elements(usecase_json)
 
         for item in out_of_scope_items:
             item_text = self._item_text(item)
-            item_normalized = self._normalize(item_text)
+            forbidden_text, allowed_texts = self._split_out_of_scope_item(item_text)
 
-            if not item_normalized:
+            forbidden_stems = self._important_stems(forbidden_text)
+            if not forbidden_stems:
                 continue
 
-            # Special but generic handling for "Only X is in scope" clauses.
-            if "only" in item_normalized and "in scope" in item_normalized:
-                errors.extend(
-                    self._validate_partial_scope_clause(
-                        out_of_scope_text=item_text,
-                        diagram_core_text=core_text,
-                    )
-                )
-                continue
+            allowed_stem_sets = [self._important_stems(text) for text in allowed_texts if text]
 
-            # For normal out-of-scope items, reject only if the actual executable
-            # use case/actor/relationship text contains the out-of-scope action.
-            search_phrase = self._remove_parenthetical_text(item_normalized)
+            for element in executable_elements:
+                element_text = element["text"]
+                element_stems = self._important_stems(element_text)
 
-            if search_phrase and search_phrase in core_text:
-                errors.append(f"Use case diagram appears to include out-of-scope item: {item_text}")
+                if not element_stems:
+                    continue
 
-        return errors
+                if self._matches_allowed_clause(element_stems, allowed_stem_sets):
+                    continue
 
-    def _validate_partial_scope_clause(
-        self,
-        out_of_scope_text: str,
-        diagram_core_text: str,
-    ) -> list[str]:
-        """
-        Handle out-of-scope items that also contain an allowed part.
+                overlap = forbidden_stems.intersection(element_stems)
+                required_overlap = 1 if len(forbidden_stems) == 1 else 2
 
-        Example:
-            Out of scope: "Password reset via email verification (Only the initiation flow is in scope)."
-
-        Allowed:
-            "Initiate Forgot Password"
-            "Initiate Password Recovery"
-            "Initiate Password Reset Flow"
-
-        Not allowed:
-            "Verify Email"
-            "Send Reset Email"
-            "Set New Password"
-            "Complete Password Reset"
-        """
-
-        errors: list[str] = []
-        normalized_out = self._normalize(out_of_scope_text)
-
-        # Generic password recovery/reset boundary handling.
-        if "password" in normalized_out and ("reset" in normalized_out or "recovery" in normalized_out):
-            forbidden_phrases = [
-                "email verification",
-                "verify email",
-                "verify reset email",
-                "send reset email",
-                "send password reset email",
-                "reset email verification",
-                "set new password",
-                "create new password",
-                "change password",
-                "complete password reset",
-                "complete reset",
-                "confirm password reset",
-            ]
-
-            for phrase in forbidden_phrases:
-                if phrase in diagram_core_text:
+                if len(overlap) >= required_overlap:
                     errors.append(
-                        f"Use case diagram includes out-of-scope password reset/email verification behaviour: {phrase}"
+                        f"Use case diagram appears to include out-of-scope item '{item_text}' in '{element_text}'."
                     )
-
-            # Do not reject "password reset" by itself when the diagram clearly says initiate/initiation.
-            if "password reset" in diagram_core_text:
-                has_initiation_context = self._contains_any(
-                    diagram_core_text,
-                    [
-                        "initiate password reset",
-                        "initiates password reset",
-                        "initiate the password reset",
-                        "initiates the password reset",
-                        "password reset initiation",
-                        "password recovery initiation",
-                        "initiate forgot password",
-                        "forgot password",
-                    ],
-                )
-
-                if not has_initiation_context:
-                    errors.append(
-                        "Use case diagram appears to include password reset beyond the initiation flow."
-                    )
-
-            return errors
-
-        # Generic handling for other "only X is in scope" items.
-        # Remove the parenthetical explanation and avoid exact whole-JSON matching.
-        base_out_of_scope = self._remove_parenthetical_text(normalized_out)
-
-        if base_out_of_scope and base_out_of_scope in diagram_core_text:
-            errors.append(f"Use case diagram appears to include out-of-scope item: {out_of_scope_text}")
 
         return errors
 
     # ------------------------------------------------------------------
-    # Helper methods
+    # Out-of-scope helper methods
     # ------------------------------------------------------------------
 
-    def _diagram_core_text(self, usecase_json: dict[str, Any]) -> str:
-        """
-        Build text only from executable diagram elements.
-
-        Excluded:
-        - notes
-        - standards_notes
-
-        Why:
-        Notes may intentionally mention constraints or out-of-scope boundaries.
-        They should not trigger false out-of-scope errors.
-        """
-
-        parts: list[str] = []
-
-        for actor in usecase_json.get("actors", []):
-            if isinstance(actor, dict):
-                parts.append(str(actor.get("name", "")))
-                parts.append(str(actor.get("description", "")))
+    def _diagram_executable_elements(self, usecase_json: dict[str, Any]) -> list[dict[str, str]]:
+        elements: list[dict[str, str]] = []
 
         for use_case in usecase_json.get("use_cases", []):
             if isinstance(use_case, dict):
-                parts.append(str(use_case.get("name", "")))
-                parts.append(str(use_case.get("description", "")))
-                parts.append(" ".join(map(str, use_case.get("related_requirements", []) or [])))
+                elements.append({
+                    "type": "use_case",
+                    "text": f"{use_case.get('name', '')} {use_case.get('description', '')}",
+                })
 
         for relationship in usecase_json.get("relationships", []):
             if isinstance(relationship, dict):
-                parts.append(str(relationship.get("label", "")))
-                parts.append(str(relationship.get("type", "")))
+                label = str(relationship.get("label", "")).strip()
+                if label:
+                    elements.append({"type": "relationship", "text": label})
 
-        return self._normalize(" ".join(parts))
+        return elements
+
+    def _split_out_of_scope_item(self, text: str) -> tuple[str, list[str]]:
+        raw = str(text)
+        allowed: list[str] = []
+
+        parenthetical_parts = re.findall(r"\(([^)]*)\)", raw)
+        for part in parenthetical_parts:
+            allowed.extend(self._extract_allowed_clauses(part))
+
+        allowed.extend(self._extract_allowed_clauses(raw))
+
+        forbidden = re.sub(r"\([^)]*\)", " ", raw)
+        forbidden = re.sub(r"\bonly\b.+?\bin\s+scope\b", " ", forbidden, flags=re.IGNORECASE)
+        forbidden = re.sub(r"\bexcept\b.+", " ", forbidden, flags=re.IGNORECASE)
+        forbidden = re.sub(r"\ballowed\s*:\s*.+", " ", forbidden, flags=re.IGNORECASE)
+        forbidden = re.sub(r"\s+", " ", forbidden).strip()
+
+        return forbidden or raw, self._unique(allowed)
+
+    def _extract_allowed_clauses(self, text: str) -> list[str]:
+        allowed: list[str] = []
+
+        patterns = [
+            r"only\s+(.+?)\s+is\s+in\s+scope",
+            r"only\s+(.+?)\s+are\s+in\s+scope",
+            r"only\s+(.+?)\s+in\s+scope",
+            r"except\s+(.+)$",
+            r"allowed\s*:\s*(.+)$",
+        ]
+
+        for pattern in patterns:
+            for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+                value = match.group(1).strip(" .;:")
+                if value:
+                    allowed.append(value)
+
+        return allowed
+
+    def _matches_allowed_clause(self, element_stems: set[str], allowed_stem_sets: list[set[str]]) -> bool:
+        for allowed_stems in allowed_stem_sets:
+            if not allowed_stems:
+                continue
+            # One strong allowed token is enough for phrases such as "initiation flow".
+            if element_stems.intersection(allowed_stems):
+                return True
+        return False
+
+    def _important_stems(self, text: str) -> set[str]:
+        words = re.findall(r"[a-zA-Z0-9]+", str(text).lower())
+        stems = set()
+
+        for word in words:
+            if word in self.STOPWORDS or len(word) < 3:
+                continue
+            stems.add(self._stem(word))
+
+        return stems
+
+    def _stem(self, word: str) -> str:
+        word = word.lower()
+
+        # Very small generic stemmer to match verify/verification and initiate/initiation.
+        if word.startswith("verif"):
+            return "verif"
+        if word.startswith("initiat"):
+            return "initiat"
+
+        for suffix in ["ations", "ation", "itions", "ition", "ments", "ment", "ing", "ed", "es", "s"]:
+            if word.endswith(suffix) and len(word) > len(suffix) + 3:
+                return word[: -len(suffix)]
+
+        return word
+
+    # ------------------------------------------------------------------
+    # General helpers
+    # ------------------------------------------------------------------
 
     def _collect_ids(self, items: Any) -> list[str]:
         ids: list[str] = []
-
         if not isinstance(items, list):
             return ids
-
         for item in items:
             if isinstance(item, dict) and item.get("id"):
                 ids.append(str(item["id"]))
-
         return ids
 
     def _item_text(self, item: Any) -> str:
@@ -539,7 +405,6 @@ class UseCaseQualityValidator:
                 if item.get(key):
                     return str(item[key])
             return str(item)
-
         return str(item)
 
     def _normalize(self, text: str) -> str:
@@ -548,8 +413,13 @@ class UseCaseQualityValidator:
         text = re.sub(r"\s+", " ", text).strip()
         return text
 
-    def _remove_parenthetical_text(self, text: str) -> str:
-        return re.sub(r"\([^)]*\)", "", text).strip()
-
     def _contains_any(self, text: str, keywords: list[str]) -> bool:
         return any(keyword in text for keyword in keywords)
+
+    def _unique(self, items: list[str]) -> list[str]:
+        result: list[str] = []
+        for item in items:
+            value = str(item).strip()
+            if value and value not in result:
+                result.append(value)
+        return result
