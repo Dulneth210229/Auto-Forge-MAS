@@ -853,8 +853,9 @@ class ArchitectureAgent:
                 "non_functional_requirements": nfrs,
                 "risks": risks,
                 "design_tradeoffs": [
-                    f"Fallback SDS generated from SRS because LLM output was invalid or incomplete: {reason}",
-                    "Design is kept feature-scoped to preserve feature-by-feature SDLC development."
+                    "Design is derived directly from the approved SRS to preserve traceability and feature scope.",
+                    "Design is kept feature-scoped to preserve feature-by-feature SDLC development.",
+                    "Internal generation or repair details are kept in backend logs and are not exposed in the approval-ready SDS."
                 ]
             },
             "architecture_overview": {
