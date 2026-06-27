@@ -4,7 +4,9 @@ Architecture Agent.
 Purpose:
 - Load approved SRS JSON from Requirement Agent.
 - Optionally load approved Enhanced SRS JSON from Domain Agent.
-- Generate SDS JSON, usecase_analysis_json, and usecase_json using LLM.
+- Generate IEEE 1016-style SDS JSON, usecase_analysis_json, and usecase_json using LLM.
+- Validate SDS coverage against SRS.
+- Validate use case quality.
 - Convert SDS JSON into Markdown.
 - Convert usecase_json into PlantUML.
 - Render PlantUML into PNG.
@@ -25,14 +27,6 @@ Outputs:
 - SDS JSON
 - Use Case Diagram PUML
 - Use Case Diagram PNG
-
-Important improvement:
-The Use Case Diagram is no longer allowed to be too simple.
-If the LLM generates a weak diagram such as:
-    Customer -> Use Login Feature
-
-The validator rejects it and the agent builds a stronger fallback diagram
-from the approved SRS.
 """
 
 from __future__ import annotations
@@ -41,6 +35,7 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from app.agents.architecture_agent.markdown_builder import ArchitectureSDSMarkdownBuilder
 from app.agents.architecture_agent.prompt import (
@@ -53,6 +48,11 @@ from app.agents.architecture_agent.schemas import (
     ArchitectureAgentInput,
     ArchitectureAgentOutput,
 )
+from app.agents.architecture_agent.sds_validator import (
+    ArchitectureSDSValidator,
+    SDSValidationError,
+)
+from app.agents.architecture_agent.usecase_modeler import ArchitectureUseCaseModeler
 from app.agents.architecture_agent.usecase_builder import ArchitectureUseCasePlantUMLBuilder
 from app.agents.architecture_agent.usecase_renderer import UseCaseDiagramRenderer
 from app.agents.architecture_agent.usecase_validator import (
@@ -85,7 +85,7 @@ class ArchitectureAgent:
     This class controls:
     1. Approved input artifact loading.
     2. LLM architecture generation.
-    3. JSON structure validation.
+    3. IEEE-style SDS validation.
     4. UML use case quality validation.
     5. SDS Markdown generation.
     6. PlantUML generation.
@@ -95,29 +95,34 @@ class ArchitectureAgent:
 
     REQUIRED_TOP_LEVEL_KEYS = [
         "sds_json",
-        "usecase_analysis_json",
-        "usecase_json",
     ]
 
     REQUIRED_SDS_KEYS = [
-        "project_id",
-        "project_name",
-        "project_type",
-        "feature_id",
-        "feature_name",
-        "target_stack",
-        "architecture_style",
-        "feature_design_overview",
-        "frontend_responsibilities",
-        "backend_responsibilities",
-        "database_design",
-        "api_design_summary",
-        "data_flow",
-        "error_handling_design",
-        "authentication_authorization_design",
-        "folder_structure_suggestion",
-        "dependency_list",
-        "traceability",
+        "document_control",
+        "introduction",
+        "design_context",
+        "design_considerations",
+        "architecture_overview",
+        "design_views",
+        "detailed_design_decisions",
+        "traceability_matrix",
+        "assumptions",
+        "constraints",
+        "risks",
+        "dependencies",
+        "use_case_diagram_reference",
+        "human_approval_note",
+    ]
+
+    REQUIRED_DESIGN_VIEW_KEYS = [
+        "context_view",
+        "logical_view",
+        "interface_view",
+        "data_view",
+        "behavior_view",
+        "error_handling_view",
+        "security_authorization_view",
+        "quality_attributes_view",
     ]
 
     REQUIRED_USECASE_KEYS = [
@@ -133,22 +138,18 @@ class ArchitectureAgent:
         """
         Initialize Architecture Agent helpers.
 
-        These helpers are specific to the Architecture Agent.
-        We are not changing common/shared files.
+        These helpers are Architecture-Agent-specific.
+        No common/shared files are changed.
         """
 
-        # Converts SDS JSON to human-readable Markdown.
         self.markdown_builder = ArchitectureSDSMarkdownBuilder()
+        self.sds_validator = ArchitectureSDSValidator()
 
-        # Converts structured usecase_json to PlantUML.
+        # Use Case pipeline:
+        # LLM/specification -> modeler -> validator -> PlantUML builder -> PNG renderer
+        self.usecase_modeler = ArchitectureUseCaseModeler()
         self.usecase_builder = ArchitectureUseCasePlantUMLBuilder()
-
-        # Validates UML quality before saving.
-        # This prevents weak diagrams such as:
-        # Customer -> Use Login Feature
         self.usecase_validator = UseCaseQualityValidator()
-
-        # Converts .puml into .png.
         self.diagram_renderer = UseCaseDiagramRenderer()
 
     async def run(
@@ -158,9 +159,6 @@ class ArchitectureAgent:
     ) -> AgentRunResponse:
         """
         Run Architecture Agent for one feature.
-
-        Endpoint:
-            POST /features/{feature_id}/agents/architecture/run
 
         Rule:
             Architecture Agent can only run after Requirement Agent SRS JSON
@@ -179,7 +177,6 @@ class ArchitectureAgent:
         if not project:
             raise ValueError("Project not found for this feature.")
 
-        # Find latest approved SRS JSON from Requirement Agent.
         srs_artifact = self._find_latest_approved_artifact(
             feature_id=feature_id,
             agent_name=AgentName.REQUIREMENT,
@@ -197,8 +194,6 @@ class ArchitectureAgent:
 
         enhanced_srs_json = None
 
-        # If Domain Agent output exists and is approved, Architecture Agent can use it.
-        # If not available, it still works using approved SRS JSON.
         if request.use_enhanced_srs_if_available:
             enhanced_srs_artifact = self._find_latest_approved_artifact(
                 feature_id=feature_id,
@@ -210,7 +205,6 @@ class ArchitectureAgent:
             if enhanced_srs_artifact:
                 enhanced_srs_json = read_json_file(enhanced_srs_artifact["file_path"])
 
-        # Update feature progress.
         feature["feature_status"] = FeatureStatus.IN_PROGRESS
         feature["current_agent"] = AgentName.ARCHITECTURE
 
@@ -243,7 +237,7 @@ class ArchitectureAgent:
             status="completed",
             message=(
                 "Architecture Agent completed successfully. "
-                "SDS and Use Case Diagram artifacts were generated. "
+                "IEEE-style SDS and Use Case Diagram artifacts were generated. "
                 "Human approval is required before UI/UX Agent can run."
             ),
             artifact_ids=artifact_ids
@@ -256,14 +250,15 @@ class ArchitectureAgent:
         """
         Generate Architecture Agent output.
 
-        Main approach:
+        Flow:
         1. Ask LLM for JSON only.
-        2. Parse and validate basic JSON structure.
-        3. Validate use case diagram quality.
-        4. If JSON is broken, ask LLM to repair it.
-        5. If still broken or too weak, build dynamic fallback from SRS.
-        6. Convert SDS JSON to Markdown.
-        7. Convert usecase_json to PlantUML.
+        2. Parse and validate JSON structure.
+        3. Validate SDS against approved SRS.
+        4. Validate use case diagram quality.
+        5. If LLM output is invalid, repair once.
+        6. If still invalid, build dynamic IEEE-style fallback from SRS.
+        7. Convert SDS JSON to Markdown.
+        8. Convert usecase_json to PlantUML.
         """
 
         provider = llm_provider_service.get_provider()
@@ -289,13 +284,13 @@ class ArchitectureAgent:
         ])
 
         try:
-            # First attempt: parse LLM output.
             parsed = self._parse_and_validate_output(raw_output)
+            parsed = self._complete_usecase_model(agent_input, parsed)
+            self._validate_full_output(agent_input, parsed)
 
         except Exception as first_error:
-            logger.warning("Architecture JSON parse failed: %s", first_error)
+            logger.warning("Architecture output validation failed: %s", first_error)
 
-            # Second attempt: ask LLM to repair its JSON.
             repair_prompt = build_json_repair_prompt(raw_output)
 
             repaired_output = await provider.invoke_agent([
@@ -311,17 +306,21 @@ class ArchitectureAgent:
 
             try:
                 parsed = self._parse_and_validate_output(repaired_output)
+                parsed = self._complete_usecase_model(agent_input, parsed)
+                self._validate_full_output(agent_input, parsed)
                 raw_output = repaired_output
 
             except Exception as second_error:
                 logger.warning("Architecture JSON repair failed: %s", second_error)
 
-                # Final fallback: generate architecture output from SRS
-                # without relying on LLM.
                 parsed = self._build_fallback_architecture_output(
                     agent_input=agent_input,
                     reason=str(second_error)
                 )
+                parsed = self._complete_usecase_model(agent_input, parsed)
+
+                # The fallback is generated from SRS, so it should still be validated.
+                self._validate_full_output(agent_input, parsed)
 
                 raw_output = json.dumps(parsed, indent=2, default=str)
 
@@ -329,37 +328,7 @@ class ArchitectureAgent:
         usecase_analysis_json = parsed["usecase_analysis_json"]
         usecase_json = parsed["usecase_json"]
 
-        # Validate UML quality after parsing.
-        # This catches simple but bad diagrams.
-        try:
-            self.usecase_validator.validate(
-                srs_json=agent_input.enhanced_srs_json or agent_input.srs_json,
-                sds_json=sds_json,
-                usecase_analysis_json=usecase_analysis_json,
-                usecase_json=usecase_json,
-            )
-
-        except UseCaseValidationError as validation_error:
-            logger.warning(
-                "Generated use case diagram was too weak. Using fallback. Reason: %s",
-                validation_error
-            )
-
-            parsed = self._build_fallback_architecture_output(
-                agent_input=agent_input,
-                reason=str(validation_error)
-            )
-
-            raw_output = json.dumps(parsed, indent=2, default=str)
-
-            sds_json = parsed["sds_json"]
-            usecase_analysis_json = parsed["usecase_analysis_json"]
-            usecase_json = parsed["usecase_json"]
-
-        # Convert SDS JSON into human-readable Markdown.
         sds_markdown = self.markdown_builder.build(sds_json)
-
-        # Convert usecase_json into PlantUML source.
         usecase_puml = self.usecase_builder.build(usecase_json)
 
         return ArchitectureAgentOutput(
@@ -371,12 +340,68 @@ class ArchitectureAgent:
             raw_llm_output=raw_output
         )
 
-    def _parse_and_validate_output(self, raw_output: str) -> dict:
+    def _complete_usecase_model(
+        self,
+        agent_input: ArchitectureAgentInput,
+        parsed: dict[str, Any]
+    ) -> dict[str, Any]:
         """
-        Parse and validate Architecture Agent JSON output.
+        Build the final use case model using the dedicated modeler.
 
-        This method only checks JSON structure.
-        Deep UML quality checking is handled by UseCaseQualityValidator.
+        The LLM may provide usecase_specification_json, usecase_analysis_json,
+        or usecase_json. However, the final diagram must always pass through
+        ArchitectureUseCaseModeler so that actors, use cases, relationships,
+        and notes are normalized using feature-independent UML rules.
+        """
+
+        srs_for_modeling = agent_input.enhanced_srs_json or agent_input.srs_json
+
+        usecase_specification_json = parsed.get("usecase_specification_json")
+
+        if not isinstance(usecase_specification_json, dict):
+            usecase_specification_json = {}
+
+        usecase_analysis_json, usecase_json = self.usecase_modeler.build(
+            srs_json=srs_for_modeling,
+            sds_json=parsed["sds_json"],
+            usecase_specification_json=usecase_specification_json,
+        )
+
+        parsed["usecase_specification_json"] = usecase_specification_json
+        parsed["usecase_analysis_json"] = usecase_analysis_json
+        parsed["usecase_json"] = usecase_json
+
+        self._ensure_keys(usecase_json, self.REQUIRED_USECASE_KEYS)
+        self._validate_usecase_json(usecase_json)
+
+        return parsed
+
+    def _validate_full_output(
+        self,
+        agent_input: ArchitectureAgentInput,
+        parsed: dict[str, Any]
+    ) -> None:
+        """
+        Run full SDS and Use Case validations.
+        """
+
+        srs_for_validation = agent_input.enhanced_srs_json or agent_input.srs_json
+
+        self.sds_validator.validate(
+            srs_json=srs_for_validation,
+            sds_json=parsed["sds_json"]
+        )
+
+        self.usecase_validator.validate(
+            srs_json=srs_for_validation,
+            sds_json=parsed["sds_json"],
+            usecase_analysis_json=parsed["usecase_analysis_json"],
+            usecase_json=parsed["usecase_json"],
+        )
+
+    def _parse_and_validate_output(self, raw_output: str) -> dict[str, Any]:
+        """
+        Parse and validate Architecture Agent JSON structure.
         """
 
         parsed = self._extract_json_object(raw_output)
@@ -384,36 +409,30 @@ class ArchitectureAgent:
         self._ensure_keys(parsed, self.REQUIRED_TOP_LEVEL_KEYS)
 
         sds_json = parsed.get("sds_json")
-        usecase_analysis_json = parsed.get("usecase_analysis_json")
-        usecase_json = parsed.get("usecase_json")
 
         if not isinstance(sds_json, dict):
             raise ValueError("sds_json must be a JSON object.")
 
-        if not isinstance(usecase_analysis_json, dict):
-            raise ValueError("usecase_analysis_json must be a JSON object.")
-
-        if not isinstance(usecase_json, dict):
-            raise ValueError("usecase_json must be a JSON object.")
-
         self._ensure_keys(sds_json, self.REQUIRED_SDS_KEYS)
-        self._ensure_keys(usecase_json, self.REQUIRED_USECASE_KEYS)
 
-        self._validate_usecase_json(usecase_json)
+        design_views = sds_json.get("design_views", {})
 
+        if not isinstance(design_views, dict):
+            raise ValueError("sds_json.design_views must be a JSON object.")
+
+        self._ensure_keys(design_views, self.REQUIRED_DESIGN_VIEW_KEYS)
+
+        # Use case output is intentionally completed by _complete_usecase_model().
+        # This prevents weak or random LLM usecase_json from becoming the final diagram.
         return parsed
 
-    def _extract_json_object(self, text: str) -> dict:
+    def _extract_json_object(self, text: str) -> dict[str, Any]:
         """
         Extract JSON object from LLM output.
-
-        This is Architecture-Agent-specific.
-        We are not changing shared json_utils.py.
         """
 
         cleaned = text.strip()
 
-        # Remove common Markdown code fences if LLM returns them accidentally.
         cleaned = re.sub(r"^```json\s*", "", cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r"^```\s*", "", cleaned)
         cleaned = re.sub(r"\s*```$", "", cleaned)
@@ -423,7 +442,6 @@ class ArchitectureAgent:
         except json.JSONDecodeError:
             pass
 
-        # Fallback extraction if the LLM added text before/after JSON.
         start = cleaned.find("{")
         end = cleaned.rfind("}")
 
@@ -432,9 +450,9 @@ class ArchitectureAgent:
 
         return json.loads(cleaned[start:end + 1])
 
-    def _ensure_keys(self, data: dict, required_keys: list[str]) -> None:
+    def _ensure_keys(self, data: dict[str, Any], required_keys: list[str]) -> None:
         """
-        Validate required keys in a dictionary.
+        Validate required keys.
         """
 
         missing = [key for key in required_keys if key not in data]
@@ -442,17 +460,9 @@ class ArchitectureAgent:
         if missing:
             raise ValueError(f"Missing required keys: {missing}")
 
-    def _validate_usecase_json(self, usecase_json: dict) -> None:
+    def _validate_usecase_json(self, usecase_json: dict[str, Any]) -> None:
         """
         Validate basic use case diagram structure.
-
-        This method checks only:
-        - actors
-        - use cases
-        - relationships
-        - notes
-
-        Deeper quality validation is done by UseCaseQualityValidator.
         """
 
         actors = usecase_json.get("actors", [])
@@ -503,8 +513,6 @@ class ArchitectureAgent:
     ) -> dict | None:
         """
         Find latest approved artifact.
-
-        Architecture Agent must not use unapproved input artifacts.
         """
 
         matching_artifacts = []
@@ -542,12 +550,7 @@ class ArchitectureAgent:
         output: ArchitectureAgentOutput
     ) -> list[str]:
         """
-        Save Architecture Agent artifacts manually.
-
-        Why manually?
-        - We want all Architecture Agent files to share the same version.
-        - We do not change common artifact_service.py.
-        - This keeps versioning behavior isolated to Architecture Agent.
+        Save Architecture Agent artifacts.
 
         Files:
         - {feature}_sds_v1.md
@@ -644,9 +647,7 @@ class ArchitectureAgent:
         created_at: datetime
     ) -> str:
         """
-        Register artifact metadata in database/store.
-
-        This mirrors artifact_service behavior but stays inside Architecture Agent.
+        Register artifact metadata in store.
         """
 
         artifact_id = generate_id("artifact")
@@ -669,10 +670,6 @@ class ArchitectureAgent:
     def _feature_slug(self, feature: dict) -> str:
         """
         Build safe file name slug from feature name.
-
-        Example:
-            Login -> login
-            Product Listing -> product_listing
         """
 
         feature_name = feature.get("feature_name", "feature")
@@ -686,100 +683,786 @@ class ArchitectureAgent:
         self,
         agent_input: ArchitectureAgentInput,
         reason: str
-    ) -> dict:
+    ) -> dict[str, Any]:
         """
-        Build fallback architecture output if LLM fails or generates weak UML.
+        Build dynamic IEEE-style fallback architecture output.
 
-        This fallback is dynamic.
-        It reads the approved SRS and builds use cases from:
-        - user roles
-        - functional requirements
-        - acceptance criteria
-        - validation rules
-        - non-functional requirements
-        - constraints
-        - risks
-
-        This avoids weak diagrams such as:
-            Customer -> Use Login Feature
+        This fallback is feature-independent.
+        It reads the approved SRS and builds SDS sections from SRS fields.
         """
 
         srs = agent_input.enhanced_srs_json or agent_input.srs_json
         feature = agent_input.feature
         project = agent_input.project
 
-        feature_name = feature.get("feature_name", srs.get("feature_name", "Feature"))
-        feature_id = feature.get("feature_id", srs.get("feature_id", "feature"))
         project_id = project.get("project_id", srs.get("project_id", "project"))
         project_name = project.get("project_name", srs.get("project_name", "Project"))
+        project_type = project.get("project_type", srs.get("project_type", "General"))
+        feature_id = feature.get("feature_id", srs.get("feature_id", "feature"))
+        feature_name = feature.get("feature_name", srs.get("feature_name", "Feature"))
+        target_stack = project.get("target_stack", srs.get("target_stack", "MERN"))
+        architecture_style = srs.get("preferred_architectural_style", srs.get("architecture_style", srs.get("architectural_style", "mvc")))
 
-        user_roles = srs.get("user_roles", ["User"])
-        functional_requirements = srs.get("functional_requirements", [])
-        acceptance_criteria = srs.get("acceptance_criteria", [])
-        validation_rules = srs.get("validation_rules", [])
-        non_functional_requirements = srs.get("non_functional_requirements", [])
-        constraints = srs.get("constraints", [])
-        risks = srs.get("risks", [])
+        sds_json = self._build_ieee_sds_from_srs(
+            srs=srs,
+            project_id=project_id,
+            project_name=project_name,
+            project_type=project_type,
+            feature_id=feature_id,
+            feature_name=feature_name,
+            target_stack=target_stack,
+            architecture_style=architecture_style,
+            reason=reason,
+        )
+
+        usecase_analysis_json, usecase_json = self._build_usecase_from_srs(
+            srs=srs,
+            feature_name=feature_name
+        )
+
+        return {
+            "sds_json": sds_json,
+            "usecase_analysis_json": usecase_analysis_json,
+            "usecase_json": usecase_json
+        }
+
+    def _build_ieee_sds_from_srs(
+        self,
+        srs: dict[str, Any],
+        project_id: str,
+        project_name: str,
+        project_type: str,
+        feature_id: str,
+        feature_name: str,
+        target_stack: str,
+        architecture_style: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        """
+        Build IEEE-style SDS JSON from SRS.
+
+        This method maps SRS sections into generic design views.
+        """
+
+        scope = self._as_text_list(srs.get("scope", []))
+        out_of_scope = self._as_text_list(srs.get("out_of_scope", []))
+        user_roles = self._as_text_list(srs.get("user_roles", []))
+        assumptions = self._as_text_list(srs.get("assumptions", []))
+        constraints = self._as_text_list(srs.get("constraints", []))
+        dependencies = self._as_text_list(srs.get("dependencies", []))
+        risks = self._as_record_list(srs.get("risks", []))
+        nfrs = self._as_record_list(srs.get("non_functional_requirements", []))
+        functional_requirements = self._as_record_list(srs.get("functional_requirements", []))
+        acceptance_criteria = self._as_record_list(srs.get("acceptance_criteria", []))
+        validation_rules = self._as_record_list(srs.get("validation_rules", []))
+        api_expectations = self._as_record_list(srs.get("api_expectations", []))
+        input_requirements = self._as_record_list(srs.get("input_requirements", []))
+        output_requirements = self._as_record_list(srs.get("output_requirements", []))
+        data_requirements = self._as_record_list(srs.get("data_requirements", []))
+        ui_expectations = self._as_record_list(srs.get("ui_expectations", []))
+        business_goal = srs.get("business_goal", f"Support the {feature_name} feature.")
+
+        interface_view = self._build_interface_view(
+            feature_name=feature_name,
+            api_expectations=api_expectations,
+            input_requirements=input_requirements,
+            output_requirements=output_requirements,
+            functional_requirements=functional_requirements,
+        )
+
+        data_view = self._build_data_view(
+            feature_name=feature_name,
+            data_requirements=data_requirements,
+            validation_rules=validation_rules,
+            functional_requirements=functional_requirements,
+        )
+
+        behavior_view = self._build_behavior_view(
+            feature_name=feature_name,
+            acceptance_criteria=acceptance_criteria,
+            functional_requirements=functional_requirements,
+        )
+
+        error_handling_view = self._build_error_handling_view(
+            validation_rules=validation_rules,
+            acceptance_criteria=acceptance_criteria,
+            nfrs=nfrs,
+        )
+
+        security_view = self._build_security_view(
+            constraints=constraints,
+            risks=risks,
+            functional_requirements=functional_requirements,
+            nfrs=nfrs,
+        )
+
+        quality_view = self._build_quality_view(nfrs=nfrs)
+
+        traceability_matrix = self._build_sds_traceability_matrix(
+            srs=srs,
+            interface_view=interface_view,
+            data_view=data_view,
+            behavior_view=behavior_view,
+            error_handling_view=error_handling_view,
+            security_view=security_view,
+            quality_view=quality_view,
+        )
+
+        srs_related_ids = self._collect_requirement_ids(functional_requirements)
+
+        return {
+            "document_control": {
+                "document_title": f"Software Design Specification: {feature_name}",
+                "document_type": "Software Design Specification",
+                "standard_basis": "IEEE 1016-style Software Design Description",
+                "project_id": project_id,
+                "project_name": project_name,
+                "project_type": project_type,
+                "feature_id": feature_id,
+                "feature_name": feature_name,
+                "target_stack": target_stack,
+                "architecture_style": architecture_style,
+                "version": "v1",
+                "generated_by": "Architecture Agent",
+                "input_artifacts": ["Approved SRS JSON", "Approved Enhanced SRS JSON if available"],
+                "approval_status": "pending"
+            },
+            "introduction": {
+                "purpose": f"Describe the software design for the {feature_name} feature based on the approved SRS.",
+                "scope": scope or [f"Design the approved {feature_name} feature only."],
+                "out_of_scope": out_of_scope,
+                "intended_audience": [
+                    "Human reviewer",
+                    "UI/UX Agent",
+                    "Coder Agent",
+                    "Project supervisor",
+                    "Software engineering team"
+                ],
+                "definitions": self._build_definitions_from_srs(srs)
+            },
+            "design_context": {
+                "business_goal": business_goal,
+                "user_roles": user_roles,
+                "feature_boundary": f"This SDS covers only the {feature_name} feature and excludes unrelated features.",
+                "operating_environment": f"Generated application target stack: {target_stack}.",
+                "dependencies": dependencies,
+                "assumptions": assumptions
+            },
+            "design_considerations": {
+                "constraints": constraints,
+                "non_functional_requirements": nfrs,
+                "risks": risks,
+                "design_tradeoffs": [
+                    f"Fallback SDS generated from SRS because LLM output was invalid or incomplete: {reason}",
+                    "Design is kept feature-scoped to preserve feature-by-feature SDLC development."
+                ]
+            },
+            "architecture_overview": {
+                "architecture_style": architecture_style,
+                "architecture_rationale": (
+                    f"Use {architecture_style} to keep the {feature_name} feature separated into presentation, "
+                    "business logic, and data responsibilities where applicable."
+                ),
+                "frontend_overview": self._build_frontend_overview(ui_expectations, input_requirements),
+                "backend_overview": self._build_backend_overview(functional_requirements, validation_rules),
+                "data_overview": self._build_data_overview(data_requirements),
+                "integration_overview": self._build_integration_overview(api_expectations, dependencies)
+            },
+            "design_views": {
+                "context_view": {
+                    "actors": user_roles,
+                    "external_systems": dependencies,
+                    "feature_boundary": f"{feature_name} feature boundary.",
+                    "main_interactions": self._build_main_interactions(user_roles, functional_requirements, feature_name)
+                },
+                "logical_view": {
+                    "frontend_modules": self._build_logical_modules("frontend", feature_name, ui_expectations, input_requirements),
+                    "backend_modules": self._build_logical_modules("backend", feature_name, functional_requirements, validation_rules),
+                    "domain_services": self._build_domain_services(feature_name, functional_requirements),
+                    "data_modules": self._build_data_modules(feature_name, data_requirements),
+                    "integration_points": self._build_integration_points(api_expectations, dependencies)
+                },
+                "interface_view": interface_view,
+                "data_view": data_view,
+                "behavior_view": behavior_view,
+                "error_handling_view": error_handling_view,
+                "security_authorization_view": security_view,
+                "quality_attributes_view": quality_view
+            },
+            "detailed_design_decisions": self._build_design_decisions(
+                feature_name=feature_name,
+                functional_requirements=functional_requirements,
+                acceptance_criteria=acceptance_criteria,
+                validation_rules=validation_rules,
+                nfrs=nfrs,
+                risks=risks,
+                api_expectations=api_expectations,
+                data_requirements=data_requirements,
+            ),
+            "traceability_matrix": traceability_matrix,
+            "assumptions": assumptions,
+            "constraints": constraints,
+            "risks": risks,
+            "dependencies": dependencies,
+            "use_case_diagram_reference": {
+                "puml_file": "Generated as a separate Architecture Agent artifact.",
+                "png_file": "Generated as a separate Architecture Agent artifact.",
+                "diagram_scope": f"Feature-level use case diagram for {feature_name}.",
+                "actors": user_roles,
+                "main_use_cases": [feature_name],
+                "relationship_summary": [
+                    "Associations connect actors to main use cases.",
+                    "Include relationships represent mandatory supporting behaviours.",
+                    "Extend relationships represent optional, alternative, or exception behaviours."
+                ]
+            },
+            "human_approval_note": "This SDS must be reviewed and approved before the UI/UX Agent starts."
+        }
+
+    def _build_interface_view(
+        self,
+        feature_name: str,
+        api_expectations: list[dict[str, Any]],
+        input_requirements: list[dict[str, Any]],
+        output_requirements: list[dict[str, Any]],
+        functional_requirements: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """
+        Build interface view generically from API/input/output requirements.
+        """
+
+        request_model_name = f"{self._pascal_case(feature_name)}Request"
+        success_model_name = f"{self._pascal_case(feature_name)}SuccessResponse"
+        error_model_name = f"{self._pascal_case(feature_name)}ErrorResponse"
+
+        request_model = {
+            "name": request_model_name,
+            "fields": [
+                {
+                    "name": item.get("field", item.get("name", "field")),
+                    "type": item.get("type", "string"),
+                    "format": item.get("format", item.get("description", "")),
+                    "required": True
+                }
+                for item in input_requirements
+            ],
+            "related_requirements": self._collect_requirement_ids(functional_requirements)
+        }
+
+        success_fields = []
+        error_fields = []
+
+        for item in output_requirements:
+            field_text = str(item.get("field", item.get("name", item))).lower()
+
+            field_record = {
+                "name": item.get("field", item.get("name", "field")),
+                "type": item.get("type", "string"),
+                "description": item.get("description", "")
+            }
+
+            if "error" in field_text or "message" in field_text:
+                error_fields.append(field_record)
+            else:
+                success_fields.append(field_record)
+
+        if not success_fields and output_requirements:
+            success_fields = output_requirements
+
+        response_models = [
+            {
+                "name": success_model_name,
+                "type": "success",
+                "fields": success_fields,
+                "related_requirements": self._collect_requirement_ids(functional_requirements)
+            },
+            {
+                "name": error_model_name,
+                "type": "error",
+                "fields": error_fields,
+                "related_requirements": []
+            }
+        ]
+
+        endpoints = []
+
+        for item in api_expectations:
+            endpoint = item.get("endpoint", "")
+            method = item.get("method", "GET")
+            payload = item.get("payload", item.get("purpose", ""))
+            related_ids = self._infer_related_requirement_ids_from_text(
+                text=f"{endpoint} {method} {payload}",
+                requirement_items=functional_requirements
+            )
+
+            endpoints.append({
+                "endpoint": endpoint or f"/api/{self._slug(feature_name)}",
+                "method": method,
+                "purpose": payload or f"Support the {feature_name} feature.",
+                "request_model": request_model_name,
+                "success_response_model": success_model_name,
+                "error_response_model": error_model_name,
+                "related_requirements": related_ids
+            })
+
+        if not endpoints:
+            endpoints.append({
+                "endpoint": f"/api/{self._slug(feature_name)}",
+                "method": "POST",
+                "purpose": f"Support the {feature_name} feature.",
+                "request_model": request_model_name,
+                "success_response_model": success_model_name,
+                "error_response_model": error_model_name,
+                "related_requirements": self._collect_requirement_ids(functional_requirements)
+            })
+
+        return {
+            "api_endpoints": endpoints,
+            "request_models": [request_model],
+            "response_models": response_models
+        }
+
+    def _build_data_view(
+        self,
+        feature_name: str,
+        data_requirements: list[dict[str, Any]],
+        validation_rules: list[dict[str, Any]],
+        functional_requirements: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """
+        Build data view from data and validation requirements.
+        """
+
+        data_entities = []
+
+        for index, item in enumerate(data_requirements, start=1):
+            data_name = (
+                item.get("data_point")
+                or item.get("name")
+                or item.get("field")
+                or f"{feature_name}DataEntity{index}"
+            )
+
+            data_entities.append({
+                "name": data_name,
+                "purpose": item.get("description", f"Support data handling for {feature_name}."),
+                "fields": self._infer_fields_from_text(item.get("description", str(item))),
+                "relationships": [],
+                "indexes_or_constraints": self._infer_data_constraints_from_text(item.get("description", str(item))),
+                "related_requirements": self._infer_related_requirement_ids_from_text(
+                    text=str(item),
+                    requirement_items=functional_requirements
+                )
+            })
+
+        if not data_entities:
+            data_entities.append({
+                "name": f"{self._pascal_case(feature_name)}Data",
+                "purpose": f"Data needed to support the {feature_name} feature.",
+                "fields": [],
+                "relationships": [],
+                "indexes_or_constraints": [],
+                "related_requirements": self._collect_requirement_ids(functional_requirements)
+            })
+
+        return {
+            "data_entities": data_entities,
+            "storage_rules": [
+                item.get("description", str(item))
+                for item in data_requirements
+            ] or [f"Store only data required for the {feature_name} feature."],
+            "data_validation_rules": [
+                {
+                    "rule_id": item.get("id", f"VR-{index:03d}"),
+                    "rule": item.get("description", str(item)),
+                    "related_requirements": [item.get("id")] if item.get("id") else []
+                }
+                for index, item in enumerate(validation_rules, start=1)
+            ]
+        }
+
+    def _build_behavior_view(
+        self,
+        feature_name: str,
+        acceptance_criteria: list[dict[str, Any]],
+        functional_requirements: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """
+        Build behavior view from acceptance criteria and FRs.
+        """
+
+        main_success_flow = []
+        alternative_flows = []
+        exception_flows = []
+
+        for item in acceptance_criteria:
+            text = item.get("description", str(item))
+            text_lower = text.lower()
+
+            record = {
+                "id": item.get("id", ""),
+                "description": text,
+                "related_requirements": self._infer_related_requirement_ids_from_text(text, functional_requirements)
+            }
+
+            if self._contains_any(text_lower, ["invalid", "error", "fail", "denied", "prevent"]):
+                exception_flows.append(record)
+            elif self._contains_any(text_lower, ["click", "optional", "alternative", "redirect", "directed", "recover", "forgot", "reset"]):
+                alternative_flows.append(record)
+            else:
+                main_success_flow.append(record)
+
+        if not main_success_flow:
+            main_success_flow = [
+                {
+                    "step": 1,
+                    "description": f"Actor initiates the {feature_name} feature.",
+                    "related_requirements": self._collect_requirement_ids(functional_requirements)
+                },
+                {
+                    "step": 2,
+                    "description": "System validates the request according to approved SRS rules.",
+                    "related_requirements": []
+                },
+                {
+                    "step": 3,
+                    "description": "System returns the expected result or a clear error response.",
+                    "related_requirements": []
+                }
+            ]
+
+        return {
+            "main_success_flow": main_success_flow,
+            "alternative_flows": alternative_flows,
+            "exception_flows": exception_flows,
+            "state_changes": self._infer_state_changes(feature_name, functional_requirements, acceptance_criteria)
+        }
+
+    def _build_error_handling_view(
+        self,
+        validation_rules: list[dict[str, Any]],
+        acceptance_criteria: list[dict[str, Any]],
+        nfrs: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """
+        Build error handling view generically.
+        """
+
+        validation_errors = [
+            {
+                "source_id": item.get("id", ""),
+                "condition": item.get("description", str(item)),
+                "handling": "Return a clear validation message and prevent invalid processing."
+            }
+            for item in validation_rules
+        ]
+
+        business_errors = []
+        authorization_errors = []
+
+        for item in acceptance_criteria:
+            text = item.get("description", str(item))
+            text_lower = text.lower()
+
+            if self._contains_any(text_lower, ["invalid", "error", "fail", "prevent", "incorrect"]):
+                business_errors.append({
+                    "source_id": item.get("id", ""),
+                    "condition": text,
+                    "handling": "Return a clear, user-friendly error and prevent the invalid action."
+                })
+
+            if self._contains_any(text_lower, ["unauthorized", "forbidden", "access", "permission"]):
+                authorization_errors.append({
+                    "source_id": item.get("id", ""),
+                    "condition": text,
+                    "handling": "Prevent unauthorized access and return an authorization-safe response."
+                })
+
+        user_message_rules = [
+            item.get("description", str(item))
+            for item in nfrs
+            if "error" in str(item).lower() or "clear" in str(item).lower()
+        ]
+
+        return {
+            "validation_errors": validation_errors,
+            "business_errors": business_errors,
+            "authorization_errors": authorization_errors,
+            "system_errors": [
+                "Unexpected system errors should return safe generic messages without exposing internal details."
+            ],
+            "user_message_rules": user_message_rules or [
+                "All user-facing errors must be clear, non-technical, and aligned with the approved SRS."
+            ]
+        }
+
+    def _build_security_view(
+        self,
+        constraints: list[str],
+        risks: list[dict[str, Any]],
+        functional_requirements: list[dict[str, Any]],
+        nfrs: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """
+        Build security/authorization view only from SRS-related security hints.
+        """
+
+        security_text = " ".join(map(str, constraints + risks + functional_requirements + nfrs)).lower()
+
+        authentication_design = []
+        authorization_design = []
+        sensitive_data_rules = []
+
+        if self._contains_any(security_text, ["auth", "login", "token", "jwt", "credential", "password"]):
+            authentication_design.append(
+                "Apply authentication behaviour required by the SRS and selected architecture."
+            )
+
+        if self._contains_any(security_text, ["role", "admin", "customer", "permission", "authorize", "access"]):
+            authorization_design.append(
+                "Apply role/access rules required by the SRS."
+            )
+
+        if self._contains_any(security_text, ["password", "token", "secret", "credential", "personal", "sensitive"]):
+            sensitive_data_rules.append(
+                "Sensitive values must not be exposed in responses, logs, or generated artifacts."
+            )
+
+        risk_mitigations = []
+
+        for risk in risks:
+            risk_mitigations.append({
+                "risk": risk.get("risk", str(risk)),
+                "mitigation": risk.get("mitigation", "Apply suitable mitigation based on project security policy."),
+                "related_requirements": self._infer_related_requirement_ids_from_text(
+                    text=str(risk),
+                    requirement_items=functional_requirements
+                )
+            })
+
+        return {
+            "authentication_design": authentication_design,
+            "authorization_design": authorization_design,
+            "sensitive_data_rules": sensitive_data_rules,
+            "risk_mitigations": risk_mitigations
+        }
+
+    def _build_quality_view(self, nfrs: list[dict[str, Any]]) -> dict[str, Any]:
+        """
+        Build quality attributes view from NFR category or text.
+        """
+
+        quality_view = {
+            "performance": [],
+            "usability": [],
+            "reliability": [],
+            "scalability": [],
+            "maintainability": [],
+            "accessibility": []
+        }
+
+        for item in nfrs:
+            description = item.get("description", str(item))
+            category = str(item.get("category", "")).lower()
+            text = f"{category} {description}".lower()
+
+            record = {
+                "nfr_id": item.get("id", ""),
+                "description": description,
+                "design_decision": self._quality_decision_from_nfr(description)
+            }
+
+            if "performance" in text or "fast" in text or "response" in text or "load" in text:
+                quality_view["performance"].append(record)
+            elif "usability" in text or "responsive" in text or "user" in text or "clear" in text:
+                quality_view["usability"].append(record)
+            elif "reliability" in text or "available" in text or "recover" in text:
+                quality_view["reliability"].append(record)
+            elif "scalability" in text or "scale" in text or "peak" in text:
+                quality_view["scalability"].append(record)
+            elif "accessibility" in text or "wcag" in text:
+                quality_view["accessibility"].append(record)
+            else:
+                quality_view["maintainability"].append(record)
+
+        return quality_view
+
+    def _build_sds_traceability_matrix(
+        self,
+        srs: dict[str, Any],
+        interface_view: dict[str, Any],
+        data_view: dict[str, Any],
+        behavior_view: dict[str, Any],
+        error_handling_view: dict[str, Any],
+        security_view: dict[str, Any],
+        quality_view: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """
+        Build generic requirement-to-design traceability matrix.
+        """
+
+        traceability = []
+
+        traceability.extend(self._trace_items(srs.get("functional_requirements", []), "FR", "Design Views / Detailed Design Decisions"))
+        traceability.extend(self._trace_items(srs.get("acceptance_criteria", []), "AC", "Behavior View / Error Handling View"))
+        traceability.extend(self._trace_items(srs.get("validation_rules", []), "VR", "Interface View / Data View / Error Handling View"))
+        traceability.extend(self._trace_items(srs.get("non_functional_requirements", []), "NFR", "Quality Attributes View"))
+        traceability.extend(self._trace_non_id_items(srs.get("constraints", []), "Constraint", "Design Considerations / Architecture Overview"))
+        traceability.extend(self._trace_non_id_items(srs.get("risks", []), "Risk", "Design Considerations / Security and Authorization View"))
+        traceability.extend(self._trace_non_id_items(srs.get("dependencies", []), "Dependency", "Design Context / Logical View"))
+        traceability.extend(self._trace_non_id_items(srs.get("data_requirements", []), "Data", "Data View"))
+        traceability.extend(self._trace_non_id_items(srs.get("api_expectations", []), "API", "Interface View"))
+        traceability.extend(self._trace_non_id_items(srs.get("ui_expectations", []), "UI", "Context View / Logical View"))
+
+        return traceability
+
+    def _trace_items(self, items: list[Any], source_type: str, section: str) -> list[dict[str, Any]]:
+        records = []
+
+        for index, item in enumerate(items, start=1):
+            if isinstance(item, dict):
+                source_id = item.get("id", f"{source_type}-{index:03d}")
+                description = item.get("description", str(item))
+            else:
+                source_id = f"{source_type}-{index:03d}"
+                description = str(item)
+
+            records.append({
+                "source_id": source_id,
+                "source_type": source_type,
+                "sds_section": section,
+                "design_element": description,
+                "coverage_status": "covered"
+            })
+
+        return records
+
+    def _trace_non_id_items(self, items: list[Any], source_type: str, section: str) -> list[dict[str, Any]]:
+        records = []
+
+        for index, item in enumerate(items, start=1):
+            source_id = f"{source_type.upper()}-{index:03d}"
+            description = self._item_description(item)
+
+            records.append({
+                "source_id": source_id,
+                "source_type": source_type,
+                "sds_section": section,
+                "design_element": description,
+                "coverage_status": "covered"
+            })
+
+        return records
+
+    def _build_design_decisions(
+        self,
+        feature_name: str,
+        functional_requirements: list[dict[str, Any]],
+        acceptance_criteria: list[dict[str, Any]],
+        validation_rules: list[dict[str, Any]],
+        nfrs: list[dict[str, Any]],
+        risks: list[dict[str, Any]],
+        api_expectations: list[dict[str, Any]],
+        data_requirements: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """
+        Build detailed design decisions from SRS items.
+        """
+
+        decisions = []
+        counter = 1
+
+        for group_name, items in [
+            ("functional requirement", functional_requirements),
+            ("acceptance criterion", acceptance_criteria),
+            ("validation rule", validation_rules),
+            ("non-functional requirement", nfrs),
+            ("risk", risks),
+            ("API expectation", api_expectations),
+            ("data requirement", data_requirements),
+        ]:
+            for item in items:
+                related_ids = [item.get("id")] if isinstance(item, dict) and item.get("id") else []
+
+                decisions.append({
+                    "decision_id": f"DD-{counter:03d}",
+                    "decision": f"Design must address {group_name}: {self._item_description(item)}",
+                    "rationale": f"This design decision is derived from the approved SRS {group_name}.",
+                    "related_requirements": related_ids
+                })
+
+                counter += 1
+
+        return decisions
+
+    def _build_usecase_from_srs(
+        self,
+        srs: dict[str, Any],
+        feature_name: str
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """
+        Build generic usecase_analysis_json and usecase_json from SRS.
+        """
+
+        user_roles = self._as_text_list(srs.get("user_roles", [])) or ["User"]
+        functional_requirements = self._as_record_list(srs.get("functional_requirements", []))
+        acceptance_criteria = self._as_record_list(srs.get("acceptance_criteria", []))
+        validation_rules = self._as_record_list(srs.get("validation_rules", []))
+        nfrs = self._as_record_list(srs.get("non_functional_requirements", []))
+        constraints = self._as_text_list(srs.get("constraints", []))
+        risks = self._as_record_list(srs.get("risks", []))
+
+        actors = [
+            {
+                "id": f"ACT-{index:03d}",
+                "name": role,
+                "type": "primary" if index == 1 else "secondary",
+                "description": f"{role} interacts with the {feature_name} feature."
+            }
+            for index, role in enumerate(user_roles, start=1)
+        ]
 
         main_uc_id = "UC-001"
-
-        actors = self._build_fallback_actors(user_roles)
 
         use_cases = [
             {
                 "id": main_uc_id,
-                "name": feature_name,
-                "description": f"Main use case for the {feature_name} feature.",
+                "name": self._verb_phrase_from_feature(feature_name),
+                "description": f"Main user goal for the {feature_name} feature.",
                 "category": "main",
-                "related_requirements": self._collect_requirement_ids(functional_requirements),
+                "related_requirements": self._collect_requirement_ids(functional_requirements)
             }
         ]
 
-        relationships = []
-
-        # Connect each SRS user role to the main use case.
-        for actor in actors:
-            relationships.append({
+        relationships = [
+            {
                 "from": actor["id"],
                 "to": main_uc_id,
                 "type": "association",
                 "label": "",
                 "related_requirements": []
-            })
+            }
+            for actor in actors
+        ]
 
-        include_counter = 2
-        extend_counter = 100
-
-        mandatory_included_behaviours = []
+        mandatory_behaviours = []
         alternative_flows = []
         exception_flows = []
         validation_flows = []
         security_flows = []
-        diagram_notes = []
 
-        # Convert validation rules into <<include>> use cases.
+        next_uc_number = 2
+
         for rule in validation_rules:
-            rule_id = (
-                rule.get("id", f"VR-{include_counter:03d}")
-                if isinstance(rule, dict)
-                else f"VR-{include_counter:03d}"
-            )
-
-            rule_text = (
-                rule.get("description", str(rule))
-                if isinstance(rule, dict)
-                else str(rule)
-            )
-
-            uc_id = f"UC-{include_counter:03d}"
-            uc_name = self._build_validation_usecase_name(rule_text)
+            uc_id = f"UC-{next_uc_number:03d}"
+            name = self._usecase_name_from_text(rule.get("description", str(rule)), prefix="Validate")
 
             use_cases.append({
                 "id": uc_id,
-                "name": uc_name,
-                "description": rule_text,
+                "name": name,
+                "description": rule.get("description", str(rule)),
                 "category": "included",
-                "related_requirements": [rule_id],
+                "related_requirements": [rule.get("id")] if rule.get("id") else []
             })
 
             relationships.append({
@@ -787,313 +1470,151 @@ class ArchitectureAgent:
                 "to": uc_id,
                 "type": "include",
                 "label": "",
-                "related_requirements": [rule_id],
+                "related_requirements": [rule.get("id")] if rule.get("id") else []
             })
 
             validation_flows.append({
-                "name": uc_name,
-                "rule": rule_text,
-                "related_requirements": [rule_id],
+                "name": name,
+                "rule": rule.get("description", str(rule)),
+                "related_requirements": [rule.get("id")] if rule.get("id") else []
             })
 
-            include_counter += 1
+            next_uc_number += 1
 
-        # Convert functional requirements into include or extend use cases.
         for requirement in functional_requirements:
-            if not isinstance(requirement, dict):
+            description = requirement.get("description", str(requirement))
+            description_lower = description.lower()
+            related_ids = [requirement.get("id")] if requirement.get("id") else []
+
+            if self._contains_any(description_lower, ["optional", "alternative", "recover", "forgot", "reset", "retry"]):
+                relationship_type = "extend"
+                category = "extension"
+                flow_target = alternative_flows
+            elif self._contains_any(description_lower, ["invalid", "error", "fail", "prevent"]):
+                relationship_type = "extend"
+                category = "extension"
+                flow_target = exception_flows
+            elif self._contains_any(description_lower, ["validate", "check", "verify", "generate", "calculate", "confirm", "process"]):
+                relationship_type = "include"
+                category = "included"
+                flow_target = mandatory_behaviours
+            else:
                 continue
 
-            req_id = requirement.get("id", "")
-            description = requirement.get("description", "")
-            description_lower = description.lower()
+            uc_id = f"UC-{next_uc_number:03d}"
+            name = self._usecase_name_from_text(description)
 
-            if self._is_optional_or_recovery_requirement(description_lower):
-                uc_id = f"UC-{extend_counter:03d}"
-                uc_name = self._build_recovery_usecase_name(description, feature_name)
+            use_cases.append({
+                "id": uc_id,
+                "name": name,
+                "description": description,
+                "category": category,
+                "related_requirements": related_ids
+            })
 
-                use_cases.append({
-                    "id": uc_id,
-                    "name": uc_name,
-                    "description": description,
-                    "category": "extension",
-                    "related_requirements": [req_id],
-                })
-
-                relationships.append({
-                    "from": uc_id,
-                    "to": main_uc_id,
-                    "type": "extend",
-                    "label": "optional/recovery flow",
-                    "related_requirements": [req_id],
-                })
-
-                alternative_flows.append({
-                    "name": uc_name,
-                    "condition": description,
-                    "related_requirements": [req_id],
-                })
-
-                extend_counter += 1
-
-            elif self._is_mandatory_internal_requirement(description_lower):
-                uc_id = f"UC-{include_counter:03d}"
-                uc_name = self._build_mandatory_usecase_name(description, feature_name)
-
-                use_cases.append({
-                    "id": uc_id,
-                    "name": uc_name,
-                    "description": description,
-                    "category": "included",
-                    "related_requirements": [req_id],
-                })
-
+            if relationship_type == "include":
                 relationships.append({
                     "from": main_uc_id,
                     "to": uc_id,
                     "type": "include",
                     "label": "",
-                    "related_requirements": [req_id],
+                    "related_requirements": related_ids
+                })
+            else:
+                relationships.append({
+                    "from": uc_id,
+                    "to": main_uc_id,
+                    "type": "extend",
+                    "label": "alternative/exception flow",
+                    "related_requirements": related_ids
                 })
 
-                mandatory_included_behaviours.append({
-                    "name": uc_name,
-                    "reason": description,
-                    "related_requirements": [req_id],
-                })
+            flow_target.append({
+                "name": name,
+                "reason" if relationship_type == "include" else "condition": description,
+                "related_requirements": related_ids
+            })
 
-                include_counter += 1
+            next_uc_number += 1
 
-        # Convert acceptance criteria into extension/error flows.
         for criterion in acceptance_criteria:
-            if not isinstance(criterion, dict):
+            description = criterion.get("description", str(criterion))
+            description_lower = description.lower()
+            related_ids = [criterion.get("id")] if criterion.get("id") else []
+
+            if not self._contains_any(description_lower, ["invalid", "error", "fail", "prevent", "optional", "alternative", "recover", "forgot", "reset", "click", "directed"]):
                 continue
 
-            ac_id = criterion.get("id", "")
-            description = criterion.get("description", "")
-            description_lower = description.lower()
+            uc_id = f"UC-{next_uc_number:03d}"
+            name = self._usecase_name_from_text(description, prefix="Handle")
 
-            if self._is_error_acceptance_criterion(description_lower):
-                uc_id = f"UC-{extend_counter:03d}"
-                uc_name = self._build_error_usecase_name(description)
-
-                use_cases.append({
-                    "id": uc_id,
-                    "name": uc_name,
-                    "description": description,
-                    "category": "extension",
-                    "related_requirements": [ac_id],
-                })
-
-                relationships.append({
-                    "from": uc_id,
-                    "to": main_uc_id,
-                    "type": "extend",
-                    "label": "error flow",
-                    "related_requirements": [ac_id],
-                })
-
-                exception_flows.append({
-                    "name": uc_name,
-                    "condition": description,
-                    "related_requirements": [ac_id],
-                })
-
-                extend_counter += 1
-
-            elif self._is_recovery_acceptance_criterion(description_lower):
-                uc_id = f"UC-{extend_counter:03d}"
-                uc_name = self._build_recovery_usecase_name(description, feature_name)
-
-                use_cases.append({
-                    "id": uc_id,
-                    "name": uc_name,
-                    "description": description,
-                    "category": "extension",
-                    "related_requirements": [ac_id],
-                })
-
-                relationships.append({
-                    "from": uc_id,
-                    "to": main_uc_id,
-                    "type": "extend",
-                    "label": "alternative flow",
-                    "related_requirements": [ac_id],
-                })
-
-                alternative_flows.append({
-                    "name": uc_name,
-                    "condition": description,
-                    "related_requirements": [ac_id],
-                })
-
-                extend_counter += 1
-
-        # Constraints, NFRs, and risks should be notes, not actors.
-        note_description_parts = []
-
-        if constraints:
-            note_description_parts.append(
-                "Constraints: " + "; ".join(map(str, constraints))
-            )
-
-        if non_functional_requirements:
-            readable_nfrs = [
-                item.get("description", str(item))
-                if isinstance(item, dict)
-                else str(item)
-                for item in non_functional_requirements
-            ]
-
-            note_description_parts.append(
-                "NFRs: " + "; ".join(readable_nfrs)
-            )
-
-        if risks:
-            readable_risks = [
-                item.get("risk", str(item))
-                if isinstance(item, dict)
-                else str(item)
-                for item in risks
-            ]
-
-            note_description_parts.append(
-                "Risks: " + "; ".join(readable_risks)
-            )
-
-        if note_description_parts:
-            diagram_notes.append({
-                "title": "Architecture and Quality Notes",
-                "description": " | ".join(note_description_parts),
-                "related_requirements": self._collect_requirement_ids(non_functional_requirements),
+            use_cases.append({
+                "id": uc_id,
+                "name": name,
+                "description": description,
+                "category": "extension",
+                "related_requirements": related_ids
             })
+
+            relationships.append({
+                "from": uc_id,
+                "to": main_uc_id,
+                "type": "extend",
+                "label": "acceptance/alternative flow",
+                "related_requirements": related_ids
+            })
+
+            if self._contains_any(description_lower, ["invalid", "error", "fail", "prevent"]):
+                exception_flows.append({
+                    "name": name,
+                    "condition": description,
+                    "related_requirements": related_ids
+                })
+            else:
+                alternative_flows.append({
+                    "name": name,
+                    "condition": description,
+                    "related_requirements": related_ids
+                })
+
+            next_uc_number += 1
 
         notes = []
 
-        for index, note in enumerate(diagram_notes, start=1):
+        note_parts = []
+
+        if constraints:
+            note_parts.append("Constraints: " + "; ".join(constraints))
+
+        if nfrs:
+            note_parts.append("NFRs: " + "; ".join(self._item_description(item) for item in nfrs))
+
+        if risks:
+            note_parts.append("Risks: " + "; ".join(self._item_description(item) for item in risks))
+
+        if note_parts:
             notes.append({
-                "id": f"NOTE-{index:03d}",
+                "id": "NOTE-001",
                 "target": main_uc_id,
-                "title": note["title"],
-                "description": note["description"],
-                "related_requirements": note["related_requirements"],
+                "title": "Design Notes",
+                "description": " | ".join(note_parts),
+                "related_requirements": self._collect_requirement_ids(nfrs)
             })
 
-        sds_json = {
-            "project_id": project_id,
-            "project_name": project_name,
-            "project_type": project.get("project_type", srs.get("project_type", "General")),
-            "feature_id": feature_id,
-            "feature_name": feature_name,
-            "target_stack": project.get("target_stack", srs.get("target_stack", "MERN")),
-            "architecture_style": srs.get(
-                "architectural_style",
-                srs.get("architecture_style", "mvc")
-            ),
-            "feature_design_overview": (
-                f"SDS for the {feature_name} feature. "
-                "This fallback SDS was generated from the approved SRS because "
-                "the LLM output was invalid or too weak."
-            ),
-            "frontend_responsibilities": [
-                f"Provide user interface for {feature_name}.",
-                "Validate user input before sending request.",
-                "Display success, validation, and error feedback clearly."
-            ],
-            "backend_responsibilities": [
-                f"Process {feature_name} request.",
-                "Validate request data.",
-                "Apply required business rules.",
-                "Return structured success or error responses."
-            ],
-            "database_design": {
-                "collections": [
-                    "Use existing user/account-related collection where applicable."
-                ],
-                "data_notes": [
-                    "Store and retrieve only required feature data.",
-                    "Do not expose sensitive data in responses."
-                ]
-            },
-            "api_design_summary": self._build_fallback_api_summary(srs, feature_name),
-            "data_flow": [
-                "Actor starts the feature action from the frontend.",
-                "Frontend validates required inputs.",
-                "Frontend sends request to backend endpoint.",
-                "Backend validates input and performs business logic.",
-                "Backend accesses required database records.",
-                "Backend returns success or error response.",
-                "Frontend displays the result."
-            ],
-            "error_handling_design": [
-                "Return clear validation error messages.",
-                "Return generic authentication/business errors where needed.",
-                "Prevent sensitive internal details from being exposed."
-            ],
-            "authentication_authorization_design": [
-                "Apply authentication/authorization behaviour required by the SRS.",
-                "Use token-based session handling if specified."
-            ],
-            "folder_structure_suggestion": [
-                "frontend/src/pages/",
-                "frontend/src/components/",
-                "backend/src/controllers/",
-                "backend/src/routes/",
-                "backend/src/services/",
-                "backend/src/models/"
-            ],
-            "dependency_list": [
-                "React",
-                "Express.js",
-                "MongoDB",
-                "Mongoose",
-                "Axios",
-                "JWT library if authentication is required"
-            ],
-            "integration_with_previous_features": [
-                "Preserve already approved features.",
-                "Do not rewrite unrelated modules."
-            ],
-            "scalability_notes": [
-                "Keep feature logic modular.",
-                "Use service layer for business logic.",
-                "Use database indexes where needed."
-            ],
-            "assumptions": [
-                f"Fallback architecture generated because: {reason}"
-            ],
-            "constraints": constraints,
-            "traceability": self._build_fallback_sds_traceability(functional_requirements)
-        }
+        analysis_trace = self._build_usecase_traceability(use_cases, relationships, notes)
 
         usecase_analysis_json = {
-            "feature_goal": f"Support the {feature_name} feature according to the approved SRS.",
-            "primary_actors": [
-                actor["name"]
-                for actor in actors
-                if actor.get("type") == "primary"
-            ],
-            "secondary_actors": [
-                actor["name"]
-                for actor in actors
-                if actor.get("type") != "primary"
-            ],
-            "main_success_scenario": [
-                f"Actor initiates {feature_name}.",
-                "System validates mandatory inputs.",
-                "System processes the request.",
-                "System returns successful response if all rules pass."
-            ],
-            "mandatory_included_behaviours": mandatory_included_behaviours,
+            "feature_goal": srs.get("business_goal", f"Support the {feature_name} feature."),
+            "primary_actors": [actor["name"] for actor in actors if actor["type"] == "primary"],
+            "secondary_actors": [actor["name"] for actor in actors if actor["type"] != "primary"],
+            "main_success_scenario": self._as_text_list(srs.get("scope", [])) or [f"Actor completes the {feature_name} feature successfully."],
+            "mandatory_included_behaviours": mandatory_behaviours,
             "alternative_flows": alternative_flows,
             "exception_flows": exception_flows,
             "validation_flows": validation_flows,
             "security_flows": security_flows,
-            "diagram_notes": diagram_notes,
-            "traceability": self._build_fallback_usecase_traceability(
-                use_cases=use_cases,
-                relationships=relationships,
-                notes=notes
-            )
+            "diagram_notes": notes,
+            "traceability": analysis_trace
         }
 
         usecase_json = {
@@ -1106,290 +1627,126 @@ class ArchitectureAgent:
             "standards_notes": [
                 "Actors are external roles.",
                 "Use cases are inside the system boundary.",
-                "<<include>> is used for mandatory behaviour.",
-                "<<extend>> is used for optional, alternative, or error behaviour.",
-                "Constraints and NFRs are represented as notes."
+                "<<include>> is used for mandatory supporting behaviour.",
+                "<<extend>> is used for optional, alternative, or exception behaviour.",
+                "Constraints, NFRs, and risks are represented as notes where appropriate."
             ]
         }
 
-        return {
-            "sds_json": sds_json,
-            "usecase_analysis_json": usecase_analysis_json,
-            "usecase_json": usecase_json
-        }
+        return usecase_analysis_json, usecase_json
 
-    def _build_fallback_actors(self, user_roles: list) -> list[dict]:
-        """
-        Build actors from SRS user roles.
+    # ---------------------------------------------------------------------
+    # Generic helper methods
+    # ---------------------------------------------------------------------
 
-        Example:
-            Customer -> ACT-001
-            Admin -> ACT-002
-        """
+    def _build_definitions_from_srs(self, srs: dict[str, Any]) -> list[dict[str, str]]:
+        definitions = [
+            {
+                "term": "SDS",
+                "definition": "Software Design Specification generated using an IEEE 1016-style design description structure."
+            }
+        ]
 
-        actors = []
+        target_stack = srs.get("target_stack")
 
-        for index, role in enumerate(user_roles, start=1):
-            role_name = str(role)
-
-            actors.append({
-                "id": f"ACT-{index:03d}",
-                "name": role_name,
-                "type": "primary" if index == 1 else "secondary",
-                "description": f"{role_name} interacts with this feature."
+        if target_stack:
+            definitions.append({
+                "term": "Target Stack",
+                "definition": str(target_stack)
             })
 
-        if not actors:
-            actors.append({
-                "id": "ACT-001",
-                "name": "User",
-                "type": "primary",
-                "description": "Default actor."
-            })
+        return definitions
 
-        return actors
+    def _build_frontend_overview(self, ui_expectations: list[dict[str, Any]], input_requirements: list[dict[str, Any]]) -> str:
+        if ui_expectations or input_requirements:
+            return "Frontend design should provide the user-facing entry points, inputs, states, and feedback required by the approved SRS."
 
-    def _collect_requirement_ids(self, items: list) -> list[str]:
-        """
-        Collect IDs from SRS items.
+        return "Frontend design should support the approved feature interactions where applicable."
 
-        Works for:
-        - FR
-        - AC
-        - VR
-        - NFR
-        """
+    def _build_backend_overview(self, functional_requirements: list[dict[str, Any]], validation_rules: list[dict[str, Any]]) -> str:
+        if functional_requirements or validation_rules:
+            return "Backend design should process feature requests, enforce business rules, validate inputs, and return structured responses."
 
-        ids = []
+        return "Backend design should support the approved feature responsibilities."
 
-        for item in items:
-            if isinstance(item, dict) and item.get("id"):
-                ids.append(item["id"])
+    def _build_data_overview(self, data_requirements: list[dict[str, Any]]) -> str:
+        if data_requirements:
+            return "Data design should support the data requirements defined in the approved SRS."
 
-        return ids
+        return "No explicit data requirement was provided; data design should remain minimal and feature-scoped."
 
-    def _is_mandatory_internal_requirement(self, text: str) -> bool:
-        """
-        Detect functional requirements that should become <<include>> use cases.
+    def _build_integration_overview(self, api_expectations: list[dict[str, Any]], dependencies: list[str]) -> str:
+        if api_expectations or dependencies:
+            return "Integration design should follow the API expectations and dependencies listed in the approved SRS."
 
-        These are mandatory behaviours needed to complete the main use case.
-        """
+        return "No explicit external integration is required beyond the approved feature boundary."
 
-        keywords = [
-            "validate",
-            "generate",
-            "return",
-            "verify",
-            "check",
-            "authenticate",
-            "token",
-            "jwt",
-            "credential",
-        ]
+    def _build_main_interactions(self, user_roles: list[str], functional_requirements: list[dict[str, Any]], feature_name: str) -> list[str]:
+        interactions = []
 
-        return any(keyword in text for keyword in keywords)
-
-    def _is_optional_or_recovery_requirement(self, text: str) -> bool:
-        """
-        Detect requirements that should become <<extend>> use cases.
-
-        These are optional, alternative, or recovery behaviours.
-        """
-
-        keywords = [
-            "forgot",
-            "recover",
-            "reset",
-            "optional",
-            "alternative",
-            "re-enter",
-            "retry",
-        ]
-
-        return any(keyword in text for keyword in keywords)
-
-    def _is_error_acceptance_criterion(self, text: str) -> bool:
-        """
-        Detect error/exception acceptance criteria.
-        """
-
-        keywords = [
-            "invalid",
-            "error",
-            "failed",
-            "prevent access",
-            "incorrect",
-            "denied",
-        ]
-
-        return any(keyword in text for keyword in keywords)
-
-    def _is_recovery_acceptance_criterion(self, text: str) -> bool:
-        """
-        Detect recovery or alternative acceptance criteria.
-        """
-
-        keywords = [
-            "forgot",
-            "recover",
-            "reset",
-            "directed",
-            "re-enter",
-            "retry",
-        ]
-
-        return any(keyword in text for keyword in keywords)
-
-    def _build_validation_usecase_name(self, rule_text: str) -> str:
-        """
-        Build readable validation use case name.
-
-        Example:
-            Email must conform to email regex -> Validate email format
-        """
-
-        text = rule_text.lower()
-
-        if "email" in text:
-            return "Validate email format"
-
-        if "password" in text:
-            return "Validate password rule"
-
-        return "Validate input"
-
-    def _build_mandatory_usecase_name(
-        self,
-        description: str,
-        feature_name: str
-    ) -> str:
-        """
-        Build included use case name from functional requirement.
-        """
-
-        text = description.lower()
-
-        if "credential" in text:
-            return "Validate credentials"
-
-        if "jwt" in text or "token" in text:
-            return "Generate authentication token"
-
-        if "authenticate" in text:
-            return f"Authenticate {feature_name} request"
-
-        if "validate" in text:
-            return "Validate submitted data"
-
-        return f"Process {feature_name} rule"
-
-    def _build_recovery_usecase_name(
-        self,
-        description: str,
-        feature_name: str
-    ) -> str:
-        """
-        Build extension use case name for recovery/optional flows.
-        """
-
-        text = description.lower()
-
-        if "forgot password" in text:
-            return "Initiate forgot password"
-
-        if "forgot username" in text:
-            return "Initiate forgot username"
-
-        if "reset" in text:
-            return "Initiate recovery flow"
-
-        return f"Alternative {feature_name} flow"
-
-    def _build_error_usecase_name(self, description: str) -> str:
-        """
-        Build extension use case name for error flows.
-        """
-
-        text = description.lower()
-
-        if "invalid" in text and "credential" in text:
-            return "Show invalid credential error"
-
-        if "error" in text:
-            return "Show error message"
-
-        return "Handle failed scenario"
-
-    def _build_fallback_api_summary(
-        self,
-        srs: dict,
-        feature_name: str
-    ) -> list[dict]:
-        """
-        Build SDS-level API summary from SRS API expectations.
-
-        Important:
-        This is not a separate API contract.
-        It is only part of the SDS.
-        """
-
-        api_expectations = srs.get("api_expectations", [])
-        summary = []
-
-        for item in api_expectations:
-            if isinstance(item, dict):
-                summary.append({
-                    "endpoint": item.get("endpoint", f"/api/{feature_name.lower()}"),
-                    "method": item.get("method", "POST"),
-                    "purpose": item.get("payload", f"Support {feature_name} feature."),
-                    "related_requirements": []
-                })
-
-        if not summary:
-            summary.append({
-                "endpoint": f"/api/{feature_name.lower()}",
-                "method": "POST",
-                "purpose": f"Support {feature_name} feature.",
-                "related_requirements": []
-            })
-
-        return summary
-
-    def _build_fallback_sds_traceability(
-        self,
-        functional_requirements: list
-    ) -> list[dict]:
-        """
-        Build SDS traceability from functional requirements.
-        """
-
-        traceability = []
+        for role in user_roles or ["User"]:
+            interactions.append(f"{role} interacts with the {feature_name} feature.")
 
         for requirement in functional_requirements:
-            if not isinstance(requirement, dict):
-                continue
+            interactions.append(requirement.get("description", str(requirement)))
 
-            traceability.append({
-                "requirement_id": requirement.get("id", "FR-000"),
-                "sds_section": "Feature Design Overview",
-                "design_decision": requirement.get(
-                    "description",
-                    "Requirement handled in SDS."
-                )
+        return interactions
+
+    def _build_logical_modules(self, layer: str, feature_name: str, primary_items: list[dict[str, Any]], secondary_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            {
+                "name": f"{self._pascal_case(feature_name)}{layer.title()}Module",
+                "responsibility": f"Handle {layer} responsibilities for the {feature_name} feature.",
+                "derived_from": [self._item_description(item) for item in primary_items + secondary_items]
+            }
+        ]
+
+    def _build_domain_services(self, feature_name: str, functional_requirements: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            {
+                "name": f"{self._pascal_case(feature_name)}Service",
+                "responsibility": f"Apply business rules for the {feature_name} feature.",
+                "related_requirements": self._collect_requirement_ids(functional_requirements)
+            }
+        ]
+
+    def _build_data_modules(self, feature_name: str, data_requirements: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            {
+                "name": f"{self._pascal_case(feature_name)}DataModule",
+                "responsibility": "Manage data access required by the feature.",
+                "derived_from": [self._item_description(item) for item in data_requirements]
+            }
+        ]
+
+    def _build_integration_points(self, api_expectations: list[dict[str, Any]], dependencies: list[str]) -> list[dict[str, Any]]:
+        points = []
+
+        for item in api_expectations:
+            points.append({
+                "type": "API",
+                "description": self._item_description(item)
             })
 
-        return traceability
+        for dependency in dependencies:
+            points.append({
+                "type": "Dependency",
+                "description": dependency
+            })
 
-    def _build_fallback_usecase_traceability(
-        self,
-        use_cases: list[dict],
-        relationships: list[dict],
-        notes: list[dict]
-    ) -> list[dict]:
-        """
-        Build traceability records for usecase_analysis_json.
-        """
+        return points
 
+    def _build_security_flow_records(self, risks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            {
+                "name": self._usecase_name_from_text(self._item_description(risk), prefix="Mitigate"),
+                "reason": self._item_description(risk),
+                "related_requirements": []
+            }
+            for risk in risks
+        ]
+
+    def _build_usecase_traceability(self, use_cases: list[dict[str, Any]], relationships: list[dict[str, Any]], notes: list[dict[str, Any]]) -> list[dict[str, Any]]:
         traceability = []
 
         for use_case in use_cases:
@@ -1421,11 +1778,166 @@ class ArchitectureAgent:
 
         return traceability
 
-    def _guess_source_type(self, requirement_id: str) -> str:
-        """
-        Guess traceability source type from ID prefix.
-        """
+    def _infer_fields_from_text(self, text: str) -> list[dict[str, Any]]:
+        words = re.findall(r"[A-Za-z][A-Za-z0-9_ ]{1,30}", text)
 
+        if not words:
+            return []
+
+        # Keep this generic: use noun-like phrases only as candidate fields.
+        fields = []
+
+        for word in words[:5]:
+            cleaned = word.strip()
+            if len(cleaned) < 3:
+                continue
+
+            fields.append({
+                "name": self._camel_case(cleaned),
+                "type": "String",
+                "required": False
+            })
+
+        return fields
+
+    def _infer_data_constraints_from_text(self, text: str) -> list[str]:
+        constraints = []
+        text_lower = text.lower()
+
+        if "unique" in text_lower:
+            constraints.append("Unique constraint required where applicable.")
+
+        if "secure" in text_lower or "sensitive" in text_lower:
+            constraints.append("Secure storage required where applicable.")
+
+        if "hashed" in text_lower or "encrypted" in text_lower:
+            constraints.append("Protected value storage required where applicable.")
+
+        return constraints
+
+    def _infer_state_changes(self, feature_name: str, functional_requirements: list[dict[str, Any]], acceptance_criteria: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        records = []
+
+        for item in functional_requirements + acceptance_criteria:
+            text = self._item_description(item)
+            if self._contains_any(text.lower(), ["redirect", "return", "update", "create", "delete", "change", "status", "receive"]):
+                records.append({
+                    "description": text,
+                    "related_requirements": [item.get("id")] if isinstance(item, dict) and item.get("id") else []
+                })
+
+        if not records:
+            records.append({
+                "description": f"Feature state changes should follow the approved {feature_name} acceptance criteria.",
+                "related_requirements": []
+            })
+
+        return records
+
+    def _quality_decision_from_nfr(self, description: str) -> str:
+        text = description.lower()
+
+        if self._contains_any(text, ["fast", "response", "performance", "load", "ms", "second"]):
+            return "Optimize design to satisfy the stated performance expectation."
+
+        if self._contains_any(text, ["responsive", "mobile", "desktop", "usability", "clear"]):
+            return "Design frontend/user-facing behaviour to satisfy the stated usability expectation."
+
+        if self._contains_any(text, ["secure", "privacy", "auth", "protect"]):
+            return "Apply secure design controls aligned with the stated quality expectation."
+
+        return "Design must satisfy this non-functional requirement."
+
+    def _infer_related_requirement_ids_from_text(self, text: str, requirement_items: list[dict[str, Any]]) -> list[str]:
+        related = []
+        text_tokens = set(re.findall(r"[a-zA-Z0-9]+", text.lower()))
+
+        for item in requirement_items:
+            item_text = self._item_description(item)
+            item_tokens = set(re.findall(r"[a-zA-Z0-9]+", item_text.lower()))
+
+            if text_tokens and item_tokens and len(text_tokens.intersection(item_tokens)) >= 2:
+                if item.get("id"):
+                    related.append(item["id"])
+
+        if not related:
+            related = self._collect_requirement_ids(requirement_items)
+
+        return related
+
+    def _collect_requirement_ids(self, items: list[Any]) -> list[str]:
+        ids = []
+
+        for item in items:
+            if isinstance(item, dict) and item.get("id"):
+                ids.append(str(item["id"]))
+
+        return ids
+
+    def _as_text_list(self, value: Any) -> list[str]:
+        if value is None:
+            return []
+
+        if isinstance(value, list):
+            return [self._item_description(item) for item in value]
+
+        return [str(value)]
+
+    def _as_record_list(self, value: Any) -> list[dict[str, Any]]:
+        if value is None:
+            return []
+
+        if isinstance(value, list):
+            records = []
+
+            for item in value:
+                if isinstance(item, dict):
+                    records.append(dict(item))
+                else:
+                    records.append({"description": str(item)})
+
+            return records
+
+        if isinstance(value, dict):
+            return [dict(value)]
+
+        return [{"description": str(value)}]
+
+    def _item_description(self, item: Any) -> str:
+        if isinstance(item, dict):
+            for key in ["description", "expectation", "payload", "risk", "mitigation", "data_point", "field", "endpoint", "name"]:
+                if item.get(key):
+                    return str(item[key])
+
+            return str(item)
+
+        return str(item)
+
+    def _verb_phrase_from_feature(self, feature_name: str) -> str:
+        text = feature_name.strip()
+
+        if not text:
+            return "Use Feature"
+
+        # Generic feature names such as Login, Signup, Checkout, Enrollment already work as use cases.
+        return text
+
+    def _usecase_name_from_text(self, text: str, prefix: str | None = None) -> str:
+        cleaned = re.sub(r"[^a-zA-Z0-9 ]+", " ", text).strip()
+        words = cleaned.split()
+
+        if prefix:
+            words = [prefix] + words
+
+        if not words:
+            return prefix or "Handle Scenario"
+
+        return " ".join(words[:5]).title()
+
+    def _contains_any(self, text: str, keywords: list[str]) -> bool:
+        return any(keyword in text for keyword in keywords)
+
+    def _guess_source_type(self, requirement_id: str) -> str:
         if requirement_id.startswith("FR"):
             return "FR"
 
@@ -1439,6 +1951,19 @@ class ArchitectureAgent:
             return "NFR"
 
         return "Requirement"
+
+    def _pascal_case(self, text: str) -> str:
+        parts = re.findall(r"[a-zA-Z0-9]+", text)
+        return "".join(part[:1].upper() + part[1:] for part in parts) or "Feature"
+
+    def _camel_case(self, text: str) -> str:
+        pascal = self._pascal_case(text)
+        return pascal[:1].lower() + pascal[1:] if pascal else "field"
+
+    def _slug(self, text: str) -> str:
+        slug = text.lower().strip()
+        slug = re.sub(r"[^a-z0-9]+", "-", slug)
+        return slug.strip("-") or "feature"
 
 
 architecture_agent = ArchitectureAgent()

@@ -2,30 +2,22 @@
 Architecture Agent Use Case Validator.
 
 Purpose:
-This validator checks whether the generated use case model is good enough
-before converting it into PlantUML.
+Validate the generated UML use case model before converting it into PlantUML.
 
-Why this is needed:
-LLMs sometimes generate diagrams that are technically valid but too simple.
-
-Example of weak output:
-    Customer -> Use Login Feature
-
-This validator prevents that by checking:
-- actors
-- use cases
-- relationships
-- traceability
-- include/extend usage
-- feature scope
+Important:
+This validator is intentionally rule-based, not score-based. It does not use a
+quality_score.py file. It simply accepts or rejects the use case model using
+feature-independent UML rules.
 """
+
+from __future__ import annotations
 
 from typing import Any
 
 
 class UseCaseValidationError(Exception):
     """
-    Raised when the generated use case model is too weak or invalid.
+    Raised when the generated use case model is invalid or too weak.
     """
 
 
@@ -37,7 +29,10 @@ class UseCaseQualityValidator:
     TECHNICAL_ACTOR_WORDS = [
         "database",
         "mongodb",
+        "mysql",
+        "postgres",
         "api",
+        "endpoint",
         "controller",
         "server",
         "backend",
@@ -50,22 +45,14 @@ class UseCaseQualityValidator:
         "service layer",
         "model",
         "view",
-    ]
-
-    UNRELATED_FEATURE_WORDS = [
-        "cart",
-        "checkout",
-        "payment",
-        "product listing",
-        "order management",
-        "wishlist",
-        "inventory",
-        "signup",
-        "registration",
+        "collection",
+        "table",
+        "schema",
     ]
 
     GENERIC_USE_CASE_NAMES = [
         "use feature",
+        "use the feature",
         "use login feature",
         "manage feature",
         "access feature",
@@ -80,10 +67,7 @@ class UseCaseQualityValidator:
         usecase_json: dict[str, Any],
     ) -> None:
         """
-        Main validation method.
-
-        Raises:
-            UseCaseValidationError if the diagram is not acceptable.
+        Validate the final use case model.
         """
 
         errors: list[str] = []
@@ -101,7 +85,7 @@ class UseCaseQualityValidator:
 
     def _validate_basic_structure(self, usecase_json: dict[str, Any]) -> list[str]:
         """
-        Validate required top-level use case diagram fields.
+        Validate required use case model fields.
         """
 
         errors = []
@@ -118,76 +102,96 @@ class UseCaseQualityValidator:
         if not isinstance(usecase_json.get("use_cases"), list) or not usecase_json.get("use_cases"):
             errors.append("Use case diagram must have at least one use case.")
 
+        if not isinstance(usecase_json.get("relationships"), list) or not usecase_json.get("relationships"):
+            errors.append("Use case diagram must have relationships.")
+
+        if not isinstance(usecase_json.get("notes", []), list):
+            errors.append("Use case diagram notes must be a list.")
+
         return errors
 
     def _validate_actors(self, usecase_json: dict[str, Any]) -> list[str]:
         """
-        Validate that actors are real user roles, not technical components.
+        Validate actors are external roles/systems, not implementation components.
         """
 
         errors = []
 
         for actor in usecase_json.get("actors", []):
-            actor_name = str(actor.get("name", "")).lower()
+            actor_name = str(actor.get("name", "")).strip()
+            actor_name_lower = actor_name.lower()
 
-            if not actor.get("id") or not actor.get("name"):
+            if not actor.get("id") or not actor_name:
                 errors.append("Each actor must have id and name.")
 
             for technical_word in self.TECHNICAL_ACTOR_WORDS:
-                if technical_word in actor_name:
+                if technical_word in actor_name_lower:
                     errors.append(
-                        f"Invalid actor '{actor.get('name')}'. "
-                        "Actors must be external roles, not technical components."
+                        f"Invalid actor '{actor_name}'. Actors must be external roles or external systems, not technical components."
                     )
 
         return errors
 
     def _validate_use_cases(self, usecase_json: dict[str, Any]) -> list[str]:
         """
-        Validate use case names and IDs.
+        Validate use case names and categories.
         """
 
         errors = []
+        valid_categories = {"main", "included", "extension", "supporting"}
 
         for use_case in usecase_json.get("use_cases", []):
-            use_case_name = str(use_case.get("name", "")).lower()
+            use_case_name = str(use_case.get("name", "")).strip()
+            use_case_name_lower = use_case_name.lower()
 
-            if not use_case.get("id") or not use_case.get("name"):
+            if not use_case.get("id") or not use_case_name:
                 errors.append("Each use case must have id and name.")
 
-            if use_case_name in self.GENERIC_USE_CASE_NAMES:
+            if use_case_name_lower in self.GENERIC_USE_CASE_NAMES:
                 errors.append(
-                    f"Generic use case name found: '{use_case.get('name')}'. "
-                    "Use case must be a real user/system behaviour."
+                    f"Generic use case name found: '{use_case_name}'. Use case must be a real goal/action."
                 )
+
+            category = use_case.get("category")
+            if category and category not in valid_categories:
+                errors.append(f"Invalid use case category: {category}")
 
         return errors
 
     def _validate_relationships(self, usecase_json: dict[str, Any]) -> list[str]:
         """
-        Validate relationships.
-
-        A meaningful use case diagram should have relationships.
+        Validate relationships and include/extend direction.
         """
 
         errors = []
+        valid_types = {"association", "include", "extend", "generalization"}
 
-        relationships = usecase_json.get("relationships", [])
+        use_case_ids = {item.get("id") for item in usecase_json.get("use_cases", [])}
+        actor_ids = {item.get("id") for item in usecase_json.get("actors", [])}
 
-        if not isinstance(relationships, list) or not relationships:
-            errors.append("Use case diagram must have relationships.")
-            return errors
+        for relationship in usecase_json.get("relationships", []):
+            source = relationship.get("from")
+            target = relationship.get("to")
+            relation_type = relationship.get("type")
 
-        valid_types = ["association", "include", "extend", "generalization"]
+            if relation_type not in valid_types:
+                errors.append(f"Invalid relationship type: {relation_type}")
 
-        for relationship in relationships:
-            if relationship.get("type") not in valid_types:
-                errors.append(
-                    f"Invalid relationship type: {relationship.get('type')}"
-                )
-
-            if not relationship.get("from") or not relationship.get("to"):
+            if not source or not target:
                 errors.append("Each relationship must have from and to.")
+                continue
+
+            if relation_type == "association":
+                if source not in actor_ids or target not in use_case_ids:
+                    errors.append("Association must go from actor to use case.")
+
+            if relation_type == "include":
+                if source not in use_case_ids or target not in use_case_ids:
+                    errors.append("Include relationship must connect use case to use case.")
+
+            if relation_type == "extend":
+                if source not in use_case_ids or target not in use_case_ids:
+                    errors.append("Extend relationship must connect use case to use case.")
 
         return errors
 
@@ -198,18 +202,12 @@ class UseCaseQualityValidator:
         usecase_analysis_json: dict[str, Any],
     ) -> list[str]:
         """
-        Validate that important requirements are mapped.
-
-        We especially check functional requirements because use case diagrams
-        should reflect user-visible functional behaviour.
+        Validate that all functional requirements are represented.
         """
 
         errors = []
 
-        functional_requirement_ids = self._collect_ids(
-            srs_json.get("functional_requirements", [])
-        )
-
+        functional_requirement_ids = self._collect_ids(srs_json.get("functional_requirements", []))
         if not functional_requirement_ids:
             return errors
 
@@ -226,20 +224,13 @@ class UseCaseQualityValidator:
 
         for trace in usecase_analysis_json.get("traceability", []):
             source_id = trace.get("source_id")
-
             if source_id:
                 mapped_ids.add(source_id)
 
-        missing = [
-            requirement_id
-            for requirement_id in functional_requirement_ids
-            if requirement_id not in mapped_ids
-        ]
+        missing = [req_id for req_id in functional_requirement_ids if req_id not in mapped_ids]
 
         if missing:
-            errors.append(
-                f"Use case diagram does not map these functional requirements: {missing}"
-            )
+            errors.append(f"Use case diagram does not map these functional requirements: {missing}")
 
         return errors
 
@@ -249,26 +240,30 @@ class UseCaseQualityValidator:
         usecase_json: dict[str, Any],
     ) -> list[str]:
         """
-        Prevent unrelated feature use cases.
+        Prevent out-of-scope SRS items appearing as use cases.
 
-        Example:
-        Login diagram should not include cart, checkout, payment, etc.
+        This replaces the earlier hardcoded unrelated feature list. It is generic
+        and works for Login, Cart, Checkout, LMS, and future features.
         """
 
         errors = []
-
-        feature_name = str(srs_json.get("feature_name", "")).lower()
-
         all_text = str(usecase_json).lower()
 
-        for unrelated_word in self.UNRELATED_FEATURE_WORDS:
-            if unrelated_word == feature_name:
+        out_of_scope_items = srs_json.get("out_of_scope", [])
+        if not isinstance(out_of_scope_items, list):
+            out_of_scope_items = [out_of_scope_items]
+
+        for item in out_of_scope_items:
+            item_text = self._extract_text(item).lower()
+            if not item_text:
                 continue
 
-            if unrelated_word in all_text:
-                errors.append(
-                    f"Use case diagram includes unrelated feature: {unrelated_word}"
-                )
+            # Do not fail on tiny/common words. Check meaningful phrases only.
+            important_terms = [term for term in item_text.replace("(", " ").replace(")", " ").split() if len(term) >= 5]
+            matched_terms = [term for term in important_terms if term in all_text]
+
+            if len(matched_terms) >= 2:
+                errors.append(f"Use case diagram appears to include out-of-scope item: {item_text}")
 
         return errors
 
@@ -278,11 +273,7 @@ class UseCaseQualityValidator:
         usecase_json: dict[str, Any],
     ) -> list[str]:
         """
-        Check diagram quality depth.
-
-        If SRS has multiple functional requirements and acceptance criteria,
-        but the diagram has only one use case and no include/extend,
-        then it is too shallow.
+        Check that the diagram is not too shallow for the SRS.
         """
 
         errors = []
@@ -290,15 +281,8 @@ class UseCaseQualityValidator:
         use_cases = usecase_json.get("use_cases", [])
         relationships = usecase_json.get("relationships", [])
 
-        has_include = any(
-            relation.get("type") == "include"
-            for relation in relationships
-        )
-
-        has_extend = any(
-            relation.get("type") == "extend"
-            for relation in relationships
-        )
+        has_include = any(relation.get("type") == "include" for relation in relationships)
+        has_extend = any(relation.get("type") == "extend" for relation in relationships)
 
         functional_count = len(srs_json.get("functional_requirements", []))
         acceptance_count = len(srs_json.get("acceptance_criteria", []))
@@ -308,27 +292,32 @@ class UseCaseQualityValidator:
 
         if srs_has_depth and len(use_cases) <= 1:
             errors.append(
-                "Use case diagram is too simple for this SRS. "
-                "It must include main, included, extension, validation, or note elements."
+                "Use case diagram is too simple for this SRS. It must include main, included, extension, validation, or note elements."
             )
 
-        if srs_has_depth and not has_include and not has_extend:
-            errors.append(
-                "Use case diagram must include at least one <<include>> or <<extend>> relationship "
-                "when SRS contains validation, success, alternative, or error flows."
-            )
+        if validation_count > 0 and not has_include:
+            errors.append("Use case diagram should include mandatory validation behaviour using <<include>> when SRS has validation rules.")
+
+        if acceptance_count > 1 and not has_include and not has_extend:
+            errors.append("Use case diagram should include <<include>> or <<extend>> relationships when SRS has multiple scenarios.")
 
         return errors
 
     def _collect_ids(self, items: list[Any]) -> list[str]:
-        """
-        Collect IDs from list of requirement-like dictionaries.
-        """
-
         ids = []
-
         for item in items:
             if isinstance(item, dict) and item.get("id"):
                 ids.append(item["id"])
-
         return ids
+
+    def _extract_text(self, item: Any) -> str:
+        if isinstance(item, dict):
+            return str(
+                item.get("description")
+                or item.get("name")
+                or item.get("risk")
+                or item.get("expectation")
+                or item.get("payload")
+                or item
+            )
+        return str(item)
