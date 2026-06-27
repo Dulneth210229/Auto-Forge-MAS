@@ -132,7 +132,11 @@ class RequirementAgent:
             agent_name=AgentName.REQUIREMENT,
             artifact_type=ArtifactType.SRS,
             artifact_format=ArtifactFormat.MARKDOWN,
-            filename="SRS_v{version}.md",
+            filename=self._build_feature_srs_filename(
+            feature=feature,
+            extension="md",
+            version_placeholder=True
+            ),
             content=output.srs_markdown
         )
 
@@ -146,7 +150,11 @@ class RequirementAgent:
             feature=feature,
             agent_name=AgentName.REQUIREMENT,
             artifact_type=ArtifactType.SRS,
-            filename="SRS_v{version}.json",
+            filename=self._build_feature_srs_filename(
+            feature=feature,
+            extension="json",
+            version_placeholder=True
+        ),
             data=output.srs_json
         )
 
@@ -711,8 +719,22 @@ class RequirementAgent:
             agent_name=AgentName.REQUIREMENT
         )
 
-        markdown_path = stage_folder / f"SRS_v{version}.md"
-        json_path = stage_folder / f"SRS_v{version}.json"
+        markdown_filename = self._build_feature_srs_filename(
+            feature=feature,
+            extension="md",
+            version_placeholder=False,
+            version=version
+        )
+
+        json_filename = self._build_feature_srs_filename(
+            feature=feature,
+            extension="json",
+            version_placeholder=False,
+            version=version
+        )
+
+        markdown_path = stage_folder / markdown_filename
+        json_path = stage_folder / json_filename
 
         saved_markdown_path = write_text_file(markdown_path, srs_markdown)
         saved_json_path = write_json_file(json_path, srs_json)
@@ -751,6 +773,51 @@ class RequirementAgent:
             markdown_artifact_id,
             json_artifact_id
         ]
+
+    def _build_feature_srs_filename(self, feature: dict, extension: str, version_placeholder: bool = True, version: int | None = None) -> str:
+        """
+        Build Requirement Agent SRS filename based on the feature name.
+
+        Example:
+            Feature name: Login
+
+            Markdown:
+                login_srs_v1.md
+
+            JSON:
+                login_srs_v1.json
+
+        Why this method is inside Requirement Agent:
+        - This naming rule is only for Requirement Agent SRS files.
+        - We do not change shared artifact_service.py.
+        - Other agents can follow their own naming style later.
+        """
+
+        feature_name = feature.get("feature_name", "feature")
+
+        # Convert feature name into safe file name.
+        # Example: "Product Listing" -> "product_listing"
+        feature_slug = feature_name.lower().strip()
+
+        # Replace spaces and special characters with underscore.
+        feature_slug = re.sub(r"[^a-z0-9]+", "_", feature_slug)
+
+        # Remove starting/ending underscores.
+        feature_slug = feature_slug.strip("_")
+
+        if not feature_slug:
+            feature_slug = "feature"
+
+        if version_placeholder:
+            # Used when artifact_service will inject the version.
+            # Double braces are needed to keep {version} as text.
+            return f"{feature_slug}_srs_v{{version}}.{extension}"
+
+        if version is None:
+            raise ValueError("version is required when version_placeholder=False")
+
+        # Used when we manually know the version number.
+        return f"{feature_slug}_srs_v{version}.{extension}"
 
 
 
