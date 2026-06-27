@@ -52,6 +52,7 @@ from app.agents.architecture_agent.sds_validator import (
     ArchitectureSDSValidator,
     SDSValidationError,
 )
+from app.agents.architecture_agent.usecase_modeler import ArchitectureUseCaseModeler
 from app.agents.architecture_agent.usecase_builder import ArchitectureUseCasePlantUMLBuilder
 from app.agents.architecture_agent.usecase_renderer import UseCaseDiagramRenderer
 from app.agents.architecture_agent.usecase_validator import (
@@ -94,8 +95,6 @@ class ArchitectureAgent:
 
     REQUIRED_TOP_LEVEL_KEYS = [
         "sds_json",
-        "usecase_analysis_json",
-        "usecase_json",
     ]
 
     REQUIRED_SDS_KEYS = [
@@ -145,6 +144,10 @@ class ArchitectureAgent:
 
         self.markdown_builder = ArchitectureSDSMarkdownBuilder()
         self.sds_validator = ArchitectureSDSValidator()
+
+        # Use Case pipeline:
+        # LLM/specification -> modeler -> validator -> PlantUML builder -> PNG renderer
+        self.usecase_modeler = ArchitectureUseCaseModeler()
         self.usecase_builder = ArchitectureUseCasePlantUMLBuilder()
         self.usecase_validator = UseCaseQualityValidator()
         self.diagram_renderer = UseCaseDiagramRenderer()
@@ -282,6 +285,7 @@ class ArchitectureAgent:
 
         try:
             parsed = self._parse_and_validate_output(raw_output)
+            parsed = self._complete_usecase_model(agent_input, parsed)
             self._validate_full_output(agent_input, parsed)
 
         except Exception as first_error:
@@ -302,6 +306,7 @@ class ArchitectureAgent:
 
             try:
                 parsed = self._parse_and_validate_output(repaired_output)
+                parsed = self._complete_usecase_model(agent_input, parsed)
                 self._validate_full_output(agent_input, parsed)
                 raw_output = repaired_output
 
@@ -312,6 +317,7 @@ class ArchitectureAgent:
                     agent_input=agent_input,
                     reason=str(second_error)
                 )
+                parsed = self._complete_usecase_model(agent_input, parsed)
 
                 # The fallback is generated from SRS, so it should still be validated.
                 self._validate_full_output(agent_input, parsed)
@@ -333,6 +339,42 @@ class ArchitectureAgent:
             usecase_puml=usecase_puml,
             raw_llm_output=raw_output
         )
+
+    def _complete_usecase_model(
+        self,
+        agent_input: ArchitectureAgentInput,
+        parsed: dict[str, Any]
+    ) -> dict[str, Any]:
+        """
+        Build the final use case model using the dedicated modeler.
+
+        The LLM may provide usecase_specification_json, usecase_analysis_json,
+        or usecase_json. However, the final diagram must always pass through
+        ArchitectureUseCaseModeler so that actors, use cases, relationships,
+        and notes are normalized using feature-independent UML rules.
+        """
+
+        srs_for_modeling = agent_input.enhanced_srs_json or agent_input.srs_json
+
+        usecase_specification_json = parsed.get("usecase_specification_json")
+
+        if not isinstance(usecase_specification_json, dict):
+            usecase_specification_json = {}
+
+        usecase_analysis_json, usecase_json = self.usecase_modeler.build(
+            srs_json=srs_for_modeling,
+            sds_json=parsed["sds_json"],
+            usecase_specification_json=usecase_specification_json,
+        )
+
+        parsed["usecase_specification_json"] = usecase_specification_json
+        parsed["usecase_analysis_json"] = usecase_analysis_json
+        parsed["usecase_json"] = usecase_json
+
+        self._ensure_keys(usecase_json, self.REQUIRED_USECASE_KEYS)
+        self._validate_usecase_json(usecase_json)
+
+        return parsed
 
     def _validate_full_output(
         self,
@@ -367,17 +409,9 @@ class ArchitectureAgent:
         self._ensure_keys(parsed, self.REQUIRED_TOP_LEVEL_KEYS)
 
         sds_json = parsed.get("sds_json")
-        usecase_analysis_json = parsed.get("usecase_analysis_json")
-        usecase_json = parsed.get("usecase_json")
 
         if not isinstance(sds_json, dict):
             raise ValueError("sds_json must be a JSON object.")
-
-        if not isinstance(usecase_analysis_json, dict):
-            raise ValueError("usecase_analysis_json must be a JSON object.")
-
-        if not isinstance(usecase_json, dict):
-            raise ValueError("usecase_json must be a JSON object.")
 
         self._ensure_keys(sds_json, self.REQUIRED_SDS_KEYS)
 
@@ -387,10 +421,9 @@ class ArchitectureAgent:
             raise ValueError("sds_json.design_views must be a JSON object.")
 
         self._ensure_keys(design_views, self.REQUIRED_DESIGN_VIEW_KEYS)
-        self._ensure_keys(usecase_json, self.REQUIRED_USECASE_KEYS)
 
-        self._validate_usecase_json(usecase_json)
-
+        # Use case output is intentionally completed by _complete_usecase_model().
+        # This prevents weak or random LLM usecase_json from becoming the final diagram.
         return parsed
 
     def _extract_json_object(self, text: str) -> dict[str, Any]:

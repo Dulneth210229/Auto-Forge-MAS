@@ -37,8 +37,8 @@ ARCHITECTURE_AGENT_SYSTEM_PROMPT = """
 You are the Architecture Agent in AutoForge.
 
 Your task:
-Generate an IEEE 1016-style Software Design Specification JSON and an advanced UML Use Case Diagram model
-for exactly one approved feature.
+Generate an IEEE 1016-style Software Design Specification JSON and a structured use case specification
+for exactly one approved feature. The backend will normalize the use case specification into the final UML model.
 
 Terminology:
 - The project calls the artifact SDS: Software Design Specification.
@@ -47,6 +47,7 @@ Terminology:
 
 Strict output rules:
 - Return only valid JSON.
+- Generate usecase_specification_json carefully. The backend will normalize it into usecase_json.
 - Do not return Markdown.
 - Do not return code fences.
 - Do not return explanation outside JSON.
@@ -78,8 +79,10 @@ IEEE-style SDS rules:
 - Every constraint must appear in design_considerations or architecture_overview.
 - Do not use the phrase "Fallback SDS" in normal LLM-generated SDS.
 
-Use Case Diagram Modelling Rules:
-- Actors must be external user roles, not system components.
+Use Case Modelling Rules:
+- Do not directly think in PlantUML. First create a usecase_specification_json.
+- The backend will convert usecase_specification_json into the final usecase_json.
+- Actors must be external user roles or external systems, not system components.
 - Do not use Database, API, Controller, MongoDB, React, Node, JWT Library, or Server as actors.
 - Use cases must be user-goal actions or visible system behaviours.
 - Use case names should be short verb phrases.
@@ -257,6 +260,61 @@ The JSON must have exactly this top-level structure:
     },
     "human_approval_note": "This SDS must be reviewed and approved before the UI/UX Agent starts."
   },
+  "usecase_specification_json": {
+    "system_boundary": "",
+    "diagram_title": "",
+    "actors": [
+      {
+        "name": "",
+        "type": "primary | secondary | external_system",
+        "description": "",
+        "source": "SRS user_roles | SDS context_view | dependency"
+      }
+    ],
+    "primary_use_cases": [
+      {
+        "name": "",
+        "description": "",
+        "goal": "",
+        "preconditions": [],
+        "trigger": "",
+        "main_success_flow": [],
+        "postconditions": [],
+        "related_requirements": []
+      }
+    ],
+    "included_behaviours": [
+      {
+        "name": "",
+        "description": "",
+        "reason": "mandatory behaviour required by the primary use case",
+        "related_requirements": []
+      }
+    ],
+    "extension_behaviours": [
+      {
+        "name": "",
+        "description": "",
+        "condition": "optional | alternative | recovery | exception",
+        "related_requirements": []
+      }
+    ],
+    "constraint_notes": [
+      {
+        "title": "",
+        "description": "",
+        "related_requirements": []
+      }
+    ],
+    "traceability": [
+      {
+        "source_id": "",
+        "source_type": "FR | AC | VR | NFR | Constraint | Risk",
+        "mapped_to": "",
+        "mapping_type": "actor | primary_use_case | include | extend | note"
+      }
+    ]
+  },
   "usecase_analysis_json": {
     "feature_goal": "",
     "primary_actors": [],
@@ -398,7 +456,7 @@ def build_architecture_user_prompt(
         enhanced_text = safe_json_dumps(enhanced_srs_json)
 
     return f"""
-Generate an IEEE 1016-style SDS JSON, usecase_analysis_json, and usecase_json for this feature only.
+Generate an IEEE 1016-style SDS JSON and usecase_specification_json for this feature only.
 
 Project:
 {safe_json_dumps(project)}
@@ -429,9 +487,14 @@ Important:
 - Use risks in design_considerations and security_authorization_view.
 - Use constraints in design_considerations and architecture_overview.
 - Create traceability_matrix entries for all FR, AC, VR, NFR, constraints, risks, dependencies, data, API, and UI items where possible.
+- For usecase_specification_json, extract actors from SRS user_roles and external systems only.
+- For usecase_specification_json, put mandatory behaviours in included_behaviours.
+- For usecase_specification_json, put optional, alternative, recovery, and exception behaviours in extension_behaviours.
+- For usecase_specification_json, put constraints, NFRs, and risks in constraint_notes instead of normal use cases.
 - Keep the output generic and feature-independent.
 - Do not hardcode Login-specific, Cart-specific, Payment-specific, or LMS-specific logic.
 - Return only valid JSON.
+- Generate usecase_specification_json carefully. The backend will normalize it into usecase_json.
 """
 
 
