@@ -4,11 +4,12 @@ Architecture Agent.
 Purpose:
 - Load approved SRS JSON from Requirement Agent.
 - Optionally load approved Enhanced SRS JSON from Domain Agent.
-- Generate IEEE 1016-style SDS JSON, usecase_analysis_json, and usecase_json using LLM.
+- Generate IEEE 1016-style SDS JSON and usecase_specification_json using LLM.
+- Derive UML Use Case, Sequence, and Class diagram models from SRS/SDS.
 - Validate SDS coverage against SRS.
-- Validate use case quality.
+- Validate UML diagram quality.
 - Convert SDS JSON into Markdown.
-- Convert usecase_json into PlantUML.
+- Convert diagram JSON into PlantUML.
 - Render PlantUML into PNG.
 - Save all Architecture Agent artifacts.
 
@@ -19,14 +20,21 @@ This implementation does not generate:
 - code
 - UI
 - component diagram
-- class diagram
+
+This implementation now generates:
+- use case diagram
 - sequence diagram
+- class diagram
 
 Outputs:
 - SDS Markdown
 - SDS JSON
 - Use Case Diagram PUML
 - Use Case Diagram PNG
+- Sequence Diagram PUML
+- Sequence Diagram PNG
+- Class Diagram PUML
+- Class Diagram PNG
 """
 
 from __future__ import annotations
@@ -59,6 +67,18 @@ from app.agents.architecture_agent.usecase_validator import (
     UseCaseQualityValidator,
     UseCaseValidationError,
 )
+from app.agents.architecture_agent.sequence_modeler import ArchitectureSequenceModeler
+from app.agents.architecture_agent.sequence_builder import ArchitectureSequencePlantUMLBuilder
+from app.agents.architecture_agent.sequence_validator import (
+    SequenceDiagramValidator,
+    SequenceDiagramValidationError,
+)
+from app.agents.architecture_agent.class_modeler import ArchitectureClassModeler
+from app.agents.architecture_agent.class_builder import ArchitectureClassPlantUMLBuilder
+from app.agents.architecture_agent.class_validator import (
+    ClassDiagramValidator,
+    ClassDiagramValidationError,
+)
 from app.core.enums import (
     AgentName,
     ApprovalStatus,
@@ -86,7 +106,7 @@ class ArchitectureAgent:
     1. Approved input artifact loading.
     2. LLM architecture generation.
     3. IEEE-style SDS validation.
-    4. UML use case quality validation.
+    4. UML use case, sequence, and class diagram validation.
     5. SDS Markdown generation.
     6. PlantUML generation.
     7. PNG rendering.
@@ -150,6 +170,20 @@ class ArchitectureAgent:
         self.usecase_modeler = ArchitectureUseCaseModeler()
         self.usecase_builder = ArchitectureUseCasePlantUMLBuilder()
         self.usecase_validator = UseCaseQualityValidator()
+
+        # Sequence diagram pipeline:
+        # SRS/SDS -> modeler -> validator -> PlantUML builder -> PNG renderer
+        self.sequence_modeler = ArchitectureSequenceModeler()
+        self.sequence_builder = ArchitectureSequencePlantUMLBuilder()
+        self.sequence_validator = SequenceDiagramValidator()
+
+        # Class diagram pipeline:
+        # SRS/SDS -> modeler -> validator -> PlantUML builder -> PNG renderer
+        self.class_modeler = ArchitectureClassModeler()
+        self.class_builder = ArchitectureClassPlantUMLBuilder()
+        self.class_validator = ClassDiagramValidator()
+
+        # Existing renderer can render any PlantUML file into PNG.
         self.diagram_renderer = UseCaseDiagramRenderer()
 
     async def run(self, feature_id: str, request: ArchitectureAgentRunRequest) -> AgentRunResponse:
@@ -233,7 +267,7 @@ class ArchitectureAgent:
             status="completed",
             message=(
                 "Architecture Agent completed successfully. "
-                "IEEE-style SDS and Use Case Diagram artifacts were generated. "
+                "IEEE-style SDS, Use Case Diagram, Sequence Diagram, and Class Diagram artifacts were generated. "
                 "Human approval is required before UI/UX Agent can run."
             ),
             artifact_ids=artifact_ids
@@ -247,11 +281,11 @@ class ArchitectureAgent:
         1. Ask LLM for JSON only.
         2. Parse and validate JSON structure.
         3. Validate SDS against approved SRS.
-        4. Validate use case diagram quality.
+        4. Build and validate use case, sequence, and class diagrams.
         5. If LLM output is invalid, repair once.
         6. If still invalid, build dynamic IEEE-style fallback from SRS.
         7. Convert SDS JSON to Markdown.
-        8. Convert usecase_json to PlantUML.
+        8. Convert diagram JSON models to PlantUML.
         """
 
         provider = llm_provider_service.get_provider()
@@ -279,6 +313,8 @@ class ArchitectureAgent:
         try:
             parsed = self._parse_and_validate_output(raw_output)
             parsed = self._complete_usecase_model(agent_input, parsed)
+            parsed = self._complete_sequence_model(agent_input, parsed)
+            parsed = self._complete_class_model(agent_input, parsed)
             self._validate_full_output(agent_input, parsed)
 
         except Exception as first_error:
@@ -300,6 +336,8 @@ class ArchitectureAgent:
             try:
                 parsed = self._parse_and_validate_output(repaired_output)
                 parsed = self._complete_usecase_model(agent_input, parsed)
+                parsed = self._complete_sequence_model(agent_input, parsed)
+                parsed = self._complete_class_model(agent_input, parsed)
                 self._validate_full_output(agent_input, parsed)
                 raw_output = repaired_output
 
@@ -311,6 +349,8 @@ class ArchitectureAgent:
                     reason=str(second_error)
                 )
                 parsed = self._complete_usecase_model(agent_input, parsed)
+                parsed = self._complete_sequence_model(agent_input, parsed)
+                parsed = self._complete_class_model(agent_input, parsed)
 
                 # The fallback is generated from SRS, so it should still be validated.
                 self._validate_full_output(agent_input, parsed)
@@ -320,9 +360,13 @@ class ArchitectureAgent:
         sds_json = parsed["sds_json"]
         usecase_analysis_json = parsed["usecase_analysis_json"]
         usecase_json = parsed["usecase_json"]
+        sequence_diagram_json = parsed["sequence_diagram_json"]
+        class_diagram_json = parsed["class_diagram_json"]
 
         sds_markdown = self.markdown_builder.build(sds_json)
         usecase_puml = self.usecase_builder.build(usecase_json)
+        sequence_puml = self.sequence_builder.build(sequence_diagram_json)
+        class_puml = self.class_builder.build(class_diagram_json)
 
         return ArchitectureAgentOutput(
             sds_json=sds_json,
@@ -330,6 +374,10 @@ class ArchitectureAgent:
             usecase_analysis_json=usecase_analysis_json,
             usecase_json=usecase_json,
             usecase_puml=usecase_puml,
+            sequence_diagram_json=sequence_diagram_json,
+            sequence_puml=sequence_puml,
+            class_diagram_json=class_diagram_json,
+            class_puml=class_puml,
             raw_llm_output=raw_output
         )
 
@@ -369,6 +417,52 @@ class ArchitectureAgent:
 
         return parsed
 
+    def _complete_sequence_model(
+        self,
+        agent_input: ArchitectureAgentInput,
+        parsed: dict[str, Any]
+    ) -> dict[str, Any]:
+        """
+        Build the sequence diagram model from approved SRS/SDS.
+
+        The LLM does not directly control this diagram.
+        This keeps the sequence diagram deterministic and aligned with the SDS.
+        """
+
+        srs_for_modeling = agent_input.enhanced_srs_json or agent_input.srs_json
+
+        sequence_diagram_json = self.sequence_modeler.build(
+            srs_json=srs_for_modeling,
+            sds_json=parsed["sds_json"],
+        )
+
+        parsed["sequence_diagram_json"] = sequence_diagram_json
+
+        return parsed
+
+    def _complete_class_model(
+        self,
+        agent_input: ArchitectureAgentInput,
+        parsed: dict[str, Any]
+    ) -> dict[str, Any]:
+        """
+        Build the class diagram model from approved SRS/SDS.
+
+        The class diagram is derived from the SDS logical, interface,
+        and data views rather than directly from free-form LLM PlantUML.
+        """
+
+        srs_for_modeling = agent_input.enhanced_srs_json or agent_input.srs_json
+
+        class_diagram_json = self.class_modeler.build(
+            srs_json=srs_for_modeling,
+            sds_json=parsed["sds_json"],
+        )
+
+        parsed["class_diagram_json"] = class_diagram_json
+
+        return parsed
+
     def _validate_full_output(
         self,
         agent_input: ArchitectureAgentInput,
@@ -390,6 +484,16 @@ class ArchitectureAgent:
             sds_json=parsed["sds_json"],
             usecase_analysis_json=parsed["usecase_analysis_json"],
             usecase_json=parsed["usecase_json"],
+        )
+
+        self.sequence_validator.validate(
+            srs_json=srs_for_validation,
+            sequence_json=parsed["sequence_diagram_json"],
+        )
+
+        self.class_validator.validate(
+            srs_json=srs_for_validation,
+            class_json=parsed["class_diagram_json"],
         )
 
     def _parse_and_validate_output(self, raw_output: str) -> dict[str, Any]:
@@ -548,8 +652,9 @@ class ArchitectureAgent:
         Files:
         - {feature}_sds_v1.md
         - {feature}_sds_v1.json
-        - {feature}_usecase_v1.puml
-        - {feature}_usecase_v1.png
+        - {feature}_usecase_v1.puml / .png
+        - {feature}_sequence_v1.puml / .png
+        - {feature}_class_v1.puml / .png
         """
 
         version = artifact_service.get_next_version(
@@ -569,12 +674,18 @@ class ArchitectureAgent:
         sds_md_path = stage_folder / f"{feature_slug}_sds_v{version}.md"
         sds_json_path = stage_folder / f"{feature_slug}_sds_v{version}.json"
         usecase_puml_path = stage_folder / f"{feature_slug}_usecase_v{version}.puml"
+        sequence_puml_path = stage_folder / f"{feature_slug}_sequence_v{version}.puml"
+        class_puml_path = stage_folder / f"{feature_slug}_class_v{version}.puml"
 
         saved_sds_md = write_text_file(sds_md_path, output.sds_markdown)
         saved_sds_json = write_json_file(sds_json_path, output.sds_json)
         saved_puml = write_text_file(usecase_puml_path, output.usecase_puml)
+        saved_sequence_puml = write_text_file(sequence_puml_path, output.sequence_puml)
+        saved_class_puml = write_text_file(class_puml_path, output.class_puml)
 
         png_path = self.diagram_renderer.render_png(Path(saved_puml))
+        sequence_png_path = self.diagram_renderer.render_png(Path(saved_sequence_puml))
+        class_png_path = self.diagram_renderer.render_png(Path(saved_class_puml))
 
         artifact_ids = []
         created_at = datetime.now(timezone.utc)
@@ -622,6 +733,54 @@ class ArchitectureAgent:
                 artifact_type=ArtifactType.USE_CASE_DIAGRAM,
                 artifact_format=ArtifactFormat.PNG,
                 file_path=str(png_path),
+                version=version,
+                created_at=created_at
+            )
+        )
+
+        artifact_ids.append(
+            self._register_artifact(
+                project=project,
+                feature=feature,
+                artifact_type=ArtifactType.SEQUENCE_DIAGRAM,
+                artifact_format=ArtifactFormat.TEXT,
+                file_path=saved_sequence_puml,
+                version=version,
+                created_at=created_at
+            )
+        )
+
+        artifact_ids.append(
+            self._register_artifact(
+                project=project,
+                feature=feature,
+                artifact_type=ArtifactType.SEQUENCE_DIAGRAM,
+                artifact_format=ArtifactFormat.PNG,
+                file_path=str(sequence_png_path),
+                version=version,
+                created_at=created_at
+            )
+        )
+
+        artifact_ids.append(
+            self._register_artifact(
+                project=project,
+                feature=feature,
+                artifact_type=ArtifactType.CLASS_DIAGRAM,
+                artifact_format=ArtifactFormat.TEXT,
+                file_path=saved_class_puml,
+                version=version,
+                created_at=created_at
+            )
+        )
+
+        artifact_ids.append(
+            self._register_artifact(
+                project=project,
+                feature=feature,
+                artifact_type=ArtifactType.CLASS_DIAGRAM,
+                artifact_format=ArtifactFormat.PNG,
+                file_path=str(class_png_path),
                 version=version,
                 created_at=created_at
             )
