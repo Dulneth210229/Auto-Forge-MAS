@@ -1,0 +1,99 @@
+{
+  "artifact_metadata": {
+    "agent": "coder_agent",
+    "feature_id": "feature_9b9d4a9b",
+    "feature_name": "Login",
+    "project_id": "proj_b46a5d06",
+    "project_name": "E-commerce Platform",
+    "version": 1,
+    "target_stack": "MERN",
+    "generated_files_count": 5,
+    "updated_files_count": 0,
+    "unchanged_files_count": 0
+  },
+  "generated_files": [
+    {
+      "file_path": "backend/models/User.js",
+      "content": "// Purpose: Define the User model for MongoDB\n// Feature: Login Feature\n// Author: Coder Agent\n// Version: 1\nconst mongoose = require('mongoose');\n\nconst userSchema = new mongoose.Schema({\n  email: {\n    type: String,\n    required: true,\n    unique: true,\n    lowercase: true\n  },\n  passwordHash: {\n    type: String,\n    required: true,\n    select: false\n  },\n  role: {\n    type: String,\n    enum: ['customer', 'admin'],\n    default: 'customer'\n  },\n  createdAt: { type: Date, default: Date.now },\n  updatedAt: { type: Date, default: Date.now }\n}, { timestamps: true });\n\nmodule.exports = mongoose.model('User', userSchema);",
+      "change_type": "new",
+      "purpose": "Define the User model for MongoDB",
+      "description": "This file defines the User schema and model with necessary fields and constraints.",
+      "feature_id": "feature_9b9d4a9b",
+      "version": 1
+    },
+    {
+      "file_path": "backend/services/auth.service.js",
+      "content": "// Purpose: Provide authentication services\n// Feature: Login Feature\n// Author: Coder Agent\n// Version: 1\nconst bcrypt = require('bcrypt');\nconst jwt = require('../utils/jwt');\nconst User = require('../models/User');\n\nconst validateCredentials = async (email, password) => {\n  const user = await User.findOne({ email });\n  if (!user || !await bcrypt.compare(password, user.passwordHash)) {\n    throw new Error('Invalid email or password');\n  }\n  return user;\n};\n\nconst generateToken = (user) => {\n  const payload = { userId: user._id, email: user.email, role: user.role };\n  return jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN });\n};\n\nmodule.exports = {\n  validateCredentials,\n  generateToken\n};",
+      "change_type": "new",
+      "purpose": "Provide authentication services",
+      "description": "This file contains functions to validate user credentials and generate JWT tokens.",
+      "feature_id": "feature_9b9d4a9b",
+      "version": 1
+    },
+    {
+      "file_path": "backend/controllers/auth.controller.js",
+      "content": "// Purpose: Handle authentication requests\n// Feature: Login Feature\n// Author: Coder Agent\n// Version: 1\nconst express = require('express');\nconst router = express.Router();\nconst authService = require('../services/auth.service');\nconst validateMiddleware = require('../middleware/validate');\n\nrouter.post('/', validateMiddleware.validateLogin, async (req, res) => {\n  try {\n    const { email, password } = req.body;\n    const user = await authService.validateCredentials(email, password);\n    const token = authService.generateToken(user);\n    res.json({ token, user: { id: user._id, email: user.email, role: user.role } });\n  } catch (error) {\n    res.status(401).json({ error: error.message });\n  }\n});\n\nmodule.exports = router;",
+      "change_type": "new",
+      "purpose": "Handle authentication requests",
+      "description": "This file defines the route and controller for handling login requests.",
+      "feature_id": "feature_9b9d4a9b",
+      "version": 1
+    },
+    {
+      "file_path": "backend/routes/auth.routes.js",
+      "content": "// Purpose: Define authentication routes\n// Feature: Login Feature\n// Author: Coder Agent\n// Version: 1\nconst express = require('express');\nconst authController = require('../controllers/auth.controller');\n\nconst router = express.Router();\n\nrouter.use('/api/auth', authController);\n\nmodule.exports = router;",
+      "change_type": "new",
+      "purpose": "Define authentication routes",
+      "description": "This file defines the routes for handling authentication requests.",
+      "feature_id": "feature_9b9d4a9b",
+      "version": 1
+    },
+    {
+      "file_path": "backend/middleware/validate.js",
+      "content": "// Purpose: Validate request data\n// Feature: Login Feature\n// Author: Coder Agent\n// Version: 1\nconst express = require('express');\nconst router = express.Router();\nconst Joi = require('joi');\n\nconst validateLogin = (req, res, next) => {\n  const schema = Joi.object({\n    email: Joi.string().email().required(),\n    password: Joi.string().min(8).required()\n  });\n  const { error } = schema.validate(req.body);\n  if (error) return res.status(400).json({ error: 'Email and password are required' });\n  next();\n};\n\nmodule.exports = {\n  validateLogin\n};",
+      "change_type": "new",
+      "purpose": "Validate request data",
+      "description": "This file contains middleware to validate login request data.",
+      "feature_id": "feature_9b9d4a9b",
+      "version": 1
+    }
+  ],
+  "updated_files": [],
+  "unchanged_files": [],
+  "env_vars_required": [
+    {
+      "name": "MONGO_URI",
+      "description": "MongoDB connection string",
+      "example_value": "mongodb://localhost:27017/myapp",
+      "required": true
+    },
+    {
+      "name": "JWT_SECRET",
+      "description": "Secret key for signing JWT tokens",
+      "example_value": "your-jwt-secret-key",
+      "required": true
+    },
+    {
+      "name": "JWT_EXPIRES_IN",
+      "description": "Token expiry duration (e.g. 7d)",
+      "example_value": "7d",
+      "required": true
+    },
+    {
+      "name": "PORT",
+      "description": "Express server port (default 5000)",
+      "example_value": "5000",
+      "required": true
+    }
+  ],
+  "run_commands": [
+    "npm install",
+    "node server.js"
+  ],
+  "integration_notes": [
+    "Add MONGO_URI, JWT_SECRET, JWT_EXPIRES_IN, and PORT to .env before running."
+  ],
+  "previous_feature_names": [
+    "Login"
+  ]
+}

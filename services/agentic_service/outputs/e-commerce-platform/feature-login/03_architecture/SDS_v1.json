@@ -1,0 +1,26 @@
+{
+  "feature": "Login",
+  "stack": "MERN",
+  "env_vars": [
+    {
+      "name": "MONGO_URI",
+      "description": "MongoDB connection string",
+      "required": true
+    },
+    {
+      "name": "JWT_SECRET",
+      "description": "JWT signing secret",
+      "required": true
+    },
+    {
+      "name": "JWT_EXPIRES_IN",
+      "description": "Token expiry (e.g. 7d)",
+      "required": true
+    },
+    {
+      "name": "PORT",
+      "description": "Server port",
+      "required": false
+    }
+  ]
+}

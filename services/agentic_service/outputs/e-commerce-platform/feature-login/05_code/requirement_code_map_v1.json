@@ -1,0 +1,59 @@
+{
+  "feature_id": "feature_9b9d4a9b",
+  "feature_name": "Login",
+  "version": 1,
+  "mappings": [
+    {
+      "requirement_id": "FR-001",
+      "requirement_text": "User can submit email and password on the login form",
+      "file_paths": [
+        "backend/routes/auth.routes.js",
+        "backend/controllers/auth.controller.js"
+      ]
+    },
+    {
+      "requirement_id": "FR-002",
+      "requirement_text": "System validates that both fields are non-empty",
+      "file_paths": [
+        "backend/middleware/validate.js"
+      ]
+    },
+    {
+      "requirement_id": "FR-003",
+      "requirement_text": "System verifies email exists in the database",
+      "file_paths": [
+        "backend/services/auth.service.js"
+      ]
+    },
+    {
+      "requirement_id": "FR-004",
+      "requirement_text": "System compares submitted password with bcrypt hash",
+      "file_paths": [
+        "backend/services/auth.service.js"
+      ]
+    },
+    {
+      "requirement_id": "FR-005",
+      "requirement_text": "On success, system returns a signed JWT access token",
+      "file_paths": [
+        "backend/services/auth.service.js",
+        "backend/controllers/auth.controller.js"
+      ]
+    },
+    {
+      "requirement_id": "FR-006",
+      "requirement_text": "On failure, system returns a clear error message",
+      "file_paths": [
+        "backend/services/auth.service.js",
+        "backend/controllers/auth.controller.js"
+      ]
+    },
+    {
+      "requirement_id": "FR-007",
+      "requirement_text": "JWT token expires after 7 days",
+      "file_paths": [
+        "backend/services/auth.service.js"
+      ]
+    }
+  ]
+}

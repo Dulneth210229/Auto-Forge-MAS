@@ -10,8 +10,7 @@
   "scope": [
     "User can login using email and password",
     "System validates credentials",
-    "System returns authentication token after successful login",
-    "Forgot password functionality"
+    "System returns authentication token after successful login"
   ],
   "out_of_scope": [],
   "user_roles": [
@@ -33,11 +32,6 @@
       "id": "FR-003",
       "description": "System returns authentication token after successful login",
       "priority": "Must Have"
-    },
-    {
-      "id": "FR-004",
-      "description": "User can request password reset via email",
-      "priority": "Should Have"
     }
   ],
   "non_functional_requirements": [
@@ -61,14 +55,14 @@
     {
       "id": "US-001",
       "role": "Customer",
-      "goal": "Log in to access my account",
-      "benefit": "I can securely access my account and continue shopping."
+      "goal": "Login to access my account",
+      "benefit": "Securely access my account and continue shopping."
     },
     {
       "id": "US-002",
-      "role": "Customer",
-      "goal": "Request a password reset if I forget it",
-      "benefit": "I can recover my account without losing any progress."
+      "role": "Admin",
+      "goal": "Login to manage the platform",
+      "benefit": "Access administrative features to manage the e-commerce platform."
     }
   ],
   "acceptance_criteria": [
@@ -78,100 +72,83 @@
     },
     {
       "id": "AC-002",
-      "description": "Given invalid credentials, the system should return an error message."
-    },
-    {
-      "id": "AC-003",
-      "description": "Given a valid email address, the user should receive a password reset link via email."
+      "description": "If invalid credentials are provided, the system should return an error message."
     }
   ],
   "input_requirements": [
     {
       "id": "IR-001",
-      "description": "Email and password for login"
+      "description": "Email address"
     },
     {
       "id": "IR-002",
-      "description": "Email address for password reset request"
+      "description": "Password"
     }
   ],
   "output_requirements": [
     {
       "id": "OR-001",
-      "description": "Authentication token after successful login"
+      "description": "Authentication token upon successful login"
     },
     {
       "id": "OR-002",
-      "description": "Password reset link via email"
+      "description": "Error message if credentials are invalid"
     }
   ],
   "ui_expectations": [
     {
-      "id": "UI-001",
-      "description": "Modern login form"
+      "id": "UIR-001",
+      "description": "Modern login form with email and password fields"
     },
     {
-      "id": "UI-002",
-      "description": "Responsive design"
+      "id": "UIR-002",
+      "description": "Responsive design for various screen sizes"
     },
     {
-      "id": "UI-003",
-      "description": "Clear error messages"
+      "id": "UIR-003",
+      "description": "Clear error messages displayed below the input fields"
     }
   ],
   "api_expectations": [
     {
-      "id": "API-001",
-      "description": "POST /api/auth/login"
+      "id": "APIR-001",
+      "description": "POST /api/auth/login with email and password in request body"
     },
     {
-      "id": "API-002",
-      "description": "POST /api/auth/reset-password"
+      "id": "APIR-002",
+      "description": "Return JWT token in response body upon successful login"
     }
   ],
   "data_requirements": [
     {
       "id": "DR-001",
-      "description": "Email"
+      "description": "Email address of the user"
     },
     {
       "id": "DR-002",
-      "description": "Password"
+      "description": "Password of the user"
     },
     {
       "id": "DR-003",
-      "description": "User role"
+      "description": "User role (Customer or Admin)"
     }
   ],
   "validation_rules": [
     {
       "id": "VR-001",
-      "description": "Email format validation"
+      "description": "Email address should be in a valid format"
     },
     {
       "id": "VR-002",
-      "description": "Password complexity validation"
+      "description": "Password should meet complexity requirements"
     }
   ],
   "constraints": [
-    {
-      "id": "CST-001",
-      "description": "Use MERN stack"
-    },
-    {
-      "id": "CST-002",
-      "description": "Use JWT authentication"
-    }
+    "Use MERN stack",
+    "Use JWT authentication"
   ],
   "assumptions": [
-    {
-      "id": "ASM-001",
-      "description": "User account already exists"
-    },
-    {
-      "id": "ASM-002",
-      "description": "Email service is available for sending password reset links"
-    }
+    "User account already exists"
   ],
   "risks": [],
   "dependencies": [],
@@ -186,19 +163,15 @@
     {
       "requirement_id": "FR-002",
       "related_acceptance_criteria": [
+        "AC-001",
         "AC-002"
       ],
       "notes": ""
     },
     {
       "requirement_id": "FR-003",
-      "related_acceptance_criteria": [],
-      "notes": ""
-    },
-    {
-      "requirement_id": "FR-004",
       "related_acceptance_criteria": [
-        "AC-003"
+        "AC-001"
       ],
       "notes": ""
     }

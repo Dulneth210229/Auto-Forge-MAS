@@ -1,0 +1,19 @@
+{
+  "backend": {
+    "models": {
+      "user.js": null
+    },
+    "services": {
+      "auth.service.js": null
+    },
+    "controllers": {
+      "auth.controller.js": null
+    },
+    "routes": {
+      "auth.routes.js": null
+    },
+    "middleware": {
+      "validate.js": null
+    }
+  }
+}

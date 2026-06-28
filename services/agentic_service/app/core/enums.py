@@ -48,6 +48,7 @@ class ArtifactFormat(str, Enum):
     TEXT = "text"
     HTML = "html"
     PNG = "png"
+    PUML = "puml"
     CODE = "code"
 
 

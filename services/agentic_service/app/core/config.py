@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     LLM_TIMEOUT_SECONDS: int = 120
     LLM_STREAMING_ENABLED: bool = True
 
+    # MongoDB configuration
+    MONGODB_URI: str
+    MONGODB_DATABASE: str
+
 
     # PlantUML configuration.
     # This is used by Architecture Agent to render use case diagrams.
