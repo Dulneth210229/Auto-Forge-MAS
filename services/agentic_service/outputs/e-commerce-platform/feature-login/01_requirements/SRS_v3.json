@@ -5,7 +5,7 @@
   "feature_id": "feature_a44033b8",
   "feature_name": "Login",
   "target_stack": "MERN",
-  "architectural_style": "modular",
+  "architectural_style": "mvc",
   "business_goal": "Allow registered users to securely access their account.",
   "scope": [
     "Allow users to log in using email and password.",
@@ -18,7 +18,6 @@
     "Password reset via email verification (Only the initiation flow is in scope).",
     "Profile management or account settings updates."
   ],
-  "out_of_scope": [],
   "user_roles": [
     "Customer",
     "Admin"
@@ -31,7 +30,7 @@
     },
     {
       "id": "FR-002",
-      "description": "System validates credentials",
+      "description": "The system must validate the provided credentials against the user database.",
       "priority": "Must Have"
     },
     {
@@ -160,20 +159,21 @@
   "assumptions": [
     "The user account already exists in the database before login is attempted.",
     "A secure mechanism for hashing passwords (e.g., bcrypt) is available and implemented.",
-    "The backend service responsible for user data is available and functional."
+    "The backend service responsible for user data is available and functional.",
+    "Revision requested by human_user: Add forgot username requirement and related acceptance criteria.",
+    "Fallback revision was used because LLM revision failed: Expecting ',' delimiter: line 167 column 5 (char 5436)"
   ],
   "risks": [
     {
       "risk": "Credential stuffing or brute force attacks.",
       "mitigation": "Implement rate limiting and account lockout mechanisms."
-    }
+    },
+    "This fallback revision should be reviewed carefully before approval."
   ],
   "dependencies": [
     "User Service/Database Layer (for credential validation)",
     "JWT Library (for token generation)"
   ],
-  "risks": [],
-  "dependencies": [],
   "traceability": [
     {
       "requirement_id": "FR-001",
@@ -204,5 +204,12 @@
       ],
       "notes": "Handles user recovery flow initiation."
     }
-  ]
+  ],
+  "revision_metadata": {
+    "revision_type": "srs_revision",
+    "revision_comment": "Add forgot username requirement and related acceptance criteria.",
+    "revised_by": "human_user",
+    "fallback_used": true,
+    "fallback_reason": "Expecting ',' delimiter: line 167 column 5 (char 5436)"
+  }
 }

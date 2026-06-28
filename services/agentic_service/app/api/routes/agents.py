@@ -18,14 +18,18 @@ from app.core.enums import AgentName
 from app.schemas.agent_schema import AgentRunRequest, AgentRunResponse
 from app.services.in_memory_store import store
 from app.agents.requirement_agent.agent import requirement_agent
-from app.agents.architecture_agent.agent import ArchitectureAgent
-from app.agents.architecture_agent.schemas import ArchitectureAgentInput
+from app.agents.architecture_agent.agent import architecture_agent
 from app.core.enums import AgentName, ArtifactType, ArtifactFormat
 from app.schemas.agent_schema import AgentRunRequest, AgentRunResponse
 from app.services.artifact_service import artifact_service
-from app.schemas.requirement_schema import RequirementAgentRunRequest
+from app.schemas.requirement_schema import (
+    RequirementAgentRunRequest,
+    RequirementAgentReviseRequest,
+)
+from app.schemas.architecture_schema import ArchitectureAgentRunRequest
 from app.services.in_memory_store import store
 from app.services.plantuml_service import plantuml_service
+import traceback
 
 # Coder Agent imports
 from app.agents.coder_agent.agent import CoderAgent
@@ -99,11 +103,46 @@ async def run_requirement_agent(
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:
+        print("========== REQUIREMENT AGENT ERROR ==========")
+        print(traceback.format_exc())
+        print("============================================")
+
         raise HTTPException(
             status_code=500,
             detail=f"Requirement Agent failed: {str(error)}"
         )
 
+@router.post("/requirement/revise", response_model=AgentRunResponse)
+async def revise_requirement_agent(
+    feature_id: str,
+    request: RequirementAgentReviseRequest
+):
+    """
+    Revise the latest Requirement Agent SRS.
+
+    This endpoint:
+    - loads the latest SRS JSON artifact
+    - applies the human revision comment
+    - creates a new SRS version
+    - keeps previous versions unchanged
+    """
+
+    _validate_feature(feature_id)
+
+    try:
+        return await requirement_agent.revise(
+            feature_id=feature_id,
+            request=request
+        )
+
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Requirement Agent revision failed: {str(error)}"
+        )
 
 @router.post("/domain/run", response_model=AgentRunResponse)
 async def run_domain_agent(feature_id: str, request: AgentRunRequest):
@@ -124,186 +163,34 @@ async def run_domain_agent(feature_id: str, request: AgentRunRequest):
 @router.post("/architecture/run", response_model=AgentRunResponse)
 async def run_architecture_agent(
     feature_id: str,
-    request: AgentRunRequest = Body(default=AgentRunRequest())
+    request: ArchitectureAgentRunRequest
 ):
     """
-    Run the Architecture Agent.
+    Run Architecture Agent.
 
     This endpoint:
-    1. Checks approved SRS.
-    2. Checks approved Enhanced SRS.
-    3. Runs Architecture Agent.
-    4. Saves SDS Markdown.
-    5. Saves SDS JSON.
-    6. Saves Use Case PlantUML.
-    7. Renders Use Case PNG.
-    8. Saves traceability JSON.
+    - requires approved SRS JSON
+    - optionally uses approved Enhanced SRS JSON
+    - generates SDS Markdown
+    - generates SDS JSON
+    - generates Use Case Diagram PUML
+    - renders Use Case Diagram PNG
 
-    Important:
-    This endpoint does NOT generate API contract or OpenAPI YAML.
+    It does not generate API contract.
     """
 
-    feature = _validate_feature(feature_id)
-    project = _get_project_for_feature(feature)
-
-    # ----------------------------------------------------
-    # 1. Load approved SRS from Requirement Agent
-    # ----------------------------------------------------
-    approved_srs = artifact_service.get_latest_approved_artifact(
-        feature_id=feature_id,
-        agent_name=AgentName.REQUIREMENT,
-        artifact_type=ArtifactType.SRS,
-        artifact_format=ArtifactFormat.MARKDOWN
-    )
-
-    if not approved_srs:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Architecture Agent cannot run because approved SRS Markdown "
-                "artifact is missing. Approve Requirement Agent output first."
-            )
-        )
-
-    # ----------------------------------------------------
-    # 2. Load approved Enhanced SRS from Domain Agent
-    # ----------------------------------------------------
-    approved_enhanced_srs = artifact_service.get_latest_approved_artifact(
-        feature_id=feature_id,
-        agent_name=AgentName.DOMAIN,
-        artifact_type=ArtifactType.ENHANCED_SRS,
-        artifact_format=ArtifactFormat.MARKDOWN
-    )
-
-    if not approved_enhanced_srs:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Architecture Agent cannot run because approved Enhanced SRS "
-                "Markdown artifact is missing. Approve Domain Agent output first."
-            )
-        )
+    _validate_feature(feature_id)
 
     try:
-        srs_markdown = artifact_service.read_artifact_content(
-            approved_srs.artifact_id
-        )
-
-        enhanced_srs_markdown = artifact_service.read_artifact_content(
-            approved_enhanced_srs.artifact_id
-        )
-
-        # ----------------------------------------------------
-        # 3. Prepare Architecture Agent input
-        # ----------------------------------------------------
-        agent_input = ArchitectureAgentInput(
-            project_id=project["project_id"],
+        return await architecture_agent.run(
             feature_id=feature_id,
-            approved_srs_markdown=srs_markdown,
-            approved_enhanced_srs_markdown=enhanced_srs_markdown,
-            project_type=project["project_type"],
-            feature_name=feature["feature_name"],
-            target_stack=project["target_stack"],
-            human_comment=request.human_comment
+            request=request
         )
 
-        # ----------------------------------------------------
-        # 4. Run Architecture Agent
-        # ----------------------------------------------------
-        architecture_agent = ArchitectureAgent()
-        output = await architecture_agent.run(agent_input)
-
-        generated_artifact_ids: list[str] = []
-
-        # ----------------------------------------------------
-        # 5. Save SDS Markdown
-        # ----------------------------------------------------
-        sds_md_artifact = artifact_service.save_text_artifact(
-            project=project,
-            feature=feature,
-            agent_name=AgentName.ARCHITECTURE,
-            artifact_type=ArtifactType.SDS,
-            artifact_format=ArtifactFormat.MARKDOWN,
-            filename="SDS_v{version}.md",
-            content=output.sds_markdown
-        )
-        generated_artifact_ids.append(sds_md_artifact.artifact_id)
-
-        # ----------------------------------------------------
-        # 6. Save SDS JSON
-        # ----------------------------------------------------
-        sds_json_artifact = artifact_service.save_json_artifact(
-            project=project,
-            feature=feature,
-            agent_name=AgentName.ARCHITECTURE,
-            artifact_type=ArtifactType.SDS,
-            filename="SDS_v{version}.json",
-            data=output.sds_json
-        )
-        generated_artifact_ids.append(sds_json_artifact.artifact_id)
-
-        # ----------------------------------------------------
-        # 7. Save PlantUML source
-        # ----------------------------------------------------
-        puml_artifact = artifact_service.save_text_artifact(
-            project=project,
-            feature=feature,
-            agent_name=AgentName.ARCHITECTURE,
-            artifact_type=ArtifactType.USE_CASE_DIAGRAM,
-            artifact_format=ArtifactFormat.PUML,
-            filename="usecase_v{version}.puml",
-            content=output.usecase_puml
-        )
-        generated_artifact_ids.append(puml_artifact.artifact_id)
-
-        # ----------------------------------------------------
-        # 8. Render PNG diagram from PlantUML
-        # ----------------------------------------------------
-        png_path = plantuml_service.render_puml_to_png(
-            puml_artifact.file_path
-        )
-
-        with open(png_path, "rb") as png_file:
-            png_content = png_file.read()
-
-        png_artifact = artifact_service.save_binary_artifact(
-            project=project,
-            feature=feature,
-            agent_name=AgentName.ARCHITECTURE,
-            artifact_type=ArtifactType.USE_CASE_DIAGRAM,
-            artifact_format=ArtifactFormat.PNG,
-            filename="usecase_v{version}.png",
-            binary_content=png_content
-        )
-        generated_artifact_ids.append(png_artifact.artifact_id)
-
-        # ----------------------------------------------------
-        # 9. Save Architecture Traceability JSON
-        # ----------------------------------------------------
-        traceability_artifact = artifact_service.save_json_artifact(
-            project=project,
-            feature=feature,
-            agent_name=AgentName.ARCHITECTURE,
-            artifact_type=ArtifactType.ARCHITECTURE_TRACEABILITY,
-            filename="traceability_architecture_v{version}.json",
-            data=output.traceability_json
-        )
-        generated_artifact_ids.append(traceability_artifact.artifact_id)
-
-        # ----------------------------------------------------
-        # 10. Update feature current agent
-        # ----------------------------------------------------
-        feature["current_agent"] = AgentName.ARCHITECTURE
-
-        return AgentRunResponse(
-            feature_id=feature_id,
-            agent_name=AgentName.ARCHITECTURE,
-            status="completed",
-            message=(
-                "Architecture Agent completed successfully. "
-                "Generated SDS, Use Case Diagram, and traceability artifacts."
-            ),
-            artifact_ids=generated_artifact_ids
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error)
         )
 
     except Exception as error:
@@ -311,6 +198,8 @@ async def run_architecture_agent(
             status_code=500,
             detail=f"Architecture Agent failed: {str(error)}"
         )
+    
+
     # ----------------------------------------------------
     # UI/UX Agent
     # ----------------------------------------------------

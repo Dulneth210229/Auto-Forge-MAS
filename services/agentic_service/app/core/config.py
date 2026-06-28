@@ -40,8 +40,12 @@ class Settings(BaseSettings):
 
     LLM_TEMPERATURE: float = 0.1
     LLM_MAX_TOKENS: int = 4096
-    LLM_TIMEOUT_SECONDS: int = 120
+    LLM_TIMEOUT_SECONDS: int = 320
     LLM_STREAMING_ENABLED: bool = True
+    # MongoDB connection URI.
+    # For local MongoDB: mongodb://localhost:27017
+    # For MongoDB Atlas: mongodb+srv://username:password@cluster.mongodb.net
+    MONGODB_URI: str = "mongodb://localhost:27017"
 
     # MongoDB configuration
     MONGODB_URI: str
@@ -51,6 +55,31 @@ class Settings(BaseSettings):
     # PlantUML configuration.
     # This is used by Architecture Agent to render use case diagrams.
     PLANTUML_JAR_PATH: str = "tools/plantuml.jar"
+
+        # -----------------------------
+    # Domain Agent RAG Settings
+    # -----------------------------
+
+    # Folder where domain knowledge files are stored.
+    # Example:
+    # knowledge_base/ecommerce/authentication.md
+    # knowledge_base/lms/enrollment.md
+    DOMAIN_KNOWLEDGE_BASE_DIR: str = "knowledge_base"
+
+    # Folder where ChromaDB stores vector data.
+    CHROMA_PERSIST_DIR: str = "vector_db/chroma"
+
+    # Embedding model used to convert chunks into vectors.
+    DOMAIN_EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
+
+    # Size of each text chunk.
+    DOMAIN_CHUNK_SIZE: int = 900
+
+    # Overlap between chunks so meaning is not lost between chunk boundaries.
+    DOMAIN_CHUNK_OVERLAP: int = 150
+
+    # Number of chunks retrieved for each Domain Agent run.
+    DOMAIN_TOP_K: int = 6
 
     model_config = SettingsConfigDict(
         env_file=str(ENV_FILE_PATH),
