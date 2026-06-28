@@ -35,6 +35,8 @@ class ArtifactType(str, Enum):
     # Architecture Agent artifacts
     SDS = "sds"
     USE_CASE_DIAGRAM = "use_case_diagram"
+    SEQUENCE_DIAGRAM = "sequence_diagram"
+    CLASS_DIAGRAM = "class_diagram"
     ARCHITECTURE_TRACEABILITY = "architecture_traceability"
 
     UI_DESIGN = "ui_design"
