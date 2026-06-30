@@ -33,6 +33,7 @@ class ArtifactType(str, Enum):
     ENHANCED_SRS = "enhanced_srs"
     
     # Architecture Agent artifacts
+    ARCHITECTURE_PLAN = "architecture_plan"
     SDS = "sds"
     USE_CASE_DIAGRAM = "use_case_diagram"
     SEQUENCE_DIAGRAM = "sequence_diagram"

@@ -1,19 +1,15 @@
 """
 Architecture Agent prompt.
 
-This prompt uses a generic IEEE 1016-style Software Design Description structure.
-
-Project naming note:
-- Your artifact can still be called SDS: Software Design Specification.
-- The structure follows IEEE 1016-style SDD concepts: design context, design views,
-  design decisions, and requirement-to-design traceability.
+The Architecture Agent now generates an Architecture Plan instead of an SDS.
 
 Important:
 - No separate API contract artifact.
 - No OpenAPI artifact.
 - No source code.
 - No UI design.
-- The backend derives UML Use Case, Sequence, and Class diagrams from the SDS/SRS.
+- The backend derives UML Use Case, Sequence, and Class diagrams from the Architecture Plan/SRS.
+- Diagram generation logic is deterministic and separate from this prompt.
 """
 
 from __future__ import annotations
@@ -33,8 +29,11 @@ ARCHITECTURE_AGENT_SYSTEM_PROMPT = """
 You are the Architecture Agent in AutoForge.
 
 Your task:
-Generate an IEEE 1016-style Software Design Specification JSON and a structured use case specification
+Generate a feature-level Architecture Plan JSON and a structured use case specification
 for exactly one approved feature.
+
+The Architecture Plan is not an SDS. It is an implementation-support design plan
+that helps the Coder Agent build the feature correctly.
 
 The backend will deterministically normalize/generate:
 - final UML Use Case Diagram model
@@ -42,11 +41,6 @@ The backend will deterministically normalize/generate:
 - UML Class Diagram model
 - PlantUML source files
 - PNG diagram files
-
-Terminology:
-- The project calls the artifact SDS: Software Design Specification.
-- The SDS must follow an IEEE 1016-style Software Design Description structure.
-- Use design views, design decisions, and requirement-to-design traceability.
 
 Strict output rules:
 - Return only valid JSON.
@@ -62,23 +56,26 @@ Strict output rules:
 - Generate architecture only for the given feature, not the full project.
 - Stay inside the approved SRS and Enhanced SRS scope.
 - Do not invent unrelated features.
-- Keep the design practical for the target stack.
+- Keep the plan practical for the target stack.
 - Reference stable SRS IDs wherever possible.
+- Do not include diagram reference sections inside architecture_plan_json.
 
-IEEE-style SDS rules:
-- The SDS must not be generic.
-- The SDS must directly map approved SRS content into design sections.
-- Every Functional Requirement must be covered in traceability_matrix.
-- Every Acceptance Criterion must be covered in behavior_view, error_handling_view, or interface_view.
-- Every Validation Rule must be covered in data_view, interface_view, or error_handling_view.
-- Every Non-Functional Requirement must be covered in quality_attributes_view.
-- Every API expectation must appear in interface_view.api_endpoints.
-- Every input requirement must appear in interface_view.request_models.
-- Every output requirement must appear in interface_view.response_models.
-- Every data requirement must appear in data_view.
-- Every risk must appear in design_considerations or security_authorization_view.
-- Every constraint must appear in design_considerations or architecture_overview.
-- Do not use the phrase "Fallback SDS" in normal LLM-generated SDS.
+Architecture Plan rules:
+- The Architecture Plan must be different from the SRS.
+- The SRS says what the feature must do.
+- The Architecture Plan must explain how the feature should be structured and implemented.
+- Every Functional Requirement must be covered in traceability_matrix and implementation tasks.
+- Every Acceptance Criterion must be covered in behavior_view, error_handling_view, interface_view, or implementation tasks.
+- Every Validation Rule must be covered in data_view, interface_view, error_handling_view, validation_plan, or implementation tasks.
+- Every Non-Functional Requirement must be covered in quality_attributes_view or quality_plan.
+- Every API expectation must appear in design_views.interface_view.api_endpoints.
+- Every input requirement must appear in design_views.interface_view.request_models.
+- Every output requirement must appear in design_views.interface_view.response_models.
+- Every data requirement must appear in design_views.data_view.
+- Every risk must appear in security_authorization_view or risks.
+- Every constraint must appear in architecture_approach or constraints.
+- The plan must contain coder_implementation_tasks with frontend/backend/data/security/validation tasks where applicable.
+- Do not use the phrase "Fallback SDS" or "Software Design Specification" in the generated plan.
 
 Use Case Specification Rules:
 - Create usecase_specification_json only; backend will normalize it into the final UML use case model.
@@ -89,13 +86,13 @@ Use Case Specification Rules:
 - Mandatory supporting behaviours should go in included_behaviours.
 - Optional, alternative, recovery, or error behaviours should go in extension_behaviours or exception_flows.
 - Do not put NFRs, constraints, risks, stack, MVC, database design, API design, or security notes into the use case diagram.
-- Do not add UML notes. Constraints, NFRs, risks, and security rules stay inside the SDS only.
+- Do not add UML notes. Constraints, NFRs, risks, and security rules stay inside the Architecture Plan only.
 - Do not add unrelated features outside the approved feature scope.
 
 Important for Sequence/Class Diagrams:
 - Do not directly output sequence_diagram_json or class_diagram_json.
-- The backend creates them from the approved SDS/SRS.
-- Therefore the SDS design views must be detailed enough for sequence/class generation:
+- The backend creates them from the approved Architecture Plan/SRS.
+- Therefore design_views must be detailed enough for sequence/class generation:
   interface_view must include endpoints, request models, and response models;
   data_view must include data entities and fields;
   behavior_view must include main, alternative, and exception flows;
@@ -104,11 +101,10 @@ Important for Sequence/Class Diagrams:
 The JSON must have exactly this top-level structure:
 
 {
-  "sds_json": {
+  "architecture_plan_json": {
     "document_control": {
       "document_title": "",
-      "document_type": "Software Design Specification",
-      "standard_basis": "IEEE 1016-style Software Design Description",
+      "document_type": "Feature Architecture Plan",
       "project_id": "",
       "project_name": "",
       "project_type": "",
@@ -121,34 +117,27 @@ The JSON must have exactly this top-level structure:
       "input_artifacts": [],
       "approval_status": "pending"
     },
-    "introduction": {
-      "purpose": "",
+    "feature_overview": {
+      "business_goal": "",
       "scope": [],
       "out_of_scope": [],
-      "intended_audience": [],
-      "definitions": []
-    },
-    "design_context": {
-      "business_goal": "",
       "user_roles": [],
-      "feature_boundary": "",
-      "operating_environment": "",
-      "dependencies": [],
-      "assumptions": []
+      "feature_boundary": ""
     },
-    "design_considerations": {
-      "constraints": [],
-      "non_functional_requirements": [],
-      "risks": [],
-      "design_tradeoffs": []
+    "requirement_interpretation": {
+      "functional_requirements": [],
+      "acceptance_criteria": [],
+      "validation_rules": [],
+      "non_functional_requirements": []
     },
-    "architecture_overview": {
+    "architecture_approach": {
       "architecture_style": "",
       "architecture_rationale": "",
       "frontend_overview": "",
       "backend_overview": "",
       "data_overview": "",
-      "integration_overview": ""
+      "integration_overview": "",
+      "design_tradeoffs": []
     },
     "design_views": {
       "context_view": {
@@ -202,31 +191,36 @@ The JSON must have exactly this top-level structure:
         "accessibility": []
       }
     },
-    "detailed_design_decisions": [],
+    "frontend_architecture_plan": {
+      "responsibilities": [],
+      "pages_or_components": [],
+      "state_and_feedback": []
+    },
+    "backend_architecture_plan": {
+      "responsibilities": [],
+      "layers": [],
+      "integration_points": []
+    },
+    "validation_plan": {
+      "input_validation": [],
+      "processing_validation": []
+    },
+    "coder_implementation_tasks": [
+      {
+        "task_id": "TASK-001",
+        "task": "",
+        "layer": "frontend | backend | data | security | validation | integration",
+        "suggested_files": [],
+        "related_requirements": []
+      }
+    ],
     "traceability_matrix": [],
     "assumptions": [],
     "constraints": [],
     "risks": [],
     "dependencies": [],
-    "use_case_diagram_reference": {
-      "puml_file": "Generated as a separate Architecture Agent artifact.",
-      "png_file": "Generated as a separate Architecture Agent artifact.",
-      "diagram_scope": "",
-      "actors": [],
-      "main_use_cases": [],
-      "relationship_summary": []
-    },
-    "sequence_diagram_reference": {
-      "puml_file": "Generated as a separate Architecture Agent artifact.",
-      "png_file": "Generated as a separate Architecture Agent artifact.",
-      "diagram_scope": "Feature-level sequence diagram derived from SDS behaviour and interface views."
-    },
-    "class_diagram_reference": {
-      "puml_file": "Generated as a separate Architecture Agent artifact.",
-      "png_file": "Generated as a separate Architecture Agent artifact.",
-      "diagram_scope": "Feature-level class diagram derived from SDS logical, interface, and data views."
-    },
-    "human_approval_note": "This SDS must be reviewed and approved before the UI/UX Agent starts."
+    "revision_metadata": null,
+    "human_approval_note": "This Architecture Plan must be reviewed and approved before the UI/UX Agent or Coder Agent starts."
   },
   "usecase_specification_json": {
     "system_boundary": "",
@@ -239,6 +233,26 @@ The JSON must have exactly this top-level structure:
     "traceability": []
   }
 }
+"""
+
+
+ARCHITECTURE_REVISION_SYSTEM_PROMPT = """
+You are the Architecture Agent revision assistant in AutoForge.
+
+Your task:
+Revise an existing Architecture Plan JSON using a human/client revision comment.
+
+Rules:
+- Return the full revised architecture_plan_json only.
+- Keep the same project_id and feature_id.
+- Keep existing traceability IDs where possible.
+- Do not remove existing architecture decisions unless the comment clearly asks for removal.
+- Update only the parts affected by the revision comment.
+- Keep design_views detailed enough because backend-generated diagrams are derived from the Architecture Plan.
+- Do not directly generate diagram PlantUML.
+- Do not include diagram reference sections.
+- Add/update revision_metadata.
+- Return only valid JSON.
 """
 
 
@@ -270,12 +284,11 @@ def build_architecture_user_prompt(
     """
 
     enhanced_text = "No approved Enhanced SRS is available."
-
     if enhanced_srs_json:
         enhanced_text = safe_json_dumps(enhanced_srs_json)
 
     return f"""
-Generate an IEEE 1016-style SDS JSON and usecase_specification_json for this feature only.
+Generate an Architecture Plan JSON and usecase_specification_json for this feature only.
 
 Project:
 {safe_json_dumps(project)}
@@ -295,18 +308,23 @@ Architecture Notes:
 Human Comment:
 {human_comment}
 
-Important SDS instructions:
+Important Architecture Plan instructions:
+- Do not create an SDS.
+- Create architecture_plan_json only.
+- The Architecture Plan must be implementation-focused and useful for the Coder Agent.
 - Use exact API expectations from the SRS in design_views.interface_view.api_endpoints.
 - Use input requirements from the SRS in design_views.interface_view.request_models.
 - Use output requirements from the SRS in design_views.interface_view.response_models.
 - Use data requirements from the SRS in design_views.data_view.
 - Use acceptance criteria in design_views.behavior_view and design_views.error_handling_view.
-- Use validation rules in design_views.data_view, design_views.interface_view, and design_views.error_handling_view.
+- Use validation rules in design_views.data_view, design_views.interface_view, validation_plan, and design_views.error_handling_view.
 - Use non-functional requirements in design_views.quality_attributes_view.
-- Use risks in design_considerations and design_views.security_authorization_view.
-- Use constraints in design_considerations and architecture_overview.
+- Use risks in design_views.security_authorization_view and risks.
+- Use constraints in architecture_approach and constraints.
+- Create coder_implementation_tasks for frontend, backend, data, validation, error handling, and security where applicable.
 - Create traceability_matrix entries for all FR, AC, VR, NFR, constraints, risks, dependencies, data, API, and UI items where possible.
 - Make logical_view, interface_view, data_view, and behavior_view detailed enough for backend-generated sequence and class diagrams.
+- Do not include diagram reference sections inside architecture_plan_json.
 
 Important use case instructions:
 - For usecase_specification_json, extract actors from SRS user_roles and real external systems only.
@@ -315,9 +333,66 @@ Important use case instructions:
 - Put mandatory supporting behaviours in included_behaviours.
 - Put optional, alternative, recovery, and exception behaviours in extension_behaviours or exception_flows.
 - Do not put constraints, NFRs, risks, architecture style, MERN stack, MVC, database design, API design, or security notes into the use case diagram.
-- Do not add UML notes. Constraints, NFRs, risks, and security rules must stay inside the SDS only.
+- Do not add UML notes. Constraints, NFRs, risks, and security rules must stay inside the Architecture Plan only.
 - Keep use case names short, action-oriented, and feature-scoped.
 - Return only valid JSON.
+"""
+
+
+def build_architecture_plan_revision_prompt(
+    project: dict,
+    feature: dict,
+    srs_json: dict,
+    existing_architecture_plan_json: dict,
+    revision_comment: str,
+    revised_by: str,
+) -> str:
+    """
+    Build prompt for Architecture Plan revision.
+    """
+
+    return f"""
+Revise the following existing Architecture Plan JSON.
+
+Project:
+{safe_json_dumps(project)}
+
+Feature:
+{safe_json_dumps(feature)}
+
+Approved SRS JSON:
+{safe_json_dumps(srs_json)}
+
+Existing Architecture Plan JSON:
+{safe_json_dumps(existing_architecture_plan_json)}
+
+Revision comment:
+{revision_comment}
+
+Revised by:
+{revised_by}
+
+Instructions:
+- Return the full revised architecture_plan_json object only.
+- Keep the same project_id and feature_id.
+- Keep design_views complete because diagrams will be regenerated from the revised plan.
+- If the revision asks to change a diagram, update the related architecture plan sections that feed that diagram:
+  behavior_view for sequence flow changes,
+  interface_view for API/request/response changes,
+  data_view for class/entity changes,
+  logical_view for module/class responsibility changes,
+  usecase_specification-relevant behaviour through requirement interpretation and behavior view.
+- Do not add diagram reference sections.
+- Do not output PlantUML.
+- Add/update this object:
+
+"revision_metadata": {{
+  "revision_comment": "{revision_comment}",
+  "revised_by": "{revised_by}",
+  "revision_type": "architecture_plan_revision"
+}}
+
+Return only valid JSON.
 """
 
 

@@ -28,8 +28,8 @@ class ArchitectureAgentOutput(BaseModel):
     """
     Internal output produced by Architecture Agent.
 
-    The Architecture Agent now produces:
-    - SDS Markdown/JSON
+    The Architecture Agent produces:
+    - Architecture Plan Markdown/JSON
     - UML Use Case Diagram JSON/PUML
     - UML Sequence Diagram JSON/PUML
     - UML Class Diagram JSON/PUML
@@ -37,8 +37,8 @@ class ArchitectureAgentOutput(BaseModel):
     PNG files are produced when artifacts are saved.
     """
 
-    sds_json: dict
-    sds_markdown: str
+    architecture_plan_json: dict
+    architecture_plan_markdown: str
 
     usecase_analysis_json: dict
     usecase_json: dict

@@ -28,7 +28,10 @@ from app.schemas.requirement_schema import (
     RequirementAgentRunRequest,
     RequirementAgentReviseRequest,
 )
-from app.schemas.architecture_schema import ArchitectureAgentRunRequest
+from app.schemas.architecture_schema import (
+    ArchitectureAgentRunRequest,
+    ArchitectureAgentReviseRequest,
+)
 from app.services.in_memory_store import store
 from app.services.plantuml_service import plantuml_service
 import traceback
@@ -144,12 +147,11 @@ async def run_architecture_agent(
     This endpoint:
     - requires approved SRS JSON
     - optionally uses approved Enhanced SRS JSON
-    - generates SDS Markdown
-    - generates SDS JSON
-    - generates Use Case Diagram PUML
-    - renders Use Case Diagram PNG
+    - generates Architecture Plan Markdown
+    - generates Architecture Plan JSON
+    - generates Use Case, Sequence, and Class Diagram PUML/PNG artifacts
 
-    It does not generate API contract.
+    It does not generate a separate API contract.
     """
 
     _validate_feature(feature_id)
@@ -172,6 +174,44 @@ async def run_architecture_agent(
             detail=f"Architecture Agent failed: {str(error)}"
         )
     
+
+
+@router.post("/architecture/revise", response_model=AgentRunResponse)
+async def revise_architecture_agent(
+    feature_id: str,
+    request: ArchitectureAgentReviseRequest
+):
+    """
+    Revise the latest Architecture Agent output.
+
+    This endpoint:
+    - loads the latest Architecture Plan JSON
+    - applies the human/client revision comment
+    - regenerates Use Case, Sequence, and Class diagrams from the revised plan
+    - creates a new Architecture Agent version
+    - keeps previous versions unchanged
+    """
+
+    _validate_feature(feature_id)
+
+    try:
+        return await architecture_agent.revise(
+            feature_id=feature_id,
+            request=request
+        )
+
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error)
+        )
+
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Architecture Agent revision failed: {str(error)}"
+        )
+
 
     # ----------------------------------------------------
     # Ui/UX  Agent
