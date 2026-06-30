@@ -1,17 +1,15 @@
 """
 Architecture Agent API schemas.
 
-This file defines the request body used when running the Architecture Agent.
-
-The Architecture Agent should generate:
-- SDS JSON
-- SDS Markdown
-- Use Case Diagram PlantUML
-- Use Case Diagram PNG
+The Architecture Agent generates:
+- Architecture Plan JSON
+- Architecture Plan Markdown
+- Use Case Diagram PlantUML/PNG
+- Sequence Diagram PlantUML/PNG
+- Class Diagram PlantUML/PNG
 
 Important:
-The user asked not to generate API contract.
-So this schema does not include API contract options.
+The user asked not to generate a separate API contract.
 """
 
 from pydantic import BaseModel, Field
@@ -20,19 +18,6 @@ from pydantic import BaseModel, Field
 class ArchitectureAgentRunRequest(BaseModel):
     """
     Request body for running Architecture Agent.
-
-    use_enhanced_srs_if_available:
-        If Domain Agent has already generated an approved Enhanced SRS,
-        Architecture Agent can use it.
-        If not available, it will use the approved SRS.
-
-    architecture_notes:
-        Optional human instruction.
-        Example:
-        "Use MVC style for this Login feature."
-
-    human_comment:
-        Optional comment from the user.
     """
 
     use_enhanced_srs_if_available: bool = Field(
@@ -47,5 +32,31 @@ class ArchitectureAgentRunRequest(BaseModel):
 
     human_comment: str | None = Field(
         default=None,
-        example="Generate SDS and use case diagram for Login feature."
+        example="Generate Architecture Plan and UML diagrams for Login feature."
+    )
+
+
+class ArchitectureAgentReviseRequest(BaseModel):
+    """
+    Request body for revising the latest Architecture Plan.
+
+    The revision can ask for changes in:
+    - Architecture Plan content
+    - Use Case Diagram behaviour
+    - Sequence Diagram flow
+    - Class Diagram entities/classes
+
+    Diagram files are not manually edited. Instead, the Architecture Plan is
+    revised and the diagrams are regenerated from the revised plan using the
+    existing deterministic diagram generation pipeline.
+    """
+
+    revision_comment: str = Field(
+        ...,
+        example="Update the sequence diagram to include account lockout after failed login attempts."
+    )
+
+    revised_by: str = Field(
+        default="human_user",
+        example="human_user"
     )
