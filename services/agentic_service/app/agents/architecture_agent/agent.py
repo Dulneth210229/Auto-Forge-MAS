@@ -4,11 +4,11 @@ Architecture Agent.
 Purpose:
 - Load approved SRS JSON from Requirement Agent.
 - Optionally load approved Enhanced SRS JSON from Domain Agent.
-- Generate IEEE 1016-style SDS JSON and usecase_specification_json using LLM.
-- Derive UML Use Case, Sequence, and Class diagram models from SRS/SDS.
-- Validate SDS coverage against SRS.
+- Generate Architecture Plan JSON and usecase_specification_json using LLM.
+- Derive UML Use Case, Sequence, and Class diagram models from SRS/Architecture Plan.
+- Validate Architecture Plan coverage against SRS.
 - Validate UML diagram quality.
-- Convert SDS JSON into Markdown.
+- Convert Architecture Plan JSON into Markdown.
 - Convert diagram JSON into PlantUML.
 - Render PlantUML into PNG.
 - Save all Architecture Agent artifacts.
@@ -27,8 +27,8 @@ This implementation now generates:
 - class diagram
 
 Outputs:
-- SDS Markdown
-- SDS JSON
+- Architecture Plan Markdown
+- Architecture Plan JSON
 - Use Case Diagram PUML
 - Use Case Diagram PNG
 - Sequence Diagram PUML
@@ -45,20 +45,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app.agents.architecture_agent.markdown_builder import ArchitectureSDSMarkdownBuilder
+from app.agents.architecture_agent.markdown_builder import ArchitecturePlanMarkdownBuilder
 from app.agents.architecture_agent.prompt import (
     ARCHITECTURE_AGENT_SYSTEM_PROMPT,
     JSON_REPAIR_PROMPT,
     build_architecture_user_prompt,
+    build_architecture_plan_revision_prompt,
     build_json_repair_prompt,
+    ARCHITECTURE_REVISION_SYSTEM_PROMPT,
 )
 from app.agents.architecture_agent.schemas import (
     ArchitectureAgentInput,
     ArchitectureAgentOutput,
 )
 from app.agents.architecture_agent.sds_validator import (
-    ArchitectureSDSValidator,
-    SDSValidationError,
+    ArchitecturePlanValidator,
+    ArchitecturePlanValidationError,
 )
 from app.agents.architecture_agent.usecase_modeler import ArchitectureUseCaseModeler
 from app.agents.architecture_agent.usecase_builder import ArchitectureUseCasePlantUMLBuilder
@@ -87,7 +89,10 @@ from app.core.enums import (
     FeatureStatus,
 )
 from app.schemas.agent_schema import AgentRunResponse
-from app.schemas.architecture_schema import ArchitectureAgentRunRequest
+from app.schemas.architecture_schema import (
+    ArchitectureAgentRunRequest,
+    ArchitectureAgentReviseRequest,
+)
 from app.services.artifact_service import artifact_service
 from app.services.in_memory_store import store
 from app.services.llm_provider_service import llm_provider_service
@@ -105,32 +110,33 @@ class ArchitectureAgent:
     This class controls:
     1. Approved input artifact loading.
     2. LLM architecture generation.
-    3. IEEE-style SDS validation.
+    3. Architecture Plan validation.
     4. UML use case, sequence, and class diagram validation.
-    5. SDS Markdown generation.
+    5. Architecture Plan Markdown generation.
     6. PlantUML generation.
     7. PNG rendering.
     8. Artifact saving.
     """
 
     REQUIRED_TOP_LEVEL_KEYS = [
-        "sds_json",
+        "architecture_plan_json",
     ]
 
-    REQUIRED_SDS_KEYS = [
+    REQUIRED_ARCHITECTURE_PLAN_KEYS = [
         "document_control",
-        "introduction",
-        "design_context",
-        "design_considerations",
-        "architecture_overview",
+        "feature_overview",
+        "requirement_interpretation",
+        "architecture_approach",
         "design_views",
-        "detailed_design_decisions",
+        "frontend_architecture_plan",
+        "backend_architecture_plan",
+        "validation_plan",
+        "coder_implementation_tasks",
         "traceability_matrix",
         "assumptions",
         "constraints",
         "risks",
         "dependencies",
-        "use_case_diagram_reference",
         "human_approval_note",
     ]
 
@@ -162,8 +168,8 @@ class ArchitectureAgent:
         No common/shared files are changed.
         """
 
-        self.markdown_builder = ArchitectureSDSMarkdownBuilder()
-        self.sds_validator = ArchitectureSDSValidator()
+        self.markdown_builder = ArchitecturePlanMarkdownBuilder()
+        self.architecture_plan_validator = ArchitecturePlanValidator()
 
         # Use Case pipeline:
         # LLM/specification -> modeler -> validator -> PlantUML builder -> PNG renderer
@@ -172,13 +178,13 @@ class ArchitectureAgent:
         self.usecase_validator = UseCaseQualityValidator()
 
         # Sequence diagram pipeline:
-        # SRS/SDS -> modeler -> validator -> PlantUML builder -> PNG renderer
+        # SRS/Architecture Plan -> modeler -> validator -> PlantUML builder -> PNG renderer
         self.sequence_modeler = ArchitectureSequenceModeler()
         self.sequence_builder = ArchitectureSequencePlantUMLBuilder()
         self.sequence_validator = SequenceDiagramValidator()
 
         # Class diagram pipeline:
-        # SRS/SDS -> modeler -> validator -> PlantUML builder -> PNG renderer
+        # SRS/Architecture Plan -> modeler -> validator -> PlantUML builder -> PNG renderer
         self.class_modeler = ArchitectureClassModeler()
         self.class_builder = ArchitectureClassPlantUMLBuilder()
         self.class_validator = ClassDiagramValidator()
@@ -267,8 +273,8 @@ class ArchitectureAgent:
             status="completed",
             message=(
                 "Architecture Agent completed successfully. "
-                "IEEE-style SDS, Use Case Diagram, Sequence Diagram, and Class Diagram artifacts were generated. "
-                "Human approval is required before UI/UX Agent can run."
+                "Architecture Plan, Use Case Diagram, Sequence Diagram, and Class Diagram artifacts were generated. "
+                "Human approval is required before UI/UX Agent or Coder Agent can run."
             ),
             artifact_ids=artifact_ids
         )
@@ -280,11 +286,11 @@ class ArchitectureAgent:
         Flow:
         1. Ask LLM for JSON only.
         2. Parse and validate JSON structure.
-        3. Validate SDS against approved SRS.
+        3. Validate Architecture Plan against approved SRS.
         4. Build and validate use case, sequence, and class diagrams.
         5. If LLM output is invalid, repair once.
         6. If still invalid, build dynamic IEEE-style fallback from SRS.
-        7. Convert SDS JSON to Markdown.
+        7. Convert Architecture Plan JSON to Markdown.
         8. Convert diagram JSON models to PlantUML.
         """
 
@@ -357,20 +363,20 @@ class ArchitectureAgent:
 
                 raw_output = json.dumps(parsed, indent=2, default=str)
 
-        sds_json = parsed["sds_json"]
+        architecture_plan_json = parsed["architecture_plan_json"]
         usecase_analysis_json = parsed["usecase_analysis_json"]
         usecase_json = parsed["usecase_json"]
         sequence_diagram_json = parsed["sequence_diagram_json"]
         class_diagram_json = parsed["class_diagram_json"]
 
-        sds_markdown = self.markdown_builder.build(sds_json)
+        architecture_plan_markdown = self.markdown_builder.build(architecture_plan_json)
         usecase_puml = self.usecase_builder.build(usecase_json)
         sequence_puml = self.sequence_builder.build(sequence_diagram_json)
         class_puml = self.class_builder.build(class_diagram_json)
 
         return ArchitectureAgentOutput(
-            sds_json=sds_json,
-            sds_markdown=sds_markdown,
+            architecture_plan_json=architecture_plan_json,
+            architecture_plan_markdown=architecture_plan_markdown,
             usecase_analysis_json=usecase_analysis_json,
             usecase_json=usecase_json,
             usecase_puml=usecase_puml,
@@ -404,7 +410,7 @@ class ArchitectureAgent:
 
         usecase_analysis_json, usecase_json = self.usecase_modeler.build(
             srs_json=srs_for_modeling,
-            sds_json=parsed["sds_json"],
+            sds_json=parsed["architecture_plan_json"],
             usecase_specification_json=usecase_specification_json,
         )
 
@@ -423,17 +429,17 @@ class ArchitectureAgent:
         parsed: dict[str, Any]
     ) -> dict[str, Any]:
         """
-        Build the sequence diagram model from approved SRS/SDS.
+        Build the sequence diagram model from approved SRS/Architecture Plan.
 
         The LLM does not directly control this diagram.
-        This keeps the sequence diagram deterministic and aligned with the SDS.
+        This keeps the sequence diagram deterministic and aligned with the Architecture Plan.
         """
 
         srs_for_modeling = agent_input.enhanced_srs_json or agent_input.srs_json
 
         sequence_diagram_json = self.sequence_modeler.build(
             srs_json=srs_for_modeling,
-            sds_json=parsed["sds_json"],
+            sds_json=parsed["architecture_plan_json"],
         )
 
         parsed["sequence_diagram_json"] = sequence_diagram_json
@@ -446,9 +452,9 @@ class ArchitectureAgent:
         parsed: dict[str, Any]
     ) -> dict[str, Any]:
         """
-        Build the class diagram model from approved SRS/SDS.
+        Build the class diagram model from approved SRS/Architecture Plan.
 
-        The class diagram is derived from the SDS logical, interface,
+        The class diagram is derived from the Architecture Plan logical, interface,
         and data views rather than directly from free-form LLM PlantUML.
         """
 
@@ -456,7 +462,7 @@ class ArchitectureAgent:
 
         class_diagram_json = self.class_modeler.build(
             srs_json=srs_for_modeling,
-            sds_json=parsed["sds_json"],
+            sds_json=parsed["architecture_plan_json"],
         )
 
         parsed["class_diagram_json"] = class_diagram_json
@@ -469,19 +475,19 @@ class ArchitectureAgent:
         parsed: dict[str, Any]
     ) -> None:
         """
-        Run full SDS and Use Case validations.
+        Run full Architecture Plan and UML diagram validations.
         """
 
         srs_for_validation = agent_input.enhanced_srs_json or agent_input.srs_json
 
-        self.sds_validator.validate(
+        self.architecture_plan_validator.validate(
             srs_json=srs_for_validation,
-            sds_json=parsed["sds_json"]
+            architecture_plan_json=parsed["architecture_plan_json"]
         )
 
         self.usecase_validator.validate(
             srs_json=srs_for_validation,
-            sds_json=parsed["sds_json"],
+            sds_json=parsed["architecture_plan_json"],
             usecase_analysis_json=parsed["usecase_analysis_json"],
             usecase_json=parsed["usecase_json"],
         )
@@ -503,19 +509,29 @@ class ArchitectureAgent:
 
         parsed = self._extract_json_object(raw_output)
 
+        # Backward compatibility: if an older prompt/provider returns sds_json,
+        # convert it into architecture_plan_json before validation.
+        if "architecture_plan_json" not in parsed and isinstance(parsed.get("sds_json"), dict):
+            parsed["architecture_plan_json"] = self._convert_sds_to_architecture_plan(
+                sds_json=parsed.pop("sds_json"),
+                srs_json={},
+            )
+
         self._ensure_keys(parsed, self.REQUIRED_TOP_LEVEL_KEYS)
 
-        sds_json = parsed.get("sds_json")
+        architecture_plan_json = parsed.get("architecture_plan_json")
 
-        if not isinstance(sds_json, dict):
-            raise ValueError("sds_json must be a JSON object.")
+        if not isinstance(architecture_plan_json, dict):
+            raise ValueError("architecture_plan_json must be a JSON object.")
 
-        self._ensure_keys(sds_json, self.REQUIRED_SDS_KEYS)
+        self._remove_diagram_reference_sections(architecture_plan_json)
 
-        design_views = sds_json.get("design_views", {})
+        self._ensure_keys(architecture_plan_json, self.REQUIRED_ARCHITECTURE_PLAN_KEYS)
+
+        design_views = architecture_plan_json.get("design_views", {})
 
         if not isinstance(design_views, dict):
-            raise ValueError("sds_json.design_views must be a JSON object.")
+            raise ValueError("architecture_plan_json.design_views must be a JSON object.")
 
         self._ensure_keys(design_views, self.REQUIRED_DESIGN_VIEW_KEYS)
 
@@ -601,6 +617,279 @@ class ArchitectureAgent:
                     f"Invalid use case relationship type: {relationship.get('type')}"
                 )
 
+    async def revise(self, feature_id: str, request: ArchitectureAgentReviseRequest) -> AgentRunResponse:
+        """
+        Revise the latest Architecture Plan and regenerate diagrams.
+
+        Diagram generation files are not manually edited here.
+        If the human asks for a diagram change, the Architecture Plan sections
+        that feed the diagrams are revised, then the existing deterministic
+        diagram pipeline regenerates Use Case, Sequence, and Class diagrams.
+        """
+
+        logger.info("Architecture Agent revision started for feature_id=%s", feature_id)
+
+        feature = store.features.get(feature_id)
+        if not feature:
+            raise ValueError("Feature not found.")
+
+        project = store.projects.get(feature["project_id"])
+        if not project:
+            raise ValueError("Project not found for this feature.")
+
+        latest_plan_artifact = self._find_latest_architecture_plan_json_artifact(feature_id)
+        if not latest_plan_artifact:
+            raise ValueError(
+                "No existing Architecture Plan JSON artifact found. "
+                "Run Architecture Agent before requesting revision."
+            )
+
+        srs_artifact = self._find_latest_approved_artifact(
+            feature_id=feature_id,
+            agent_name=AgentName.REQUIREMENT,
+            artifact_type=ArtifactType.SRS,
+            artifact_format=ArtifactFormat.JSON
+        )
+        if not srs_artifact:
+            raise ValueError(
+                "No approved SRS JSON artifact found. "
+                "Approve Requirement Agent SRS JSON before revising Architecture Agent output."
+            )
+
+        existing_architecture_plan_json = read_json_file(latest_plan_artifact["file_path"])
+        srs_json = read_json_file(srs_artifact["file_path"])
+
+        output = await self._revise_architecture_plan_output(
+            project=dict(project),
+            feature=dict(feature),
+            srs_json=srs_json,
+            existing_architecture_plan_json=existing_architecture_plan_json,
+            revision_comment=request.revision_comment,
+            revised_by=request.revised_by,
+        )
+
+        artifact_ids = self._save_architecture_artifacts(
+            project=dict(project),
+            feature=dict(feature),
+            output=output
+        )
+
+        logger.info(
+            "Architecture Agent revision completed for feature_id=%s artifacts=%s",
+            feature_id,
+            artifact_ids
+        )
+
+        return AgentRunResponse(
+            feature_id=feature_id,
+            agent_name=AgentName.ARCHITECTURE,
+            status="revised",
+            message=(
+                "Architecture Plan revised successfully. "
+                "Use Case, Sequence, and Class diagrams were regenerated from the revised plan. "
+                "A new Architecture Agent version was created and requires human approval."
+            ),
+            artifact_ids=artifact_ids
+        )
+
+    async def _revise_architecture_plan_output(
+        self,
+        project: dict,
+        feature: dict,
+        srs_json: dict,
+        existing_architecture_plan_json: dict,
+        revision_comment: str,
+        revised_by: str,
+    ) -> ArchitectureAgentOutput:
+        """
+        Use the LLM to revise the Architecture Plan, then regenerate diagrams.
+        """
+
+        provider = llm_provider_service.get_provider()
+
+        prompt = build_architecture_plan_revision_prompt(
+            project=project,
+            feature=feature,
+            srs_json=srs_json,
+            existing_architecture_plan_json=existing_architecture_plan_json,
+            revision_comment=revision_comment,
+            revised_by=revised_by,
+        )
+
+        raw_output = await provider.invoke_agent([
+            {
+                "role": "system",
+                "content": ARCHITECTURE_REVISION_SYSTEM_PROMPT
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ])
+
+        try:
+            revised_architecture_plan_json = self._parse_and_validate_architecture_plan_json(raw_output)
+
+        except Exception as error:
+            logger.warning("LLM Architecture Plan revision failed. Using fallback revision. Error=%s", error)
+
+            revised_architecture_plan_json = self._fallback_revise_architecture_plan_json(
+                existing_architecture_plan_json=existing_architecture_plan_json,
+                revision_comment=revision_comment,
+                revised_by=revised_by,
+                reason=str(error),
+            )
+            raw_output = json.dumps(revised_architecture_plan_json, indent=2, default=str)
+
+        agent_input = ArchitectureAgentInput(
+            project=project,
+            feature=feature,
+            srs_json=srs_json,
+            enhanced_srs_json=None,
+            architecture_notes=None,
+            human_comment=revision_comment,
+        )
+
+        parsed = {
+            "architecture_plan_json": revised_architecture_plan_json,
+            "usecase_specification_json": {},
+        }
+        parsed = self._complete_usecase_model(agent_input, parsed)
+        parsed = self._complete_sequence_model(agent_input, parsed)
+        parsed = self._complete_class_model(agent_input, parsed)
+        self._validate_full_output(agent_input, parsed)
+
+        architecture_plan_markdown = self.markdown_builder.build(revised_architecture_plan_json)
+        usecase_puml = self.usecase_builder.build(parsed["usecase_json"])
+        sequence_puml = self.sequence_builder.build(parsed["sequence_diagram_json"])
+        class_puml = self.class_builder.build(parsed["class_diagram_json"])
+
+        return ArchitectureAgentOutput(
+            architecture_plan_json=revised_architecture_plan_json,
+            architecture_plan_markdown=architecture_plan_markdown,
+            usecase_analysis_json=parsed["usecase_analysis_json"],
+            usecase_json=parsed["usecase_json"],
+            usecase_puml=usecase_puml,
+            sequence_diagram_json=parsed["sequence_diagram_json"],
+            sequence_puml=sequence_puml,
+            class_diagram_json=parsed["class_diagram_json"],
+            class_puml=class_puml,
+            raw_llm_output=raw_output,
+        )
+
+    def _parse_and_validate_architecture_plan_json(self, raw_output: str) -> dict[str, Any]:
+        """
+        Parse a revised Architecture Plan JSON object returned by the LLM.
+        """
+
+        parsed = self._extract_json_object(raw_output)
+
+        if "architecture_plan_json" in parsed and isinstance(parsed["architecture_plan_json"], dict):
+            parsed = parsed["architecture_plan_json"]
+
+        if "sds_json" in parsed and isinstance(parsed["sds_json"], dict):
+            parsed = self._convert_sds_to_architecture_plan(
+                sds_json=parsed["sds_json"],
+                srs_json={},
+            )
+
+        if not isinstance(parsed, dict):
+            raise ValueError("Revised Architecture Plan must be a JSON object.")
+
+        self._remove_diagram_reference_sections(parsed)
+        self._ensure_keys(parsed, self.REQUIRED_ARCHITECTURE_PLAN_KEYS)
+
+        design_views = parsed.get("design_views", {})
+        if not isinstance(design_views, dict):
+            raise ValueError("architecture_plan_json.design_views must be a JSON object.")
+        self._ensure_keys(design_views, self.REQUIRED_DESIGN_VIEW_KEYS)
+
+        return parsed
+
+    def _fallback_revise_architecture_plan_json(
+        self,
+        existing_architecture_plan_json: dict,
+        revision_comment: str,
+        revised_by: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        """
+        Create a safe fallback revision when LLM revision fails.
+        """
+
+        revised = dict(existing_architecture_plan_json)
+        self._remove_diagram_reference_sections(revised)
+
+        revised["revision_metadata"] = {
+            "revision_type": "architecture_plan_revision",
+            "revision_comment": revision_comment,
+            "revised_by": revised_by,
+            "fallback_used": True,
+            "fallback_reason": reason,
+        }
+
+        tasks = revised.get("coder_implementation_tasks", [])
+        if not isinstance(tasks, list):
+            tasks = []
+        tasks.append({
+            "task_id": f"TASK-{len(tasks) + 1:03d}",
+            "task": f"Review and manually apply architecture revision request: {revision_comment}",
+            "layer": "review",
+            "suggested_files": [],
+            "related_requirements": [],
+        })
+        revised["coder_implementation_tasks"] = tasks
+
+        revised["human_approval_note"] = (
+            "This Architecture Plan revision used a safe fallback. "
+            "Human review is required before the UI/UX Agent or Coder Agent starts."
+        )
+
+        return revised
+
+    def _find_latest_architecture_plan_json_artifact(self, feature_id: str) -> dict | None:
+        """
+        Find the latest Architecture Plan JSON artifact for this feature.
+        """
+
+        matching_artifacts = []
+
+        for artifact in store.artifacts.values():
+            if artifact.get("feature_id") != feature_id:
+                continue
+
+            if artifact.get("agent_name") not in [AgentName.ARCHITECTURE, AgentName.ARCHITECTURE.value]:
+                continue
+
+            if artifact.get("artifact_type") not in [
+                ArtifactType.ARCHITECTURE_PLAN,
+                ArtifactType.ARCHITECTURE_PLAN.value,
+            ]:
+                continue
+
+            if artifact.get("artifact_format") not in [ArtifactFormat.JSON, ArtifactFormat.JSON.value]:
+                continue
+
+            matching_artifacts.append(artifact)
+
+        if not matching_artifacts:
+            return None
+
+        return max(matching_artifacts, key=lambda item: item.get("version", 1))
+
+    def _remove_diagram_reference_sections(self, architecture_plan_json: dict[str, Any]) -> None:
+        """
+        Architecture Plan must not include diagram reference sections.
+        Diagram files are saved as separate artifacts instead.
+        """
+
+        for key in [
+            "use_case_diagram_reference",
+            "sequence_diagram_reference",
+            "class_diagram_reference",
+        ]:
+            architecture_plan_json.pop(key, None)
+
     def _find_latest_approved_artifact(
         self,
         feature_id: str,
@@ -650,8 +939,8 @@ class ArchitectureAgent:
         Save Architecture Agent artifacts.
 
         Files:
-        - {feature}_sds_v1.md
-        - {feature}_sds_v1.json
+        - {feature}_architecture_plan_v1.md
+        - {feature}_architecture_plan_v1.json
         - {feature}_usecase_v1.puml / .png
         - {feature}_sequence_v1.puml / .png
         - {feature}_class_v1.puml / .png
@@ -660,7 +949,7 @@ class ArchitectureAgent:
         version = artifact_service.get_next_version(
             feature_id=feature["feature_id"],
             agent_name=AgentName.ARCHITECTURE,
-            artifact_type=ArtifactType.SDS
+            artifact_type=ArtifactType.ARCHITECTURE_PLAN
         )
 
         stage_folder = artifact_service.get_stage_folder(
@@ -671,14 +960,14 @@ class ArchitectureAgent:
 
         feature_slug = self._feature_slug(feature)
 
-        sds_md_path = stage_folder / f"{feature_slug}_sds_v{version}.md"
-        sds_json_path = stage_folder / f"{feature_slug}_sds_v{version}.json"
+        architecture_plan_md_path = stage_folder / f"{feature_slug}_architecture_plan_v{version}.md"
+        architecture_plan_json_path = stage_folder / f"{feature_slug}_architecture_plan_v{version}.json"
         usecase_puml_path = stage_folder / f"{feature_slug}_usecase_v{version}.puml"
         sequence_puml_path = stage_folder / f"{feature_slug}_sequence_v{version}.puml"
         class_puml_path = stage_folder / f"{feature_slug}_class_v{version}.puml"
 
-        saved_sds_md = write_text_file(sds_md_path, output.sds_markdown)
-        saved_sds_json = write_json_file(sds_json_path, output.sds_json)
+        saved_architecture_plan_md = write_text_file(architecture_plan_md_path, output.architecture_plan_markdown)
+        saved_architecture_plan_json = write_json_file(architecture_plan_json_path, output.architecture_plan_json)
         saved_puml = write_text_file(usecase_puml_path, output.usecase_puml)
         saved_sequence_puml = write_text_file(sequence_puml_path, output.sequence_puml)
         saved_class_puml = write_text_file(class_puml_path, output.class_puml)
@@ -694,9 +983,9 @@ class ArchitectureAgent:
             self._register_artifact(
                 project=project,
                 feature=feature,
-                artifact_type=ArtifactType.SDS,
+                artifact_type=ArtifactType.ARCHITECTURE_PLAN,
                 artifact_format=ArtifactFormat.MARKDOWN,
-                file_path=saved_sds_md,
+                file_path=saved_architecture_plan_md,
                 version=version,
                 created_at=created_at
             )
@@ -706,9 +995,9 @@ class ArchitectureAgent:
             self._register_artifact(
                 project=project,
                 feature=feature,
-                artifact_type=ArtifactType.SDS,
+                artifact_type=ArtifactType.ARCHITECTURE_PLAN,
                 artifact_format=ArtifactFormat.JSON,
-                file_path=saved_sds_json,
+                file_path=saved_architecture_plan_json,
                 version=version,
                 created_at=created_at
             )
@@ -837,10 +1126,10 @@ class ArchitectureAgent:
         reason: str
     ) -> dict[str, Any]:
         """
-        Build dynamic IEEE-style fallback architecture output.
+        Build dynamic fallback architecture output.
 
         This fallback is feature-independent.
-        It reads the approved SRS and builds SDS sections from SRS fields.
+        It reads the approved SRS and builds Architecture Plan sections from SRS fields.
         """
 
         srs = agent_input.enhanced_srs_json or agent_input.srs_json
@@ -855,7 +1144,7 @@ class ArchitectureAgent:
         target_stack = project.get("target_stack", srs.get("target_stack", "MERN"))
         architecture_style = srs.get("preferred_architectural_style", srs.get("architecture_style", srs.get("architectural_style", "mvc")))
 
-        sds_json = self._build_ieee_sds_from_srs(
+        base_sds_json = self._build_base_design_from_srs(
             srs=srs,
             project_id=project_id,
             project_name=project_name,
@@ -867,18 +1156,266 @@ class ArchitectureAgent:
             reason=reason,
         )
 
+        architecture_plan_json = self._convert_sds_to_architecture_plan(
+            sds_json=base_sds_json,
+            srs_json=srs,
+        )
+
         usecase_analysis_json, usecase_json = self._build_usecase_from_srs(
             srs=srs,
             feature_name=feature_name
         )
 
         return {
-            "sds_json": sds_json,
+            "architecture_plan_json": architecture_plan_json,
             "usecase_analysis_json": usecase_analysis_json,
             "usecase_json": usecase_json
         }
 
-    def _build_ieee_sds_from_srs(
+    def _convert_sds_to_architecture_plan(
+        self,
+        sds_json: dict[str, Any],
+        srs_json: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Convert the older SDS-shaped design JSON into the new Architecture Plan shape.
+
+        This keeps diagram generation unchanged because design_views are preserved.
+        """
+
+        srs_json = srs_json or {}
+        document_control = dict(sds_json.get("document_control", {}))
+        introduction = sds_json.get("introduction", {})
+        design_context = sds_json.get("design_context", {})
+        design_considerations = sds_json.get("design_considerations", {})
+        architecture_overview = sds_json.get("architecture_overview", {})
+        design_views = sds_json.get("design_views", {})
+
+        feature_name = (
+            document_control.get("feature_name")
+            or srs_json.get("feature_name")
+            or "Feature"
+        )
+
+        document_control["document_title"] = f"Architecture Plan: {feature_name}"
+        document_control["document_type"] = "Feature Architecture Plan"
+        document_control.pop("standard_basis", None)
+        document_control.setdefault("generated_by", "Architecture Agent")
+        document_control.setdefault("approval_status", "pending")
+
+        architecture_plan_json = {
+            "document_control": document_control,
+            "feature_overview": {
+                "business_goal": design_context.get("business_goal", srs_json.get("business_goal", "")),
+                "scope": introduction.get("scope", srs_json.get("scope", [])),
+                "out_of_scope": introduction.get("out_of_scope", srs_json.get("out_of_scope", [])),
+                "user_roles": design_context.get("user_roles", srs_json.get("user_roles", [])),
+                "feature_boundary": design_context.get("feature_boundary", f"This plan covers only the {feature_name} feature."),
+            },
+            "requirement_interpretation": {
+                "functional_requirements": self._as_record_list(srs_json.get("functional_requirements", [])),
+                "acceptance_criteria": self._as_record_list(srs_json.get("acceptance_criteria", [])),
+                "validation_rules": self._as_record_list(srs_json.get("validation_rules", [])),
+                "non_functional_requirements": self._as_record_list(srs_json.get("non_functional_requirements", [])),
+            },
+            "architecture_approach": {
+                "architecture_style": architecture_overview.get("architecture_style", document_control.get("architecture_style", "modular")),
+                "architecture_rationale": architecture_overview.get("architecture_rationale", ""),
+                "frontend_overview": architecture_overview.get("frontend_overview", ""),
+                "backend_overview": architecture_overview.get("backend_overview", ""),
+                "data_overview": architecture_overview.get("data_overview", ""),
+                "integration_overview": architecture_overview.get("integration_overview", ""),
+                "design_tradeoffs": design_considerations.get("design_tradeoffs", []),
+            },
+            "design_views": design_views,
+            "frontend_architecture_plan": {
+                "responsibilities": design_views.get("logical_view", {}).get("frontend_modules", []),
+                "pages_or_components": self._as_record_list(srs_json.get("ui_expectations", [])),
+                "state_and_feedback": [
+                    self._item_description(item)
+                    for item in self._as_record_list(srs_json.get("acceptance_criteria", []))
+                    if self._contains_any(self._item_description(item).lower(), ["display", "show", "message", "redirect", "direct"])
+                ],
+            },
+            "backend_architecture_plan": {
+                "responsibilities": design_views.get("logical_view", {}).get("backend_modules", []),
+                "layers": (
+                    design_views.get("logical_view", {}).get("domain_services", [])
+                    + design_views.get("logical_view", {}).get("data_modules", [])
+                ),
+                "integration_points": design_views.get("logical_view", {}).get("integration_points", []),
+            },
+            "validation_plan": {
+                "input_validation": design_views.get("data_view", {}).get("data_validation_rules", []),
+                "processing_validation": design_views.get("error_handling_view", {}).get("validation_errors", []),
+            },
+            "coder_implementation_tasks": self._build_coder_implementation_tasks(
+                feature_name=feature_name,
+                srs=srs_json,
+                design_views=design_views,
+            ),
+            "traceability_matrix": self._convert_traceability_to_architecture_plan(
+                sds_json.get("traceability_matrix", [])
+            ),
+            "assumptions": design_context.get("assumptions", sds_json.get("assumptions", [])),
+            "constraints": design_considerations.get("constraints", sds_json.get("constraints", [])),
+            "risks": design_considerations.get("risks", sds_json.get("risks", [])),
+            "dependencies": design_context.get("dependencies", sds_json.get("dependencies", [])),
+            "revision_metadata": None,
+            "human_approval_note": "This Architecture Plan must be reviewed and approved before the UI/UX Agent or Coder Agent starts.",
+        }
+
+        self._remove_diagram_reference_sections(architecture_plan_json)
+        architecture_plan_json = self._clean_architecture_plan_text(architecture_plan_json)
+        return architecture_plan_json
+
+    def _clean_architecture_plan_text(self, value: Any) -> Any:
+        """
+        Remove old SDS wording from Architecture Plan values.
+        """
+
+        replacements = {
+            "Software Design Specification": "Architecture Plan",
+            "software design specification": "architecture plan",
+            "IEEE 1016-style Software Design Description": "Feature-level implementation design plan",
+            "This SDS": "This Architecture Plan",
+            "this SDS": "this Architecture Plan",
+            "SDS must": "Architecture Plan must",
+            "SDS was": "Architecture Plan was",
+            "approval-ready SDS": "approval-ready Architecture Plan",
+            "Fallback SDS": "Fallback Architecture Plan",
+        }
+
+        if isinstance(value, dict):
+            return {key: self._clean_architecture_plan_text(val) for key, val in value.items()}
+
+        if isinstance(value, list):
+            return [self._clean_architecture_plan_text(item) for item in value]
+
+        if isinstance(value, str):
+            cleaned = value
+            for old, new in replacements.items():
+                cleaned = cleaned.replace(old, new)
+            return cleaned
+
+        return value
+
+    def _convert_traceability_to_architecture_plan(self, traceability_items: list[Any]) -> list[dict[str, Any]]:
+        """
+        Rename old SDS traceability section labels to Architecture Plan labels.
+        """
+
+        converted = []
+        for item in traceability_items or []:
+            if not isinstance(item, dict):
+                continue
+            record = dict(item)
+            if "sds_section" in record:
+                record["architecture_plan_section"] = str(record.pop("sds_section")).replace("SDS", "Architecture Plan")
+            elif "architecture_plan_section" in record:
+                record["architecture_plan_section"] = str(record["architecture_plan_section"]).replace("SDS", "Architecture Plan")
+            converted.append(record)
+        return converted
+
+    def _build_coder_implementation_tasks(
+        self,
+        feature_name: str,
+        srs: dict[str, Any],
+        design_views: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """
+        Build feature-independent Coder Agent tasks from SRS and Architecture Plan design views.
+        """
+
+        tasks: list[dict[str, Any]] = []
+        feature_slug = self._slug(feature_name).replace("-", "_")
+        functional_ids = self._collect_requirement_ids(self._as_record_list(srs.get("functional_requirements", [])))
+        validation_ids = self._collect_requirement_ids(self._as_record_list(srs.get("validation_rules", [])))
+        acceptance_ids = self._collect_requirement_ids(self._as_record_list(srs.get("acceptance_criteria", [])))
+        nfr_ids = self._collect_requirement_ids(self._as_record_list(srs.get("non_functional_requirements", [])))
+
+        interface_view = design_views.get("interface_view", {}) if isinstance(design_views, dict) else {}
+        data_view = design_views.get("data_view", {}) if isinstance(design_views, dict) else {}
+
+        if srs.get("ui_expectations") or srs.get("input_requirements"):
+            tasks.append({
+                "task_id": f"TASK-{len(tasks) + 1:03d}",
+                "task": f"Create or update frontend screen/components for the {feature_name} feature.",
+                "layer": "frontend",
+                "suggested_files": [
+                    f"frontend/src/pages/{self._pascal_case(feature_name)}.jsx",
+                    f"frontend/src/components/{self._pascal_case(feature_name)}Form.jsx",
+                ],
+                "related_requirements": functional_ids + acceptance_ids,
+            })
+
+        if interface_view.get("api_endpoints") or srs.get("api_expectations"):
+            tasks.append({
+                "task_id": f"TASK-{len(tasks) + 1:03d}",
+                "task": f"Implement backend route/controller/service flow for the {feature_name} API expectations.",
+                "layer": "backend",
+                "suggested_files": [
+                    f"backend/routes/{feature_slug}.routes.js",
+                    f"backend/controllers/{feature_slug}.controller.js",
+                    f"backend/services/{feature_slug}.service.js",
+                ],
+                "related_requirements": functional_ids + acceptance_ids,
+            })
+
+        if data_view.get("data_entities") or srs.get("data_requirements"):
+            tasks.append({
+                "task_id": f"TASK-{len(tasks) + 1:03d}",
+                "task": f"Create or update data model/repository required by the {feature_name} feature.",
+                "layer": "data",
+                "suggested_files": [
+                    f"backend/models/{feature_slug}.model.js",
+                    f"backend/repositories/{feature_slug}.repository.js",
+                ],
+                "related_requirements": functional_ids,
+            })
+
+        if validation_ids:
+            tasks.append({
+                "task_id": f"TASK-{len(tasks) + 1:03d}",
+                "task": "Implement validation rules before processing feature requests.",
+                "layer": "validation",
+                "suggested_files": [
+                    f"backend/validators/{feature_slug}.validator.js",
+                ],
+                "related_requirements": validation_ids,
+            })
+
+        if acceptance_ids:
+            tasks.append({
+                "task_id": f"TASK-{len(tasks) + 1:03d}",
+                "task": "Implement success, alternative, and exception handling according to acceptance criteria.",
+                "layer": "backend/frontend",
+                "suggested_files": [],
+                "related_requirements": acceptance_ids,
+            })
+
+        security_text = str(srs).lower()
+        if self._contains_any(security_text, ["auth", "token", "jwt", "password", "role", "permission", "secure"]):
+            tasks.append({
+                "task_id": f"TASK-{len(tasks) + 1:03d}",
+                "task": "Implement security controls required by the feature, including authentication/authorization or sensitive data handling where applicable.",
+                "layer": "security",
+                "suggested_files": [],
+                "related_requirements": functional_ids + nfr_ids,
+            })
+
+        if not tasks:
+            tasks.append({
+                "task_id": "TASK-001",
+                "task": f"Implement the {feature_name} feature according to the approved SRS and Architecture Plan.",
+                "layer": "implementation",
+                "suggested_files": [],
+                "related_requirements": functional_ids,
+            })
+
+        return tasks
+
+    def _build_base_design_from_srs(
         self,
         srs: dict[str, Any],
         project_id: str,
@@ -891,7 +1428,7 @@ class ArchitectureAgent:
         reason: str,
     ) -> dict[str, Any]:
         """
-        Build IEEE-style SDS JSON from SRS.
+        Build a base Architecture Plan design structure from SRS.
 
         This method maps SRS sections into generic design views.
         """
@@ -950,7 +1487,7 @@ class ArchitectureAgent:
 
         quality_view = self._build_quality_view(nfrs=nfrs)
 
-        traceability_matrix = self._build_sds_traceability_matrix(
+        traceability_matrix = self._build_architecture_traceability_matrix(
             srs=srs,
             interface_view=interface_view,
             data_view=data_view,
@@ -964,9 +1501,8 @@ class ArchitectureAgent:
 
         return {
             "document_control": {
-                "document_title": f"Software Design Specification: {feature_name}",
-                "document_type": "Software Design Specification",
-                "standard_basis": "IEEE 1016-style Software Design Description",
+                "document_title": f"Architecture Plan: {feature_name}",
+                "document_type": "Feature Architecture Plan",
                 "project_id": project_id,
                 "project_name": project_name,
                 "project_type": project_type,
@@ -995,7 +1531,7 @@ class ArchitectureAgent:
             "design_context": {
                 "business_goal": business_goal,
                 "user_roles": user_roles,
-                "feature_boundary": f"This SDS covers only the {feature_name} feature and excludes unrelated features.",
+                "feature_boundary": f"This Architecture Plan covers only the {feature_name} feature and excludes unrelated features.",
                 "operating_environment": f"Generated application target stack: {target_stack}.",
                 "dependencies": dependencies,
                 "assumptions": assumptions
@@ -1007,7 +1543,7 @@ class ArchitectureAgent:
                 "design_tradeoffs": [
                     "Design is derived directly from the approved SRS to preserve traceability and feature scope.",
                     "Design is kept feature-scoped to preserve feature-by-feature SDLC development.",
-                    "Internal generation or repair details are kept in backend logs and are not exposed in the approval-ready SDS."
+                    "Internal generation or repair details are kept in backend logs and are not exposed in the approval-ready Architecture Plan."
                 ]
             },
             "architecture_overview": {
@@ -1057,19 +1593,7 @@ class ArchitectureAgent:
             "constraints": constraints,
             "risks": risks,
             "dependencies": dependencies,
-            "use_case_diagram_reference": {
-                "puml_file": "Generated as a separate Architecture Agent artifact.",
-                "png_file": "Generated as a separate Architecture Agent artifact.",
-                "diagram_scope": f"Feature-level use case diagram for {feature_name}.",
-                "actors": user_roles,
-                "main_use_cases": [feature_name],
-                "relationship_summary": [
-                    "Associations connect actors to main use cases.",
-                    "Include relationships represent mandatory supporting behaviours.",
-                    "Extend relationships represent optional, alternative, or exception behaviours."
-                ]
-            },
-            "human_approval_note": "This SDS must be reviewed and approved before the UI/UX Agent starts."
+            "human_approval_note": "This Architecture Plan must be reviewed and approved before the UI/UX Agent or Coder Agent starts."
         }
 
     def _build_interface_view(
@@ -1440,7 +1964,7 @@ class ArchitectureAgent:
 
         return quality_view
 
-    def _build_sds_traceability_matrix(
+    def _build_architecture_traceability_matrix(
         self,
         srs: dict[str, Any],
         interface_view: dict[str, Any],
@@ -1483,7 +2007,7 @@ class ArchitectureAgent:
             records.append({
                 "source_id": source_id,
                 "source_type": source_type,
-                "sds_section": section,
+                "architecture_plan_section": section,
                 "design_element": description,
                 "coverage_status": "covered"
             })
@@ -1500,7 +2024,7 @@ class ArchitectureAgent:
             records.append({
                 "source_id": source_id,
                 "source_type": source_type,
-                "sds_section": section,
+                "architecture_plan_section": section,
                 "design_element": description,
                 "coverage_status": "covered"
             })
@@ -1795,8 +2319,8 @@ class ArchitectureAgent:
     def _build_definitions_from_srs(self, srs: dict[str, Any]) -> list[dict[str, str]]:
         definitions = [
             {
-                "term": "SDS",
-                "definition": "Software Design Specification generated using an IEEE 1016-style design description structure."
+                "term": "Architecture Plan",
+                "definition": "Feature-level implementation design plan generated by the Architecture Agent."
             }
         ]
 
