@@ -28,6 +28,7 @@ class Settings(BaseSettings):
 
     API_PREFIX: str = "/api/v1"
     OUTPUT_DIR: str = "outputs"
+    WORKSPACE_DIR: str = "workspaces"
 
     # LLM settings
     DEFAULT_LLM_PROVIDER: str = "ollama"
