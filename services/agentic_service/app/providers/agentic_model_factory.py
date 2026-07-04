@@ -36,8 +36,21 @@ def get_agentic_chat_model() -> BaseChatModel:
 
     model_string = f"{provider}:{model}"
 
+    extra_kwargs = {}
+
+    if provider == "ollama":
+        # Ollama's server-side default context window (often 2048-4096) is far
+        # smaller than this model's actual capability, and is easily blown past
+        # by a single tool result containing a real file's contents (e.g.
+        # read_ui_component returning a whole .jsx file) -- which silently
+        # truncates the conversation and produces degenerate/empty completions
+        # rather than an error. Set explicitly, well within the model's real
+        # context length, for the agentic path specifically.
+        extra_kwargs["num_ctx"] = settings.AGENTIC_OLLAMA_NUM_CTX
+
     return init_chat_model(
         model_string,
         temperature=llm_settings.get("temperature", settings.LLM_TEMPERATURE),
         timeout=llm_settings.get("timeout_seconds", settings.LLM_TIMEOUT_SECONDS),
+        **extra_kwargs,
     )

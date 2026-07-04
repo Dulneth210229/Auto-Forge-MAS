@@ -9,6 +9,7 @@ No agent output should move to the next agent unless the artifact is approved.
 
 from datetime import datetime
 
+from app.agents.coder_agent.agent import coder_agent
 from app.agents.uiux_agent.agent import uiux_agent
 from app.core.enums import AgentName, ApprovalStatus, ArtifactType
 from app.schemas.approval_schema import ApprovalRequest, ApprovalResponse
@@ -96,6 +97,38 @@ class ApprovalService:
                     "Failed to apply design system patch for feature_id=%s version=%s",
                     artifact["feature_id"],
                     artifact["version"],
+                )
+
+        # Coder Agent: merge the approved feature branch into main and update
+        # project_manifest.json, or discard the branch on rejection -- gated
+        # on this exact artifact/version, same discipline as the UI/UX hook
+        # above. Never merges automatically regardless of verification result;
+        # that's the human's call, informed by merge_report_markdown.
+        is_rejected = request.status in [ApprovalStatus.REJECTED, ApprovalStatus.REJECTED.value]
+        is_coder_diff = (
+            artifact["agent_name"] in [AgentName.CODER, AgentName.CODER.value]
+            and artifact["artifact_type"] in [ArtifactType.CODE_DIFF, ArtifactType.CODE_DIFF.value]
+        )
+
+        if is_coder_diff and is_approved:
+            try:
+                coder_agent.merge_approved_feature(
+                    feature_id=artifact["feature_id"],
+                    version=artifact["version"],
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to merge approved feature for feature_id=%s version=%s",
+                    artifact["feature_id"],
+                    artifact["version"],
+                )
+        elif is_coder_diff and is_rejected:
+            try:
+                coder_agent.discard_rejected_feature(feature_id=artifact["feature_id"])
+            except Exception:
+                logger.exception(
+                    "Failed to discard rejected feature branch for feature_id=%s",
+                    artifact["feature_id"],
                 )
 
         return ApprovalResponse(**approval)

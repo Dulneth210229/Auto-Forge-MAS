@@ -1,9 +1,16 @@
 """
-Milestone 0 isolation test: the top-level LangGraph orchestrator.
+Graph orchestrator mechanics test (interrupt/resume/checkpoint survival).
 
-This exercises the graph mechanics only (interrupt/resume/checkpoint survival)
-using pass-through nodes -- no LLM calls, no real agent logic. Real agent
-integration is tested separately as each agent is rebuilt.
+Milestone 6 note: uiux_node and coder_node now call the real UIUXAgent/
+CoderAgent pipelines, which require real approved SRS/Architecture Plan
+artifacts and make real LLM calls -- not appropriate for a throwaway-feature
+fast test. These tests exercise the graph mechanics through the stages that
+are still pass-through/auto-approved (requirement -> domain (auto) ->
+architecture), which is exactly where M0 originally proved
+interrupt/resume/checkpoint-survival works, and stays true for the same
+reason today. The real, full run-to-completion proof (through the real
+uiux_node/coder_node) is exercised manually against the real, approved
+Login feature -- see CLAUDE.md for that verification.
 
 Requires a reachable MongoDB (the same one configured in .env / MONGODB_URI).
 Every project/feature this test creates is deleted in a fixture teardown, and
@@ -59,43 +66,30 @@ def test_start_pauses_at_first_approval_gate(feature):
     assert status["next"] == ["approve_requirement"]
 
 
-def test_approve_advances_to_next_stage(feature):
+def test_approve_skips_auto_approved_domain_and_reaches_architecture(feature):
     orchestrator = GraphOrchestratorService()
     orchestrator.start(feature["project_id"], feature["feature_id"])
 
     orchestrator.resume(feature["feature_id"], "approved")
 
     status = orchestrator.get_status(feature["feature_id"])
-    assert status["next"] == ["approve_domain"]
-    assert status["values"]["last_agent"] == "domain"
+    # domain has no gate (auto-approved, Domain Agent is still a stub) -- one
+    # resume from approve_requirement lands directly on approve_architecture.
+    assert status["next"] == ["approve_architecture"]
+    assert status["values"]["last_agent"] == "architecture"
 
 
 def test_rejection_loops_back_to_same_stage(feature):
     orchestrator = GraphOrchestratorService()
     orchestrator.start(feature["project_id"], feature["feature_id"])
-    orchestrator.resume(feature["feature_id"], "approved")  # -> domain
+    orchestrator.resume(feature["feature_id"], "approved")  # -> approve_architecture
 
     orchestrator.resume(feature["feature_id"], "revision_requested")
 
     status = orchestrator.get_status(feature["feature_id"])
-    # Still paused at the domain gate, not advanced to architecture.
-    assert status["next"] == ["approve_domain"]
-    assert status["values"]["last_agent"] == "domain"
-
-
-def test_full_run_reaches_completion(feature):
-    orchestrator = GraphOrchestratorService()
-    orchestrator.start(feature["project_id"], feature["feature_id"])
-
-    # requirement -> domain -> architecture -> uiux -> coder
-    for _ in range(5):
-        orchestrator.resume(feature["feature_id"], "approved")
-
-    status = orchestrator.get_status(feature["feature_id"])
-
-    # security/qa are auto-approved pass-through stages: no gate to resume.
-    assert status["next"] == []
-    assert status["values"]["last_agent"] == "qa"
+    # Still paused at the architecture gate, not advanced to uiux.
+    assert status["next"] == ["approve_architecture"]
+    assert status["values"]["last_agent"] == "architecture"
 
 
 def test_resume_without_a_paused_run_raises(feature):
@@ -113,15 +107,15 @@ def test_resume_survives_a_fresh_orchestrator_instance(feature):
     """
     first_instance = GraphOrchestratorService()
     first_instance.start(feature["project_id"], feature["feature_id"])
-    first_instance.resume(feature["feature_id"], "approved")  # -> domain
+    first_instance.resume(feature["feature_id"], "approved")  # -> approve_architecture
 
     second_instance = GraphOrchestratorService()
     status_before = second_instance.get_status(feature["feature_id"])
-    assert status_before["next"] == ["approve_domain"]
+    assert status_before["next"] == ["approve_architecture"]
 
-    for _ in range(4):
-        second_instance.resume(feature["feature_id"], "approved")
+    # Prove routing still works correctly post-restart (reject -> loop back).
+    second_instance.resume(feature["feature_id"], "revision_requested")
 
     final_status = second_instance.get_status(feature["feature_id"])
-    assert final_status["next"] == []
-    assert final_status["values"]["last_agent"] == "qa"
+    assert final_status["next"] == ["approve_architecture"]
+    assert final_status["values"]["last_agent"] == "architecture"

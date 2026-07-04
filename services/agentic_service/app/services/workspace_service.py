@@ -113,6 +113,31 @@ class WorkspaceService:
 
         return branch_name
 
+    def commit_changes(self, project_id: str, feature_id: str, message: str) -> bool:
+        """
+        Stage and commit everything currently on the feature branch's working
+        tree. Returns False (no-op) if there is nothing to commit.
+
+        The coding loop's tools (write_file/apply_patch/run_shell) only ever
+        touch the working tree -- they never commit. diff_against_main() and
+        merge_feature_branch() both operate on committed history, so this is
+        the deterministic step between "the agentic loop finished" and
+        "there is a diff/mergeable commit to review."
+        """
+        repo = self.ensure_project_repo(project_id)
+        branch_name = self._feature_branch_name(feature_id)
+
+        if repo.active_branch.name != branch_name:
+            repo.git.checkout(branch_name)
+
+        if not repo.is_dirty(untracked_files=True):
+            return False
+
+        repo.git.add(A=True)
+        repo.index.commit(message)
+
+        return True
+
     def diff_against_main(self, project_id: str, feature_id: str) -> dict[str, Any]:
         """
         Return a structured diff of the feature branch against main:

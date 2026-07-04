@@ -6,20 +6,27 @@ StateGraph per feature, checkpointed in MongoDB, that pauses on interrupt() at
 every human approval gate and resumes exactly where it left off -- even across
 backend restarts -- via Command(resume=...).
 
-Milestone 0 scope: every stage node is a pass-through no-op. This proves the
-graph mechanics (interrupt/resume/checkpoint-survives-restart) independently
-of any agent's real quality. Each stage's node is replaced with a call into
-that agent's real logic as it is rebuilt (UI/UX, Coder), without touching the
-approval-gate/routing plumbing built here.
+Milestone 6: uiux_node and coder_node now call the real, complete
+UIUXAgent.run()/CoderAgent.run() pipelines (built in M1-M5) instead of the
+Milestone 0 pass-through no-ops. requirement_node and architecture_node stay
+pass-through -- those two agents predate this whole build and are still
+driven by their existing, unchanged
+POST /features/{id}/agents/{requirement,architecture}/run endpoints; approving
+the resulting artifact (unchanged approval flow) is what resumes the graph
+past their gates, exactly as it always has.
 
-Security and QA stages are intentionally auto-approved pass-through nodes (no
-human interrupt) for now, since neither agent exists yet -- there is nothing
-for a human to review. Flip these to real interrupt() gates the moment those
-agents produce real output (see the doc's Milestone 7 section).
+domain_node moved from a gated stage to an auto-approved pass-through stage
+this milestone: Domain Agent is still a stub with no artifact a human could
+ever approve, so leaving it gated made the pipeline permanently stuck at
+approve_domain with no way through the normal approval endpoint. It now joins
+security/qa as an auto-approved no-op, for the identical reason those two got
+that treatment in Milestone 0 -- flip it back to a real gate the moment
+Domain Agent produces real output.
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from langgraph.checkpoint.mongodb import MongoDBSaver
@@ -27,19 +34,26 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 from typing_extensions import TypedDict
 
+from app.agents.coder_agent.agent import coder_agent
+from app.agents.uiux_agent.agent import uiux_agent
 from app.core.config import settings
+from app.schemas.coder_schema import CoderAgentRunRequest
+from app.schemas.uiux_schema import UIUXAgentRunRequest
 from app.services.in_memory_store import store
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# The full pipeline order (used for edge-wiring), independent of which stages
+# get a real human approval gate.
+STAGE_SEQUENCE = ["requirement", "domain", "architecture", "uiux", "coder", "security", "qa"]
+
 # Stages that stop for a human approval gate.
-GATED_STAGES = ["requirement", "domain", "architecture", "uiux", "coder"]
+GATED_STAGES = ["requirement", "architecture", "uiux", "coder"]
 
-# Stages that run automatically with no human gate (no agent implementation yet).
-AUTO_APPROVED_STAGES = ["security", "qa"]
-
-STAGE_SEQUENCE = GATED_STAGES + AUTO_APPROVED_STAGES
+# Stages that run automatically with no human gate (no agent implementation
+# yet for domain/security/qa -- there is nothing for a human to review).
+AUTO_APPROVED_STAGES = ["domain", "security", "qa"]
 
 
 class FeaturePipelineState(TypedDict, total=False):
@@ -69,6 +83,53 @@ def _make_stage_node(stage_name: str):
         }
 
     return _node
+
+
+def _uiux_node(state: FeaturePipelineState) -> dict[str, Any]:
+    """
+    Real UI/UX Agent call.
+
+    asyncio.run() is safe here specifically because every current caller of
+    graph.invoke()/resume() is a sync FastAPI route handler (`def`, not
+    `async def`) that FastAPI runs in a worker thread with no event loop
+    already active. If this graph is ever invoked from a context that already
+    has a running event loop, this must change to a threadsafe bridge
+    (e.g. asyncio.run_coroutine_threadsafe).
+    """
+    feature_id = state["feature_id"]
+    logger.info("Running real UIUXAgent for feature_id=%s", feature_id)
+
+    request = UIUXAgentRunRequest(human_comment=state.get("human_comment"))
+    output = asyncio.run(uiux_agent.run(feature_id, request))
+
+    return {
+        "last_agent": "uiux",
+        "last_artifact_ids": output.artifact_ids,
+        "human_comment": None,
+    }
+
+
+def _coder_node(state: FeaturePipelineState) -> dict[str, Any]:
+    """
+    Real Coder Agent call. See _uiux_node for the asyncio.run() safety note.
+    """
+    feature_id = state["feature_id"]
+    logger.info("Running real CoderAgent for feature_id=%s", feature_id)
+
+    request = CoderAgentRunRequest(human_comment=state.get("human_comment"))
+    output = asyncio.run(coder_agent.run(feature_id, request))
+
+    return {
+        "last_agent": "coder",
+        "last_artifact_ids": output.artifact_ids,
+        "human_comment": None,
+    }
+
+
+REAL_NODE_FUNCTIONS = {
+    "uiux": _uiux_node,
+    "coder": _coder_node,
+}
 
 
 def _make_approval_gate(stage_name: str):
@@ -113,28 +174,29 @@ def _build_checkpointer() -> MongoDBSaver:
 def _build_graph():
     builder = StateGraph(FeaturePipelineState)
 
+    for stage in STAGE_SEQUENCE:
+        node_fn = REAL_NODE_FUNCTIONS.get(stage) or _make_stage_node(stage)
+        builder.add_node(f"{stage}_node", node_fn)
+
     for stage in GATED_STAGES:
-        builder.add_node(f"{stage}_node", _make_stage_node(stage))
         builder.add_node(f"approve_{stage}", _make_approval_gate(stage))
         builder.add_edge(f"{stage}_node", f"approve_{stage}")
 
-    for stage in AUTO_APPROVED_STAGES:
-        builder.add_node(f"{stage}_node", _make_stage_node(stage))
+    builder.add_edge(START, f"{STAGE_SEQUENCE[0]}_node")
 
-    builder.add_edge(START, "requirement_node")
+    for index, stage in enumerate(STAGE_SEQUENCE):
+        is_last = index == len(STAGE_SEQUENCE) - 1
+        next_node = END if is_last else f"{STAGE_SEQUENCE[index + 1]}_node"
 
-    for index, stage in enumerate(GATED_STAGES):
-        next_stage_node = f"{STAGE_SEQUENCE[index + 1]}_node"
-        same_stage_node = f"{stage}_node"
-
-        builder.add_conditional_edges(
-            f"approve_{stage}",
-            _make_router(stage, next_stage_node),
-            {next_stage_node: next_stage_node, same_stage_node: same_stage_node},
-        )
-
-    builder.add_edge("security_node", "qa_node")
-    builder.add_edge("qa_node", END)
+        if stage in GATED_STAGES:
+            same_stage_node = f"{stage}_node"
+            builder.add_conditional_edges(
+                f"approve_{stage}",
+                _make_router(stage, next_node),
+                {next_node: next_node, same_stage_node: same_stage_node},
+            )
+        else:
+            builder.add_edge(f"{stage}_node", next_node)
 
     return builder.compile(checkpointer=_build_checkpointer())
 

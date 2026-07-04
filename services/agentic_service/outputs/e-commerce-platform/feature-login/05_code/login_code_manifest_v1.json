@@ -1,0 +1,53 @@
+{
+  "files": [
+    {
+      "path": "client/src/pages/LoginPage.jsx",
+      "action": "create",
+      "description": "Host the approved LoginForm component and route /login to it.",
+      "maps_to": [
+        "login-page"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "client/src/components/LoginForm.jsx",
+      "action": "create",
+      "description": "The approved UI/UX component for the login form -- integrate the exact approved file via read_ui_component, do not rewrite its markup.",
+      "maps_to": [
+        "LoginForm"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "client/src/services/authService.js",
+      "action": "create",
+      "description": "Frontend API calls to the login/forgot-password endpoints.",
+      "maps_to": [
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "server/src/routes/auth.routes.js",
+      "action": "create",
+      "description": "Backend routes implementing /api/auth/login and /api/auth/forgot-password.",
+      "maps_to": [
+        "/api/auth/login",
+        "/api/auth/forgot-password"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "server/src/models/UserCredentials.js",
+      "action": "create",
+      "description": "Mongoose model for the User Credentials data entity.",
+      "maps_to": [
+        "User Credentials"
+      ],
+      "actually_touched": true
+    }
+  ]
+}

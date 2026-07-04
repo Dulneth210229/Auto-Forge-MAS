@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     # coding loop have different model-quality tradeoffs.
     AGENTIC_MODEL_OVERRIDE: str = "qwen3-coder:latest"
 
+    # Ollama's own server-side default context window is much smaller than most
+    # models' real capability and gets silently exceeded by tool results containing
+    # real file contents. Only applied when the agentic provider is "ollama".
+    AGENTIC_OLLAMA_NUM_CTX: int = 32768
+
     LLM_TEMPERATURE: float = 0.1
     LLM_MAX_TOKENS: int = 4096
     LLM_TIMEOUT_SECONDS: int = 320
