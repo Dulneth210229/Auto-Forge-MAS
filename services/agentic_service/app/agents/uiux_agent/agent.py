@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from app.agents.uiux_agent.component_generator import UIUXComponentGenerator
@@ -199,6 +200,31 @@ class UIUXAgent:
             rendered_components = []
 
             for component_metadata in page.get("components", []) or []:
+                component_name = component_metadata["name"]
+
+                if component_metadata.get("reused_from_design_system"):
+                    reused_jsx = self._load_existing_approved_component(
+                        agent_input.project["project_id"], component_name
+                    )
+
+                    if reused_jsx is not None:
+                        component_files[component_name] = reused_jsx
+                        rendered_components.append(
+                            {
+                                "name": component_name,
+                                "jsx_code": reused_jsx,
+                                "mock_props": self._placeholder_mock_props(component_metadata),
+                            }
+                        )
+                        continue
+
+                    logger.warning(
+                        "Component '%s' was flagged reused_from_design_system=True but no "
+                        "approved component with that name exists yet in this project -- "
+                        "generating it instead.",
+                        component_name,
+                    )
+
                 generated, _raw = await self.component_generator.generate(
                     project=agent_input.project,
                     feature=agent_input.feature,
@@ -210,7 +236,6 @@ class UIUXAgent:
                     human_comment=agent_input.human_comment,
                 )
 
-                component_name = component_metadata["name"]
                 component_files[component_name] = generated["jsx_code"]
                 rendered_components.append(
                     {
@@ -241,6 +266,64 @@ class UIUXAgent:
             )
 
         return page_screenshots
+
+    def _load_existing_approved_component(self, project_id: str, component_name: str) -> str | None:
+        """
+        Look up an already-approved component .jsx file from ANY feature in
+        this project (not just the current one) by name, and return its
+        exact content verbatim.
+
+        This is what makes "reused_from_design_system: true" an actual reuse
+        mechanism instead of just a label the model writes down while a
+        fresh (and possibly drifted) copy gets generated anyway -- the
+        precise bug this method fixes, found during M8's real second-feature
+        test (Signup correctly flagged LoginForm as reused, but nothing
+        previously stopped a brand-new LoginForm.jsx from being generated).
+        """
+        slug = self._slug(component_name)
+
+        matching = []
+
+        for artifact in store.artifacts.values():
+            if artifact.get("project_id") != project_id:
+                continue
+            if artifact.get("agent_name") not in [AgentName.UIUX, AgentName.UIUX.value]:
+                continue
+            if artifact.get("artifact_type") not in [
+                ArtifactType.UI_COMPONENT_CODE,
+                ArtifactType.UI_COMPONENT_CODE.value,
+            ]:
+                continue
+            if artifact.get("artifact_format") not in [ArtifactFormat.CODE, ArtifactFormat.CODE.value]:
+                continue
+            if artifact.get("approval_status") not in [
+                ApprovalStatus.APPROVED,
+                ApprovalStatus.APPROVED.value,
+            ]:
+                continue
+            if slug not in str(artifact.get("file_path", "")).lower():
+                continue
+
+            matching.append(artifact)
+
+        if not matching:
+            return None
+
+        latest = max(matching, key=lambda item: item.get("version", 1))
+        return Path(latest["file_path"]).read_text(encoding="utf-8")
+
+    def _placeholder_mock_props(self, component_metadata: dict[str, Any]) -> dict[str, Any]:
+        """
+        Build simple mock props for previewing a reused component. There is
+        no component_generator call for a reused component (no LLM involved,
+        by design), so there is no generated mock_props either -- use the
+        prop descriptions already present in ui_metadata_json as readable
+        placeholder values instead.
+        """
+        return {
+            name: str(description)
+            for name, description in (component_metadata.get("props") or {}).items()
+        }
 
     def _save_artifacts(self, project: dict, feature: dict, output: UIUXAgentOutput) -> list[str]:
         """

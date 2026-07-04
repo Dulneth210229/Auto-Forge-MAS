@@ -16,12 +16,17 @@ the resulting artifact (unchanged approval flow) is what resumes the graph
 past their gates, exactly as it always has.
 
 domain_node moved from a gated stage to an auto-approved pass-through stage
-this milestone: Domain Agent is still a stub with no artifact a human could
+in Milestone 6: Domain Agent is still a stub with no artifact a human could
 ever approve, so leaving it gated made the pipeline permanently stuck at
 approve_domain with no way through the normal approval endpoint. It now joins
-security/qa as an auto-approved no-op, for the identical reason those two got
-that treatment in Milestone 0 -- flip it back to a real gate the moment
-Domain Agent produces real output.
+security/qa as an auto-approved no-op -- flip it back to a real gate the
+moment Domain Agent produces real output.
+
+Milestone 7: security_node and qa_node now call the real (still placeholder)
+SecurityAgent/QAAgent classes instead of the generic Milestone 0 pass-through
+-- same auto-approved, non-blocking behavior, but the graph now has real
+node targets per the doc's Milestone 7 instruction, ready to become real
+gates the moment those agents produce real output worth reviewing.
 """
 
 from __future__ import annotations
@@ -35,6 +40,8 @@ from langgraph.types import Command, interrupt
 from typing_extensions import TypedDict
 
 from app.agents.coder_agent.agent import coder_agent
+from app.agents.qa_agent.agent import qa_agent
+from app.agents.security_agent.agent import security_agent
 from app.agents.uiux_agent.agent import uiux_agent
 from app.core.config import settings
 from app.schemas.coder_schema import CoderAgentRunRequest
@@ -126,9 +133,51 @@ def _coder_node(state: FeaturePipelineState) -> dict[str, Any]:
     }
 
 
+def _security_node(state: FeaturePipelineState) -> dict[str, Any]:
+    """
+    Security Agent call. Still a placeholder (see app/agents/security_agent/
+    agent.py) that always returns {"status": "skipped"} without touching the
+    workspace -- calling it for real now (rather than a generic pass-through)
+    means the graph already has a real node target to route to, per the
+    doc's Milestone 7 instruction, so nothing here needs to change again
+    except the agent's own internals once it's implemented for real. Stays
+    auto-approved (no interrupt() gate) since there is no real output yet for
+    a human to review -- flip to a real gate the moment that changes.
+    """
+    feature_id = state["feature_id"]
+    logger.info("Running Security Agent (placeholder) for feature_id=%s", feature_id)
+
+    asyncio.run(security_agent.run(feature_id=feature_id))
+
+    return {
+        "last_agent": "security",
+        "last_artifact_ids": [],
+        "human_comment": None,
+    }
+
+
+def _qa_node(state: FeaturePipelineState) -> dict[str, Any]:
+    """
+    QA Agent call. See _security_node for why this calls the real (still
+    placeholder) agent class instead of a generic pass-through.
+    """
+    feature_id = state["feature_id"]
+    logger.info("Running QA Agent (placeholder) for feature_id=%s", feature_id)
+
+    asyncio.run(qa_agent.run(feature_id=feature_id))
+
+    return {
+        "last_agent": "qa",
+        "last_artifact_ids": [],
+        "human_comment": None,
+    }
+
+
 REAL_NODE_FUNCTIONS = {
     "uiux": _uiux_node,
     "coder": _coder_node,
+    "security": _security_node,
+    "qa": _qa_node,
 }
 
 

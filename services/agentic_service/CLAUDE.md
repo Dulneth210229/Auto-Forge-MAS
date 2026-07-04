@@ -20,7 +20,7 @@ milestone — that file is scratch, **this file is the durable one**.
 | M4 — Coder Agent loop (create_agent + tools, manual run) | DONE |
 | M5 — Coder Agent verification + diff + merge | DONE |
 | M6 — Full graph wiring (real uiux_node/coder_node) | DONE |
-| M7 — Security/QA placeholders | not started |
+| M7 — Security/QA placeholders | DONE |
 | M8 — Second feature (Signup) proving reuse | not started |
 
 ## Environment facts (verified, not assumed — re-check if anything seems off)
@@ -134,6 +134,17 @@ milestone — that file is scratch, **this file is the durable one**.
     misleading 500 to someone who did nothing wrong. Worth keeping in mind if this error handling
     is ever "tightened" -- the current broad catch is load-bearing for more than its original
     purpose.
+16. **M7: `app/agents/security_agent/` and `app/agents/qa_agent/` created**, matching the exact
+    stub convention `deployment_agent/` already used (`agent.py`/`prompt.py`/`schemas.py`, no
+    `__init__.py` -- matches every stub agent, not just the two implemented ones which happen to
+    have one). Both `SecurityAgent.run()`/`QAAgent.run()` are `async def` returning
+    `{"status": "skipped", "message": "... not yet implemented."}` verbatim per the doc's own
+    snippet. `graph_orchestrator_service.py`'s `security_node`/`qa_node` now call these real
+    (still-placeholder) classes via the same `asyncio.run()` bridge pattern `uiux_node`/
+    `coder_node` established in M6, instead of the generic M0 pass-through function -- behavior is
+    identical (auto-approved, no gate, no artifacts), but the graph now has real node targets to
+    route to per the doc's Milestone 7 instruction, so implementing these agents for real later
+    only means changing their own `agent.py` internals, not touching the graph again.
 
 ## Known model-quality gotchas (not code bugs — prompts already account for these)
 
