@@ -7,3 +7,9 @@ __pycache__/
 .vscode/
 data/raw/*
 data/processed/*
+
+# Per-project generated MERN repos (each is its own nested git repo -- must
+# never be committed into this repo).
+workspaces/
+
+.pytest_cache/

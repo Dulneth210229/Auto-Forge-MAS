@@ -18,6 +18,7 @@ from fastapi import APIRouter, HTTPException
 from app.core.enums import FeatureStatus, AgentName
 from app.schemas.feature_schema import FeatureCreateRequest, FeatureResponse
 from app.services.artifact_service import artifact_service
+from app.services.graph_orchestrator_service import graph_orchestrator_service
 from app.services.in_memory_store import store
 from app.utils.id_generator import generate_id
 
@@ -89,3 +90,25 @@ def get_feature(feature_id: str):
         raise HTTPException(status_code=404, detail="Feature not found")
 
     return FeatureResponse(**feature)
+
+
+@router.post("/features/{feature_id}/start")
+def start_feature_pipeline(feature_id: str):
+    """
+    Start this feature's LangGraph pipeline run.
+
+    This kicks off the graph for the first time; every step after that is
+    driven by approval decisions hitting POST /artifacts/{artifact_id}/approval,
+    which resume the same paused run (see graph_orchestrator_service).
+    """
+    feature = store.features.get(feature_id)
+
+    if not feature:
+        raise HTTPException(status_code=404, detail="Feature not found")
+
+    graph_orchestrator_service.start(
+        project_id=feature["project_id"],
+        feature_id=feature_id,
+    )
+
+    return graph_orchestrator_service.get_status(feature_id)

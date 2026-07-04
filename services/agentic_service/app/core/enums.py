@@ -25,13 +25,15 @@ class AgentName(str, Enum):
     ARCHITECTURE = "architecture_agent"
     UIUX = "uiux_agent"
     CODER = "coder_agent"
+    SECURITY = "security_agent"
+    QA = "qa_agent"
     DEPLOYMENT = "deployment_agent"
 
 
 class ArtifactType(str, Enum):
     SRS = "srs"
     ENHANCED_SRS = "enhanced_srs"
-    
+
     # Architecture Agent artifacts
     ARCHITECTURE_PLAN = "architecture_plan"
     SDS = "sds"
@@ -39,6 +41,25 @@ class ArtifactType(str, Enum):
     SEQUENCE_DIAGRAM = "sequence_diagram"
     CLASS_DIAGRAM = "class_diagram"
     ARCHITECTURE_TRACEABILITY = "architecture_traceability"
+
+    # UI/UX Agent artifacts
+    UI_METADATA = "ui_metadata"
+    UI_INTEGRATION_MANIFEST = "ui_integration_manifest"
+    UI_COMPONENT_CODE = "ui_component_code"
+    UI_PREVIEW_SCREENSHOT = "ui_preview_screenshot"
+    DESIGN_SYSTEM = "design_system"
+
+    # Coder Agent artifacts
+    CODE_PLAN = "code_plan"
+    CODE_DIFF = "code_diff"
+    CODE_MANIFEST = "code_manifest"
+    REQUIREMENT_CODE_MAP = "requirement_code_map"
+    SETUP_INSTRUCTIONS = "setup_instructions"
+    PROJECT_MANIFEST = "project_manifest"
+
+    # Security / QA Agent artifacts (placeholders for now)
+    SECURITY_REPORT = "security_report"
+    QA_REPORT = "qa_report"
 
     UI_DESIGN = "ui_design"
     CODE = "code"

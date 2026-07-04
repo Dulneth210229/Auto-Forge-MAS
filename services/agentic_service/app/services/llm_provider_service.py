@@ -26,7 +26,10 @@ class LLMProviderService:
     Service for managing LLM configuration and provider creation.
     """
 
-    SUPPORTED_PROVIDERS = {"ollama", "openai"}
+    # "anthropic" is accepted here so the shared settings document (also read by
+    # agentic_model_factory) can be set to it. get_provider() below does not implement
+    # an AnthropicProvider yet -- only the agentic (tool-calling) path uses Anthropic today.
+    SUPPORTED_PROVIDERS = {"ollama", "openai", "anthropic"}
 
     def get_settings(self) -> LLMSettings:
         """

@@ -1,0 +1,17 @@
+{
+  "colors": {},
+  "typography": {},
+  "spacing": {},
+  "components": {
+    "LoginForm": {
+      "props": [
+        "emailField",
+        "passwordField",
+        "submitButton",
+        "forgotPasswordLink"
+      ],
+      "introduced_by_feature": "Login"
+    }
+  },
+  "tokens": {}
+}

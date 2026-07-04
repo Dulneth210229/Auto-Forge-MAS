@@ -1,0 +1,36 @@
+{
+  "pages": [
+    {
+      "page_id": "login-page",
+      "route": "/login",
+      "nav_entry": "Login Page",
+      "components": [
+        {
+          "name": "LoginForm",
+          "reused_from_design_system": false,
+          "expected_props": [
+            "emailField",
+            "passwordField",
+            "submitButton",
+            "forgotPasswordLink"
+          ]
+        }
+      ],
+      "actors": [
+        "Customer",
+        "Admin"
+      ],
+      "covers_requirements": [
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "US-001",
+        "US-002",
+        "AC-001",
+        "AC-002",
+        "AC-003"
+      ]
+    }
+  ]
+}

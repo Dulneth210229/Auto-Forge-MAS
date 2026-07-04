@@ -38,10 +38,23 @@ class Settings(BaseSettings):
     OPENAI_BASE_URL: str = "https://api.openai.com/v1"
     OPENAI_MODEL: str = "gpt-4o-mini"
 
+    ANTHROPIC_API_KEY: str | None = None
+    ANTHROPIC_MODEL: str = "claude-sonnet-4-5"
+
+    # Model used specifically by agentic (tool-calling) nodes such as the Coder Agent,
+    # via init_chat_model. Kept separate from DEFAULT_LLM_MODEL because the one-shot
+    # prose-generation agents (Requirement/Domain/Architecture/UI-UX) and the agentic
+    # coding loop have different model-quality tradeoffs.
+    AGENTIC_MODEL_OVERRIDE: str = "qwen3-coder:latest"
+
     LLM_TEMPERATURE: float = 0.1
     LLM_MAX_TOKENS: int = 4096
     LLM_TIMEOUT_SECONDS: int = 320
     LLM_STREAMING_ENABLED: bool = True
+
+    # Root folder for persistent per-project git repositories (the actual generated MERN app).
+    WORKSPACE_DIR: str = "workspaces"
+
     # MongoDB connection URI.
     # For local MongoDB: mongodb://localhost:27017
     # For MongoDB Atlas: mongodb+srv://username:password@cluster.mongodb.net
