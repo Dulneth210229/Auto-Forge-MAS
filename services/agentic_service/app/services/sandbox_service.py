@@ -11,6 +11,14 @@ build failure, or a timeout are all returned as data ({exit_code, stdout,
 stderr}) so an agentic loop can read the failure and try to self-correct.
 Only setup problems (e.g. Docker itself unreachable) raise, since there is
 nothing an agent loop could do about that.
+
+SANDBOX_IMAGE is a custom image (docker/coder-sandbox.Dockerfile), based on
+node:20 rather than node:20-slim -- -slim ships without a git binary, which
+silently broke the `git status`/`git diff` self-check the Coder Agent's
+system prompt encourages using (always exit 127). The image also bakes in
+@babel/parser globally so the check_syntax tool can validate JSX before a
+project's own `npm install` has ever run. Build it once with:
+    docker build -t autoforge-coder-sandbox:latest -f docker/coder-sandbox.Dockerfile .
 """
 
 from pathlib import Path
@@ -21,7 +29,7 @@ from docker.errors import DockerException
 
 from app.services.workspace_service import workspace_service
 
-SANDBOX_IMAGE = "node:20-slim"
+SANDBOX_IMAGE = "autoforge-coder-sandbox:latest"
 DEFAULT_TIMEOUT_SECONDS = 120
 
 

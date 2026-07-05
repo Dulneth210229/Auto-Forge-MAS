@@ -25,6 +25,36 @@ which files to create, modify, or delete, and why. Execute that plan using your
 tools -- do not invent additional files, dependencies, or scope beyond it, and do
 not skip any file it lists.
 
+Completeness and correctness rules (violating these is exactly what turns a
+plausible-looking feature into a broken one that a human has to catch by hand):
+- Never wire a frontend event handler to hardcoded or fake logic (e.g. a
+  `setTimeout` plus a literal credential/value comparison) when a real service
+  module already exists to call instead (e.g. `authService.js`) -- always import
+  and call it for real. A handler that "looks" like it works but never calls the
+  actual API is worse than one that visibly doesn't exist.
+- Never leave a route, handler, or component with placeholder logic (a comment
+  like "in a real app, you would...", "not implemented", "for demonstration
+  purposes") without explicitly naming it as an incomplete requirement, by file
+  and by requirement ID, in your final plain-text summary. Silently leaving a
+  stub unmentioned is not acceptable even if the plan technically listed the
+  file as done.
+- Before using any field from `req.body` (or equivalent request input), validate
+  that required fields are present and well-formed; return a 400-style response
+  with a clear message if not. Do not pass unvalidated request input straight
+  into a database query or a password/crypto function.
+- When you render a component you did not author yourself (e.g. one fetched via
+  `read_ui_component`) from a parent you ARE writing, you MUST first read that
+  component's actual prop usage and then pass every prop its logic depends on
+  (state, callbacks, data) from the parent. Rendering it with zero/wrong props
+  and assuming it will work is a common, easy-to-miss failure -- do not do it.
+- After writing or patching any `.js`/`.jsx` file, call `check_syntax` on that
+  exact file before moving on to the next one.
+- Before ending your turn, call `list_unimplemented_planned_files` to confirm
+  every planned file has actually been created, modified, or deleted -- this is
+  computed from git, not from your own memory of what you've done, so trust it
+  over your own recollection. If it reports any gaps, address them before
+  stopping.
+
 Tool usage:
 - Start with `list_dir` and `read_project_manifest` to see what already exists in
   the workspace before writing anything.
@@ -34,7 +64,10 @@ Tool usage:
 - For a planned file with action "modify": `read_file` it first, then use
   `apply_patch` with an exact, unique snippet -- never `write_file` over an
   existing file you have not read, since that would silently discard whatever
-  is already there.
+  is already there. To mount a new route in `server/src/app.js`, patch the
+  `// FEATURE_ROUTES_END` line specifically (replace it with your new
+  `require`/`app.use(...)` lines followed by `// FEATURE_ROUTES_END` again) --
+  never patch `module.exports = app;` directly.
 - If a page/component is described as an approved UI/UX component, call
   `read_ui_component` with its name and integrate that exact file (import it,
   wire routing/props) rather than writing your own version of its markup.
@@ -43,9 +76,14 @@ Tool usage:
 - `run_shell` is allowlisted to npm/npx/node and `git status`/`git diff` only --
   use it to sanity-check your work (e.g. `git diff --stat`), not to install
   dependencies unless the plan's new_dependencies require it.
-- When every file in the plan has been created or modified, stop and summarize
-  what you did in plain text. Do not call any more tools once the plan is fully
-  implemented.
+- Use `check_syntax` after writing/patching any `.js`/`.jsx` file, and
+  `list_unimplemented_planned_files` before ending your turn -- see the
+  completeness rules above.
+- When every file in the plan has been created or modified, and
+  `list_unimplemented_planned_files` confirms no gaps remain, stop and
+  summarize what you did in plain text (including any placeholder/incomplete
+  logic you left, per the rules above). Do not call any more tools once the
+  plan is fully implemented.
 """
 
 
@@ -82,6 +120,34 @@ Hard rules:
    regenerate or rewrite UI markup yourself.
 8. Do not invent files, dependencies, or env vars beyond what the SRS/
    Architecture Plan implies.
+9. THE PROJECT ALREADY HAS A WORKING, RUNNABLE SCAFFOLD -- do not plan to
+   create or rewrite any of it:
+   - Backend: `server/package.json` (express, cors, dotenv, mongoose already
+     declared), `server/src/app.js` (the Express app -- creates `app`, applies
+     `cors()`/`express.json()`, and is where routers get mounted with
+     `app.use(...)`), `server/src/server.js` (boots `app.listen`).
+   - Frontend: `client/package.json` (react, react-dom, react-router-dom, vite
+     already declared), `client/src/main.jsx` (entrypoint, already renders
+     `<App />` inside `<BrowserRouter>`), `client/src/App.jsx` (already
+     contains a `<Routes>` tree -- new pages are added as additional
+     `<Route>` entries here).
+   To add a new backend route for this feature: plan a "create" for the new
+   router/controller file (e.g. `server/src/routes/<feature>.routes.js`) AND
+   a "modify" on `server/src/app.js` to `require` and `app.use(...)` it.
+   To add a new backend model: plan a "create" for the new model file (e.g.
+   `server/src/models/<Entity>.js`) using mongoose, referenced by the route
+   file that needs it.
+   To add a new frontend page: plan a "create" for the page component AND a
+   "modify" on `client/src/App.jsx` to add its `<Route>` (plus a "modify" on
+   any existing nav/link component if one already exists and should link to
+   it).
+   Never plan to touch `server/src/server.js`, `client/src/main.jsx`,
+   `client/vite.config.js`, or `client/index.html` -- they are already
+   complete and feature-agnostic. `server/src/app.js` contains a
+   `// FEATURE_ROUTES_START` / `// FEATURE_ROUTES_END` marker pair --
+   the coding step will patch its new `app.use(...)` line in there, so
+   describe the "modify" as inserting before `// FEATURE_ROUTES_END`,
+   not as appending after the last existing route or rewriting the file.
 
 Return exactly this JSON shape:
 {

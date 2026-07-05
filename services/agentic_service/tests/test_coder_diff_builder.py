@@ -89,13 +89,23 @@ def test_build_requirement_code_map_includes_unplanned_file():
 def test_build_setup_instructions_with_deps_and_env_vars():
     markdown = build_setup_instructions_markdown(CODE_PLAN)
 
-    assert "npm install bcrypt jsonwebtoken" in markdown
+    assert "npm run install:all" in markdown
+    assert "npm run dev" in markdown
+    assert "`bcrypt`" in markdown
+    assert "`jsonwebtoken`" in markdown
     assert "`JWT_SECRET`" in markdown
 
 
 def test_build_setup_instructions_empty_case():
     markdown = build_setup_instructions_markdown({"new_dependencies": [], "env_vars_needed": []})
-    assert "No new dependencies" in markdown
+
+    # The run instructions are always present -- there's always a working
+    # scaffold to run, regardless of whether this specific feature added
+    # anything new.
+    assert "npm run install:all" in markdown
+    assert "npm run dev" in markdown
+    assert "New dependencies added by this feature" not in markdown
+    assert "Required environment variables" not in markdown
 
 
 def test_build_merge_report_shows_pass_and_fail_status():
@@ -109,6 +119,34 @@ def test_build_merge_report_shows_pass_and_fail_status():
     )
     assert "FAILED" in failing
     assert "Coding attempts used:** 3" in failing
+
+
+def test_build_merge_report_surfaces_output_for_failed_and_info_steps_only():
+    report = build_merge_report_markdown(
+        "Login",
+        DIFF,
+        {
+            "passed": False,
+            "steps": [
+                {"name": "npm install (server)", "status": "passed", "output": "added 10 packages"},
+                {
+                    "name": "endpoint route coverage",
+                    "status": "failed",
+                    "output": "These planned endpoints have no matching route registration found:\n- /api/auth/signup",
+                },
+                {
+                    "name": "placeholder-stub scan",
+                    "status": "info",
+                    "output": "Found possible placeholder/stub logic:\n- server/src/routes/auth.routes.js:57: in a real app",
+                },
+            ],
+        },
+        1,
+    )
+
+    assert "/api/auth/signup" in report
+    assert "in a real app" in report
+    assert "added 10 packages" not in report  # passed steps stay terse
 
 
 def test_build_merge_report_lists_files_changed():

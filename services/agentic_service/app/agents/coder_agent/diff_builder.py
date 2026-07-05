@@ -74,28 +74,41 @@ def build_setup_instructions_markdown(code_plan_json: dict[str, Any]) -> str:
     dependencies = code_plan_json.get("new_dependencies", []) or []
     env_vars = code_plan_json.get("env_vars_needed", []) or []
 
-    lines = ["# Setup Instructions", ""]
+    lines = [
+        "# Setup Instructions",
+        "",
+        "## Run the app",
+        "",
+        "This project has a working Express server (`server/`) and a Vite+React "
+        "client (`client/`) scaffolded from the start -- these commands work for "
+        "every feature, not just this one.",
+        "",
+        "```bash",
+        "npm run install:all   # installs server/ and client/ dependencies",
+        "cp server/.env.example server/.env   # first time only -- fill in real values",
+        "npm run dev           # boots the Express API (port 5000) and the Vite dev server (port 5173)",
+        "```",
+        "",
+    ]
 
     if dependencies:
         lines.extend(
             [
-                "## Install new dependencies",
+                "## New dependencies added by this feature",
                 "",
-                "```bash",
-                f"npm install {' '.join(dependencies)}",
-                "```",
+                "Already declared in the relevant `package.json` and installed by "
+                "`npm run install:all` above; listed here for traceability:",
+                "",
+                *[f"- `{dependency}`" for dependency in dependencies],
                 "",
             ]
         )
 
     if env_vars:
-        lines.append("## Required environment variables")
+        lines.append("## Required environment variables (add to `server/.env`)")
         lines.append("")
         lines.extend(f"- `{name}`" for name in env_vars)
         lines.append("")
-
-    if not dependencies and not env_vars:
-        lines.append("No new dependencies or environment variables are required for this feature.")
 
     return "\n".join(lines)
 
@@ -116,6 +129,16 @@ def build_merge_report_markdown(
     lines.append("## Verification steps")
     for step in verify_result["steps"]:
         lines.append(f"- **{step['name']}**: {step['status']}")
+
+        # failed/info steps' output is substantive (missing endpoints, found
+        # placeholder-stub phrases, ...) and would otherwise be invisible to
+        # the human reviewer here -- passed/skipped steps stay terse since
+        # their output is just install/build logs nobody needs to see by
+        # default.
+        if step["status"] in ("failed", "info") and step.get("output"):
+            lines.append("  ```")
+            lines.extend(f"  {line}" for line in step["output"].splitlines())
+            lines.append("  ```")
     lines.append("")
 
     lines.append("## Files changed")

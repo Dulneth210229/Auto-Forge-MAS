@@ -11,6 +11,17 @@
         "forgotPasswordLink"
       ],
       "introduced_by_feature": "Login"
+    },
+    "SignupForm": {
+      "props": [
+        "fullNameField",
+        "emailField",
+        "passwordField",
+        "confirmPasswordField",
+        "submitButton",
+        "loginLink"
+      ],
+      "introduced_by_feature": "Signup"
     }
   },
   "tokens": {}

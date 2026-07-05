@@ -36,7 +36,12 @@ milestone — that file is scratch, **this file is the durable one**.
   follow the structured JSON schemas the UI/UX and Coder planning prompts require.
 - **Agentic (tool-calling) model** is also `qwen3-coder:latest` via
   `app/providers/agentic_model_factory.py` (`AGENTIC_MODEL_OVERRIDE` in `.env`/`config.py`).
-- Docker Desktop is installed and used by `sandbox_service` for `run_shell`.
+- Docker Desktop is installed and used by `sandbox_service` for `run_shell`, but is **not always
+  already running** — it does not auto-start with Windows in this environment. If
+  `sandbox_service.run_command` returns `exit_code: 1` with `"Sandbox unavailable: could not reach
+  Docker daemon"`, that's this, not a code bug: launch
+  `C:\Program Files\Docker\Docker\Docker Desktop.exe` and poll `docker version` until it responds
+  (took ~10s in practice) before retrying.
 - Playwright + Chromium are installed. UI/UX preview rendering uses **vendored UMD bundles**
   (React/ReactDOM/Babel-standalone/Tailwind CDN script) at `app/agents/uiux_agent/vendor/` and a
   static HTML shell — **not** a Vite dev server. Gotcha: the babel `<script type="text/babel">`
@@ -145,6 +150,256 @@ milestone — that file is scratch, **this file is the durable one**.
     identical (auto-approved, no gate, no artifacts), but the graph now has real node targets to
     route to per the doc's Milestone 7 instruction, so implementing these agents for real later
     only means changing their own `agent.py` internals, not touching the graph again.
+17. **Post-M8: Coder Agent output was not actually runnable — fixed with a deterministic
+    Express+Vite scaffold.** The user reported directly (independent of the milestone plan) that
+    generated projects had no way to actually run: the backend had no Express app at all, the
+    frontend had no Vite/React project at all. Root cause: `workspace_service.ensure_project_repo`
+    only ever created empty `client/`/`server/` folders with `.gitkeep` files and a bare root
+    `package.json` (name/private only -- no deps, no scripts) -- every feature's entire runnable
+    skeleton (package.json deps/scripts, `vite.config.js`, entrypoints, Express bootstrap) was
+    left for the LLM planner + coding loop to invent from scratch every run, and the planner was
+    already documented (below) as unreliable even at planning backend *route* files, let alone
+    scaffold-level infrastructure. `verify.py` also never actually proved anything ran: it only
+    checked for `build`/`lint`/`test` scripts in the **root** `package.json` (never populated)
+    and silently skipped if absent. Confirmed against the real, already-merged Login feature
+    before fixing: `server/` had `routes/auth.routes.js` and `models/UserCredentials.js` but no
+    `app.js`/`server.js`/`package.json`; `client/` had `components/LoginForm.jsx`,
+    `pages/LoginPage.jsx`, `services/authService.js` but no `main.jsx`/`App.jsx`/`index.html`/
+    `vite.config.js`/`package.json` -- exactly the reported bug. Fix:
+    - `workspace_service.py`: `SCAFFOLD_FILES` now defines a real, working MERN skeleton --
+      `server/package.json` (express, cors, dotenv, mongoose, nodemon; `start`/`dev` scripts),
+      `server/src/app.js` (Express app: cors, json body parsing, `/api/health`, exports `app`
+      for routers to be `app.use(...)`'d onto), `server/src/server.js` (`app.listen`),
+      `server/.env.example`; `client/package.json` (react, react-dom, react-router-dom, vite,
+      `@vitejs/plugin-react`; `dev`/`build`/`preview` scripts), `client/vite.config.js`,
+      `client/index.html`, `client/src/main.jsx` (renders `<App/>` inside `<BrowserRouter>`),
+      `client/src/App.jsx` (a `<Routes>` tree new pages get added to), `client/src/index.css`.
+      Root `package.json` gets real `install:all`/`dev`/`build` scripts (via `concurrently`) so
+      `npm run install:all && npm run dev` actually boots both sides.
+    - **Idempotent backfill, not just first-init**: `ensure_project_repo` now calls
+      `_backfill_scaffold` on every call (not just at `Repo.init` time), which adds any
+      `SCAFFOLD_FILES` entry missing from whatever branch is currently checked out (without
+      touching anything already there) and separately merges the root `install:all`/`dev`/`build`
+      scripts + `concurrently` devDependency into an existing root `package.json` via
+      `_backfill_root_package_json` (parses/merges/rewrites JSON, preserves any dependencies
+      already declared there). This is what let the already-in-progress, already-merged
+      `e-commerce-platform` project (not just brand-new projects) get retrofitted automatically
+      just by calling `ensure_project_repo` again -- no migration script, no special-casing.
+      Deliberately does not force a `git checkout main` first -- it commits onto whatever branch
+      is active, so the common case (repo idle on `main` between features) backfills `main`
+      directly, and a mid-coding-loop call (`build_coder_tools` also calls `ensure_project_repo`)
+      backfills the feature branch, which still reaches `main` on the next merge either way.
+    - `prompt.py`'s `CODE_PLANNER_SYSTEM_PROMPT` gained hard rule 9: the scaffold already exists
+      and works, do not re-plan it; to add a route, plan a "create" for the new router file AND
+      a "modify" on `server/src/app.js` to `require`+`app.use(...)` it; to add a page, plan a
+      "create" for the page AND a "modify" on `client/src/App.jsx` to add its `<Route>`. This is
+      unconditional (in the system prompt, not the user-prompt context built from
+      `project_manifest_json`), so it holds even for a project's very first feature, when the
+      manifest is still empty.
+    - `verify.py` was rewritten: `npm install` now always runs in both `server/` and `client/`
+      (their `package.json` always exist thanks to the scaffold, regardless of whether
+      `code_plan_json.new_dependencies` is empty), plus two new hard, non-skippable checks --
+      `SERVER_BOOT_SMOKE_TEST_COMMAND` (backgrounds `node src/server.js`, polls `/api/health`
+      using Node's own `fetch`, not `curl` -- `node:20-slim` has no `curl`, same root cause as
+      the already-documented missing-`git` gotcha below -- then kills the server; nonzero exit
+      is a hard failure) and a client build check (`npm run build` in `client/`, i.e. a real
+      `vite build`). `lint`/`test` remain skip-if-absent (root `package.json` only) since no
+      such tooling is scaffolded.
+    - `diff_builder.py`'s `build_setup_instructions_markdown` now always shows the real
+      `npm run install:all` / `npm run dev` commands (previously: nothing at all unless the
+      plan happened to declare `new_dependencies`/`env_vars_needed`).
+    - **Real fix applied to the actual `e-commerce-platform` project**, not just new projects:
+      called `ensure_project_repo` to backfill the scaffold onto `main`, then hand-wired the
+      already-merged Login feature into it (one-time, deterministic, not LLM-authored -- mirrors
+      exactly what the updated planner prompt now instructs for every future feature):
+      `server/src/app.js` now `require`s and `app.use("/api/auth", ...)`s the existing
+      `auth.routes.js`; `client/src/App.jsx` now imports and routes `/login` to the existing
+      `LoginPage`. Also relocated `bcrypt`/`jsonwebtoken` (used by `auth.routes.js`/
+      `UserCredentials.js`, previously installed flat at the repo root with no script to ever
+      run them) into `server/package.json`, and `axios`/`jwt-decode` (used by `authService.js`)
+      into `client/package.json`. Verified for real: `coder_verifier.verify()` against this
+      exact project -- `npm install (server)`: passed (135 packages), `npm install (client)`:
+      passed (91 packages), `server boot (curl /api/health)`: passed (Express actually boots
+      with the real Login routes mounted), `client build (vite build)`: passed (36 modules,
+      including `LoginForm`/`LoginPage`/`authService`, actually compile). `result["passed"]`:
+      `True`. Resulting lockfiles and the wiring commit are real, intentional state on `main`
+      (see "Real state changes" below), not test debris.
+    - Tests: `tests/test_workspace_scaffold.py` (new -- scaffold presence, git commit, backfill
+      of a missing file without touching existing customizations, backfill of root-package.json
+      scripts without touching existing dependencies, idempotency), `tests/test_coder_verify.py`
+      (rewritten -- server/client-scoped installs, hard boot/build checks including a deliberately
+      broken `app.js` producing a hard failure, root lint/test still skip-if-absent),
+      `tests/test_coder_diff_builder.py` (setup-instructions assertions updated for the new
+      always-present run commands). Full suite: 83 passed.
+    - **Known remaining gap, not fixed by this change**: `authService.js` (generated before this
+      fix, untouched by it) reads `process.env.REACT_APP_API_BASE_URL` -- a Create-React-App-style
+      env var that does not exist under Vite (Vite exposes `import.meta.env.VITE_*` instead).
+      This does not break `vite build` (the reference is never evaluated at bundle time, and the
+      `||` fallback provides a working default that happens to match the scaffold's port 5000),
+      but it would throw `ReferenceError: process is not defined` if that code path actually ran
+      in a browser with that env var set. Not fixed here -- it's a pre-existing LLM-generated-
+      code correctness bug, a different concern from "is there a scaffold to run it in at all,"
+      and out of this fix's scope.
+18. **Post-scaffold-fix: Coder Agent output was "partially implemented," not accurate/complete --
+    fixed with tighter intra-loop verification, deterministic post-code checks, and prompt
+    hardening (Upgrade 2 of 2; Upgrade 1, per-agent multi-provider LLM config, is a separate,
+    not-yet-started follow-up -- see below).** The user reported the real, already-merged Login
+    feature was broken in ways a human had to discover by hand: `LoginForm.jsx` never actually
+    rendered (its markup was gated on `props.state`, which `LoginPage.jsx` never passed --
+    literally invisible in the running app), its submit handler hardcoded a fake
+    `setTimeout`-based credential check instead of calling the real, already-written
+    `authService.js` (100% dead code as a result), `/forgot-password`/`/reset-password` were
+    non-functional stubs ("in a real app, you would..." comments), and **no file anywhere called
+    `mongoose.connect(...)`** despite `mongoose` being a dependency and models being defined --
+    the DB was never actually connected. Root cause, confirmed by reading the actual pipeline
+    code: verification only ever ran *after* the whole agentic coding loop declared itself done,
+    against a brand-new agent instance each retry with zero memory of the previous attempt
+    (`CoderAgent._code_with_retries` rebuilding `build_coder_react_agent` from scratch every
+    time); nothing checked that every planned file was actually touched before the loop was
+    allowed to stop (purely self-reported completion); the one self-check tool the system prompt
+    already encouraged (`git status`/`git diff`) silently failed with exit 127 because
+    `node:20-slim` has no `git` binary; and `verify.py` (even after the scaffold fix) only ever
+    proved the app *boots and builds*, never that any specific planned endpoint was actually
+    implemented rather than left as an unreachable stub.
+    - `workspace_service.py` (`SCAFFOLD_FILES` templates): `SERVER_APP_JS` gained `helmet()`,
+      an `express-rate-limit` limiter on `/api/`, a `// FEATURE_ROUTES_START` /
+      `// FEATURE_ROUTES_END` marker pair (a stable `apply_patch` anchor for every future
+      feature's router-mount line, regardless of how large the file grows), and a catch-all
+      Express error-handling middleware; `SERVER_SERVER_JS` gained a **guarded**
+      `mongoose.connect(process.env.MONGODB_URI)` (skips cleanly with a `console.warn` if the
+      env var isn't set -- the sandbox's Docker containers never see host env vars, so this
+      guard is what keeps the boot smoke test passing for every feature, not just DB-backed
+      ones); `SERVER_PACKAGE_JSON` gained `helmet`/`express-rate-limit` deps. New
+      `_backfill_scaffold_upgrades`/`_upgrade_server_app_js`/`_upgrade_server_server_js`: since
+      these files already exist in any repo scaffolded before this upgrade, existence-based
+      backfill (`_backfill_scaffold`) can't detect what's missing -- content **fingerprinting**
+      does instead: a file that still matches its own frozen legacy template
+      (`_LEGACY_SERVER_APP_JS_V1`/`_LEGACY_SERVER_SERVER_JS_V1`) exactly is provably untouched
+      and gets replaced wholesale; anything else (e.g. the real e-commerce-platform's `app.js`,
+      which already had Login's router mounted) gets **targeted, anchor-based insertions**
+      instead, anchored on `const app = express();` and `module.exports = app;` (the two lines
+      guaranteed present in every version of this file) so it's safe regardless of whatever a
+      feature has already added in between. `_merge_package_json` is a new, generic, purely
+      additive dict-merge helper, refactored out of the pre-existing `_backfill_root_package_json`
+      and reused for `server/package.json` too.
+    - **Sandbox image swap**: `docker/coder-sandbox.Dockerfile` (new) builds
+      `autoforge-coder-sandbox:latest` from `node:20` (not `-slim`, which ships without `git` --
+      confirmed root cause of the already-documented `git status`/`git diff` exit-127 gotcha)
+      plus a globally-installed `@babel/parser` (with `NODE_PATH=/usr/local/lib/node_modules` so
+      a plain `require()` from any cwd can actually find it -- npm's global install location
+      isn't on Node's default require search path otherwise, a real gotcha hit while building
+      this). `sandbox_service.SANDBOX_IMAGE` now points at this custom tag. Full suite re-run
+      immediately after the swap to catch any regression from the larger base image -- none
+      found.
+    - **New self-check tools** (`app/agents/coder_agent/tools.py`, `build_coder_tools` gained an
+      optional `code_plan_json` parameter): `list_unimplemented_planned_files` -- computes
+      touched files from **git**, via new `workspace_service.get_touched_files(project_id,
+      feature_id)` (compares the feature branch's current working tree, including still-
+      untracked writes, against main's tip -- correct mid-loop, before `commit_changes` has run,
+      unlike the existing `diff_against_main`'s committed-history-only triple-dot comparison),
+      and reports any planned file not yet created/modified/deleted -- the model is told to call
+      this before ending its turn, so plan completeness stops being self-reported.
+      `check_syntax` -- runs `node --check` (`.js`) or a `@babel/parser` JSX parse (`.jsx`) on a
+      single file inside the sandbox, giving fast, cheap per-file feedback instead of waiting for
+      the next full install/build cycle to surface a typo.
+    - **`route_checker.py`** (new module): `check_route_coverage` -- best-effort, regex-based
+      static check that a planned backend file's endpoint (`maps_to` entries starting with `/`)
+      actually has a matching route registration in that file, resolving the file's mount prefix
+      by cross-referencing `app.js`'s `require(...)`/`app.use(prefix, binding)` pairs against the
+      file's own relative route registrations (e.g. `router.post('/login', ...)` mounted at
+      `/api/auth` correctly resolves to `/api/auth/login`). Explicitly a heuristic (regex, not a
+      real router/AST analysis) -- documented as such in the module docstring. `verify.py` now
+      runs this as a new **hard** gate ("endpoint route coverage"). `scan_for_placeholder_stubs`
+      -- phrase-based scan (`"in a real app"`, `"not implemented"`, `"TODO"`, `"for now"`, etc.)
+      of every touched file, wired in as a new **informational-only** step ("placeholder-stub
+      scan", a new `"info"` status that never affects `passed`) -- deliberately not a hard gate,
+      since these phrases are common enough in legitimate comments that blocking on them would be
+      too false-positive-prone; it exists purely so a human reviewer sees it.
+      `diff_builder.build_merge_report_markdown` previously only ever printed each verify step's
+      `name`/`status`, silently dropping `output` -- now also renders `output` for `failed`/`info`
+      steps specifically, otherwise the new placeholder-stub findings (informational by design)
+      would be invisible in the human-facing report.
+    - **`agent.py`'s `_code_with_retries`**: new pre-verify gate -- after `commit_changes`, before
+      the expensive `verifier.verify(...)` call (2x `npm install`, server boot, `vite build`),
+      deterministically diff the plan's file list against `workspace_service.get_touched_files`
+      (new `_find_plan_gaps`/`_format_plan_gaps` helpers); if anything's missing, skip `verify()`
+      entirely for this attempt and feed back the precise list of untouched files. **Targeted
+      retries**: `coding_loop.build_task_message` gained an `already_touched` parameter -- a
+      retry's task message now lists exactly which files already exist from the previous attempt
+      (`"do not redo unless the failure below specifically points at them"`), so a fresh agent
+      instance (each attempt still starts with zero memory of the last one, by design -- this
+      pass did not change that) at least starts with better situational awareness instead of a
+      fully generic re-prompt. `verify()`'s signature gained a required `feature_id` parameter
+      (needed for `get_touched_files`) -- every call site and test updated.
+    - **`CODER_AGENT_SYSTEM_PROMPT` hardening** (`prompt.py`), directly targeting the exact
+      anti-patterns found in the real Login feature: never wire a handler to hardcoded/fake logic
+      when a real service module exists to call instead; never leave placeholder-stub logic
+      without explicitly naming it, by file, in the final summary; always validate required
+      `req.body` fields before use (400 on missing/malformed); when rendering a component you
+      didn't author (e.g. via `read_ui_component`), read its actual prop usage and wire every
+      prop its logic depends on -- don't render it with zero props and assume it works; call
+      `check_syntax` after every `.js`/`.jsx` write/patch and `list_unimplemented_planned_files`
+      before ending the turn. The planner prompt's rule 9 (scaffold-awareness, from the prior
+      milestone) gained an addendum: patch the `// FEATURE_ROUTES_END` marker specifically, never
+      `module.exports = app;` directly. `CODING_LOOP_RECURSION_LIMIT` bumped 50 -> 65 to
+      accommodate the new self-check tool calls without prematurely hitting the cap on otherwise-
+      legitimate work.
+    - **Real E2E test**: with a fresh `autoforge-coder-sandbox` image and all of the above live,
+      approved the previously-pending Signup UI/UX v2 (see item 17's LoginForm-reuse-fix context)
+      through the real approval endpoint, which resumed the real LangGraph run straight into the
+      real `coder_node` for `feature_f74fb38a` (Signup) against the real e-commerce-platform
+      project. Notable, real findings:
+      - The real planner **passed `plan_validator` on the first attempt** for this feature (a
+        `modify`-only plan against the already-existing `auth.routes.js`/`UserCredentials.js` --
+        simpler than Login's from-scratch backend, and the first time in this project's history
+        the real planner has driven a `CoderAgent.run()` past planning unattended). The
+        already-documented from-scratch backend-under-planning gotcha (below) is unchanged/still
+        open -- this one case succeeding doesn't contradict it.
+      - The generated `/api/auth/signup` route genuinely validates required fields
+        (`if (!email || !password || !fullName) return res.status(400)...`), checks for an
+        existing user before creating one, and issues a JWT on success -- directly reflecting the
+        new "validate `req.body` before use" prompt rule, and a real, concrete quality
+        improvement over the original Login route (which had zero such validation).
+      - `endpoint route coverage`: passed (the new checker correctly resolved `/api/auth/signup`
+        against `auth.routes.js`'s `router.post('/signup', ...)` via `app.js`'s mount prefix).
+      - `placeholder-stub scan`: correctly surfaced the **pre-existing** (from the original Login
+        feature, untouched by this run) forgot/reset-password stub comments as informational
+        findings, without blocking -- proof the scan works and correctly doesn't gate on them.
+      - All 3 coding attempts nonetheless recorded `verification_passed: False` in the artifacts
+        first saved from this run, because the `server boot (curl /api/health)` step failed on
+        every attempt with a **false negative**: a real full pytest regression run (also
+        Docker-heavy) happened to be running concurrently on this machine, and the original
+        10-attempt/~10-second health-check retry window wasn't always enough for a container to
+        get scheduled CPU under that contention -- confirmed by re-running the exact same
+        `SERVER_BOOT_SMOKE_TEST_COMMAND` against the identical generated code in isolation
+        immediately afterward: `exit_code: 0`, passed cleanly. **Fixed**: widened the retry loop
+        from 10 attempts/1s apart to 30 (`SERVER_BOOT_TIMEOUT_SECONDS` 30 -> 45 to give the
+        container itself enough wall-clock budget too), re-ran `tests/test_coder_verify.py` (9/9
+        passed) and the full suite (115/115 passed) to confirm. Re-verified the Signup code a
+        second time, fully cleanly (no concurrent load): every step passed, including server
+        boot, `endpoint route coverage`, and build. Saved as a fresh, accurate v2 artifact set
+        (`CoderAgentOutput` rebuilt deterministically from the *same* already-generated code plus
+        this clean `verify_result` -- no re-planning, no re-invoking the LLM, since nothing about
+        the actual generated code changed, only the environment's contention) so the artifact a
+        human reviews next reflects reality (`verification_passed: True`) rather than the earlier
+        contention-confounded false failure. **Lesson for future real-agentic-pipeline testing on
+        this machine**: don't run the full Docker-heavy pytest suite at the same time as a real
+        end-to-end agent run that also hits the sandbox -- they compete for the same Docker
+        daemon and can produce exactly this kind of false negative.
+    - Tests: `tests/test_coder_tools.py` (+8: `list_unimplemented_planned_files` gap-detection/
+      clearing/no-plan-provided cases, `check_syntax` valid/invalid `.js`/`.jsx`/unsupported-
+      extension cases), `tests/test_route_checker.py` (new, 9 tests: mount-prefix resolution,
+      missing route, literal full-path match, missing file, non-backend/deleted files ignored,
+      no-endpoint-maps_to ignored, placeholder-stub true/true-negative/untouched-file cases, all
+      pure `tmp_path`-based, no git/Docker/LLM), `tests/test_coder_verify.py` (+3: route-coverage
+      pass/fail, placeholder-stub-is-informational-and-never-fails; fixture now also creates a
+      feature and starts its branch, since `verify()` needs `feature_id`), `tests/
+      test_coder_diff_builder.py` (+1: failed/info step output surfaced, passed step output
+      stays terse), `tests/test_coder_prompt.py` (new, 7 trivial substring-presence tests locking
+      in the new hard rules -- these prove the rules are in the prompt text, not that the model
+      follows them; the real E2E run above is what proves that). Full suite: **115 passed**
+      (up from 87 before this pass), confirmed clean (no concurrent load) after the retry-window
+      fix.
 
 ## Known model-quality gotchas (not code bugs — prompts already account for these)
 
@@ -216,6 +471,22 @@ milestone — that file is scratch, **this file is the durable one**.
   real git repo via `workspace_service` needs both of these in its teardown**, or leftover
   `workspaces/*` directories will silently accumulate (this happened once already in M5 --
   `ignore_errors=True` was masking the failures rather than fixing them).
+- **Docker Desktop does not auto-start with Windows in this environment.** If
+  `sandbox_service.run_command` returns `exit_code: 1` with `"Sandbox unavailable: could not reach
+  Docker daemon"`, that's this, not a code bug -- launch
+  `C:\Program Files\Docker\Docker\Docker Desktop.exe` and poll `docker version` until it responds
+  (~10s in practice) before retrying.
+- **Running the full Docker-heavy pytest suite at the same time as a real agentic pipeline run
+  that also uses the sandbox causes false-negative verify failures**, specifically in the
+  server-boot smoke test: both compete for the same Docker daemon, and a container can be too
+  slow to get scheduled CPU to answer the health check within its retry window even though the
+  server process itself started fine (confirmed directly: a real 3-attempt `CoderAgent.run()`
+  recorded `server boot` as failed on every attempt while a full pytest run happened to be
+  running concurrently; re-running the identical check against the identical generated code in
+  isolation immediately after passed cleanly, `exit_code: 0`). Widened the health-check retry
+  loop (10 -> 30 attempts, `SERVER_BOOT_TIMEOUT_SECONDS` 30 -> 45) to make this less likely, but
+  the safest thing is still: don't run the full suite and a real end-to-end agent run at the same
+  time on this machine.
 
 ## Testing conventions established
 
@@ -286,6 +557,37 @@ milestone — that file is scratch, **this file is the durable one**.
   through the exact same human-facing approval endpoint used throughout this whole build.
 - `login_ui_metadata_v2.json` etc. (the v2 UI/UX artifacts from the run above) are real outputs
   of this milestone's verification, not test debris — left in place alongside the v1 set from M2.
+- **`workspaces/e-commerce-platform/repo`'s `main` now has a real, working Express+Vite scaffold**
+  (post-M8 fix, see deviation #17): `server/{package.json,src/app.js,src/server.js,.env.example}`
+  and `client/{package.json,vite.config.js,index.html,src/{main.jsx,App.jsx,index.css}}` were
+  backfilled via `ensure_project_repo`, and the already-merged Login feature was hand-wired into
+  them (`app.js` mounts `auth.routes.js` at `/api/auth`; `App.jsx` routes `/login` to
+  `LoginPage`), plus `bcrypt`/`jsonwebtoken`/`axios`/`jwt-decode` relocated into the correct
+  `server`/`client` `package.json`. `client/package-lock.json` and `server/package-lock.json`
+  are also real, committed output of the verification run (not debris). `git log --oneline -6`
+  on `main` at time of writing: `c44825f` (lockfiles) → `d272f24` (Login wiring) → `de4de30`/
+  `cbc1ac9` (scaffold backfill) → `667b0ef` (Login merge) → `c8bd481` (M4 manual coding attempt)
+  → `0f5fcb3` (original bare scaffold, now superseded).
+- **`main` also has `d513acc` on top of the above** ("Backfill scaffold upgrades: security
+  middleware, DB connection, error handling") -- item 18's `_backfill_scaffold_upgrades` firing
+  for real against this repo, adding helmet/rate-limit/`FEATURE_ROUTES_START`/`_END`/error-handler
+  to `app.js` (preserving the already-mounted `authRoutes`) and guarded `mongoose.connect` to
+  `server.js`, confirmed via the diff at the time (not test debris).
+- **`feature/signup` branch (not yet merged, pending human review)**: two real Coder Agent
+  commits (`66cf00d` attempt 1, `864a706` attempt 2 -- attempt 3 made no additional changes and
+  wasn't committed since nothing new was dirty) modify `server/src/routes/auth.routes.js` (adds
+  a real, validated `/signup` route: required-field check, existing-user check, JWT issuance) and
+  `server/src/models/UserCredentials.js` (adds the `fullName` field), plus `bcryptjs` installed
+  (declared at the repo root by the model's own `npm install` rather than `server/package.json`
+  -- a real, minor planner/coding-loop imprecision worth knowing about, though harmless since
+  `UserCredentials.js` still uses the original `bcrypt`, not `bcryptjs`, for its hashing). Code
+  plan v1 + a first artifact set (`verification_passed: false`, from the contention-confounded
+  run) plus a corrected v2 artifact set (`verification_passed: true`, from the clean re-verify --
+  same code, accurate result) both exist under `outputs/e-commerce-platform/feature-signup/
+  05_code/`; v2 is the one to review/approve. Signup's UI/UX v2 (LoginForm genuinely reused
+  byte-for-byte, SignupForm freshly generated -- see item 17) was approved for real through
+  `POST /api/v1/artifacts/{id}/approval` during this session, which is what resumed the graph
+  into this real `coder_node` run in the first place.
 
 ## Where to look
 

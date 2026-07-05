@@ -196,3 +196,116 @@ def test_run_shell_runs_allowed_command(project_and_tools):
     result = project_and_tools["tools"]["run_shell"].invoke({"command": "node --version"})
     assert "exit_code: 0" in result
     assert "v" in result  # node version output starts with 'v'
+
+
+@pytest.fixture
+def project_and_tools_with_plan():
+    """
+    Same as project_and_tools, but on a real feature branch (as
+    CoderAgent.run() always is by the time the coding loop's tools are
+    built) and with a real code_plan_json bound, so
+    list_unimplemented_planned_files has something to check against.
+    """
+    from app.agents.coder_agent.tools import build_coder_tools
+
+    project_id = generate_id("project")
+    feature_id = generate_id("feature")
+
+    store.projects[project_id] = {"project_id": project_id, "project_name": f"Plan Tool Test {project_id}"}
+    store.features[feature_id] = {
+        "project_id": project_id,
+        "feature_id": feature_id,
+        "feature_name": "Plan Tool Test Feature",
+    }
+
+    workspace_service.start_feature_branch(project_id, feature_id)
+
+    code_plan_json = {
+        "files": [
+            {
+                "path": "server/src/routes/widget.routes.js",
+                "action": "create",
+                "rationale": "Widget endpoint.",
+                "maps_to": ["/api/widgets"],
+            }
+        ]
+    }
+
+    tools = build_coder_tools(project_id, feature_id, code_plan_json)
+    by_name = {t.name: t for t in tools}
+
+    yield {"project_id": project_id, "feature_id": feature_id, "tools": by_name}
+
+    repo_path = workspace_service.get_repo_path(project_id)
+    workspace_service.ensure_project_repo(project_id).close()
+    store.database["projects"].delete_one({"project_id": project_id})
+    store.database["features"].delete_one({"feature_id": feature_id})
+    shutil.rmtree(repo_path.parent, onerror=_remove_readonly)
+
+
+def test_list_unimplemented_planned_files_reports_gap_before_writing(project_and_tools_with_plan):
+    result = project_and_tools_with_plan["tools"]["list_unimplemented_planned_files"].invoke({})
+    assert "server/src/routes/widget.routes.js" in result
+    assert "NOT been touched" in result
+
+
+def test_list_unimplemented_planned_files_clears_after_writing(project_and_tools_with_plan):
+    tools = project_and_tools_with_plan["tools"]
+    tools["write_file"].invoke(
+        {"path": "server/src/routes/widget.routes.js", "content": "module.exports = {};"}
+    )
+
+    result = tools["list_unimplemented_planned_files"].invoke({})
+    assert "All planned files have been created" in result
+
+
+def test_list_unimplemented_planned_files_without_plan_reports_nothing_to_check(project_and_tools):
+    result = project_and_tools["tools"]["list_unimplemented_planned_files"].invoke({})
+    assert "No code_plan_json was provided" in result
+
+
+def test_check_syntax_valid_js(project_and_tools):
+    tools = project_and_tools["tools"]
+    tools["write_file"].invoke({"path": "server/valid.js", "content": "const x = 1;\nmodule.exports = x;"})
+
+    result = tools["check_syntax"].invoke({"path": "server/valid.js"})
+    assert "syntax OK" in result
+
+
+def test_check_syntax_invalid_js(project_and_tools):
+    tools = project_and_tools["tools"]
+    tools["write_file"].invoke({"path": "server/broken.js", "content": "const x = ;"})
+
+    result = tools["check_syntax"].invoke({"path": "server/broken.js"})
+    assert "syntax error" in result
+
+
+def test_check_syntax_valid_jsx(project_and_tools):
+    tools = project_and_tools["tools"]
+    tools["write_file"].invoke(
+        {
+            "path": "client/src/Widget.jsx",
+            "content": "export default function Widget() { return <div>hi</div>; }",
+        }
+    )
+
+    result = tools["check_syntax"].invoke({"path": "client/src/Widget.jsx"})
+    assert "syntax OK" in result
+
+
+def test_check_syntax_invalid_jsx(project_and_tools):
+    tools = project_and_tools["tools"]
+    tools["write_file"].invoke(
+        {"path": "client/src/Broken.jsx", "content": "export default function Broken() { return <div; }"}
+    )
+
+    result = tools["check_syntax"].invoke({"path": "client/src/Broken.jsx"})
+    assert "syntax error" in result
+
+
+def test_check_syntax_rejects_unsupported_extension(project_and_tools):
+    tools = project_and_tools["tools"]
+    tools["write_file"].invoke({"path": "server/notes.txt", "content": "hello"})
+
+    result = tools["check_syntax"].invoke({"path": "server/notes.txt"})
+    assert "only supports" in result

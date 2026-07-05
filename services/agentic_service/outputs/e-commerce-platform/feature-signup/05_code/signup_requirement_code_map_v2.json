@@ -1,0 +1,40 @@
+{
+  "files": [
+    {
+      "path": "package-lock.json",
+      "planned": false,
+      "maps_to": []
+    },
+    {
+      "path": "package.json",
+      "planned": false,
+      "maps_to": []
+    },
+    {
+      "path": "server/package-lock.json",
+      "planned": false,
+      "maps_to": []
+    },
+    {
+      "path": "server/src/models/UserCredentials.js",
+      "planned": true,
+      "maps_to": [
+        "User Credentials",
+        "FR-001",
+        "FR-005"
+      ]
+    },
+    {
+      "path": "server/src/routes/auth.routes.js",
+      "planned": true,
+      "maps_to": [
+        "/api/auth/signup",
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005"
+      ]
+    }
+  ]
+}

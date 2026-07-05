@@ -77,10 +77,17 @@ def _is_allowed_shell_command(command: str) -> bool:
     return False
 
 
-def build_coder_tools(project_id: str, feature_id: str) -> list[BaseTool]:
+def build_coder_tools(
+    project_id: str, feature_id: str, code_plan_json: dict[str, Any] | None = None
+) -> list[BaseTool]:
     """
-    Build the 8 Coder Agent tools, scoped to one project's workspace and one
-    feature's approved UI/UX output.
+    Build the Coder Agent tools, scoped to one project's workspace, one
+    feature's approved UI/UX output, and (for list_unimplemented_planned_files)
+    one run's approved code_plan_json.
+
+    code_plan_json is optional so existing callers/tests that only need the
+    file/shell tools don't have to supply a plan -- list_unimplemented_planned_files
+    degrades to reporting "no plan available" rather than raising when omitted.
     """
 
     workspace_service.ensure_project_repo(project_id)
@@ -254,6 +261,85 @@ def build_coder_tools(project_id: str, feature_id: str) -> list[BaseTool]:
 
         return Path(artifact["file_path"]).read_text(encoding="utf-8")
 
+    @tool
+    def list_unimplemented_planned_files() -> str:
+        """
+        Compare the approved plan's file list against what has actually been
+        created/modified/deleted so far in this workspace (computed from git,
+        not from memory of your own tool calls) and report any planned file
+        you have not yet touched. Call this before ending your turn -- do not
+        rely on your own recollection of what you've done; check here first.
+        """
+        if not code_plan_json:
+            return "No code_plan_json was provided for this run -- nothing to check against."
+
+        touched = workspace_service.get_touched_files(project_id, feature_id)
+        touched_paths = set(touched["added"]) | set(touched["modified"]) | set(touched["deleted"])
+
+        gaps = []
+        for file_entry in code_plan_json.get("files", []):
+            path = file_entry.get("path")
+            action = file_entry.get("action")
+
+            if not path or path in touched_paths:
+                continue
+
+            gaps.append(f"- {path} (action: {action}, rationale: {file_entry.get('rationale', '')})")
+
+        if not gaps:
+            return "All planned files have been created, modified, or deleted as required."
+
+        return (
+            "The following planned files have NOT been touched yet -- address these "
+            "before ending your turn:\n" + "\n".join(gaps)
+        )
+
+    @tool
+    def check_syntax(path: str) -> str:
+        """
+        Run a fast syntax check on a single .js/.jsx file you just wrote or
+        patched, without the cost of a full install/build. Use this right
+        after write_file/apply_patch on any .js/.jsx file, before moving on.
+        """
+        try:
+            target = _resolve_within(workspace_root, path)
+        except PathEscapesWorkspaceError as error:
+            return str(error)
+
+        if not target.exists() or not target.is_file():
+            return f"File not found: {path}"
+
+        suffix = target.suffix.lower()
+        if suffix not in {".js", ".jsx", ".mjs", ".cjs"}:
+            return f"check_syntax only supports .js/.jsx/.mjs/.cjs files, got: {path}"
+
+        relative_path = target.relative_to(workspace_root).as_posix()
+        is_jsx = suffix == ".jsx"
+
+        if is_jsx:
+            check_script = (
+                "const fs = require('fs');"
+                "const { parse } = require('@babel/parser');"
+                f"const code = fs.readFileSync('{relative_path}', 'utf-8');"
+                "try {"
+                "  parse(code, { sourceType: 'module', plugins: ['jsx'] });"
+                "  console.log('SYNTAX_OK');"
+                "} catch (error) {"
+                "  console.error('SYNTAX_ERROR: ' + error.message);"
+                "  process.exit(1);"
+                "}"
+            )
+            command = f"node -e \"{check_script}\""
+        else:
+            command = f"node --check {relative_path}"
+
+        result = sandbox_service.run_command(project_id=project_id, command=command, cwd=".", timeout=30)
+
+        if result["exit_code"] == 0:
+            return f"{path}: syntax OK."
+
+        return f"{path}: syntax error.\n{result['stderr'] or result['stdout']}"
+
     return [
         list_dir,
         read_file,
@@ -263,6 +349,8 @@ def build_coder_tools(project_id: str, feature_id: str) -> list[BaseTool]:
         search_code,
         read_project_manifest,
         read_ui_component,
+        list_unimplemented_planned_files,
+        check_syntax,
     ]
 
 

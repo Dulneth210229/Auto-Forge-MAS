@@ -57,7 +57,10 @@ logger = get_logger(__name__)
 
 MAX_PLANNING_ATTEMPTS = 2
 MAX_CODING_ATTEMPTS = 3
-CODING_LOOP_RECURSION_LIMIT = 50
+# Bumped from 50 -- the coding loop now also calls list_unimplemented_planned_files
+# and check_syntax (once per .js/.jsx file written/patched) as real, encouraged
+# self-check tool calls, which use up turns that used to be pure file-editing budget.
+CODING_LOOP_RECURSION_LIMIT = 65
 
 
 class CoderAgent:
@@ -210,11 +213,12 @@ class CoderAgent:
         self, project_id: str, feature_id: str, code_plan_json: dict[str, Any]
     ) -> tuple[dict[str, Any], int]:
         prior_failure_output = None
+        already_touched: dict[str, list[str]] | None = None
         verify_result: dict[str, Any] = {"passed": False, "steps": []}
 
         for attempt in range(1, MAX_CODING_ATTEMPTS + 1):
-            react_agent = build_coder_react_agent(project_id, feature_id)
-            task_message = build_task_message(code_plan_json, prior_failure_output)
+            react_agent = build_coder_react_agent(project_id, feature_id, code_plan_json)
+            task_message = build_task_message(code_plan_json, prior_failure_output, already_touched)
 
             await react_agent.ainvoke(
                 {"messages": [{"role": "user", "content": task_message}]},
@@ -225,7 +229,31 @@ class CoderAgent:
                 project_id, feature_id, message=f"Coder Agent attempt {attempt}: {feature_id}"
             )
 
-            verify_result = self.verifier.verify(project_id, code_plan_json)
+            already_touched = workspace_service.get_touched_files(project_id, feature_id)
+            gaps = self._find_plan_gaps(code_plan_json, already_touched)
+
+            if gaps:
+                logger.warning(
+                    "Coding attempt %d/%d for feature_id=%s left %d planned file(s) untouched",
+                    attempt,
+                    MAX_CODING_ATTEMPTS,
+                    feature_id,
+                    len(gaps),
+                )
+                prior_failure_output = self._format_plan_gaps(gaps)
+                verify_result = {
+                    "passed": False,
+                    "steps": [
+                        {
+                            "name": "planned files touched",
+                            "status": "failed",
+                            "output": prior_failure_output,
+                        }
+                    ],
+                }
+                continue
+
+            verify_result = self.verifier.verify(project_id, feature_id, code_plan_json)
 
             if verify_result["passed"]:
                 return verify_result, attempt
@@ -239,6 +267,38 @@ class CoderAgent:
             prior_failure_output = self._summarize_verify_failure(verify_result)
 
         return verify_result, MAX_CODING_ATTEMPTS
+
+    def _find_plan_gaps(
+        self, code_plan_json: dict[str, Any], touched: dict[str, list[str]]
+    ) -> list[dict[str, str]]:
+        """
+        Deterministically compute which planned files were never created,
+        modified, or deleted this attempt -- computed from git (via
+        workspace_service.get_touched_files), never trusted from the coding
+        loop's own self-report that it "finished." Runs before the expensive
+        verify.py gate (npm install x2, server boot, client build) so a
+        plan that's silently incomplete fails fast and cheaply instead of
+        only being caught after minutes of infra checks that were never
+        going to matter.
+        """
+        touched_paths = set(touched["added"]) | set(touched["modified"]) | set(touched["deleted"])
+
+        return [
+            {
+                "path": file_entry["path"],
+                "action": file_entry.get("action", ""),
+                "rationale": file_entry.get("rationale", ""),
+            }
+            for file_entry in code_plan_json.get("files", [])
+            if file_entry.get("path") and file_entry["path"] not in touched_paths
+        ]
+
+    def _format_plan_gaps(self, gaps: list[dict[str, str]]) -> str:
+        lines = [f"- {gap['path']} (action: {gap['action']}, rationale: {gap['rationale']})" for gap in gaps]
+        return (
+            "The following planned files were never created, modified, or deleted in this "
+            "attempt -- implement these before doing anything else:\n" + "\n".join(lines)
+        )
 
     def _summarize_verify_failure(self, verify_result: dict[str, Any]) -> str:
         failed_steps = [step for step in verify_result["steps"] if step["status"] == "failed"]
