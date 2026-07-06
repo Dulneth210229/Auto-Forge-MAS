@@ -734,6 +734,181 @@ milestone — that file is scratch, **this file is the durable one**.
       `window.confirm(...)` guard, nothing else touched), and `verify()` came back clean on every
       step except the same already-known, out-of-scope `page reachability` gap for
       `/tasks/:taskId` (unrelated to this revision, not a regression). Saved as artifact set v5.
+22. **`CoderAgent.revise()` only worked when the human named the exact file(s) to change -- a
+    vague, file-unspecified request (e.g. "styles are missing, add tailwind css") never correctly
+    identified which files were affected. Fixed by giving revision planning real tools to look at
+    the actual codebase, instead of a single-shot LLM call with zero visibility into it.** The
+    user reported this directly, having had to manually enumerate files like `TaskflowHomePage.jsx`
+    and `TaskDetailPage.jsx` one at a time to get anything done. Root cause, confirmed by reading
+    the code: `code_plan_json` for a revision was produced by `CodePlanner.generate()` -- a
+    single-shot, non-agentic LLM call whose only context is the SRS/Architecture Plan/project
+    manifest/UI manifest/human comment, with **zero ability to look at the real, current files** --
+    it could only correctly scope a change when told exactly what to do, never when it had to
+    figure out *what's affected* on its own.
+    - **New agentic revision planner**, reusing tools/patterns already proven elsewhere in this
+      codebase rather than inventing new mechanisms:
+      - `tools.py`'s new `build_revision_planning_tools(project_id, feature_id)`: a read-only
+        subset of the coding loop's own tools (`list_dir`/`read_file`/`search_code`/
+        `read_project_manifest`/`read_ui_component` -- explicitly excludes write_file/apply_patch/
+        run_shell/check_syntax/list_unimplemented_planned_files, since planning must never touch
+        the working tree), plus a new `submit_code_plan(plan_json: str)` tool -- the model's one
+        and only way to finish. Deliberately a JSON **string** argument, not a nested `list[dict]`
+        tool argument, so parsing reuses the already-proven `CodePlanner._extract_json_object`
+        (with its existing repair-prompt fallback) instead of an untested nested tool-call schema.
+      - `planner.py`'s new `CodePlanner.generate_via_exploration(...)`: builds the same
+        `create_agent(model=get_agentic_chat_model(), tools=..., system_prompt=...)` shape
+        `coding_loop.py`'s `build_coder_react_agent` already uses, with a bounded
+        `REVISION_PLANNING_RECURSION_LIMIT` (see below for why this needed raising twice).
+      - New `CODE_PLANNER_AGENTIC_REVISION_SYSTEM_PROMPT` + `build_agentic_revision_planner_user_prompt`
+        (`prompt.py`) -- shares the existing coverage/scaffold-awareness hard rules with the
+        single-shot prompt (factored into `_CODE_PLANNER_SHARED_HARD_RULES`/`_CODE_PLAN_JSON_SHAPE`
+        to avoid drift), adds explicit instruction to use the tools (especially for a broad,
+        file-unspecified request), and seeds the prompt with the cumulative file list from
+        `_collect_cumulative_plan_files` (item 21's fix) as a starting point the model can still
+        look beyond via its own tools.
+      - `agent.py`: `_plan_with_retries` gained an `exploration_context: tuple[project_id,
+        feature_id] | None` -- when set (only `revise()` sets it; `run()` is unaffected, since
+        planning happens before any feature branch exists there), each attempt calls
+        `generate_via_exploration` instead of `generate`. **Required reordering in `revise()`**:
+        `workspace_service.resume_feature_branch(...)` now happens BEFORE planning, not after --
+        the exploration tools read whatever is currently checked out, so the feature branch's real
+        content must already be checked out when planning starts.
+    - **Two more real, reachable failure modes found ONLY by running this for real against the
+      live Task Comments feature with the user's exact wording -- neither was caught by the
+      mock-based unit tests written first, since those don't exercise a real, multi-turn
+      tool-calling loop**:
+      1. The exploration loop is genuinely open-ended (a vague ask can require many list_dir/
+         read_file calls), and the first real run used 16 real tool-calling turns without ever
+         calling `submit_code_plan`, hitting the initial 25-turn budget and raising
+         `CodePlanGenerationError` uncaught -- crashing the whole `revise()` call. Fixed two ways,
+         mirroring the exact lesson already learned for the coding loop's `GraphRecursionError`
+         (item 20): bumped `REVISION_PLANNING_RECURSION_LIMIT` 25 -> 50, and made
+         `_plan_with_retries` catch `CodePlanGenerationError` from the exploration path and retry
+         with an efficiency-focused hint ("don't re-read a file you've already read..."), instead
+         of letting it crash the request.
+      2. Even with real exploration happening, the model **correctly discovered Tailwind was
+         already fully configured project-wide** (tailwind.config.js/postcss.config.js/index.css's
+         `@tailwind` directives all already present) but still **converged on the wrong fix**
+         (planning to modify `index.css`) instead of finding the one actual unstyled page
+         (`TaskflowHomePage.jsx`, using raw inline `style={{...}}` throughout, zero `className`
+         usage). Root cause: finding files that do **NOT** match a pattern (no Tailwind classes) is
+         a much harder "inverse search" for a model to carry out reliably via manual list_dir/
+         read_file/search_code than finding files that DO match one. Fixed with a new deterministic
+         tool, mirroring the exact `nav_checker.py`/`route_checker.py` "cheap, best-effort regex
+         heuristic" precedent: `style_checker.py`'s `check_component_styling(workspace_root)`
+         scans every `.jsx` file under `client/src/pages`/`client/src/components` and reports
+         `"styled"` (has `className=`), `"inline_styles"` (only raw `style={{`/`style={`), or
+         `"unstyled"` (neither) -- exposed as a new `check_component_styling` tool in
+         `build_revision_planning_tools`, with the system prompt explicitly instructing the model
+         to call it FIRST for a styling-related comment and trust its answer over manual inference.
+    - **Real end-to-end proof, the user's exact reported problem, verified twice (once
+      pre-`check_component_styling`, confirming the gap; once after, confirming the fix)**: called
+      `coder_agent.revise('feature_5521adbd', ...)` with the literal comment "Styles are missing in
+      the generated code so add styles using tailwind css" -- **no file names given at all**.
+      Before the styling tool: planned only `client/src/index.css` (wrong -- Tailwind was already
+      configured). After adding the tool: planned exactly `client/src/pages/TaskflowHomePage.jsx`
+      (modify), with the model's own summary correctly stating "All other components appear to
+      already be using Tailwind CSS classes appropriately" -- an accurate, correctly-scoped
+      diagnosis with zero file names supplied by the human. The actual generated diff is exactly
+      right: every raw inline `style={{...}}` in that file was replaced with the equivalent
+      Tailwind utility classes (`p-8 font-sans`, `text-2xl font-bold`, `mt-2`, `text-blue-600
+      hover:underline`, etc.), nothing else touched.
+    - **Known, separate, pre-existing bug found along the way, NOT part of this fix and not
+      introduced by it**: this run's `verify()` still reported `verification_passed: False`, but
+      solely because `client build (vite build)` fails with `ReferenceError: module is not defined
+      in ES module scope` at `client/postcss.config.js:1` -- that file uses CommonJS
+      (`module.exports = ...`) while `client/package.json` declares `"type": "module"`, which
+      forces Node to treat every `.js` file as an ES module. Confirmed this predates this fix
+      entirely (`postcss.config.js` already existed, already broken, on the commit before this run
+      started) -- likely a leftover from earlier, separate manual testing that set up Tailwind in
+      this project. The coding loop actually noticed and attempted a fix on its own initiative
+      (created a `postcss.config.cjs` with the same, correct content -- `.cjs` is exempt from the
+      `"type": "module"` rule), but left the original broken `postcss.config.js` in place alongside
+      it, so the build still fails (Vite/PostCSS's config resolution still finds the broken `.js`
+      file). **Not fixed here** -- deleting the stale `client/postcss.config.js` (keeping the
+      already-correct `.cjs` version) would resolve it, but that's a separate, small, pre-existing
+      project bug outside this session's scope (making `revise()` understand vague requests), left
+      for a future pass or a human's own `git rm client/postcss.config.js` on the live project.
+    - Tests: `tests/test_style_checker.py` (new, 6, pure regex-heuristic tests, no LLM/Docker),
+      `tests/test_revision_planner_tools.py` (+1 for `check_component_styling`, tool-set-shape
+      assertion updated), `tests/test_coder_planner_exploration.py` (new, 4: parses a submitted
+      plan, raises when never submitted, recursion-limit-as-clean-failure, malformed-JSON repair
+      path -- all mock-based, no real LLM), `tests/test_coder_agent_revise.py` (+2: resume-before-
+      planning call-order assertion, exploration-recursion-limit retry-with-efficiency-hint).
+      Full suite: **172 passed** (up from 156 before this item).
+23. **Two more real bugs found from the user continuing to hit real, reachable failures through
+    the live `/coder/revise` endpoint on the same TaskFlow feature -- one in the exploration
+    planner's reliability at real project scale, one an actual, separate frontend bug (a blank
+    page mistaken for "no styles").**
+    - **Exploration planner reliability at real project scale, confirmed with two full real
+      re-runs of the same request** (a vague "this /tasks endpoint doesn't have styles... or
+      TaskDetailPage.jsx" comment): the first hit `REVISION_PLANNING_RECURSION_LIMIT` (still 50 at
+      the time) after real, substantial exploration; a second real run (~4.5 hours, due to a severe
+      apparent Ollama/inference slowdown in this environment -- individual tool-calling turns that
+      previously took seconds took minutes each) got through both planning attempts without hitting
+      the turn limit at all, but **both times submitted a plan with an empty `files` list**,
+      failing `code_plan_json.files must be a non-empty list` -- a different failure mode than
+      either previously-seen one (recursion exhaustion, or coverage rejection). Given the multi-hour
+      real cost of further live reproduction, root-caused and fixed the improvable parts directly
+      rather than continuing to re-run live:
+      - `REVISION_PLANNING_RECURSION_LIMIT` bumped 50 -> 80 (`planner.py`) -- exploration is still
+        cheap (filesystem-only), so a larger budget costs little and helps as the project (now
+        11+ files across many revisions) keeps growing.
+      - `CODE_PLANNER_AGENTIC_REVISION_SYSTEM_PROMPT` gained a new rule 1b (`prompt.py`): planning's
+        job is only to decide WHICH files need a plan entry, not to draft the actual code change (a
+        later, separate coding step does that and reads each file itself) -- so it should prefer a
+        summarizing tool (`check_component_styling`/`read_project_manifest`/`search_code`) over
+        reading full file contents one at a time, and call `submit_code_plan` as soon as it's
+        confident rather than continuing to explore "to be thorough." This directly targets wasted
+        turns spent reading files whose content isn't actually needed for a planning-level decision.
+      - The exploration-recursion-limit retry feedback (`agent.py`) was rewritten: the old text
+        ("don't re-read a file you've already read") was **not actionable** -- a fresh retry
+        attempt is a brand-new agent conversation with zero memory of what the previous attempt
+        actually explored, so it has no way to know what "already read" even refers to. The new
+        feedback asks for a general strategy change instead (prefer summarizing tools, stop
+        exploring once confident) rather than an unfollowable specific instruction.
+      - **Not yet root-caused**: why the model submitted an *empty* files list specifically (rather
+        than, say, a wrong-but-non-empty one, as happened earlier with `index.css`). No visibility
+        into the actual tool-call trace was available after the fact (no checkpointer configured on
+        the exploration agent, so a completed run's intermediate messages aren't inspectable
+        afterward) -- if this recurs, adding a checkpointer (or logging each tool call as it
+        happens) would be the way to actually see what the model was doing right before submitting.
+    - **A second, real, structural bug in the coverage-union fix (item 21/22)**: even after fixing
+      the turn-budget/efficiency issues, a real run's plan was rejected by `plan_validator` for not
+      covering the literal endpoint string `/api/task-comments` -- but the actual backend routes
+      had been legitimately restructured (in earlier work) to `/api/tasks/:taskId/comments` +
+      `/api/comments/:commentId`, a real, valid API design improvement. Since the Architecture
+      Plan's `api_endpoints` is a frozen snapshot from before the feature was ever implemented, and
+      `_collect_cumulative_plan_files`'s union can only reflect what's in *saved plan* `maps_to`
+      values (not the literal Architecture Plan requirement, which never changes), **once a
+      feature's real API shape evolves past that snapshot, no future revision can ever satisfy the
+      old literal string again** -- permanently blocking every subsequent `revise()` call on that
+      feature, regardless of plan quality or turn budget. Fixed: `CodePlanValidator.validate(...)`
+      (`plan_validator.py`) gained `enforce_endpoint_coverage: bool = True` -- `_plan_with_retries`
+      (`agent.py`) passes `enforce_endpoint_coverage=exploration_context is None`, so **endpoint
+      coverage remains a hard gate for a first `run()`** (where it's genuinely important that the
+      plan covers everything the Architecture Plan promised) **but is skipped for `revise()`**
+      (which builds on an already-implemented, already-approved feature whose real API shape can
+      legitimately keep evolving). Entity and requirement-ID coverage remain enforced for revisions
+      either way -- those track WHAT the feature does, not the exact shape of its API, and are far
+      less likely to legitimately go stale the same way. New tests in
+      `tests/test_coder_plan_validator.py` (+2: flag skips endpoint coverage only, entity/
+      requirement coverage still enforced; flag defaults to `True`).
+    - **The actual, real frontend bug the user was hitting**: not a styling gap at all.
+      `TaskDetailPage.jsx` already existed, fully built and already using real Tailwind classes
+      throughout (card layout, priority/status badges, styled comment list/input) -- but **no
+      `<Route path="/tasks/:taskId">` was ever registered** in `App.jsx`, even though
+      `TaskflowHomePage.jsx` already links to specific task URLs (`/tasks/123`, etc.). Navigating to
+      any of those links rendered a **completely blank page** (confirmed directly with a real
+      Playwright screenshot before the fix) -- indistinguishable, to a human, from "the page has no
+      styles," since a page that never renders at all looks exactly like one with zero CSS. Fixed
+      directly (added the missing `<Route>` + import) rather than through `revise()` again, given
+      the multi-hour real cost already spent reproducing the exploration-planner issues above.
+      Verified with a real browser screenshot after the fix: `/tasks/123` renders the fully-styled
+      Task Details page (including a styled "Failed to load comments" error state, since no live
+      backend was connected for this specific check -- expected, not a bug) with zero JS errors,
+      and full `coder_verifier.verify()` passes end-to-end (`page reachability` now correctly
+      passes too, since `/tasks/:taskId`'s static prefix `/tasks` is registered and linked).
 
 ## Known model-quality gotchas (not code bugs — prompts already account for these)
 
@@ -881,6 +1056,43 @@ milestone — that file is scratch, **this file is the durable one**.
   **Any logic anywhere in this codebase that needs "the full picture of what a feature has
   implemented so far" must walk every artifact version, not assume the latest one is
   self-contained** -- that assumption is only ever true before the first revision.
+- **A model reliably finds files that match a pattern, but unreliably finds files that DON'T** --
+  confirmed directly: the agentic revision planner (item 22) correctly discovered Tailwind was
+  already configured project-wide via its own tools, but still converged on the wrong fix, because
+  manually cross-referencing "every page/component file" against "which ones showed up in a
+  className search" to deduce the files that DIDN'T is a much harder inverse-search reasoning task
+  than a direct grep. **Any future case that needs "which files are missing X" (not "which files
+  have X") should get a cheap, deterministic tool/check that answers it directly** (like
+  `style_checker.py`'s `check_component_styling`), rather than trusting an agentic loop to reliably
+  reason its way to the same answer via generic list_dir/read_file/search_code exploration alone.
+- **A real, transient Ollama/langchain-ollama streaming error was hit once during this session's
+  testing**: `ollama._types.ResponseError: XML syntax error on line 4: unexpected EOF` , raised
+  from deep inside `langchain_ollama`'s chat-streaming response aggregation, uncaught, crashing the
+  whole `revise()` call. Did not reproduce on an immediate retry of the identical request --
+  treated as a one-off transport/server hiccup (this environment's Ollama server has other
+  documented flakiness, e.g. Docker-contention false negatives), not a logic bug, and NOT specially
+  caught in code for that reason -- if this recurs reliably (not just once), it would be worth
+  broadening `_plan_with_retries`'s exploration-path exception handling beyond just
+  `CodePlanGenerationError` to catch this too.
+- **The agentic exploration planner has no checkpointer, so a completed run's actual tool-call
+  trace is not inspectable afterward** -- confirmed as a real diagnostic limitation: a live run
+  submitted an empty `files` list after extensive real exploration, and there was no way after the
+  fact to see what the model actually looked at or why it concluded there was nothing to plan.
+  **If this specific failure mode (a plan that parses but has empty/wrong content, despite
+  seemingly-successful exploration) recurs**, the way to actually root-cause it is to add a
+  checkpointer to the `create_agent(...)` in `CodePlanner.generate_via_exploration` (or log each
+  tool call/result as it happens) so the conversation is inspectable -- guessing from httpx
+  timestamps alone (as this session had to) only reveals *when* things happened, not *what* the
+  model was actually reasoning about.
+- **A feature's real API shape can legitimately evolve past its Architecture Plan's frozen
+  snapshot, and once that happens, no revision can ever satisfy the old literal requirement again**
+  -- confirmed directly: `/api/task-comments` (the Architecture Plan's original literal endpoint
+  string) was legitimately restructured to `/api/tasks/:taskId/comments` + `/api/comments/:commentId`
+  during earlier work, permanently blocking every subsequent `revise()` call's coverage check. Fixed
+  by skipping endpoint-literal-string coverage specifically for `revise()` (see item 23) -- **if a
+  similar "the original requirement no longer matches the evolved reality" problem is ever found for
+  entity names or requirement IDs**, the same reasoning (and the same `enforce_...` flag pattern)
+  would apply there too, though neither has shown this problem yet.
 
 ## Testing conventions established
 
@@ -1017,6 +1229,35 @@ milestone — that file is scratch, **this file is the durable one**.
     gap; every other step, including the now-fixed `home page render`, passes) -- v1-v3 (from
     earlier sessions/attempts) remain intact and superseded, matching this project's existing
     "never overwrite, always version" artifact convention.
+- **Item 22's real verification against `feature/task-comments`**: between this and the prior
+  session, the user independently exercised the (then-still-buggy) `/coder/revise` endpoint
+  directly through Swagger several times, which is how `client/src/pages/TaskflowHomePage.jsx` and
+  `client/src/components/TaskComments.jsx` came to exist on this branch (real, legitimate user
+  work, not debris -- left untouched). On top of that real state, this session's `revise()` calls
+  (real "add a loading spinner"/"add a delete confirmation dialog"/two "styles are missing, add
+  tailwind css" attempts) added further real commits, ending at `a80c559` ("Coder Agent attempt 3:
+  feature_5521adbd") -- the final, correct fix: `TaskflowHomePage.jsx`'s raw inline styles replaced
+  with Tailwind classes, plus a `client/postcss.config.cjs` the coding loop added on its own
+  initiative (attempting, incompletely, to fix the separate pre-existing PostCSS bug documented in
+  item 22). The latest artifact set (`artifact_d5833291` and siblings, `verification_passed:
+  False` solely due to that separate PostCSS bug) is left in place, pending human review -- not
+  merged. **Still not fixed**: `client/postcss.config.js` (the original, broken CommonJS file) is
+  still present alongside the new working `.cjs` version; deleting the former would let
+  `client build` pass cleanly.
+- **Item 23's real, direct fixes on `feature/task-comments`** (applied directly, not through
+  `revise()`, given the multi-hour real cost already spent reproducing the exploration-planner
+  issues that session): `d48b54e` removed a duplicate `<BrowserRouter>` in `App.jsx` that was
+  crashing the entire app to a blank page (React Router throws on nested Routers with no error
+  boundary to catch it); `0d7bf78` added the missing `tailwindcss`/`postcss`/`autoprefixer` npm
+  packages and deleted the stale `client/postcss.config.js` stub that was shadowing the real
+  `postcss.config.cjs` in Vite's config resolution (root cause of "Tailwind never actually
+  applies" -- confirmed empirically: built CSS grew from 136 bytes of raw, unprocessed `@tailwind`
+  directives to 12.86kB of real utility CSS); `22c03bb` registered the missing
+  `<Route path="/tasks/:taskId">` for `TaskDetailPage.jsx` (which already existed, fully built and
+  styled, but was never wired into routing -- confirmed via a real Playwright screenshot showing a
+  completely blank page before the fix, fully rendered after). Each commit has its own real,
+  independently-approvable artifact set (`artifact_dfc0e118`/`artifact_651f0b96`/`artifact_662fd295`
+  and siblings respectively), all with `verification_passed: True`.
 
 ## Where to look
 

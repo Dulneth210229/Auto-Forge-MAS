@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.agents.coder_agent.agent import CoderAgent
+from app.agents.coder_agent.planner import CodePlanGenerationError
 from app.core.enums import AgentName, ArtifactFormat, ArtifactType
 from app.schemas.coder_schema import CoderAgentReviseRequest
 from app.services.in_memory_store import store
@@ -234,7 +235,7 @@ async def test_revise_resumes_existing_branch_not_start_fresh(agent, feature_wit
     request = CoderAgentReviseRequest(revision_comment="Add a loading spinner.")
 
     with (
-        patch.object(agent.planner, "generate", new=AsyncMock(return_value=(EXISTING_PLAN, "raw"))),
+        patch.object(agent.planner, "generate_via_exploration", new=AsyncMock(return_value=(EXISTING_PLAN, "raw"))),
         patch.object(agent.plan_validator, "validate", return_value=None),
         patch("app.agents.coder_agent.agent.workspace_service") as mock_workspace,
         patch.object(
@@ -255,20 +256,60 @@ async def test_revise_resumes_existing_branch_not_start_fresh(agent, feature_wit
 
 
 @pytest.mark.asyncio
+async def test_revise_resumes_the_branch_before_planning_not_after(agent, feature_with_prior_run):
+    """
+    Required ordering for the agentic revision planner: its read-only tools
+    (list_dir/read_file/search_code) read whatever is currently checked out
+    in the workspace, so the feature branch must already be checked out
+    before planning starts -- not after, which is how run()'s
+    start_feature_branch/planning order works (there, planning happens
+    before any branch exists at all).
+    """
+    feature_id = feature_with_prior_run["feature_id"]
+    request = CoderAgentReviseRequest(revision_comment="Add a loading spinner.")
+
+    call_order = []
+
+    async def _fake_generate_via_exploration(**kwargs):
+        call_order.append("generate_via_exploration")
+        return EXISTING_PLAN, "raw"
+
+    with (
+        patch.object(agent.planner, "generate_via_exploration", new=_fake_generate_via_exploration),
+        patch.object(agent.plan_validator, "validate", return_value=None),
+        patch("app.agents.coder_agent.agent.workspace_service") as mock_workspace,
+        patch.object(
+            agent, "_code_with_retries", new=AsyncMock(return_value=({"passed": True, "steps": []}, 1))
+        ),
+        patch.object(agent, "_save_artifacts", return_value=["artifact_new"]),
+    ):
+        mock_workspace.diff_against_main.return_value = {
+            "added": [], "modified": [], "deleted": [], "diff_text": ""
+        }
+        mock_workspace.resume_feature_branch.side_effect = lambda *a, **k: call_order.append(
+            "resume_feature_branch"
+        )
+
+        await agent.revise(feature_id, request)
+
+    assert call_order == ["resume_feature_branch", "generate_via_exploration"]
+
+
+@pytest.mark.asyncio
 async def test_revise_frames_the_existing_plan_as_a_revision_not_a_rejection(agent, feature_with_prior_run):
     feature_id = feature_with_prior_run["feature_id"]
     request = CoderAgentReviseRequest(revision_comment="Add a loading spinner while comments load.")
 
     captured = {}
 
-    async def _fake_generate(**kwargs):
+    async def _fake_generate_via_exploration(**kwargs):
         captured["previous_plan_json"] = kwargs.get("previous_plan_json")
         captured["validation_feedback"] = kwargs.get("validation_feedback")
         captured["human_comment"] = kwargs.get("human_comment")
         return EXISTING_PLAN, "raw"
 
     with (
-        patch.object(agent.planner, "generate", new=_fake_generate),
+        patch.object(agent.planner, "generate_via_exploration", new=_fake_generate_via_exploration),
         patch.object(agent.plan_validator, "validate", return_value=None),
         patch("app.agents.coder_agent.agent.workspace_service") as mock_workspace,
         patch.object(
@@ -323,7 +364,7 @@ async def test_revise_validates_coverage_against_prior_plan_union_not_delta_alon
     }
 
     with (
-        patch.object(agent.planner, "generate", new=AsyncMock(return_value=(delta_only_plan, "raw"))),
+        patch.object(agent.planner, "generate_via_exploration", new=AsyncMock(return_value=(delta_only_plan, "raw"))),
         # plan_validator is intentionally NOT mocked here -- the real coverage
         # check is exactly what this test is verifying.
         patch("app.agents.coder_agent.agent.workspace_service") as mock_workspace,
@@ -376,7 +417,7 @@ async def test_revise_coverage_baseline_spans_every_prior_version_not_just_the_l
     }
 
     with (
-        patch.object(agent.planner, "generate", new=AsyncMock(return_value=(third_delta_plan, "raw"))),
+        patch.object(agent.planner, "generate_via_exploration", new=AsyncMock(return_value=(third_delta_plan, "raw"))),
         # plan_validator is intentionally NOT mocked here -- the real coverage
         # check is exactly what this test is verifying.
         patch("app.agents.coder_agent.agent.workspace_service") as mock_workspace,
@@ -392,4 +433,71 @@ async def test_revise_coverage_baseline_spans_every_prior_version_not_just_the_l
         output = await agent.revise(feature_id, request)
 
     assert output.code_plan_json == third_delta_plan
+    assert output.verification_passed is True
+
+
+@pytest.mark.asyncio
+async def test_revise_retries_exploration_planning_after_it_runs_out_of_turns(
+    agent, feature_with_full_coverage_prior_run
+):
+    """
+    Reproduces a real bug found running a genuinely vague revision request
+    ("styles are missing, add tailwind css") against a live feature: the
+    agentic exploration planner used 16 real tool-calling turns and still
+    hadn't called submit_code_plan when its turn budget ran out, raising
+    CodePlanGenerationError uncaught -- crashing the whole revise() call
+    instead of being treated as a recoverable attempt, the same way
+    _code_with_retries already treats a GraphRecursionError from the coding
+    loop. This confirms the fix: a CodePlanGenerationError from the
+    exploration path is now caught and retried with an efficiency-focused
+    hint, not left to crash the request.
+    """
+    feature_id = feature_with_full_coverage_prior_run["feature_id"]
+    request = CoderAgentReviseRequest(revision_comment="Styles are missing, add tailwind css.")
+
+    delta_plan = {
+        "files": [
+            {
+                "path": "client/src/components/CommentList.jsx",
+                "action": "modify",
+                "rationale": "Add tailwind styling",
+                "maps_to": [],
+            }
+        ],
+        "new_dependencies": [],
+        "env_vars_needed": [],
+        "summary": "Add tailwind styling.",
+    }
+
+    captured_feedback = []
+
+    async def _fake_generate_via_exploration(**kwargs):
+        captured_feedback.append(kwargs.get("validation_feedback"))
+        if len(captured_feedback) == 1:
+            raise CodePlanGenerationError(
+                "Coder Agent's agentic revision planner ended without calling "
+                "submit_code_plan (either it stopped early or hit the exploration turn limit of 50)."
+            )
+        return delta_plan, "raw"
+
+    with (
+        patch.object(agent.planner, "generate_via_exploration", new=_fake_generate_via_exploration),
+        # plan_validator is intentionally NOT mocked -- confirms the real coverage
+        # union check still passes for the eventual successful attempt.
+        patch("app.agents.coder_agent.agent.workspace_service") as mock_workspace,
+        patch.object(
+            agent, "_code_with_retries", new=AsyncMock(return_value=({"passed": True, "steps": []}, 1))
+        ),
+        patch.object(agent, "_save_artifacts", return_value=["artifact_new"]),
+    ):
+        mock_workspace.diff_against_main.return_value = {
+            "added": [], "modified": [], "deleted": [], "diff_text": ""
+        }
+
+        output = await agent.revise(feature_id, request)
+
+    assert len(captured_feedback) == 2
+    assert "HUMAN-REQUESTED REVISION" in captured_feedback[0]  # first attempt: normal revision framing
+    assert "summarizing tool" in captured_feedback[1]  # second attempt: strategy-change hint fed back
+    assert output.code_plan_json == delta_plan
     assert output.verification_passed is True

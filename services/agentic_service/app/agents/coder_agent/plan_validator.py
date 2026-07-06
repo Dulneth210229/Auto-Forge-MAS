@@ -37,13 +37,33 @@ class CodePlanValidator:
         srs_json: dict[str, Any],
         architecture_plan_json: dict[str, Any],
         code_plan_json: dict[str, Any],
+        enforce_endpoint_coverage: bool = True,
     ) -> None:
+        """
+        enforce_endpoint_coverage: set False for CoderAgent.revise() calls
+        only. The Architecture Plan's api_endpoints are a snapshot from
+        before the feature was ever implemented -- for a first run(), every
+        one of those literal endpoint strings genuinely must exist somewhere
+        in the plan. But a revision builds on an ALREADY-implemented,
+        already-approved feature, whose real API shape can legitimately
+        evolve past that snapshot (e.g. a refactor from a flat
+        `/api/task-comments` to a properly nested `/api/tasks/:taskId/comments`
+        + `/api/comments/:commentId`) -- confirmed as a real, reachable,
+        totally-blocking case: once that happens, no future revision plan can
+        ever satisfy the old literal string again, since it is no longer
+        what is actually implemented, and every revise() call would fail
+        this check forever regardless of turn budget or plan quality. Entity
+        and requirement-ID coverage remain enforced either way -- those
+        track WHAT the feature does, not the exact shape of its API, and are
+        far less likely to legitimately go stale the same way.
+        """
         errors: list[str] = []
 
         errors.extend(self._validate_structure(code_plan_json))
 
         if not errors:
-            errors.extend(self._validate_endpoint_coverage(architecture_plan_json, code_plan_json))
+            if enforce_endpoint_coverage:
+                errors.extend(self._validate_endpoint_coverage(architecture_plan_json, code_plan_json))
             errors.extend(self._validate_entity_coverage(architecture_plan_json, code_plan_json))
             errors.extend(self._validate_requirement_coverage(srs_json, code_plan_json))
 

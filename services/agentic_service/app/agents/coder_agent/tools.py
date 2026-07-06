@@ -28,6 +28,7 @@ from typing import Any
 
 from langchain_core.tools import BaseTool, tool
 
+from app.agents.coder_agent.style_checker import check_component_styling as _check_component_styling
 from app.core.enums import AgentName, ApprovalStatus, ArtifactFormat, ArtifactType
 from app.services.in_memory_store import store
 from app.services.project_memory_service import project_memory_service
@@ -352,6 +353,83 @@ def build_coder_tools(
         list_unimplemented_planned_files,
         check_syntax,
     ]
+
+
+REVISION_PLANNING_TOOL_NAMES = {
+    "list_dir",
+    "read_file",
+    "search_code",
+    "read_project_manifest",
+    "read_ui_component",
+}
+
+
+def build_revision_planning_tools(
+    project_id: str, feature_id: str
+) -> tuple[list[BaseTool], dict[str, Any]]:
+    """
+    Read-only subset of build_coder_tools, for the agentic revision planner
+    (planner.py's CodePlanner.generate_via_exploration) to look at the real,
+    current codebase before finalizing a plan -- explicitly excludes
+    write_file/apply_patch/run_shell/check_syntax/list_unimplemented_planned_files,
+    since planning must never touch the working tree.
+
+    Also returns a `submit_code_plan` tool: the model's one and only way to
+    finish. Its argument is a JSON-encoded string (not a nested list[dict]
+    tool argument) so parsing can reuse CodePlanner._extract_json_object
+    (with its existing repair-prompt fallback) instead of depending on a
+    nested tool-call schema this codebase hasn't already proven works.
+
+    Also returns a `check_component_styling` tool (style_checker.py):
+    directly reports which .jsx files under client/src/pages and
+    client/src/components currently use Tailwind classes, raw inline
+    styles, or neither -- confirmed necessary directly, not speculatively:
+    a real exploration run correctly found Tailwind was already configured
+    project-wide but still converged on the wrong fix (editing index.css)
+    because manually finding "which file has NO className" via list_dir/
+    read_file is a much harder inverse-search task than finding files that
+    DO match a pattern. This tool answers it directly instead.
+
+    Returns (tools, captured) where `captured` is a plain dict the
+    submit_code_plan tool writes into (key "plan_json") -- the caller reads
+    it after the agent loop ends, rather than parsing free-text chat output.
+    """
+    all_tools = build_coder_tools(project_id, feature_id)
+    read_only_tools = [t for t in all_tools if t.name in REVISION_PLANNING_TOOL_NAMES]
+
+    workspace_root = workspace_service.get_repo_path(project_id).resolve()
+    captured: dict[str, Any] = {}
+
+    @tool
+    def check_component_styling() -> str:
+        """
+        Best-effort scan of every .jsx file under client/src/pages and
+        client/src/components, reporting whether each one uses Tailwind
+        classes (className=), only raw inline styles (style={{...}}), or
+        neither. Call this when a human's revision comment describes a
+        styling/CSS issue without naming specific files -- it directly
+        tells you which files are affected instead of you having to infer
+        it by manually reading every file yourself.
+        """
+        results = _check_component_styling(workspace_root)
+
+        if not results:
+            return "No .jsx files found under client/src/pages or client/src/components."
+
+        return "\n".join(f"{item['path']}: {item['status']}" for item in results)
+
+    @tool
+    def submit_code_plan(plan_json: str) -> str:
+        """
+        Submit your final code plan as a JSON string, in the exact shape
+        described in your instructions. Call this exactly once, only after
+        you have explored enough to be confident about which files are
+        affected -- this ends your turn.
+        """
+        captured["plan_json"] = plan_json
+        return "Plan submitted."
+
+    return read_only_tools + [check_component_styling, submit_code_plan], captured
 
 
 def _find_approved_component_artifact(feature_id: str, component_name: str) -> dict[str, Any] | None:

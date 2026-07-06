@@ -19,13 +19,43 @@ import json
 import re
 from typing import Any
 
+from langchain.agents import create_agent
+from langgraph.errors import GraphRecursionError
+
 from app.agents.coder_agent.prompt import (
     CODE_PLAN_JSON_REPAIR_PROMPT,
+    CODE_PLANNER_AGENTIC_REVISION_SYSTEM_PROMPT,
     CODE_PLANNER_SYSTEM_PROMPT,
+    build_agentic_revision_planner_user_prompt,
     build_code_plan_repair_prompt,
     build_code_planner_user_prompt,
 )
+from app.agents.coder_agent.tools import build_revision_planning_tools
+from app.providers.agentic_model_factory import get_agentic_chat_model
 from app.services.llm_provider_service import llm_provider_service
+
+# Read-only exploration (list_dir/read_file/search_code) is cheap -- no
+# Docker/npm involved, just filesystem reads -- so this can be generous
+# without meaningfully slowing down a revision. Exists purely so a model
+# that never calls submit_code_plan can't loop forever.
+# Bumped 25 -> 50: a real run against a genuinely vague, multi-file revision
+# request ("styles are missing, add tailwind css") used 16 real tool-calling
+# turns and still hadn't called submit_code_plan when the original 25-turn
+# budget ran out -- the same class of exhaustion CODING_LOOP_RECURSION_LIMIT
+# hit and was bumped for (65 -> 100). CodePlanGenerationError from hitting
+# this limit is now also caught in _plan_with_retries and treated as a
+# recoverable attempt (efficiency-hint retry), not a crash -- the same
+# pattern _code_with_retries already uses for GraphRecursionError.
+# Bumped 50 -> 80: a real user request against this same project (by then
+# grown to ~11+ files across several revisions) exhausted the 50-turn budget
+# too. As the project a feature touches grows, "explore everything relevant"
+# genuinely costs more turns -- this alone doesn't fully solve that (see the
+# prompt's new rule 1b: prefer summarizing tools like check_component_styling
+# over reading every candidate file's full content, since only the later
+# coding step actually needs that), but a larger budget is still the cheap,
+# always-worth-doing half of the fix, since exploration itself is cheap (no
+# Docker/npm, just filesystem reads).
+REVISION_PLANNING_RECURSION_LIMIT = 80
 
 
 class CodePlanGenerationError(Exception):
@@ -98,6 +128,99 @@ class CodePlanner:
             raise CodePlanGenerationError(
                 f"Coder Agent planner could not produce valid code_plan_json after one "
                 f"repair attempt: {error}"
+            ) from error
+
+    async def generate_via_exploration(
+        self,
+        *,
+        project_id: str,
+        feature_id: str,
+        project: dict,
+        feature: dict,
+        srs_json: dict,
+        architecture_plan_json: dict,
+        ui_integration_manifest_json: dict | None,
+        project_manifest_json: dict,
+        human_comment: str | None,
+        previous_plan_json: dict | None,
+        validation_feedback: str | None,
+        coverage_baseline_files: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], str]:
+        """
+        Agentic counterpart to generate() -- used only for CoderAgent.revise().
+
+        Unlike generate() (a single-shot LLM call with zero visibility into
+        the actual codebase), this gives the model read-only tools
+        (list_dir/read_file/search_code/read_project_manifest/
+        read_ui_component) to look at the real, current feature branch
+        before finalizing a plan. This is what lets a vague, file-unspecified
+        revision comment (e.g. "styles are missing, add tailwind css") be
+        correctly scoped to every actually-affected file, instead of only
+        working when the human names each file explicitly.
+
+        The caller MUST have already checked out the correct branch
+        (workspace_service.resume_feature_branch) before calling this --
+        the tools read whatever is currently on disk.
+
+        Returns (code_plan_json, raw_plan_json_string), mirroring generate()'s
+        (code_plan_json, raw_output) shape.
+        """
+        tools, captured = build_revision_planning_tools(project_id, feature_id)
+
+        agent = create_agent(
+            model=get_agentic_chat_model(),
+            tools=tools,
+            system_prompt=CODE_PLANNER_AGENTIC_REVISION_SYSTEM_PROMPT,
+        )
+
+        user_prompt = build_agentic_revision_planner_user_prompt(
+            project=project,
+            feature=feature,
+            srs_json=srs_json,
+            architecture_plan_json=architecture_plan_json,
+            ui_integration_manifest_json=ui_integration_manifest_json,
+            project_manifest_json=project_manifest_json,
+            human_comment=human_comment,
+            previous_plan_json=previous_plan_json,
+            validation_feedback=validation_feedback,
+            coverage_baseline_files=coverage_baseline_files,
+        )
+
+        try:
+            await agent.ainvoke(
+                {"messages": [{"role": "user", "content": user_prompt}]},
+                config={"recursion_limit": REVISION_PLANNING_RECURSION_LIMIT},
+            )
+        except GraphRecursionError:
+            pass  # handled uniformly below -- "plan_json" simply won't be in `captured`
+
+        if "plan_json" not in captured:
+            raise CodePlanGenerationError(
+                "Coder Agent's agentic revision planner ended without calling "
+                "submit_code_plan (either it stopped early or hit the exploration "
+                f"turn limit of {REVISION_PLANNING_RECURSION_LIMIT})."
+            )
+
+        raw_output = captured["plan_json"]
+
+        try:
+            return self._extract_json_object(raw_output), raw_output
+        except ValueError:
+            pass
+
+        repaired_output = await llm_provider_service.get_provider().invoke_agent(
+            [
+                {"role": "system", "content": CODE_PLAN_JSON_REPAIR_PROMPT},
+                {"role": "user", "content": build_code_plan_repair_prompt(raw_output)},
+            ]
+        )
+
+        try:
+            return self._extract_json_object(repaired_output), repaired_output
+        except ValueError as error:
+            raise CodePlanGenerationError(
+                f"Coder Agent's agentic revision planner submitted a plan that could not be "
+                f"parsed as valid code_plan_json, even after one repair attempt: {error}"
             ) from error
 
     def _extract_json_object(self, text: str) -> dict[str, Any]:

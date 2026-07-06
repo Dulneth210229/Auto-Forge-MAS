@@ -43,7 +43,7 @@ from app.agents.coder_agent.diff_builder import (
     build_setup_instructions_markdown,
 )
 from app.agents.coder_agent.plan_validator import CodePlanValidationError, code_plan_validator
-from app.agents.coder_agent.planner import code_planner
+from app.agents.coder_agent.planner import CodePlanGenerationError, code_planner
 from app.agents.coder_agent.schemas import CoderAgentInput, CoderAgentOutput
 from app.agents.coder_agent.verify import coder_verifier
 from app.core.enums import AgentName, ApprovalStatus, ArtifactFormat, ArtifactType
@@ -270,15 +270,20 @@ class CoderAgent:
 
         coverage_baseline_files = self._collect_cumulative_plan_files(feature_id)
 
+        # Must happen BEFORE planning, not after: the agentic revision planner's
+        # tools (list_dir/read_file/search_code) read whatever is currently
+        # checked out in the workspace, so the feature branch's real, current
+        # file content must already be checked out when planning starts.
+        workspace_service.resume_feature_branch(project["project_id"], feature_id)
+
         code_plan_json = await self._plan_with_retries(
             agent_input,
             srs_json,
             previous_plan_json=existing_plan_json,
             validation_feedback=revision_feedback,
             coverage_baseline_files=coverage_baseline_files,
+            exploration_context=(project["project_id"], feature_id),
         )
-
-        workspace_service.resume_feature_branch(project["project_id"], feature_id)
 
         verify_result, coding_attempts = await self._code_with_retries(
             project["project_id"], feature_id, code_plan_json
@@ -377,6 +382,7 @@ class CoderAgent:
         previous_plan_json: dict[str, Any] | None = None,
         validation_feedback: str | None = None,
         coverage_baseline_files: list[dict[str, Any]] | None = None,
+        exploration_context: tuple[str, str] | None = None,
     ) -> dict[str, Any]:
         """
         previous_plan_json/validation_feedback can be pre-seeded by a caller
@@ -397,21 +403,82 @@ class CoderAgent:
         untouched by this revision. Coverage is validated against the union
         of the baseline's files and this attempt's own files; the plan
         actually returned (and coded) is still just this attempt's delta.
+
+        exploration_context: (project_id, feature_id), for revise() only --
+        when set, each attempt calls planner.generate_via_exploration(...)
+        (an agentic, tool-using planner that can look at the real codebase)
+        instead of planner.generate() (a single-shot call with zero
+        visibility into it). Confirmed necessary: the single-shot planner
+        could only correctly scope a revision when the human named the exact
+        file(s) to change -- a vague, file-unspecified request (e.g. "styles
+        are missing, add tailwind css") needs the model to actually look at
+        the codebase to know which files are affected. Everything else about
+        the retry loop (coverage validation, feedback framing) is unchanged.
         """
-        last_error: CodePlanValidationError | None = None
+        last_error: CodePlanValidationError | CodePlanGenerationError | None = None
 
         for attempt in range(1, MAX_PLANNING_ATTEMPTS + 1):
-            code_plan_json, _raw = await self.planner.generate(
-                project=agent_input.project,
-                feature=agent_input.feature,
-                srs_json=srs_for_planning,
-                architecture_plan_json=agent_input.architecture_plan_json,
-                ui_integration_manifest_json=agent_input.ui_integration_manifest_json,
-                project_manifest_json=agent_input.project_manifest_json,
-                human_comment=agent_input.human_comment,
-                previous_plan_json=previous_plan_json,
-                validation_feedback=validation_feedback,
-            )
+            if exploration_context:
+                project_id, feature_id = exploration_context
+                try:
+                    code_plan_json, _raw = await self.planner.generate_via_exploration(
+                        project_id=project_id,
+                        feature_id=feature_id,
+                        project=agent_input.project,
+                        feature=agent_input.feature,
+                        srs_json=srs_for_planning,
+                        architecture_plan_json=agent_input.architecture_plan_json,
+                        ui_integration_manifest_json=agent_input.ui_integration_manifest_json,
+                        project_manifest_json=agent_input.project_manifest_json,
+                        human_comment=agent_input.human_comment,
+                        previous_plan_json=previous_plan_json,
+                        validation_feedback=validation_feedback,
+                        coverage_baseline_files=coverage_baseline_files or [],
+                    )
+                except CodePlanGenerationError as error:
+                    # The exploration loop ran out of its turn budget before
+                    # calling submit_code_plan -- confirmed a real, reachable
+                    # failure mode on a genuinely vague, multi-file revision
+                    # request. Treat exactly like a rejected attempt (same
+                    # retry mechanism below), not an uncaught crash -- mirrors
+                    # _code_with_retries' GraphRecursionError handling.
+                    logger.warning(
+                        "Exploration-planning attempt %d/%d did not finish in time: %s",
+                        attempt,
+                        MAX_PLANNING_ATTEMPTS,
+                        error,
+                    )
+                    last_error = error
+                    # NOTE: this fresh attempt has zero memory of what the previous one
+                    # actually explored (a new agent conversation, not a continuation) --
+                    # so the feedback can only be a general strategy change, not "don't
+                    # redo X" (it has no idea what X was). Point it at the tools that
+                    # answer a question directly instead of requiring per-file reads.
+                    validation_feedback = (
+                        "Your previous attempt ran out of exploration turns before calling "
+                        "submit_code_plan. This is a fresh attempt with no memory of what you "
+                        "explored last time, so change strategy rather than trying to pick up "
+                        "where you left off: prefer a summarizing tool (check_component_styling, "
+                        "read_project_manifest, search_code) over reading each candidate file's "
+                        "full content one at a time -- your job here is only to decide WHICH "
+                        "files need a plan entry, not to draft the actual code change (a later "
+                        "coding step does that and will read each file itself). Call "
+                        "submit_code_plan as soon as you can name the affected file(s), without "
+                        "verifying every one by reading its source."
+                    )
+                    continue
+            else:
+                code_plan_json, _raw = await self.planner.generate(
+                    project=agent_input.project,
+                    feature=agent_input.feature,
+                    srs_json=srs_for_planning,
+                    architecture_plan_json=agent_input.architecture_plan_json,
+                    ui_integration_manifest_json=agent_input.ui_integration_manifest_json,
+                    project_manifest_json=agent_input.project_manifest_json,
+                    human_comment=agent_input.human_comment,
+                    previous_plan_json=previous_plan_json,
+                    validation_feedback=validation_feedback,
+                )
 
             plan_for_coverage_check = code_plan_json
             if coverage_baseline_files:
@@ -422,7 +489,10 @@ class CoderAgent:
 
             try:
                 self.plan_validator.validate(
-                    srs_for_planning, agent_input.architecture_plan_json, plan_for_coverage_check
+                    srs_for_planning,
+                    agent_input.architecture_plan_json,
+                    plan_for_coverage_check,
+                    enforce_endpoint_coverage=exploration_context is None,
                 )
                 return code_plan_json
             except CodePlanValidationError as error:
