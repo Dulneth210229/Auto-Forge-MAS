@@ -358,8 +358,30 @@ class ArchitectureAgent:
                 parsed = self._complete_sequence_model(agent_input, parsed)
                 parsed = self._complete_class_model(agent_input, parsed)
 
-                # The fallback is generated from SRS, so it should still be validated.
-                self._validate_full_output(agent_input, parsed)
+                # The fallback is generated deterministically from the approved SRS, so it
+                # should normally pass -- but it is still built from LLM-authored diagram
+                # content (use case/sequence/class models), so it can still fail a heuristic
+                # validator on a genuinely ambiguous edge case. This is the last resort: there
+                # is no further fallback to try, and this whole feature blocks the UI/UX and
+                # Coder Agents until an Architecture Plan exists for a human to review. Rather
+                # than crash the entire run over a heuristic-validator false positive (or a
+                # genuinely borderline case a human can judge in seconds), record the failure
+                # plainly on the plan itself and let it through for human review -- mirrors the
+                # Coder Agent's "proceed anyway with verification_passed=False" precedent.
+                try:
+                    self._validate_full_output(agent_input, parsed)
+                except Exception as third_error:
+                    logger.warning(
+                        "Architecture fallback output also failed validation for feature_id=%s "
+                        "-- proceeding anyway for human review: %s",
+                        agent_input.feature.get("feature_id"),
+                        third_error,
+                    )
+                    parsed["architecture_plan_json"]["human_approval_note"] = (
+                        f"{parsed['architecture_plan_json'].get('human_approval_note', '')} "
+                        f"AUTOMATIC VALIDATION FAILED even on the deterministic SRS-derived "
+                        f"fallback -- review carefully before approving: {third_error}"
+                    ).strip()
 
                 raw_output = json.dumps(parsed, indent=2, default=str)
 

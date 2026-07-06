@@ -245,6 +245,39 @@ ReactDOM.createRoot(document.getElementById("root")).render(
 
 CLIENT_APP_JSX = """\
 import React from "react";
+import { Routes, Route, Link } from "react-router-dom";
+
+function HomePage() {
+  return (
+    <div style={{ padding: "2rem", fontFamily: "sans-serif" }}>
+      <h1>Auto-Forge Generated App</h1>
+      <p>Feature pages are registered as routes below.</p>
+      <nav>
+        <ul>
+          {/* FEATURE_LINKS_START */}
+          {/* FEATURE_LINKS_END */}
+        </ul>
+      </nav>
+    </div>
+  );
+}
+
+export default function App() {
+  return (
+    <Routes>
+      <Route path="/" element={<HomePage />} />
+    </Routes>
+  );
+}
+"""
+
+# Frozen, exact content of CLIENT_APP_JSX before the FEATURE_LINKS marker
+# upgrade above -- used by _upgrade_client_app_jsx to detect a file that is
+# provably still the untouched original scaffold (safe to replace wholesale)
+# versus one a feature has since customized (needs targeted insertion instead).
+# Never change this constant after the fact.
+_LEGACY_CLIENT_APP_JSX_V1 = """\
+import React from "react";
 import { Routes, Route } from "react-router-dom";
 
 function HomePage() {
@@ -497,12 +530,17 @@ class WorkspaceService:
         ):
             changed_paths.append("server/package.json")
 
+        app_jsx_path = repo_path / "client" / "src" / "App.jsx"
+        if app_jsx_path.exists() and self._upgrade_client_app_jsx(app_jsx_path):
+            changed_paths.append("client/src/App.jsx")
+
         if not changed_paths:
             return
 
         repo.index.add(changed_paths)
         repo.index.commit(
-            "Backfill scaffold upgrades: security middleware, DB connection, error handling"
+            "Backfill scaffold upgrades: security middleware, DB connection, error handling, "
+            "home page navigation"
         )
 
     def _upgrade_server_app_js(self, path: Path) -> bool:
@@ -606,6 +644,68 @@ class WorkspaceService:
         )
         return False
 
+    def _upgrade_client_app_jsx(self, path: Path) -> bool:
+        """
+        Add a FEATURE_LINKS marker pair inside HomePage's <nav> so every
+        feature's coding step has a stable place to add a real <Link> to
+        its new page. Without this, a feature's Coder Agent run correctly
+        adds a new <Route> but nothing ever links to it -- confirmed
+        directly in the real e-commerce-platform and taskflow projects,
+        both of which only ever showed the static placeholder HomePage
+        because their new routes ("/login", "/tasks/:taskId") were never
+        reachable from "/".
+
+        Wholesale-replaces only if the file is provably still the exact,
+        untouched original scaffold. Otherwise anchors a targeted
+        insertion on HomePage's known placeholder paragraph (present in
+        every version to date, since no feature has touched HomePage
+        itself so far -- only the <Routes> block) -- if that anchor isn't
+        found, skips with a warning rather than risk corrupting a
+        HomePage a project has customized beyond recognition, matching
+        _upgrade_server_server_js's same fallback philosophy.
+        """
+        content = path.read_text(encoding="utf-8")
+
+        if content == _LEGACY_CLIENT_APP_JSX_V1:
+            path.write_text(CLIENT_APP_JSX, encoding="utf-8")
+            return True
+
+        if "FEATURE_LINKS_START" in content:
+            return False
+
+        anchor = "<p>Feature pages are registered as routes below.</p>\n    </div>"
+        if anchor not in content:
+            logger.warning(
+                "client/src/App.jsx's HomePage has diverged too far from the scaffold "
+                "template to safely add a navigation anchor -- skipping. Add a "
+                "// FEATURE_LINKS_START / // FEATURE_LINKS_END marker pair inside HomePage "
+                "manually if this project needs one."
+            )
+            return False
+
+        updated = content.replace(
+            anchor,
+            "<p>Feature pages are registered as routes below.</p>\n"
+            "      <nav>\n"
+            "        <ul>\n"
+            "          {/* FEATURE_LINKS_START */}\n"
+            "          {/* FEATURE_LINKS_END */}\n"
+            "        </ul>\n"
+            "      </nav>\n"
+            "    </div>",
+            1,
+        )
+
+        if 'import { Routes, Route } from "react-router-dom";' in updated:
+            updated = updated.replace(
+                'import { Routes, Route } from "react-router-dom";',
+                'import { Routes, Route, Link } from "react-router-dom";',
+                1,
+            )
+
+        path.write_text(updated, encoding="utf-8")
+        return True
+
     def start_feature_branch(self, project_id: str, feature_id: str) -> str:
         """
         Create (or reset) `feature/{feature_slug}` from main and check it out.
@@ -621,6 +721,32 @@ class WorkspaceService:
             repo.git.branch("-D", branch_name)
 
         repo.git.checkout("-b", branch_name)
+
+        return branch_name
+
+    def resume_feature_branch(self, project_id: str, feature_id: str) -> str:
+        """
+        Check out an EXISTING feature branch without resetting it -- for
+        revision runs (CoderAgent.revise) that must build on top of prior
+        work, not discard it. Unlike start_feature_branch (always deletes
+        and recreates from main), this only ever checks out what's already
+        there.
+
+        Raises ValueError if no branch exists yet -- a revision is only
+        meaningful after a real prior CoderAgent run, matching the same
+        precondition Requirement/Architecture Agent's revise() methods
+        already enforce (there must be a prior artifact to revise).
+        """
+        repo = self.ensure_project_repo(project_id)
+        branch_name = self._feature_branch_name(feature_id)
+
+        if branch_name not in [head.name for head in repo.heads]:
+            raise ValueError(
+                f"No existing feature branch found for feature_id={feature_id} -- "
+                "run the Coder Agent before requesting a revision."
+            )
+
+        repo.git.checkout(branch_name)
 
         return branch_name
 

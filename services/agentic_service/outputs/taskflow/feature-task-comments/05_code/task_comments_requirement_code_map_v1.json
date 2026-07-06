@@ -1,0 +1,75 @@
+{
+  "files": [
+    {
+      "path": "client/src/App.jsx",
+      "planned": true,
+      "maps_to": []
+    },
+    {
+      "path": "client/src/components/CommentInput.jsx",
+      "planned": true,
+      "maps_to": [
+        "FR-001"
+      ]
+    },
+    {
+      "path": "client/src/components/CommentItem.jsx",
+      "planned": false,
+      "maps_to": []
+    },
+    {
+      "path": "client/src/components/CommentList.jsx",
+      "planned": true,
+      "maps_to": [
+        "FR-003"
+      ]
+    },
+    {
+      "path": "client/src/pages/TaskDetailPage.jsx",
+      "planned": true,
+      "maps_to": [
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004"
+      ]
+    },
+    {
+      "path": "client/src/services/taskCommentsService.js",
+      "planned": true,
+      "maps_to": [
+        "FR-001",
+        "FR-002",
+        "FR-003"
+      ]
+    },
+    {
+      "path": "server/src/app.js",
+      "planned": true,
+      "maps_to": []
+    },
+    {
+      "path": "server/src/models/Comment.js",
+      "planned": true,
+      "maps_to": [
+        "Task CommentsDataEntity1",
+        "Task CommentsDataEntity2",
+        "Task CommentsDataEntity3",
+        "Task CommentsDataEntity4",
+        "FR-001",
+        "FR-004"
+      ]
+    },
+    {
+      "path": "server/src/routes/task-comments.routes.js",
+      "planned": true,
+      "maps_to": [
+        "/api/task-comments",
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004"
+      ]
+    }
+  ]
+}

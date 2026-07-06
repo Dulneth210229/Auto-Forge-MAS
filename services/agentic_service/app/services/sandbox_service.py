@@ -21,6 +21,7 @@ project's own `npm install` has ever run. Build it once with:
     docker build -t autoforge-coder-sandbox:latest -f docker/coder-sandbox.Dockerfile .
 """
 
+import time
 from pathlib import Path
 from typing import Any
 
@@ -111,6 +112,98 @@ class SandboxService:
                     container.remove(force=True)
                 except DockerException:
                     pass
+
+    def start_background_service(
+        self,
+        project_id: str,
+        command: str,
+        cwd: str,
+        container_port: int,
+    ) -> dict[str, Any]:
+        """
+        Start `command` in a detached container that keeps running (unlike
+        run_command, which waits for the command to exit) with
+        `container_port` published to an available host port. For
+        long-running processes like `vite preview` that never exit on
+        their own -- e.g. the Coder Agent's runtime-render check, which
+        needs an actually-running server for Playwright (on the host) to
+        navigate to.
+
+        Returns {"container": <docker Container>, "host_port": int}. The
+        caller must call stop_background_service(container) when done --
+        this does not clean up after itself the way run_command does,
+        since the whole point is that it keeps running.
+
+        Raises RuntimeError if Docker is unreachable or the container
+        fails to start -- unlike run_command, there is no meaningful
+        "returned as data" failure mode for a service that never produces
+        a normal exit code.
+        """
+        repo_path = workspace_service.get_repo_path(project_id)
+        repo_path.mkdir(parents=True, exist_ok=True)
+
+        working_dir = "/workspace" if cwd in (".", "") else f"/workspace/{cwd.lstrip('/')}"
+
+        try:
+            client = docker.from_env()
+        except DockerException as error:
+            raise RuntimeError(f"Sandbox unavailable: could not reach Docker daemon: {error}") from error
+
+        try:
+            container = client.containers.run(
+                self.image,
+                command=["sh", "-c", command],
+                working_dir=working_dir,
+                volumes={str(Path(repo_path).resolve()): {"bind": "/workspace", "mode": "rw"}},
+                mem_limit="1g",
+                ports={f"{container_port}/tcp": None},  # None = let Docker assign a free host port
+                detach=True,
+            )
+        except DockerException as error:
+            raise RuntimeError(f"Sandbox execution error: {error}") from error
+
+        # Docker publishes the port as soon as the container's network is up --
+        # this does not wait for the process inside to actually bind it -- but
+        # container.attrs is a point-in-time snapshot from container.reload(),
+        # and immediately after client.containers.run() returns, the daemon has
+        # not always finished recording that mapping yet. Poll briefly instead
+        # of trusting a single reload (confirmed directly: a bare reload right
+        # after run() reported no port bindings for a container that, moments
+        # later, was already running with its port correctly published).
+        port_bindings = None
+        for _ in range(10):
+            container.reload()
+            port_bindings = container.attrs["NetworkSettings"]["Ports"].get(f"{container_port}/tcp")
+            if port_bindings:
+                break
+            if container.status == "exited":
+                break
+            time.sleep(0.3)
+
+        if not port_bindings:
+            logs = container.logs().decode("utf-8", errors="replace")
+            self.stop_background_service(container)
+            raise RuntimeError(
+                f"Container started but port {container_port} was not published -- "
+                f"the process may have exited immediately. Container status: "
+                f"{container.status}. Logs:\n{logs}"
+            )
+
+        host_port = int(port_bindings[0]["HostPort"])
+
+        return {"container": container, "host_port": host_port}
+
+    def stop_background_service(self, container: Any) -> None:
+        """Kill and remove a container started by start_background_service."""
+        try:
+            container.kill()
+        except DockerException:
+            pass
+        finally:
+            try:
+                container.remove(force=True)
+            except DockerException:
+                pass
 
 
 sandbox_service = SandboxService()

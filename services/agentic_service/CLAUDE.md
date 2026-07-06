@@ -400,6 +400,340 @@ milestone — that file is scratch, **this file is the durable one**.
       follows them; the real E2E run above is what proves that). Full suite: **115 passed**
       (up from 87 before this pass), confirmed clean (no concurrent load) after the retry-window
       fix.
+19. **Architecture Agent's out-of-scope validator false-positived on almost every real run --
+    fixed, and re-verified with a real, brand-new project + feature end-to-end.** The user
+    reported the Architecture Agent "did not work" when run for real. Root cause: both
+    `usecase_validator.py`'s and `sequence_validator.py`'s `_validate_out_of_scope` flagged a
+    diagram element as an out-of-scope violation whenever it shared just **2 stems** with a
+    forbidden SRS `out_of_scope` phrase (`required_overlap = 1 if len(forbidden_stems) == 1 else
+    2`), regardless of how many total stems the phrase had or whether the actual *distinguishing*
+    word was present at all. Since out-of-scope items are almost always phrased using the same
+    domain nouns as the feature itself (e.g. "Account verification via email" for a feature that
+    is itself about accounts and email), this meant the check false-positived on nearly any
+    legitimate in-scope element -- confirmed directly against three real errors from an earlier
+    real run (documented in this file's history for the Signup feature): a duplicate-email check
+    was flagged as "Account verification" (matched on `account`+`email`, missing the actual
+    distinguishing stem `verif`), a new-user-registration step was flagged as "Password recovery
+    functionality" (matched on `password`+`recovery`, missing `functionality`), and the signup
+    use case itself was flagged as "User profile customization after signup" (matched on
+    `user`+`signup`, missing `profile`/`customiz`). Because the Architecture Agent's fallback
+    path (a deterministic, SRS-derived plan, generated only when both the raw and repaired LLM
+    outputs fail) has **no further recourse** if it also fails validation, this false-positive
+    could -- and, per the prior session's real Signup run, did -- crash the entire request with
+    no Architecture Plan produced at all, blocking the UI/UX and Coder Agents from ever running.
+    - Fix: `_validate_out_of_scope` in both validators now requires **all** of a forbidden
+      phrase's meaningful stems to be present (`required_overlap = len(forbidden_stems)`), not a
+      flat 2 -- the element must restate the entire forbidden concept, not merely share incidental
+      domain vocabulary. Verified this alone fixes all three real false positives while still
+      catching a genuine full-concept violation (e.g. "Verify Account Email... sends an email
+      verification link" against "Account verification via email" is still correctly flagged,
+      since `verif`/`account`/`email` are all present).
+    - This alone was slightly too strict for phrases containing generic requirement-writing
+      filler nouns (e.g. "Password recovery **functionality**" -- no realistic diagram element
+      would ever literally contain the word "functionality"). Added `functionality`, `capability`,
+      `capabilities`, `support` to both validators' `STOPWORDS` sets -- domain-agnostic filler
+      words that describe *that* something is a capability, not *which* one, so they add no
+      distinguishing signal (same precedent as the pre-existing `feature`/`flow` stopwords).
+    - **Safety net added regardless of the above fix** (`agent.py`'s `_generate_architecture_output`):
+      the final `_validate_full_output` call on the fallback path is now wrapped in its own
+      try/except. If the fallback *still* fails validation (a heuristic validator can always have
+      another edge case), the run no longer crashes -- it logs a warning and appends a plain,
+      specific caveat to the plan's own `human_approval_note` field, then proceeds so a human can
+      review and judge it, mirroring the Coder Agent's existing "proceed anyway with
+      `verification_passed=False`" precedent rather than inventing a new failure story.
+    - Tests: `tests/test_architecture_usecase_validator.py` (new, 5 tests: all 3 real false
+      positives now pass validation, a genuine violation is still caught, an out-of-scope item
+      with no meaningful stems is safely ignored) and `tests/test_architecture_sequence_validator.py`
+      (new, 3 tests: 2 of the real false positives adapted to sequence-message shape, genuine
+      violation still caught) -- no LLM, hand-built minimal `usecase_json`/`sequence_json`
+      fixtures. Full suite: **123 passed** (up from 115).
+    - **Real end-to-end verification, a genuinely new project and feature** (not a reuse of
+      e-commerce-platform): created project **TaskFlow** (`proj_53284a63`, SaaS/MERN) and feature
+      **Task Comments** (`feature_5521adbd` -- add/view/delete comments on a task, with SRS
+      `out_of_scope` items "Editing existing comments", "Comment notifications or mentions",
+      "Comment threading or replies", "Comment attachments or media" -- deliberately chosen to
+      share the word "comment" with every in-scope element, the same shape of case that broke
+      before). Ran the real pipeline through the actual HTTP API: Requirement Agent (real,
+      succeeded first try) → approved → graph `start()` → `resume("approved")` (auto-passed
+      `domain`) → paused at `approve_architecture` → **ran the real, now-fixed Architecture
+      Agent**: raw LLM output failed JSON parsing (unrelated pre-existing issue, line-431
+      malformed delimiter), the repair attempt was missing several required top-level keys, so it
+      fell through to the deterministic SRS-derived fallback -- **which completed and passed
+      `_validate_full_output` cleanly, with no validation-failure warning logged at all** (the
+      fix's target scenario, working correctly on a real run) → approved the Architecture Plan →
+      graph resumed into the real `uiux_node`, which generated `CommentInput`/`CommentList`
+      components and completed normally → approved the UI metadata → graph resumed into the real
+      `coder_node`, whose planner hit the **already-documented, separately-tracked** endpoint/
+      entity-coverage limitation (`CodePlanValidationError: code_plan_json does not cover these
+      API endpoints: ['/api/task-comments']; ... data entities: [...]`) -- the same pre-existing
+      planner unreliability observed repeatedly for Login/Signup in the other project, not a new
+      or regressed issue, and out of scope for this fix. The graph correctly stayed parked at
+      `next: ['coder_node']` (the same emergent, already-documented checkpoint behavior noted
+      elsewhere in this file), ready for a clean retry. **Net result: the Architecture Agent --
+      the actual subject of this fix -- now runs to completion and produces an approvable plan
+      for a real, previously-guaranteed-to-fail-shaped feature, and the pipeline progressed
+      further (through Architecture and UI/UX) than it had ever previously gotten for this class
+      of feature.**
+    - Known, pre-existing, separate quality gap observed along the way (not part of this fix):
+      the deterministic fallback Architecture Plan is noticeably crude -- e.g. it split the
+      Comment entity's four fields into four separately-named "entities"
+      (`Task CommentsDataEntity1..4`) instead of one unified entity, and produced duplicate
+      `/api/task-comments GET` endpoint entries instead of distinct POST/GET/DELETE routes
+      matching the SRS's `api_expectations`. This is the fallback template's own generation logic
+      (a different code path from the validators fixed here), and its crudeness likely also
+      contributed to the Coder Agent planner's subsequent coverage failure (awkward, non-standard
+      entity names are harder for the planner to reference correctly). Worth a future look, but
+      not conflated with the validator bug fixed in this pass.
+20. **Ran the real Coder Agent for TaskFlow/Task Comments (user request: "run the coder agent for
+    this new project and feature and check the output") -- found and fixed a real
+    `GraphRecursionError` crash, found and corrected a UI/UX component-approval gap, and got a
+    clean, genuinely well-integrated result on the corrected re-run.** Since the real planner
+    (already known-unreliable, see the gotchas section) failed identically to item 19's earlier
+    run, used the same established hand-validated-plan precedent as Login/Signup
+    (`scripts/run_taskflow_coder_pipeline_manual.py`, new) -- a real, sensible plan (REST
+    POST/GET/DELETE routes, one `Comment` model, modify the two approved UI/UX components instead
+    of rewriting them) that still covers every literal string `plan_validator` requires from the
+    crude fallback Architecture Plan.
+    - **Bug found and fixed**: the first real run of the coding loop against this 8-file plan (2
+      of which were "patch an existing component" tasks) hit `GraphRecursionError` -- the 100%
+      real, uncaught turn-limit-of-65 exception crashed the entire script/request. `_code_with_retries`
+      now catches `GraphRecursionError` explicitly and treats it exactly like an incomplete
+      attempt: commits whatever partial progress was made (not lost), and feeds the next attempt
+      a message naming the recursion limit and asking the model to work efficiently (don't re-read
+      known files, don't call `check_syntax` more than once per file, prioritize finishing over
+      polishing) on top of the existing plan-gap report. `CODING_LOOP_RECURSION_LIMIT` also bumped
+      65 -> 100 -- the exact right number isn't the point anymore now that hitting it is a
+      recoverable failure, not a crash. 4 new tests in `tests/test_coder_agent_retries.py`
+      (mock-based: recursion error retried not crashed, efficiency-hint feedback on the next
+      attempt's task message, plan-gap still skips the expensive verify() call, a passing verify()
+      still short-circuits remaining attempts).
+    - **Real gap found in this session's own process, not a Coder Agent bug**: the first
+      (pre-fix) full run of the coding loop completed successfully (`verification_passed=True`,
+      attempt 1/1) but the model **fabricated brand-new `CommentInput.jsx`/`CommentList.jsx`/
+      `CommentItem.jsx` components from scratch** instead of reusing the approved UI/UX ones, even
+      though the plan explicitly said to "modify" them. Root cause: only the `ui_metadata` JSON
+      artifact had been approved (`artifact_b3950e89`), not the individual `UI_COMPONENT_CODE`
+      artifacts for `CommentInput`/`CommentList` themselves -- `read_ui_component`'s lookup
+      (`_find_approved_component_artifact`) filters on `approval_status == APPROVED`, so it had
+      nothing to find and correctly reported no approved component, leaving the model to build its
+      own working (but design-inconsistent) version out of necessity. Confirmed
+      `approval_service.py` never cascades a `UI_METADATA` approval to its sibling
+      `UI_COMPONENT_CODE` artifacts -- each component needs its own explicit approval, same as
+      every other artifact type. **This is a real, easy-to-miss human/process gotcha worth knowing
+      for future runs**: approving the metadata is not sufficient to make components reusable by
+      the Coder Agent.
+    - Approved the two component artifacts for real (`artifact_5e0bba5f`, `artifact_ca5c2871`)
+      and re-ran the identical hand-validated plan against a freshly-reset branch. **Result: clean
+      integration, exactly as intended.** `CommentInput.jsx` kept 100% of the approved component's
+      markup/styling/loading/error-state logic -- the *only* change was replacing the fake
+      `// Mock submission - in real app this would be an API call` + `setTimeout` with a real
+      `await props.onSubmit(props.taskId, commentText)` call (plus adding the `useState` import
+      the preview-only original omitted). `CommentList.jsx` likewise kept 100% of its visual
+      structure -- the delete button (previously present with no `onClick` at all) now correctly
+      calls `props.onDelete(comment._id)`, and every field reference was correctly updated to match
+      the real `Comment` Mongoose model's actual shape (`comment.author.username`/
+      `comment.author._id`/`comment.createdAt`/`comment._id`/`comment.text`) instead of the UI/UX
+      agent's originally-guessed field names (`comment.authorUserId`/`comment.createdTimestamp`/
+      `comment.id`/`comment.commentText`). This is precisely what this session's earlier Coder
+      Agent prompt hardening (item 18: "read the component's actual prop usage and wire every prop
+      its logic depends on," "never leave a handler wired to hardcoded/fake logic when a real
+      service exists") was meant to produce, now confirmed on a real run where the precondition
+      (an actually-approved component) was correctly met.
+    - `server/src/routes/task-comments.routes.js`: real REST design (POST/GET/DELETE, not the
+      fallback plan's single duplicated GET) -- required-field validation on create (400 on
+      missing `text`/`author`/`task`), ownership check on delete (403 if the requester isn't the
+      comment's author), chronological sort on list, `populate("author", "username")` on both read
+      paths so the frontend gets real author names. `verify_result` on the corrected run: **all
+      steps passed** -- `npm install` (both sides, first-ever install for this fresh project),
+      server boot, client build, endpoint route coverage, and an informational (non-blocking)
+      placeholder-stub hit on `TaskDetailPage.jsx`'s intentionally-mocked `currentUser` (reasonable,
+      since no auth feature exists yet in this project) and a sample task description string --
+      both legitimate, correctly-flagged, non-blocking notes for a human reviewer, not bugs.
+    - Full suite re-confirmed passing after the `GraphRecursionError` fix (see test count below).
+    - **Real state**: `workspaces/taskflow/repo` now exists with a `feature/task-comments` branch
+      (not yet merged -- pending human review of the corrected run's artifacts:
+      `artifact_fd4d28ec` and siblings, code plan + merge report + manifest). The pre-fix run's
+      artifacts (`artifact_a72df0e1` and siblings, from the fabricated-components version) are
+      superseded by this corrected set and should not be approved.
+21. **Every generated app only ever showed the static scaffold placeholder when actually run --
+    fixed the root cause (unreachable pages), added two new deterministic gates that prove a page
+    is both reachable and renders without crashing, and added a real "revise by human prompt"
+    capability for the Coder Agent (mirroring Requirement/Architecture Agent's existing
+    `.revise()` pattern) so a human can iterate on an already-verified feature instead of hoping
+    one shot is enough.** The user reported this directly: Login, Signup, and Task Comments all
+    rendered nothing but "Auto-Forge Generated App" / "Feature pages are registered as routes
+    below." regardless of what was actually built. Investigated and confirmed a real, structural
+    root cause -- **not** a per-feature LLM mistake: `CLIENT_APP_JSX`'s `HomePage` has never had
+    any navigation at all, so every `<Route>` a feature adds is real and correctly wired, but
+    genuinely unreachable by a human clicking through the app. The user's own first proposal (an
+    automatic live-dev-server self-correction loop) was evaluated and deliberately not built --
+    no reliable, domain-agnostic way exists to judge "does this look right" without either
+    duplicating a much cheaper deterministic check or resorting to a slow, non-deterministic
+    LLM-judged screenshot (exactly the cost `preview_renderer.py`'s own docstring already argues
+    against for a *much* smaller unit), and it would inherit this project's already-documented
+    Docker-contention flakiness. Full plan: `C:\Users\ASUS\.claude\plans\soft-petting-star.md`.
+    - **Scaffold fix** (`workspace_service.py`): `CLIENT_APP_JSX`'s `HomePage` now has a stable
+      `{/* FEATURE_LINKS_START */}`/`{/* FEATURE_LINKS_END */}` marker pair inside a `<nav><ul>`,
+      mirroring the existing `FEATURE_ROUTES_START`/`_END` idiom used for `app.js`'s router
+      mounts -- a feature now patches this marker to add a real `<Link>` alongside its `<Route>`,
+      instead of there being nothing to patch at all. **Idempotent backfill**: new
+      `_LEGACY_CLIENT_APP_JSX_V1` fingerprint + `_upgrade_client_app_jsx`, wired into
+      `_backfill_scaffold_upgrades` exactly like the existing `app.js`/`server.js` upgrades --
+      untouched file -> wholesale replace; customized file (already has real routes/imports) ->
+      anchored insertion that never touches what's already there; already-upgraded -> no-op.
+      This is what let the two already-broken, already-real projects
+      (`e-commerce-platform`, `taskflow`) self-heal just by calling `ensure_project_repo` again,
+      same rollout mechanism as every prior scaffold-upgrade fix.
+    - **Prompt changes** (`prompt.py`): `CODE_PLANNER_SYSTEM_PROMPT` rule 9's nav-link clause was
+      previously conditional ("if one already exists" -- dead code, since the scaffold never
+      created that mechanism) -- now unconditional: adding a page means planning both its
+      `<Route>` and a real `<Link>` to it, in one "modify" of `App.jsx`. Added explicit guidance
+      for parameterized routes (e.g. `/tasks/:taskId`): never link directly to one -- link to a
+      list/index page instead, planning that page as part of the feature if it doesn't exist yet.
+      `CODER_AGENT_SYSTEM_PROMPT` gained the symmetric patch instruction for
+      `// FEATURE_LINKS_END` and a new completeness rule: a `<Route>` with no reachable `<Link>`
+      is exactly the "looks done but isn't" defect the existing completeness rules already target.
+    - **New hard gate: page reachability** (`nav_checker.py`, new module, sibling to
+      `route_checker.py`, same "explicitly best-effort, regex-based, not full AST" idiom):
+      `check_page_reachability` parses `App.jsx` for every `<Route>`/`<Link>` (including
+      `to="..."`, template-literal `to={\`...${\`}, and `<a href="...">`) across the entire
+      `client/src` tree (not just `App.jsx`), resolves parameterized routes as reachable only if
+      their static prefix is itself a registered, reachable route. Wired into `verify.py` as a
+      new hard gate, same justification as `check_route_coverage`: cheap, mechanical, no
+      meaningful ambiguity.
+    - **New hard gate: runtime render check** (`render_checker.py`, new module). Neither
+      `client build` (compiles) nor `page reachability` (linked) can catch a page that does
+      both but still throws at runtime (e.g. an undefined prop access) -- this closes that gap
+      without a live dev server or a retry loop: serves the client's **already-built** `dist/`
+      via `vite preview` (correct SPA-routing fallback, unlike a bare static server) from inside
+      the sandbox, using a new `sandbox_service.start_background_service`/
+      `stop_background_service` (detached container, published port -- `run_command` only ever
+      waited for exit with no port publishing before this). From the host, Playwright navigates
+      to `/` and every reachable route, checking for zero `pageerror` events and non-empty
+      rendered content -- the same minimal bar `preview_renderer.py` already uses for component
+      previews. Home page failing is a hard gate (cheap, no data dependency, exactly what was
+      silently broken project-wide); feature pages are informational only (their rendering can
+      legitimately vary with backend data state, e.g. an empty list before any data exists).
+    - **Two real infra bugs found and fixed only by testing against real Docker/real async
+      call chains, not synthetic unit tests**:
+      1. `sandbox_service.start_background_service` reloaded the container's Docker attrs
+         **once**, immediately after `containers.run()` returned, and raised if the port mapping
+         wasn't there yet -- confirmed directly that this is a pure timing race (a manual
+         reproduction showed the identical container correctly publishing its port moments
+         later). Fixed by polling `reload()` up to 10 times (0.3s apart, bailing early if the
+         container already exited), and including the container's logs in the error message if
+         it genuinely never publishes.
+      2. **`render_checker.py`'s Playwright sync API crashes when actually invoked through the
+         real pipeline.** `CoderAgent.run()`/`revise()` are `async def`, invoked from a sync graph
+         node via `asyncio.run(...)` (deviation #13) -- meaning `verify()` (called synchronously,
+         deep inside that async call chain, with no thread of its own) always executes with an
+         asyncio event loop already running on that thread. Playwright's sync API refuses to run
+         on such a thread at all. This was invisible in every test up to this point because
+         `test_render_checker.py`/`test_coder_verify.py` call `verify()`/`check_runtime_render`
+         from plain synchronous scripts/tests with **no** event loop running -- only a real,
+         genuine end-to-end `revise()` run (see below) surfaced it: every one of 3 coding attempts
+         failed with `"home page render": failed -- "It looks like you are using Playwright Sync
+         API inside the asyncio loop."` Fixed by running the actual Playwright-touching work
+         inside a dedicated `concurrent.futures.ThreadPoolExecutor` worker thread from within
+         `check_runtime_render` itself -- a fresh thread has no event loop of its own, regardless
+         of the caller's context, with no change to the function's public signature or any
+         caller. New regression test drives this through `asyncio.run(...)` specifically (calling
+         the function directly inside a running coroutine, not via `asyncio.to_thread`, which
+         would already dodge the bug) to actually reproduce the failure mode.
+    - **New human-in-the-loop iteration capability: `CoderAgent.revise(feature_id, request)`**,
+      mirroring Requirement/Architecture Agent's existing `.revise()` pattern (load latest
+      artifact + a human `revision_comment`, regenerate, save as a new version, never overwriting,
+      require fresh approval) -- adapted for the fact that the Coder Agent's real output is a live
+      git branch, not just a JSON document. This closes a real, previously-unaddressed gap: before
+      this, the only way to influence a re-run at all was to manually resume the LangGraph run, and
+      `human_comment` never reached the agentic coding loop's own task message, only the planner.
+      - New `workspace_service.resume_feature_branch(project_id, feature_id)`: checks out an
+        EXISTING branch **without resetting it** (raises `ValueError` if no such branch exists) --
+        the key difference from `run()`'s `start_feature_branch`, which always deletes and
+        recreates from `main`. A revision builds on top of prior work; it does not discard it.
+      - New `CoderAgentReviseRequest` schema (`revision_comment`, `revised_by`) and
+        `POST /features/{feature_id}/agents/coder/revise` endpoint, same error-handling shape as
+        the existing `/requirement/revise`/`/architecture/revise` endpoints.
+      - New `CoderAgent._find_latest_code_plan_artifact`: finds the latest `CODE_PLAN` artifact
+        **regardless of approval status** -- a revision should be possible even before a prior
+        version has been approved/merged (a human may want several rounds of feedback first).
+      - **A real, non-obvious design bug found only by a genuine end-to-end run, not by the
+        mock-based unit tests written first**: `revise()`'s re-plan is naturally a *delta* (a
+        human asking to "add a loading spinner" produces a plan that only touches
+        `CommentList.jsx`, not one that re-lists every endpoint/entity the *prior* plan already
+        implements) -- but `_plan_with_retries` validated that delta alone against the **full**
+        architecture plan's endpoint/entity/requirement coverage, the same check used for a
+        brand-new `run()`. Confirmed directly: a real revision request against the live Task
+        Comments feature failed both planning attempts with `"code_plan_json does not cover these
+        API endpoints: ['/api/task-comments']..."` even though those endpoints were already
+        correctly implemented and untouched by this revision. Fixed by adding an optional
+        `coverage_baseline_files` parameter to `_plan_with_retries` -- for revise() only, coverage
+        is validated against the **union** of the prior plan's files and the new delta's files,
+        while the plan actually returned (and coded) remains just the delta. Mock-based tests
+        alone would never have caught this, since they stub out `plan_validator.validate` entirely
+        -- a new test exercises the **real, unmocked** validator against a realistic architecture
+        plan + prior-plan/delta-plan pair to lock this in.
+    - Tests: `tests/test_nav_checker.py` (new, 10, page-reachability logic, no Docker/LLM),
+      `tests/test_render_checker.py` (new, 3: real render check passes on the untouched scaffold,
+      the sandbox port-mapping mechanism itself, and the event-loop reproduction above),
+      `tests/test_workspace_scaffold.py` (+5: `_upgrade_client_app_jsx` backfill + idempotency,
+      `resume_feature_branch` checks-out/raises), `tests/test_coder_prompt.py` (+2: unconditional
+      link rule, parameterized-route list-page guidance), `tests/test_coder_verify.py` (+4: page
+      reachability pass/fail, runtime-render hard-fail-on-home-crash, statuses wired through
+      end-to-end), `tests/test_coder_agent_revise.py` (new, 4: raises with no prior run, resumes
+      instead of restarting the branch, frames the plan as a revision not a rejection, and the
+      real-validator coverage-union fix). Full suite: **155 passed** (up from 153 before adding
+      the last two regression tests above).
+    - **Real end-to-end verification against both live projects, not just synthetic fixtures**:
+      triggered `ensure_project_repo` for real against `proj_a2e3d529` (e-commerce-platform,
+      currently on `feature/signup`) and `proj_53284a63` (taskflow, currently on
+      `feature/task-comments`) -- both got the `FEATURE_LINKS` marker backfilled wholesale
+      (confirmed via `git log`: "Backfill scaffold upgrades: ... home page navigation" on top of
+      each project's existing history), proving the backfill mechanism works on real,
+      already-diverged repos, not just fixtures. Ran `coder_verifier.verify()` for real against
+      both: `page reachability` correctly **fails** on both (neither project has ever had a link
+      retroactively added for its pre-existing route -- an accurate, honest result, not a
+      regression), while every other step (install, boot, build, endpoint coverage,
+      **home page render: passed**) is clean. One transient false-negative on `server boot` was
+      observed and confirmed non-reproducing on an immediate isolated re-run -- the same
+      already-documented class of Docker-contention flakiness noted below, not a regression.
+      Then ran the real `CoderAgent.revise()` end-to-end against the live Task Comments feature
+      (`feature_5521adbd`) with a genuine human revision comment ("add a loading spinner while
+      comments are being fetched") -- this is what surfaced both real bugs above. After fixing
+      them, re-verified the same already-correct generated code (a clean, minimal, well-scoped
+      diff: one line added to `CommentList.jsx`'s existing loading state, nothing else touched)
+      and saved a corrected, accurate artifact set as **v4** (`artifact_8169b564` and siblings) --
+      same "re-verify the same code with a corrected checker, don't re-spend real LLM time for a
+      cosmetic re-confirmation" precedent already established for Signup (item 20). Confirms the
+      whole revise() flow for real: prior branch commits preserved (`git log` shows the original
+      `attempt 1`/`attempt 2` commits still present, untouched), a fresh version saved
+      independently of v1-v3, approvable on its own.
+    - **A second real bug in the coverage-union fix itself, found only by the user actually
+      calling `POST /features/{id}/agents/coder/revise` through Swagger for a genuine SECOND
+      revision** (not caught by any test written so far, since none exercised more than one
+      revision): the coverage-baseline union above only ever used the *latest* saved CODE_PLAN
+      artifact's own file list -- but that latest artifact (v4, saved from the loading-spinner
+      revision) itself only lists its own delta (`CommentList.jsx`), by design, not the original
+      plan's full file list. So a second revision's baseline silently lost everything the
+      *original* plan (v1/v2) implemented, reproducing the identical
+      `"code_plan_json does not cover these API endpoints: ['/api/task-comments']..."` rejection
+      this whole mechanism exists to prevent -- this time surfaced directly to the user as a 400
+      through the real API, not just in a background script. Fixed by adding
+      `CoderAgent._collect_cumulative_plan_files(feature_id)`, which unions file entries across
+      **every** CODE_PLAN version ever saved for the feature (later versions winning for the same
+      path), not just the latest -- `revise()` now passes this as `coverage_baseline_files`
+      instead of the single latest plan's own files. **Any future logic that treats "the latest
+      saved plan" as "everything this feature has ever implemented" will hit this same class of
+      bug** -- after the first revision, that's no longer true by design. New regression test
+      (`test_revise_coverage_baseline_spans_every_prior_version_not_just_the_latest`) seeds two
+      prior plan versions (a full v1 + a delta-only v2, mirroring the real history) and confirms
+      a third revision's real, unmocked `plan_validator` still passes. **Re-verified for real
+      against the live feature with a genuine second revision** ("add a delete confirmation
+      dialog before deleting a comment") -- planning succeeded with no coverage error at all this
+      time, the generated diff is exactly right (wraps the existing `onDelete` call in a
+      `window.confirm(...)` guard, nothing else touched), and `verify()` came back clean on every
+      step except the same already-known, out-of-scope `page reachability` gap for
+      `/tasks/:taskId` (unrelated to this revision, not a regression). Saved as artifact set v5.
 
 ## Known model-quality gotchas (not code bugs — prompts already account for these)
 
@@ -487,6 +821,66 @@ milestone — that file is scratch, **this file is the durable one**.
   loop (10 -> 30 attempts, `SERVER_BOOT_TIMEOUT_SECONDS` 30 -> 45) to make this less likely, but
   the safest thing is still: don't run the full suite and a real end-to-end agent run at the same
   time on this machine.
+- **Approving a UI/UX run's `ui_metadata` artifact does NOT approve its individual component
+  artifacts.** `approval_service.py`'s UI/UX hook only checks for `ArtifactType.UI_METADATA` to
+  trigger `apply_design_system_patch` -- there is no cascade to the sibling `UI_COMPONENT_CODE`
+  artifacts from the same run. `CoderAgent`'s `read_ui_component` tool only ever finds components
+  with `approval_status == APPROVED` (`_find_approved_component_artifact`), so if only the
+  metadata was approved, the Coder Agent will find nothing to reuse and will build its own
+  from-scratch version instead -- silently, with no error, since "no approved component found" is
+  a valid, expected outcome for a genuinely backend-only feature. Confirmed directly: this exact
+  gap caused a real Coder Agent run for Task Comments to fabricate its own `CommentInput`/
+  `CommentList` instead of reusing the approved ones (see item 20). **Every `UI_COMPONENT_CODE`
+  artifact a feature's coding step is expected to reuse must be approved individually**, not just
+  the metadata JSON.
+- **`GraphRecursionError` (from `langgraph.errors`) is a real, reachable failure mode for the
+  Coder Agent's coding loop on a realistically-sized plan** (confirmed: an 8-file plan with 2
+  "modify an existing file" tasks exhausted a 65-step budget). It is now caught in
+  `CoderAgent._code_with_retries` and treated as a recoverable failed attempt (see item 20) --
+  but if a similar uncaught `GraphRecursionError` ever surfaces elsewhere (e.g. if the UI/UX Agent
+  grows an agentic loop of its own someday), the same pattern applies: catch it at the attempt
+  boundary, commit partial progress, retry with an efficiency-focused message, don't let it
+  crash the whole request.
+- **Every generated app's `HomePage` had no navigation at all until item 21's fix** -- any
+  `<Route>` a feature plans is real and correctly wired, but was never reachable by a human
+  clicking through the running app (confirmed as the root cause of "every feature just shows the
+  placeholder text no matter what was built"). Fixed via a `FEATURE_LINKS_START`/`_END` marker in
+  `HomePage` + `nav_checker.check_page_reachability` as a new hard `verify()` gate. If a project
+  was scaffolded before this fix, `ensure_project_repo` self-heals it on next call (same backfill
+  mechanism as every other scaffold upgrade) -- but any **already-existing** route from before the
+  fix still needs a human (or a `CoderAgent.revise()` request) to actually add its `<Link>`; the
+  backfill only adds the mechanism, it does not retroactively link routes it didn't create.
+- **Playwright's sync API cannot run on a thread that already has an asyncio event loop
+  running** -- `render_checker.py`'s runtime-render check learned this the hard way: it's only
+  ever really invoked through `CoderAgent.run()`/`revise()` (both `async def`, bridged from a sync
+  graph node via `asyncio.run(...)`, deviation #13), so an event loop is *always* active on the
+  calling thread in production, even though it's invisible in any test that calls `verify()`/
+  `check_runtime_render` from a plain synchronous script. Fixed by running the actual
+  Playwright-touching work inside its own `concurrent.futures.ThreadPoolExecutor` worker thread,
+  internal to `check_runtime_render` -- **any future check that uses Playwright's (or another
+  library's) sync API and might be called from inside `CoderAgent`'s or `UIUXAgent`'s async call
+  chain needs the same treatment**, regardless of whether it happens to work in an ad hoc sync
+  test script.
+- **A revision's own plan is naturally a delta, but `plan_validator` checks full architecture-plan
+  coverage** -- confirmed directly: a real `CoderAgent.revise()` request ("add a loading spinner")
+  produced a plan that only touched the one file that needed to change, and was rejected for
+  "missing" endpoints that the *prior*, still-in-place plan already implements. `revise()` now
+  passes `_plan_with_retries` an optional `coverage_baseline_files` so coverage is checked against
+  the **union** of prior + delta, while only the delta is actually coded -- **any future caller of
+  `_plan_with_retries` for an intentionally-partial/incremental plan must do the same**, or it
+  will hit this exact false rejection.
+- **"The latest saved CODE_PLAN" is NOT "everything this feature has ever implemented," once even
+  one revision has happened** -- the coverage-baseline fix above initially built
+  `coverage_baseline_files` from only the single latest CODE_PLAN artifact, which broke on a real
+  SECOND revision: the first revision's own saved plan was itself just a delta (by design), so
+  using only *that* as the baseline for the next revision silently dropped everything the
+  *original* plan covered, reproducing the identical false rejection -- this time surfaced
+  directly to a real user through the live `/coder/revise` endpoint. Fixed with
+  `CoderAgent._collect_cumulative_plan_files`, which unions file entries across **every** CODE_PLAN
+  version ever saved for the feature (later versions winning per path), not just the latest one.
+  **Any logic anywhere in this codebase that needs "the full picture of what a feature has
+  implemented so far" must walk every artifact version, not assume the latest one is
+  self-contained** -- that assumption is only ever true before the first revision.
 
 ## Testing conventions established
 
@@ -588,6 +982,41 @@ milestone — that file is scratch, **this file is the durable one**.
   byte-for-byte, SignupForm freshly generated -- see item 17) was approved for real through
   `POST /api/v1/artifacts/{id}/approval` during this session, which is what resumed the graph
   into this real `coder_node` run in the first place.
+- **A second real project now exists**: `proj_53284a63` ("TaskFlow", SaaS/MERN), feature
+  `feature_5521adbd` ("Task Comments") -- created specifically to real-world-verify item 19's
+  Architecture Agent fix against a genuinely new project (not e-commerce-platform). Has approved
+  SRS v2 (`artifact_7082b7d7`), approved Architecture Plan v1 (`artifact_2190f60f`, the
+  deterministic-fallback shape described in item 19), approved UI/UX v1
+  (`artifact_b3950e89` + `CommentInput.jsx`/`CommentList.jsx` components). The LangGraph
+  checkpoint for `feature_5521adbd` is currently parked at `next: ['coder_node']` after a real
+  `CodePlanValidationError` (the pre-existing planner limitation, not a new issue) -- a future
+  `resume()` call would retry the real planner cleanly, or a hand-validated plan (matching the
+  established Login/Signup precedent in `scripts/run_coder_pipeline_manual.py`) could be used to
+  exercise the rest of the Coder Agent pipeline for this feature if desired. **No
+  `workspaces/taskflow/` directory exists yet** -- `CoderAgent.run()` calls
+  `workspace_service.start_feature_branch(...)` only *after* `_plan_with_retries` succeeds, and
+  planning failed before that point, so the project's git repo/scaffold has never been created
+  for TaskFlow. **(Superseded by item 20/21 below: `workspaces/taskflow/repo` was subsequently
+  created via the hand-validated manual pipeline and now has real commits on `feature/task-comments`.)**
+- **Item 21's real, live-project verification, on top of everything item 20 already left in
+  place**: `workspaces/e-commerce-platform/repo` (currently on `feature/signup`) and
+  `workspaces/taskflow/repo` (currently on `feature/task-comments`) both gained a new real commit
+  ("Backfill scaffold upgrades: ... home page navigation") from calling `ensure_project_repo`
+  again -- the `FEATURE_LINKS` marker is now present in both repos' `App.jsx`, on top of whatever
+  each branch had already added. Neither branch's pre-existing route (`/login`/`/signup` for
+  e-commerce, `/tasks/:taskId` for taskflow) got a `<Link>` retroactively added by this (the
+  backfill only adds the *mechanism*, not a link for a route it didn't create) -- `verify()`'s new
+  `page reachability` gate correctly and honestly still fails for both, which is expected, not a
+  regression.
+  - `feature/task-comments` also gained two more real commits from a genuine
+    `CoderAgent.revise()` run (revision comment: "add a loading spinner while comments are being
+    fetched"): `3899554` (attempt 1) and `2b50de7` (attempt 2, the one that stuck -- diff is a
+    single line added inside `CommentList.jsx`'s existing loading state). A corrected, accurate
+    **v4** artifact set (`artifact_8169b564` and siblings) was saved reflecting the real verify
+    result (`page reachability: failed` -- the known, pre-existing, out-of-scope-for-this-revision
+    gap; every other step, including the now-fixed `home page render`, passes) -- v1-v3 (from
+    earlier sessions/attempts) remain intact and superseded, matching this project's existing
+    "never overwrite, always version" artifact convention.
 
 ## Where to look
 

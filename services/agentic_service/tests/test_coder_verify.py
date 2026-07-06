@@ -157,3 +157,107 @@ def test_placeholder_stub_scan_is_informational_and_never_fails(verifier, projec
 
     assert statuses["placeholder-stub scan"] == "info"
     assert result["passed"] is True
+
+
+def test_page_reachability_passes_on_untouched_scaffold(verifier, project):
+    # The fresh scaffold only has the "/" route -- nothing else to check.
+    project_id, feature_id = project
+    result = verifier.verify(project_id, feature_id, {"new_dependencies": []})
+    statuses = {s["name"]: s["status"] for s in result["steps"]}
+
+    assert statuses["page reachability"] == "passed"
+    assert statuses["home page render"] == "passed"
+    assert statuses["feature page render"] == "info"
+
+
+def test_page_reachability_fails_on_a_route_with_no_link(verifier, project):
+    # Reproduces the real, confirmed bug: a feature added a <Route> but
+    # never a <Link> to it.
+    project_id, feature_id = project
+    app_jsx_path = workspace_service.get_repo_path(project_id) / "client" / "src" / "App.jsx"
+    app_jsx_path.write_text(
+        'import React from "react";\n'
+        'import { Routes, Route } from "react-router-dom";\n'
+        "function HomePage() { return <div>Home</div>; }\n"
+        "export default function App() {\n"
+        "  return (\n"
+        "    <Routes>\n"
+        '      <Route path="/" element={<HomePage />} />\n'
+        '      <Route path="/login" element={<div>Login</div>} />\n'
+        "    </Routes>\n"
+        "  );\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = verifier.verify(project_id, feature_id, {"new_dependencies": []})
+    statuses = {s["name"]: s["status"] for s in result["steps"]}
+
+    assert statuses["page reachability"] == "failed"
+    assert result["passed"] is False
+
+
+def test_page_reachability_passes_when_route_is_linked(verifier, project):
+    project_id, feature_id = project
+    app_jsx_path = workspace_service.get_repo_path(project_id) / "client" / "src" / "App.jsx"
+    app_jsx_path.write_text(
+        'import React from "react";\n'
+        'import { Routes, Route, Link } from "react-router-dom";\n'
+        "function HomePage() {\n"
+        "  return (\n"
+        "    <div>\n"
+        '      <Link to="/login">Login</Link>\n'
+        "    </div>\n"
+        "  );\n"
+        "}\n"
+        "export default function App() {\n"
+        "  return (\n"
+        "    <Routes>\n"
+        '      <Route path="/" element={<HomePage />} />\n'
+        '      <Route path="/login" element={<div>Login</div>} />\n'
+        "    </Routes>\n"
+        "  );\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = verifier.verify(project_id, feature_id, {"new_dependencies": []})
+    statuses = {s["name"]: s["status"] for s in result["steps"]}
+
+    assert statuses["page reachability"] == "passed"
+    assert statuses["home page render"] == "passed"
+    # The reachable "/login" page (an inline <div>, not a real page component)
+    # is checked too, and reported informationally.
+    assert statuses["feature page render"] == "info"
+
+
+def test_home_page_render_fails_on_a_real_runtime_crash(verifier, project):
+    # Reachable and compiles cleanly (vite build has no type-checking to
+    # catch this), but throws at runtime -- exactly the class of bug
+    # nav_checker/route_checker/vite build all cannot catch, and the reason
+    # this check exists.
+    project_id, feature_id = project
+    app_jsx_path = workspace_service.get_repo_path(project_id) / "client" / "src" / "App.jsx"
+    app_jsx_path.write_text(
+        'import React from "react";\n'
+        'import { Routes, Route } from "react-router-dom";\n'
+        "function HomePage() {\n"
+        "  const crash = undefinedVariable.someProperty;\n"
+        "  return <div>{crash}</div>;\n"
+        "}\n"
+        "export default function App() {\n"
+        "  return (\n"
+        "    <Routes>\n"
+        '      <Route path="/" element={<HomePage />} />\n'
+        "    </Routes>\n"
+        "  );\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = verifier.verify(project_id, feature_id, {"new_dependencies": []})
+    statuses = {s["name"]: s["status"] for s in result["steps"]}
+
+    assert statuses["client build (vite build)"] == "passed"  # compiles fine -- the bug is only at runtime
+    assert statuses["home page render"] == "failed"
+    assert result["passed"] is False

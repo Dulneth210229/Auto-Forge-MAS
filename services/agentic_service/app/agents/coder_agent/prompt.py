@@ -47,6 +47,11 @@ plausible-looking feature into a broken one that a human has to catch by hand):
   component's actual prop usage and then pass every prop its logic depends on
   (state, callbacks, data) from the parent. Rendering it with zero/wrong props
   and assuming it will work is a common, easy-to-miss failure -- do not do it.
+- Never add a `<Route>` to `client/src/App.jsx` without also adding a corresponding
+  `<Link>` reachable from `HomePage` (directly, or via a list/index page `HomePage`
+  links to, for parameterized routes) -- an unreachable page is exactly the "looks
+  done but isn't" defect these rules exist to prevent. A route with no way to reach
+  it by clicking is not a complete page, no matter how correct its own code is.
 - After writing or patching any `.js`/`.jsx` file, call `check_syntax` on that
   exact file before moving on to the next one.
 - Before ending your turn, call `list_unimplemented_planned_files` to confirm
@@ -67,7 +72,11 @@ Tool usage:
   is already there. To mount a new route in `server/src/app.js`, patch the
   `// FEATURE_ROUTES_END` line specifically (replace it with your new
   `require`/`app.use(...)` lines followed by `// FEATURE_ROUTES_END` again) --
-  never patch `module.exports = app;` directly.
+  never patch `module.exports = app;` directly. To add a nav entry in
+  `client/src/App.jsx`, patch the `// FEATURE_LINKS_END` line inside `HomePage`
+  specifically (replace it with your new `<li><Link to="...">...</Link></li>`
+  line followed by `// FEATURE_LINKS_END` again) -- never rewrite `HomePage`'s
+  JSX wholesale.
 - If a page/component is described as an approved UI/UX component, call
   `read_ui_component` with its name and integrate that exact file (import it,
   wire routing/props) rather than writing your own version of its markup.
@@ -138,9 +147,21 @@ Hard rules:
    `server/src/models/<Entity>.js`) using mongoose, referenced by the route
    file that needs it.
    To add a new frontend page: plan a "create" for the page component AND a
-   "modify" on `client/src/App.jsx` to add its `<Route>` (plus a "modify" on
-   any existing nav/link component if one already exists and should link to
-   it).
+   single "modify" on `client/src/App.jsx` that adds BOTH its `<Route>` AND a
+   real `<Link>` to it from `HomePage` -- a page with a route but no way to
+   reach it by clicking is NOT complete. `client/src/App.jsx` has a
+   `// FEATURE_LINKS_START` / `// FEATURE_LINKS_END` marker pair inside
+   `HomePage` for exactly this purpose.
+   If the route is parameterized (e.g. `/tasks/:taskId`), do NOT link directly
+   to it -- there is no real id value at the nav level. Instead: if a top-level
+   "list" page for that resource already exists (e.g. `/tasks`, each item
+   linking to its own `/tasks/:taskId`), link `HomePage` to the list page
+   instead. If no such list page exists yet, plan one as part of this feature:
+   a "create" for a list/index page that fetches the collection and links to
+   each item's detail route, plus its own `<Route path="/tasks">` and a
+   `HomePage` link to it. Recognizing that a parameterized route needs a
+   reachable list-page ancestor is a planning decision, not just a coding-loop
+   patch -- do not leave a parameterized route as the only way in.
    Never plan to touch `server/src/server.js`, `client/src/main.jsx`,
    `client/vite.config.js`, or `client/index.html` -- they are already
    complete and feature-agnostic. `server/src/app.js` contains a

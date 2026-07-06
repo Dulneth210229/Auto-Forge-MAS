@@ -15,6 +15,7 @@ import pytest
 from app.services.in_memory_store import store
 from app.services.workspace_service import (
     SCAFFOLD_FILES,
+    _LEGACY_CLIENT_APP_JSX_V1,
     _LEGACY_SERVER_APP_JS_V1,
     _LEGACY_SERVER_SERVER_JS_V1,
     workspace_service,
@@ -257,3 +258,113 @@ def test_upgrade_backfill_skips_customized_server_js_without_corrupting_it(proje
     server_js = (repo_path / "server" / "src" / "server.js").read_text(encoding="utf-8")
     assert server_js == customized_server_js
     assert "mongoose.connect" not in server_js
+
+
+def _reset_to_legacy_client_app_jsx(repo, repo_path, app_jsx_content: str) -> None:
+    """
+    Rewrite an already-scaffolded repo's client/src/App.jsx back to its
+    pre-FEATURE_LINKS-upgrade (legacy, link-free) shape -- exactly the real
+    state e-commerce-platform's and taskflow's App.jsx were found in (a
+    feature's <Route> added, but HomePage never linking to it).
+    """
+    (repo_path / "client" / "src" / "App.jsx").write_text(app_jsx_content, encoding="utf-8")
+    repo.index.add(["client/src/App.jsx"])
+    repo.index.commit("simulate pre-nav-fix legacy App.jsx state")
+
+
+def test_upgrade_backfill_replaces_untouched_legacy_app_jsx_wholesale(project_id):
+    repo = workspace_service.ensure_project_repo(project_id)
+    repo_path = workspace_service.get_repo_path(project_id)
+    _reset_to_legacy_client_app_jsx(repo, repo_path, _LEGACY_CLIENT_APP_JSX_V1)
+
+    workspace_service.ensure_project_repo(project_id)
+
+    app_jsx = (repo_path / "client" / "src" / "App.jsx").read_text(encoding="utf-8")
+    assert "FEATURE_LINKS_START" in app_jsx
+    assert "FEATURE_LINKS_END" in app_jsx
+    assert "Link" in app_jsx.split("\n")[1]  # the react-router-dom import line
+
+
+def test_upgrade_backfill_preserves_a_customized_app_jsx_route(project_id):
+    repo = workspace_service.ensure_project_repo(project_id)
+    repo_path = workspace_service.get_repo_path(project_id)
+
+    # Simulate the real e-commerce-platform/taskflow scenario: a feature
+    # already added its own route to the legacy App.jsx before this
+    # upgrade existed, but HomePage was never touched.
+    customized_app_jsx = _LEGACY_CLIENT_APP_JSX_V1.replace(
+        'import { Routes, Route } from "react-router-dom";\n',
+        'import { Routes, Route } from "react-router-dom";\nimport LoginPage from "./pages/LoginPage";\n',
+    ).replace(
+        '<Route path="/" element={<HomePage />} />',
+        '<Route path="/" element={<HomePage />} />\n      <Route path="/login" element={<LoginPage />} />',
+    )
+    _reset_to_legacy_client_app_jsx(repo, repo_path, customized_app_jsx)
+
+    workspace_service.ensure_project_repo(project_id)
+
+    app_jsx = (repo_path / "client" / "src" / "App.jsx").read_text(encoding="utf-8")
+
+    assert '<Route path="/login" element={<LoginPage />} />' in app_jsx
+    assert "FEATURE_LINKS_START" in app_jsx
+    assert "FEATURE_LINKS_END" in app_jsx
+    assert "Link" in app_jsx.split("\n")[1]
+
+
+def test_upgrade_backfill_is_idempotent_on_customized_app_jsx(project_id):
+    repo = workspace_service.ensure_project_repo(project_id)
+    repo_path = workspace_service.get_repo_path(project_id)
+    customized_app_jsx = _LEGACY_CLIENT_APP_JSX_V1.replace(
+        '<Route path="/" element={<HomePage />} />',
+        '<Route path="/" element={<HomePage />} />\n      <Route path="/login" element={<LoginPage />} />',
+    )
+    _reset_to_legacy_client_app_jsx(repo, repo_path, customized_app_jsx)
+
+    workspace_service.ensure_project_repo(project_id)
+    first_pass = (repo_path / "client" / "src" / "App.jsx").read_text(encoding="utf-8")
+
+    workspace_service.ensure_project_repo(project_id)
+    second_pass = (repo_path / "client" / "src" / "App.jsx").read_text(encoding="utf-8")
+
+    assert first_pass == second_pass
+    assert first_pass.count("FEATURE_LINKS_START") == 1
+
+
+def test_resume_feature_branch_checks_out_existing_branch_without_resetting(project_id):
+    feature_id = generate_id("feature")
+    store.features[feature_id] = {
+        "project_id": project_id,
+        "feature_id": feature_id,
+        "feature_name": "Resume Test Feature",
+    }
+
+    workspace_service.start_feature_branch(project_id, feature_id)
+    repo_path = workspace_service.get_repo_path(project_id)
+    (repo_path / "server" / "src" / "marker.js").write_text("// prior work", encoding="utf-8")
+    workspace_service.commit_changes(project_id, feature_id, "prior revision work")
+
+    repo = workspace_service.ensure_project_repo(project_id)
+    repo.git.checkout("main")
+
+    branch_name = workspace_service.resume_feature_branch(project_id, feature_id)
+
+    assert branch_name == f"feature/{workspace_service._feature_slug(feature_id)}"
+    assert repo.active_branch.name == branch_name
+    assert (repo_path / "server" / "src" / "marker.js").exists()
+
+    store.database["features"].delete_one({"feature_id": feature_id})
+
+
+def test_resume_feature_branch_raises_when_no_prior_branch_exists(project_id):
+    feature_id = generate_id("feature")
+    store.features[feature_id] = {
+        "project_id": project_id,
+        "feature_id": feature_id,
+        "feature_name": "Never Started Feature",
+    }
+    workspace_service.ensure_project_repo(project_id)
+
+    with pytest.raises(ValueError, match="No existing feature branch"):
+        workspace_service.resume_feature_branch(project_id, feature_id)
+
+    store.database["features"].delete_one({"feature_id": feature_id})

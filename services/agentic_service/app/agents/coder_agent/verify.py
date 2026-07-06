@@ -28,6 +28,22 @@ endpoints were actually implemented (route_checker.check_route_coverage,
 a hard gate) versus left as unreachable/placeholder logic
 (route_checker.scan_for_placeholder_stubs, informational only -- see that
 module's docstring for why it never gates passed).
+
+A further gate closes the frontend mirror of that same gap: a page can
+compile and have a registered route while still being unreachable by a
+human, because nothing links to it (nav_checker.check_page_reachability,
+a hard gate -- confirmed real bug: every feature built so far added a
+`<Route>` but never a `<Link>`, so the app's home page never changed no
+matter what was actually built).
+
+One last check closes the gap neither static check above can: a page can
+compile, have a registered route, AND be linked, while still crashing at
+runtime (e.g. an undefined prop access) -- render_checker.check_runtime_render
+serves the already-built client and loads each reachable page in a real
+browser. The home page failing is a hard gate (cheap, no data dependency,
+exactly what was silently broken project-wide); feature pages are checked
+too but only reported informationally, since their rendering can
+legitimately vary with backend data state.
 """
 
 from __future__ import annotations
@@ -35,6 +51,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from app.agents.coder_agent.nav_checker import check_page_reachability
+from app.agents.coder_agent.render_checker import RenderCheckError, check_runtime_render
 from app.agents.coder_agent.route_checker import check_route_coverage, scan_for_placeholder_stubs
 from app.services.sandbox_service import sandbox_service
 from app.services.workspace_service import workspace_service
@@ -148,6 +166,25 @@ class CoderVerifier:
         steps.append(route_coverage_step)
         passed = passed and route_coverage_step["status"] != "failed"
 
+        page_reachability_results = check_page_reachability(workspace_root)
+        page_reachability_step = self._build_page_reachability_step(page_reachability_results)
+        steps.append(page_reachability_step)
+        passed = passed and page_reachability_step["status"] != "failed"
+
+        if client_build_step["status"] == "passed":
+            reachable_routes = [
+                item["route"] for item in page_reachability_results if item["status"] == "reachable"
+            ]
+            home_page_step, feature_page_step = self._build_runtime_render_steps(project_id, reachable_routes)
+        else:
+            skip_output = "Skipped because the client did not build successfully."
+            home_page_step = {"name": "home page render", "status": "skipped", "output": skip_output}
+            feature_page_step = {"name": "feature page render", "status": "skipped", "output": skip_output}
+
+        steps.append(home_page_step)
+        steps.append(feature_page_step)
+        passed = passed and home_page_step["status"] != "failed"
+
         steps.append(self._build_placeholder_stub_step(workspace_root, touched_paths))
 
         return {"passed": passed, "steps": steps}
@@ -177,6 +214,77 @@ class CoderVerifier:
             "status": "passed",
             "output": f"All {len(results)} planned endpoint(s) have a matching route registration.",
         }
+
+    def _build_page_reachability_step(self, results: list[dict[str, str]]) -> dict[str, str]:
+        unreachable = [item for item in results if item["status"] == "unreachable"]
+
+        if not results:
+            return {
+                "name": "page reachability",
+                "status": "passed",
+                "output": "No non-root page routes registered yet to check.",
+            }
+
+        if unreachable:
+            lines = [f"- {item['route']}" for item in unreachable]
+            return {
+                "name": "page reachability",
+                "status": "failed",
+                "output": "These pages have no way to reach them by clicking from \"/\":\n"
+                + "\n".join(lines),
+            }
+
+        return {
+            "name": "page reachability",
+            "status": "passed",
+            "output": f"All {len(results)} registered page route(s) are reachable from \"/\".",
+        }
+
+    def _build_runtime_render_steps(
+        self, project_id: str, reachable_routes: list[str]
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        try:
+            result = check_runtime_render(project_id, reachable_routes)
+        except RenderCheckError as error:
+            home_page_step = {"name": "home page render", "status": "failed", "output": str(error)}
+            feature_page_step = {
+                "name": "feature page render",
+                "status": "info",
+                "output": "Skipped: the runtime-render check's preview server never became reachable, "
+                "so feature pages could not be checked either.",
+            }
+            return home_page_step, feature_page_step
+
+        home_page_step = {
+            "name": "home page render",
+            "status": result["home_page"]["status"],
+            "output": result["home_page"]["output"],
+        }
+
+        feature_pages = result["feature_pages"]
+
+        if not feature_pages:
+            feature_page_step = {
+                "name": "feature page render",
+                "status": "info",
+                "output": "No reachable feature pages to check.",
+            }
+        else:
+            failed_pages = [item for item in feature_pages if item["status"] == "failed"]
+            lines = [f"- {item['route']}: {item['output']}" for item in feature_pages]
+            summary = (
+                f"{len(failed_pages)} of {len(feature_pages)} feature page(s) had rendering issues "
+                "(does not fail verification, review before approving):\n"
+                if failed_pages
+                else f"All {len(feature_pages)} feature page(s) rendered cleanly:\n"
+            )
+            feature_page_step = {
+                "name": "feature page render",
+                "status": "info",
+                "output": summary + "\n".join(lines),
+            }
+
+        return home_page_step, feature_page_step
 
     def _build_placeholder_stub_step(self, workspace_root, touched_paths: list[str]) -> dict[str, str]:
         findings = scan_for_placeholder_stubs(workspace_root, touched_paths)

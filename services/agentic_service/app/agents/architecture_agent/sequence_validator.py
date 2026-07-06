@@ -37,6 +37,10 @@ class SequenceDiagramValidator:
         "the", "a", "an", "and", "or", "to", "via", "by", "for", "of", "in",
         "on", "with", "only", "is", "are", "be", "this", "that", "flow",
         "feature", "scope", "out", "from", "as", "at", "using",
+        # Generic requirement-phrasing filler nouns -- see the matching
+        # comment in usecase_validator.py's STOPWORDS for why these add no
+        # distinguishing signal to an out-of-scope phrase's stem set.
+        "functionality", "capability", "capabilities", "support",
     }
 
     def validate(self, srs_json: dict[str, Any], sequence_json: dict[str, Any]) -> None:
@@ -195,7 +199,10 @@ class SequenceDiagramValidator:
                 text_stems = self._important_stems(text)
                 if self._matches_allowed(text_stems, allowed_sets):
                     continue
-                if len(forbidden_stems.intersection(text_stems)) >= (1 if len(forbidden_stems) == 1 else 2):
+                # Require ALL forbidden stems to be present, not just any 2 -- see the
+                # matching comment in usecase_validator.py's _validate_out_of_scope for why a
+                # flat 2-stem threshold false-positives on generic shared domain vocabulary.
+                if len(forbidden_stems.intersection(text_stems)) >= len(forbidden_stems):
                     errors.append(f"Sequence diagram appears to include out-of-scope item '{self._item_text(item)}' in message '{text}'.")
 
         return errors

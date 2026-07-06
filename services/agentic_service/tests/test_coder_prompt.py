@@ -40,3 +40,17 @@ def test_prompt_describes_feature_routes_marker_patch_target():
 def test_planner_prompt_describes_feature_routes_marker():
     assert "FEATURE_ROUTES_START" in CODE_PLANNER_SYSTEM_PROMPT
     assert "FEATURE_ROUTES_END" in CODE_PLANNER_SYSTEM_PROMPT
+
+
+def test_prompt_requires_a_link_for_every_route():
+    flattened = " ".join(CODER_AGENT_SYSTEM_PROMPT.split())
+    assert "FEATURE_LINKS_END" in flattened
+    assert "never rewrite `HomePage`'s JSX wholesale" in flattened
+    assert "an unreachable page is exactly the" in flattened
+
+
+def test_planner_prompt_requires_link_and_list_page_for_parameterized_routes():
+    assert "FEATURE_LINKS_START" in CODE_PLANNER_SYSTEM_PROMPT
+    assert "FEATURE_LINKS_END" in CODE_PLANNER_SYSTEM_PROMPT
+    assert "do NOT link directly" in CODE_PLANNER_SYSTEM_PROMPT
+    assert "list/index page" in CODE_PLANNER_SYSTEM_PROMPT

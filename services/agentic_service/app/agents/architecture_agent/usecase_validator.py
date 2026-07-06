@@ -50,6 +50,13 @@ class UseCaseQualityValidator:
         "the", "a", "an", "and", "or", "to", "via", "by", "for", "of",
         "in", "on", "with", "only", "is", "are", "be", "this", "that",
         "flow", "feature", "scope", "out", "from", "as", "at", "using",
+        # Generic requirement-phrasing filler nouns -- these describe *that*
+        # something is a capability, not *which* capability, so they add no
+        # distinguishing signal to an out-of-scope phrase's stem set (e.g.
+        # "Password recovery functionality" is distinguished by "password"/
+        # "recovery", not by "functionality"). Domain-agnostic (applies to
+        # any feature), not feature-specific hardcoding.
+        "functionality", "capability", "capabilities", "support",
     }
 
     def validate(
@@ -282,8 +289,17 @@ class UseCaseQualityValidator:
                 if self._matches_allowed_clause(element_stems, allowed_stem_sets):
                     continue
 
+                # Require the element to restate the ENTIRE forbidden concept (all of its
+                # stems), not just any 2 -- a flat "2 stems overlap" threshold means any
+                # out-of-scope phrase sharing 2 generic domain words with the feature (e.g.
+                # "account"/"email" for an "Account verification via email" item, on a feature
+                # that is itself about accounts and email) false-positives on nearly every
+                # legitimate in-scope element, since those words are common to the whole
+                # feature, not distinctive of the forbidden concept. Requiring the full set
+                # means the single word that actually DEFINES the forbidden concept (e.g.
+                # "verif") must be present, not just incidental shared vocabulary.
                 overlap = forbidden_stems.intersection(element_stems)
-                required_overlap = 1 if len(forbidden_stems) == 1 else 2
+                required_overlap = len(forbidden_stems)
 
                 if len(overlap) >= required_overlap:
                     errors.append(

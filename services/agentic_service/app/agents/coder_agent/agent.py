@@ -32,6 +32,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from langgraph.errors import GraphRecursionError
+
 from app.agents.coder_agent.coding_loop import build_coder_react_agent, build_task_message
 from app.agents.coder_agent.diff_builder import (
     build_code_manifest,
@@ -45,7 +47,7 @@ from app.agents.coder_agent.planner import code_planner
 from app.agents.coder_agent.schemas import CoderAgentInput, CoderAgentOutput
 from app.agents.coder_agent.verify import coder_verifier
 from app.core.enums import AgentName, ApprovalStatus, ArtifactFormat, ArtifactType
-from app.schemas.coder_schema import CoderAgentRunRequest
+from app.schemas.coder_schema import CoderAgentReviseRequest, CoderAgentRunRequest
 from app.services.artifact_service import artifact_service
 from app.services.in_memory_store import store
 from app.services.project_memory_service import project_memory_service
@@ -57,10 +59,15 @@ logger = get_logger(__name__)
 
 MAX_PLANNING_ATTEMPTS = 2
 MAX_CODING_ATTEMPTS = 3
-# Bumped from 50 -- the coding loop now also calls list_unimplemented_planned_files
-# and check_syntax (once per .js/.jsx file written/patched) as real, encouraged
-# self-check tool calls, which use up turns that used to be pure file-editing budget.
-CODING_LOOP_RECURSION_LIMIT = 65
+# Bumped 50 -> 65 -> 100. 65 (raised specifically to accommodate the new
+# list_unimplemented_planned_files/check_syntax self-check tool calls) still hit
+# GraphRecursionError on a real 8-file plan (2 of which were "modify an existing
+# component" patches) before the model reached a stop condition -- confirmed via a
+# real run against the TaskFlow/Task Comments feature. GraphRecursionError is now
+# also caught in _code_with_retries (treated as a failed attempt, not a crash), so
+# this limit no longer needs to be exactly right -- just generous enough that a
+# realistically-sized plan can usually finish in one attempt.
+CODING_LOOP_RECURSION_LIMIT = 100
 
 
 class CoderAgent:
@@ -174,11 +181,223 @@ class CoderAgent:
 
         return output
 
+    async def revise(self, feature_id: str, request: CoderAgentReviseRequest) -> CoderAgentOutput:
+        """
+        Revise the latest Coder Agent output for a feature that already has
+        a real prior run -- mirrors RequirementAgent.revise()/
+        ArchitectureAgent.revise()'s established pattern (load latest
+        output, apply a human revision comment, save as a new version,
+        never overwriting), adapted for the fact that this agent's output
+        is a live git branch, not just a JSON document.
+
+        Key difference from run(): builds on the EXISTING feature branch
+        (workspace_service.resume_feature_branch, never resets it) instead
+        of starting fresh from main -- a revision is a targeted change on
+        top of already-verified work, not a new attempt at the same plan.
+        This is what lets a human iterate by prompt (this session's
+        explicit ask) instead of only getting one automatic shot.
+
+        Rule:
+            Requires a prior Coder Agent run for this feature (a CODE_PLAN
+            artifact and a feature branch must already exist) -- there is
+            nothing to revise otherwise.
+        """
+        logger.info("Coder Agent revision started for feature_id=%s", feature_id)
+
+        feature = store.features.get(feature_id)
+        if not feature:
+            raise ValueError("Feature not found.")
+
+        project = store.projects.get(feature["project_id"])
+        if not project:
+            raise ValueError("Project not found for this feature.")
+
+        latest_plan_artifact = self._find_latest_code_plan_artifact(feature_id)
+        if not latest_plan_artifact:
+            raise ValueError(
+                "No existing Coder Agent output found for this feature. "
+                "Run the Coder Agent before requesting a revision."
+            )
+        existing_plan_json = read_json_file(latest_plan_artifact["file_path"])
+
+        srs_artifact = self._find_latest_approved_artifact(
+            feature_id=feature_id,
+            agent_name=AgentName.REQUIREMENT,
+            artifact_type=ArtifactType.SRS,
+            artifact_format=ArtifactFormat.JSON,
+        )
+        if not srs_artifact:
+            raise ValueError(
+                "No approved SRS JSON artifact found. "
+                "Approve Requirement Agent SRS JSON before revising the Coder Agent."
+            )
+        srs_json = read_json_file(srs_artifact["file_path"])
+
+        architecture_plan_json = self._load_approved_architecture_plan(feature_id)
+        if architecture_plan_json is None:
+            raise ValueError(
+                "No approved Architecture Plan (or legacy SDS) JSON artifact found."
+            )
+
+        ui_integration_manifest_json = self._load_approved_ui_integration_manifest(feature_id)
+        project_manifest_json = project_memory_service.load_project_manifest(project["project_id"])
+
+        agent_input = CoderAgentInput(
+            project=dict(project),
+            feature=dict(feature),
+            srs_json=srs_json,
+            enhanced_srs_json=None,
+            architecture_plan_json=architecture_plan_json,
+            ui_integration_manifest_json=ui_integration_manifest_json,
+            project_manifest_json=project_manifest_json,
+            human_comment=request.revision_comment,
+        )
+
+        # Frames the existing plan honestly, as a revision request rather than a
+        # validation rejection -- reusing _plan_with_retries' rejection-retry
+        # mechanism (see that method's docstring) would otherwise tell the model
+        # its already-good, already-coded plan was "REJECTED by a deterministic
+        # coverage check," which is simply false and would confuse the model
+        # about what actually needs to change.
+        revision_feedback = (
+            "This is a HUMAN-REQUESTED REVISION of an already-implemented and verified "
+            "feature, not a validation rejection. The plan below already passed validation "
+            "and was successfully coded once. Apply ONLY the specific change described in "
+            "the human revision comment above -- keep every existing file entry that "
+            "doesn't need to change; add or modify entries only for what this revision "
+            "requires."
+        )
+
+        coverage_baseline_files = self._collect_cumulative_plan_files(feature_id)
+
+        code_plan_json = await self._plan_with_retries(
+            agent_input,
+            srs_json,
+            previous_plan_json=existing_plan_json,
+            validation_feedback=revision_feedback,
+            coverage_baseline_files=coverage_baseline_files,
+        )
+
+        workspace_service.resume_feature_branch(project["project_id"], feature_id)
+
+        verify_result, coding_attempts = await self._code_with_retries(
+            project["project_id"], feature_id, code_plan_json
+        )
+
+        diff = workspace_service.diff_against_main(project["project_id"], feature_id)
+
+        output = CoderAgentOutput(
+            code_plan_json=code_plan_json,
+            verification_passed=verify_result["passed"],
+            file_tree_json=build_file_tree(diff),
+            code_manifest_json=build_code_manifest(code_plan_json, diff),
+            requirement_code_map_json=build_requirement_code_map(code_plan_json, diff),
+            setup_instructions_markdown=build_setup_instructions_markdown(code_plan_json),
+            merge_report_markdown=build_merge_report_markdown(
+                feature["feature_name"], diff, verify_result, coding_attempts
+            ),
+        )
+
+        output.artifact_ids = self._save_artifacts(dict(project), dict(feature), output)
+
+        logger.info(
+            "Coder Agent revision completed for feature_id=%s verification_passed=%s "
+            "attempts=%d artifacts=%s",
+            feature_id,
+            verify_result["passed"],
+            coding_attempts,
+            output.artifact_ids,
+        )
+
+        return output
+
+    def _find_latest_code_plan_artifact(self, feature_id: str) -> dict | None:
+        """
+        Find the latest CODE_PLAN JSON artifact for this feature, regardless
+        of approval status -- a revision should be possible even before the
+        prior version has been approved/merged (a human may want several
+        rounds of feedback before approving anything).
+        """
+        matching = self._find_all_code_plan_artifacts(feature_id)
+
+        if not matching:
+            return None
+
+        return max(matching, key=lambda item: item.get("version", 1))
+
+    def _find_all_code_plan_artifacts(self, feature_id: str) -> list[dict]:
+        return [
+            artifact
+            for artifact in store.artifacts.values()
+            if artifact.get("feature_id") == feature_id
+            and artifact.get("agent_name") in [AgentName.CODER, AgentName.CODER.value]
+            and artifact.get("artifact_type") in [ArtifactType.CODE_PLAN, ArtifactType.CODE_PLAN.value]
+            and artifact.get("artifact_format") in [ArtifactFormat.JSON, ArtifactFormat.JSON.value]
+        ]
+
+    def _collect_cumulative_plan_files(self, feature_id: str) -> list[dict[str, Any]]:
+        """
+        Union of every file entry across EVERY CODE_PLAN version ever saved
+        for this feature -- not just the latest one.
+
+        Each revise() call's own saved code_plan_json only lists the delta
+        it actually touched (see _plan_with_retries' coverage_baseline_files
+        docstring for why), so the *latest* version alone is not a complete
+        picture of everything this feature has ever implemented. Confirmed
+        necessary by a real, second revision request: the first revision's
+        corrected artifact set was saved with only its own delta plan
+        (just the one file it touched) as the "latest" CODE_PLAN, so a
+        second revision's coverage baseline -- built from only that latest
+        version -- silently lost every file the *original* plan had
+        implemented, reproducing the exact "does not cover these API
+        endpoints" rejection this whole mechanism exists to prevent. Later
+        versions win when the same path appears in more than one version
+        (its most recent maps_to/action is the accurate one).
+        """
+        matching = sorted(
+            self._find_all_code_plan_artifacts(feature_id), key=lambda item: item.get("version", 1)
+        )
+
+        files_by_path: dict[str, dict[str, Any]] = {}
+        for artifact in matching:
+            plan = read_json_file(artifact["file_path"])
+            if not isinstance(plan, dict):
+                continue
+            for file_entry in plan.get("files", []) or []:
+                path = file_entry.get("path") if isinstance(file_entry, dict) else None
+                if path:
+                    files_by_path[path] = file_entry
+
+        return list(files_by_path.values())
+
     async def _plan_with_retries(
-        self, agent_input: CoderAgentInput, srs_for_planning: dict[str, Any]
+        self,
+        agent_input: CoderAgentInput,
+        srs_for_planning: dict[str, Any],
+        previous_plan_json: dict[str, Any] | None = None,
+        validation_feedback: str | None = None,
+        coverage_baseline_files: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        previous_plan_json = None
-        validation_feedback = None
+        """
+        previous_plan_json/validation_feedback can be pre-seeded by a caller
+        (revise() does this, framing the existing plan + a human revision
+        request rather than a validation rejection) -- if plan_validator
+        then rejects THAT plan, the retry loop below takes over normally
+        from there, with the standard "was rejected" framing, since at that
+        point it genuinely would be a rejection.
+
+        coverage_baseline_files: for revise() only -- the file list of the
+        already-implemented, already-verified prior plan. A revision's own
+        code_plan_json only needs to describe the delta (what this specific
+        change touches), not re-declare every endpoint/entity/requirement the
+        prior plan already covered -- confirmed necessary against a real
+        revise() run, where the model (reasonably) returned only the files
+        relevant to the requested change and plan_validator then rejected it
+        for "missing" endpoints that were, in fact, already implemented and
+        untouched by this revision. Coverage is validated against the union
+        of the baseline's files and this attempt's own files; the plan
+        actually returned (and coded) is still just this attempt's delta.
+        """
         last_error: CodePlanValidationError | None = None
 
         for attempt in range(1, MAX_PLANNING_ATTEMPTS + 1):
@@ -194,9 +413,16 @@ class CoderAgent:
                 validation_feedback=validation_feedback,
             )
 
+            plan_for_coverage_check = code_plan_json
+            if coverage_baseline_files:
+                plan_for_coverage_check = {
+                    **code_plan_json,
+                    "files": list(code_plan_json.get("files", []) or []) + coverage_baseline_files,
+                }
+
             try:
                 self.plan_validator.validate(
-                    srs_for_planning, agent_input.architecture_plan_json, code_plan_json
+                    srs_for_planning, agent_input.architecture_plan_json, plan_for_coverage_check
                 )
                 return code_plan_json
             except CodePlanValidationError as error:
@@ -219,11 +445,31 @@ class CoderAgent:
         for attempt in range(1, MAX_CODING_ATTEMPTS + 1):
             react_agent = build_coder_react_agent(project_id, feature_id, code_plan_json)
             task_message = build_task_message(code_plan_json, prior_failure_output, already_touched)
+            hit_recursion_limit = False
 
-            await react_agent.ainvoke(
-                {"messages": [{"role": "user", "content": task_message}]},
-                config={"recursion_limit": CODING_LOOP_RECURSION_LIMIT},
-            )
+            try:
+                await react_agent.ainvoke(
+                    {"messages": [{"role": "user", "content": task_message}]},
+                    config={"recursion_limit": CODING_LOOP_RECURSION_LIMIT},
+                )
+            except GraphRecursionError:
+                # A larger plan (several files, some "modify" patches, plus the
+                # self-check tool calls the prompt now encourages) can burn through
+                # the turn budget before the model calls a final, tool-free answer.
+                # Treat this exactly like an incomplete attempt rather than letting
+                # it crash the whole run uncaught: commit whatever was finished,
+                # then let the existing gap-detection logic below report precisely
+                # what's still missing for the next attempt.
+                hit_recursion_limit = True
+                logger.warning(
+                    "Coding attempt %d/%d for feature_id=%s hit the recursion limit "
+                    "(%d) before finishing -- committing partial progress and "
+                    "retrying with a note to work efficiently.",
+                    attempt,
+                    MAX_CODING_ATTEMPTS,
+                    feature_id,
+                    CODING_LOOP_RECURSION_LIMIT,
+                )
 
             workspace_service.commit_changes(
                 project_id, feature_id, message=f"Coder Agent attempt {attempt}: {feature_id}"
@@ -232,7 +478,7 @@ class CoderAgent:
             already_touched = workspace_service.get_touched_files(project_id, feature_id)
             gaps = self._find_plan_gaps(code_plan_json, already_touched)
 
-            if gaps:
+            if gaps or hit_recursion_limit:
                 logger.warning(
                     "Coding attempt %d/%d for feature_id=%s left %d planned file(s) untouched",
                     attempt,
@@ -241,6 +487,14 @@ class CoderAgent:
                     len(gaps),
                 )
                 prior_failure_output = self._format_plan_gaps(gaps)
+                if hit_recursion_limit:
+                    prior_failure_output = (
+                        "The previous attempt ran out of turns before finishing -- work "
+                        "efficiently this time: do not re-read files you already know the "
+                        "contents of, do not call check_syntax more than once per file, and "
+                        "prioritize finishing every remaining planned file over polishing ones "
+                        "that are already correct.\n\n" + (prior_failure_output or "")
+                    )
                 verify_result = {
                     "passed": False,
                     "steps": [
