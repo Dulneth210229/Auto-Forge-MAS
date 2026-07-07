@@ -1,0 +1,13 @@
+{
+  "files": [
+    {
+      "path": "client/src/App.jsx",
+      "action": "modify",
+      "rationale": "Register the missing <Route path=\"/tasks/:taskId\"> for TaskDetailPage.jsx -- it already existed, fully built and styled, but was never wired into routing, so every task link on /tasks rendered a completely blank page.",
+      "maps_to": []
+    }
+  ],
+  "new_dependencies": [],
+  "env_vars_needed": [],
+  "summary": "Fix: /tasks/:taskId rendered a completely blank page (which looked like \"missing styles\") because TaskDetailPage.jsx was never registered as a route in App.jsx, even though TaskflowHomePage.jsx already links to specific task URLs. Added the missing <Route> + import. Verified with a real browser screenshot: the page now renders fully styled with no JS errors."
+}

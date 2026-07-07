@@ -1,0 +1,11 @@
+{
+  "files": [
+    {
+      "path": "client/src/App.jsx",
+      "action": "modify",
+      "description": "Register the missing <Route path=\"/tasks/:taskId\"> for TaskDetailPage.jsx -- it already existed, fully built and styled, but was never wired into routing, so every task link on /tasks rendered a completely blank page.",
+      "maps_to": [],
+      "actually_touched": true
+    }
+  ]
+}

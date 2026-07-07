@@ -1,0 +1,18 @@
+{
+  "files": [
+    {
+      "path": "client/package.json",
+      "action": "modify",
+      "description": "Add tailwindcss, postcss, and autoprefixer as devDependencies -- they were referenced by tailwind.config.js/postcss.config.cjs but never actually declared or installed, so Tailwind was never really running.",
+      "maps_to": [],
+      "actually_touched": true
+    },
+    {
+      "path": "client/postcss.config.js",
+      "action": "delete",
+      "description": "A leftover deprecated stub (kept alongside the real postcss.config.cjs) was still being picked up by Vite ahead of the real config, resulting in zero PostCSS plugins running at all.",
+      "maps_to": [],
+      "actually_touched": false
+    }
+  ]
+}

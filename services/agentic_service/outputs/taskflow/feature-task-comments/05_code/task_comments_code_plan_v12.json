@@ -1,0 +1,33 @@
+{
+  "env_vars_needed": [],
+  "files": [
+    {
+      "action": "modify",
+      "maps_to": [
+        "/api/tasks/:taskId/comments",
+        "/api/comments/:commentId",
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004"
+      ],
+      "path": "server/src/routes/task-comments.routes.js",
+      "rationale": "Fix the API endpoint paths to match the SRS requirements and ensure proper routing for task comments"
+    },
+    {
+      "action": "modify",
+      "maps_to": [
+        "/api/tasks/:taskId/comments",
+        "/api/comments/:commentId",
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004"
+      ],
+      "path": "client/src/services/taskCommentsService.js",
+      "rationale": "Update the service methods to use the correct API endpoint paths that match the backend implementation"
+    }
+  ],
+  "new_dependencies": [],
+  "summary": "The frontend is not working due to API endpoint path mismatches between the frontend service layer and backend routes. The backend routes are using incorrect paths (/api/task-comments) instead of the required paths (/api/tasks/:taskId/comments for GET/POST and /api/comments/:commentId for DELETE). This plan modifies both the backend routes and frontend service to use consistent, correct endpoint paths that match the SRS requirements."
+}

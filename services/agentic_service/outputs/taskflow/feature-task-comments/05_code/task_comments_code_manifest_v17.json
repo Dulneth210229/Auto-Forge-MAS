@@ -1,0 +1,17 @@
+{
+  "files": [
+    {
+      "path": "client/src/pages/TaskDetailPage.jsx",
+      "action": "modify",
+      "description": "Add functionality to mark tasks as complete through the frontend, which was missing from the current implementation to satisfy the revision comment",
+      "maps_to": [
+        "/api/task-comments",
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004"
+      ],
+      "actually_touched": true
+    }
+  ]
+}
