@@ -313,6 +313,19 @@ def _build_shared_planner_context_sections(
         json.dumps(project_manifest_json, indent=2, default=str),
     ]
 
+    implementation_plan = architecture_plan_json.get("implementation_plan")
+    if implementation_plan:
+        sections.extend(
+            [
+                "",
+                "Architecture implementation plan (the approved end-to-end blueprint your code "
+                "plan must realize -- follow its file paths, endpoint specs, model fields, and "
+                "implementation order. Use ITS exact file paths for your \"files\" entries "
+                "unless the project manifest shows a conflicting file already exists):",
+                json.dumps(implementation_plan, indent=2, default=str),
+            ]
+        )
+
     if ui_integration_manifest_json:
         sections.extend(
             [

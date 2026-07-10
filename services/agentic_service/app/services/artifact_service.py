@@ -223,6 +223,39 @@ class ArtifactService:
             if artifact["feature_id"] == feature_id
         ]
 
+    def list_project_artifacts(
+        self,
+        project_id: str,
+        agent_name: AgentName | None = None,
+        artifact_type: ArtifactType | None = None,
+        artifact_format: ArtifactFormat | None = None,
+        approval_status: ApprovalStatus | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Return raw artifact records across EVERY feature of a project,
+        optionally filtered -- the first project-scoped artifact query
+        (every record already carries project_id; all other lookups are
+        feature-scoped). Added for the Architecture Agent's project-aware
+        generation: a new feature's plan is generated with visibility into
+        the previous features' approved plans.
+
+        Enum filters match both the enum and its .value string form, since
+        records written by different code paths store either.
+        """
+
+        def _matches(value: Any, expected) -> bool:
+            return expected is None or value in (expected, expected.value)
+
+        return [
+            artifact
+            for artifact in store.artifacts.values()
+            if artifact.get("project_id") == project_id
+            and _matches(artifact.get("agent_name"), agent_name)
+            and _matches(artifact.get("artifact_type"), artifact_type)
+            and _matches(artifact.get("artifact_format"), artifact_format)
+            and _matches(artifact.get("approval_status"), approval_status)
+        ]
+
     def get_artifact(self, artifact_id: str) -> ArtifactResponse | None:
         """
         Return one artifact by ID.

@@ -78,6 +78,7 @@ class ArchitecturePlanValidator:
         errors.extend(self._validate_data_coverage(srs_json, architecture_plan_json))
         errors.extend(self._validate_quality_coverage(srs_json, architecture_plan_json))
         errors.extend(self._validate_coder_tasks(srs_json, architecture_plan_json))
+        errors.extend(self._validate_implementation_plan(srs_json, architecture_plan_json))
         errors.extend(self._validate_no_weak_sds_text(architecture_plan_json))
 
         if errors:
@@ -249,6 +250,56 @@ class ArchitecturePlanValidator:
             return [f"Coder implementation tasks missing Functional Requirement IDs: {missing}"]
 
         return []
+
+    def _validate_implementation_plan(
+        self,
+        srs_json: dict[str, Any],
+        architecture_plan_json: dict[str, Any]
+    ) -> list[str]:
+        """
+        The implementation_plan is the Coder Agent's end-to-end blueprint --
+        its presence and minimal substance are required, conditioned on what
+        the SRS actually asks for (a feature with no API expectations does
+        not need backend file entries, etc.).
+        """
+
+        implementation_plan = architecture_plan_json.get("implementation_plan")
+
+        if not isinstance(implementation_plan, dict):
+            return ["Architecture Plan missing required implementation_plan object."]
+
+        errors = []
+
+        backend = implementation_plan.get("backend")
+        frontend = implementation_plan.get("frontend")
+
+        if not isinstance(backend, dict):
+            errors.append("implementation_plan.backend must be a JSON object.")
+        if not isinstance(frontend, dict):
+            errors.append("implementation_plan.frontend must be a JSON object.")
+
+        if not implementation_plan.get("implementation_order"):
+            errors.append("implementation_plan.implementation_order must be a non-empty list.")
+        if not implementation_plan.get("constraints"):
+            errors.append("implementation_plan.constraints must be a non-empty list.")
+
+        if isinstance(backend, dict):
+            if srs_json.get("api_expectations") and not backend.get("files"):
+                errors.append(
+                    "SRS has API expectations but implementation_plan.backend.files is empty."
+                )
+            if srs_json.get("data_requirements") and not backend.get("models"):
+                errors.append(
+                    "SRS has data requirements but implementation_plan.backend.models is empty."
+                )
+
+        if isinstance(frontend, dict):
+            if srs_json.get("ui_expectations") and not frontend.get("pages"):
+                errors.append(
+                    "SRS has UI expectations but implementation_plan.frontend.pages is empty."
+                )
+
+        return errors
 
     def _validate_no_weak_sds_text(self, architecture_plan_json: dict[str, Any]) -> list[str]:
         text = str(architecture_plan_json).lower()

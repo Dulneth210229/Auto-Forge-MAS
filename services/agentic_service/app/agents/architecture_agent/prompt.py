@@ -64,6 +64,25 @@ Architecture Plan rules:
 - The Architecture Plan must be different from the SRS.
 - The SRS says what the feature must do.
 - The Architecture Plan must explain how the feature should be structured and implemented.
+- The Architecture Plan is an implementation blueprint that a coding AI (the Coder Agent)
+  will execute directly -- every section must be concrete enough to act on without human
+  interpretation: real file paths, real endpoint methods+paths, real field names and types.
+- implementation_plan is the most important section for the Coder Agent. It must contain:
+  backend.files (exact file paths with create/modify actions), backend.endpoints (method,
+  path, request_body fields with types/required/validation, response, error_cases),
+  backend.models (name, file path, fields with types and constraints), frontend.pages
+  (path, route, purpose, uses_components), frontend.components_to_reuse,
+  frontend.services (path, functions mapping to endpoints), frontend.routing
+  (new_routes, nav_links), implementation_order (ordered concrete steps), and
+  constraints.
+- implementation_plan file paths must follow the project scaffold conventions exactly:
+  backend routers at server/src/routes/<feature>.routes.js (mounted by modifying
+  server/src/app.js at its // FEATURE_ROUTES_END marker), Mongoose models at
+  server/src/models/<Entity>.js, pages at client/src/pages/<Name>Page.jsx, API service
+  modules at client/src/services/<name>Service.js, and page routes/nav links registered
+  in client/src/App.jsx (which has FEATURE_LINKS markers inside HomePage).
+- Never plan to create or rewrite the existing scaffold files themselves
+  (server/src/server.js, client/src/main.jsx, client/vite.config.js, client/index.html).
 - Every Functional Requirement must be covered in traceability_matrix and implementation tasks.
 - Every Acceptance Criterion must be covered in behavior_view, error_handling_view, interface_view, or implementation tasks.
 - Every Validation Rule must be covered in data_view, interface_view, error_handling_view, validation_plan, or implementation tasks.
@@ -214,6 +233,37 @@ The JSON must have exactly this top-level structure:
         "related_requirements": []
       }
     ],
+    "implementation_plan": {
+      "backend": {
+        "files": [
+          {"path": "server/src/routes/<feature>.routes.js", "action": "create",
+           "purpose": "", "implements_endpoints": ["/api/..."]}
+        ],
+        "endpoints": [
+          {"method": "POST", "path": "/api/...",
+           "request_body": [{"field": "", "type": "", "required": true, "validation": ""}],
+           "response": "", "error_cases": ["400 when ...", "404 when ..."]}
+        ],
+        "models": [
+          {"name": "", "file": "server/src/models/<Entity>.js",
+           "fields": [{"name": "", "type": "", "constraints": ""}]}
+        ]
+      },
+      "frontend": {
+        "pages": [
+          {"path": "client/src/pages/<Name>Page.jsx", "route": "/...",
+           "purpose": "", "uses_components": []}
+        ],
+        "components_to_reuse": [],
+        "services": [
+          {"path": "client/src/services/<name>Service.js",
+           "functions": [{"name": "", "calls_endpoint": "POST /api/..."}]}
+        ],
+        "routing": {"new_routes": [], "nav_links": []}
+      },
+      "implementation_order": [],
+      "constraints": []
+    },
     "traceability_matrix": [],
     "assumptions": [],
     "constraints": [],
@@ -236,6 +286,51 @@ The JSON must have exactly this top-level structure:
 """
 
 
+# Everything after the four JSON-format-only output rules is shared verbatim
+# between the single-shot prompt above and the agentic (tool-using) prompt
+# below -- split rather than duplicated, so the two can never drift apart
+# (same zero-drift technique as the coder planner's shared rule constants).
+_SHARED_RULES_AND_SCHEMA = ARCHITECTURE_AGENT_SYSTEM_PROMPT.split(
+    "- Do not return explanation outside JSON.\n", 1
+)[1]
+
+ARCHITECTURE_AGENT_AGENTIC_SYSTEM_PROMPT = (
+    """
+You are the Architecture Agent in AutoForge, generating a feature-level
+Architecture Plan JSON and use case specification for exactly one approved
+feature -- with READ-ONLY tools to explore the project's real context first.
+
+Your tools:
+- read_previous_architecture_plan: the full approved plan of a previous
+  feature in this SAME project (available feature names are listed in the
+  user message). Use it to keep endpoints, data models, naming, and file
+  layout consistent with what already exists, and to reuse instead of
+  re-planning.
+- read_project_manifest: routes/models/components already merged into the
+  project's codebase.
+- list_workspace_dir / read_workspace_file / search_workspace_code: the
+  project's real code workspace (may not exist yet for a first feature --
+  the tools will say so; that is normal, not an error).
+You have NO write tools -- you cannot and must not change anything.
+
+How to work:
+- Explore only what informs planning-level decisions: what already exists
+  (endpoints, models, components, files) and what this feature must add.
+  Prefer the summarizing tools (read_project_manifest,
+  read_previous_architecture_plan) over reading many workspace files one at
+  a time; your turn budget is limited.
+- When you are confident, call submit_architecture_plan EXACTLY ONCE with
+  your full output serialized as a JSON string -- the same top-level
+  structure shown below (architecture_plan_json + usecase_specification_json).
+  This is your only way to finish; do not output the plan as chat text.
+- Never re-plan an endpoint, data entity, model, or file that a previous
+  feature's plan or the project manifest shows already exists -- reference
+  and extend the existing one instead.
+"""
+    + _SHARED_RULES_AND_SCHEMA
+)
+
+
 ARCHITECTURE_REVISION_SYSTEM_PROMPT = """
 You are the Architecture Agent revision assistant in AutoForge.
 
@@ -248,6 +343,8 @@ Rules:
 - Keep existing traceability IDs where possible.
 - Do not remove existing architecture decisions unless the comment clearly asks for removal.
 - Update only the parts affected by the revision comment.
+- Keep the implementation_plan section complete and in the same shape -- update its file
+  paths/endpoints/models/pages/order entries when the revision affects them, never drop it.
 - Keep design_views detailed enough because backend-generated diagrams are derived from the Architecture Plan.
 - Do not directly generate diagram PlantUML.
 - Do not include diagram reference sections.
@@ -271,6 +368,59 @@ Rules:
 """
 
 
+def summarize_previous_architecture_plans(previous_plans: list[dict]) -> str:
+    """
+    Compact, prompt-friendly summary of other features' approved plans --
+    endpoints, entities, and implementation file paths only, never the full
+    JSON (the Ollama context budget is real; a full plan is thousands of
+    tokens and only these fields matter for consistency/reuse decisions).
+    """
+
+    if not previous_plans:
+        return ""
+
+    sections: list[str] = []
+
+    for entry in previous_plans:
+        plan = entry.get("architecture_plan_json", {}) or {}
+        design_views = plan.get("design_views", {}) or {}
+        interface_view = design_views.get("interface_view", {}) or {}
+        data_view = design_views.get("data_view", {}) or {}
+        implementation_plan = plan.get("implementation_plan", {}) or {}
+
+        endpoints = [
+            f"{item.get('method', 'GET')} {item.get('endpoint', '')}"
+            for item in interface_view.get("api_endpoints", []) or []
+            if isinstance(item, dict) and item.get("endpoint")
+        ]
+        entities = [
+            str(item.get("name"))
+            for item in data_view.get("data_entities", []) or []
+            if isinstance(item, dict) and item.get("name")
+        ]
+        files = [
+            str(item.get("path"))
+            for item in (implementation_plan.get("backend", {}) or {}).get("files", []) or []
+            if isinstance(item, dict) and item.get("path")
+        ] + [
+            str(item.get("path"))
+            for item in (implementation_plan.get("frontend", {}) or {}).get("pages", []) or []
+            if isinstance(item, dict) and item.get("path")
+        ]
+
+        lines = [f"Feature: {entry.get('feature_name', entry.get('feature_id', 'unknown'))}"]
+        if endpoints:
+            lines.append(f"  Existing endpoints: {', '.join(endpoints)}")
+        if entities:
+            lines.append(f"  Existing data entities: {', '.join(entities)}")
+        if files:
+            lines.append(f"  Existing implementation files: {', '.join(files)}")
+
+        sections.append("\n".join(lines))
+
+    return "\n".join(sections)
+
+
 def build_architecture_user_prompt(
     project: dict,
     feature: dict,
@@ -278,14 +428,45 @@ def build_architecture_user_prompt(
     enhanced_srs_json: dict | None = None,
     architecture_notes: str | None = None,
     human_comment: str | None = None,
+    previous_architecture_plans: list[dict] | None = None,
+    project_manifest_json: dict | None = None,
 ) -> str:
     """
     Build Architecture Agent user prompt.
     """
 
-    enhanced_text = "No approved Enhanced SRS is available."
+    # When the Domain Agent's Enhanced SRS exists it SUPERSEDES the plain SRS
+    # entirely -- it is the enriched, authoritative requirements source, and
+    # sending both bodies would waste context and invite the model to mix a
+    # stale requirement from the plain SRS into the plan.
     if enhanced_srs_json:
-        enhanced_text = safe_json_dumps(enhanced_srs_json)
+        srs_section = f"""Approved Enhanced SRS JSON (produced by the Domain Agent -- this SUPERSEDES
+the plain SRS and is your SOLE requirements source; the original SRS is
+deliberately not shown):
+{safe_json_dumps(enhanced_srs_json)}"""
+    else:
+        srs_section = f"""Approved SRS JSON:
+{safe_json_dumps(srs_json)}
+
+Approved Enhanced SRS JSON if available:
+No approved Enhanced SRS is available."""
+
+    project_context_text = ""
+    previous_plans_summary = summarize_previous_architecture_plans(previous_architecture_plans or [])
+    if previous_plans_summary:
+        project_context_text += f"""
+Previous features' APPROVED architecture plans in this SAME project (design
+consistency + reuse: do NOT re-plan endpoints, data entities, models, or
+files that already exist below -- reference and extend them instead, and keep
+naming/API style consistent with them):
+{previous_plans_summary}
+"""
+    if project_manifest_json:
+        project_context_text += f"""
+Project manifest (routes/models/components already MERGED into this project's
+codebase -- these files exist on disk today):
+{safe_json_dumps(project_manifest_json)}
+"""
 
     return f"""
 Generate an Architecture Plan JSON and usecase_specification_json for this feature only.
@@ -296,12 +477,8 @@ Project:
 Feature:
 {safe_json_dumps(feature)}
 
-Approved SRS JSON:
-{safe_json_dumps(srs_json)}
-
-Approved Enhanced SRS JSON if available:
-{enhanced_text}
-
+{srs_section}
+{project_context_text}
 Architecture Notes:
 {architecture_notes}
 
@@ -322,6 +499,7 @@ Important Architecture Plan instructions:
 - Use risks in design_views.security_authorization_view and risks.
 - Use constraints in architecture_approach and constraints.
 - Create coder_implementation_tasks for frontend, backend, data, validation, error handling, and security where applicable.
+- Create a complete implementation_plan: exact file paths (following the scaffold conventions in the system prompt), every endpoint with its request fields/validation/response/error cases, every model with its fields, every page/service the frontend needs, routing entries, an ordered implementation_order, and constraints. The Coder Agent executes this section directly -- vague entries produce broken code.
 - Create traceability_matrix entries for all FR, AC, VR, NFR, constraints, risks, dependencies, data, API, and UI items where possible.
 - Make logical_view, interface_view, data_view, and behavior_view detailed enough for backend-generated sequence and class diagrams.
 - Do not include diagram reference sections inside architecture_plan_json.
@@ -393,6 +571,61 @@ Instructions:
 }}
 
 Return only valid JSON.
+"""
+
+
+def build_agentic_architecture_user_prompt(
+    project: dict,
+    feature: dict,
+    srs_json: dict,
+    enhanced_srs_json: dict | None = None,
+    architecture_notes: str | None = None,
+    human_comment: str | None = None,
+    previous_architecture_plans: list[dict] | None = None,
+    project_manifest_json: dict | None = None,
+) -> str:
+    """
+    User prompt for the agentic (tool-using) generation rung: the same
+    context as the single-shot prompt, plus which previous features'
+    plans are readable via tools and the explicit submit instruction.
+    """
+
+    base_prompt = build_architecture_user_prompt(
+        project=project,
+        feature=feature,
+        srs_json=srs_json,
+        enhanced_srs_json=enhanced_srs_json,
+        architecture_notes=architecture_notes,
+        human_comment=human_comment,
+        previous_architecture_plans=previous_architecture_plans,
+        project_manifest_json=project_manifest_json,
+    )
+
+    previous_names = [
+        str(entry.get("feature_name"))
+        for entry in (previous_architecture_plans or [])
+        if entry.get("feature_name")
+    ]
+    if previous_names:
+        readable_note = (
+            "Previous features whose full approved plan you can read with "
+            f"read_previous_architecture_plan: {', '.join(previous_names)}."
+        )
+    else:
+        readable_note = (
+            "This is the project's FIRST feature -- there are no previous "
+            "architecture plans and likely no workspace yet."
+        )
+
+    return f"""{base_prompt}
+
+---
+{readable_note}
+
+Explore what you need with your read-only tools, then call
+submit_architecture_plan exactly once with your full output (the exact
+top-level JSON structure from your instructions: architecture_plan_json +
+usecase_specification_json) serialized as a JSON string.
 """
 
 

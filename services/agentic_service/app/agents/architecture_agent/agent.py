@@ -45,15 +45,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from langchain.agents import create_agent
+from langgraph.errors import GraphRecursionError
+
 from app.agents.architecture_agent.markdown_builder import ArchitecturePlanMarkdownBuilder
 from app.agents.architecture_agent.prompt import (
+    ARCHITECTURE_AGENT_AGENTIC_SYSTEM_PROMPT,
     ARCHITECTURE_AGENT_SYSTEM_PROMPT,
     JSON_REPAIR_PROMPT,
+    build_agentic_architecture_user_prompt,
     build_architecture_user_prompt,
     build_architecture_plan_revision_prompt,
     build_json_repair_prompt,
     ARCHITECTURE_REVISION_SYSTEM_PROMPT,
 )
+from app.agents.architecture_agent.tools import build_architecture_planning_tools
 from app.agents.architecture_agent.schemas import (
     ArchitectureAgentInput,
     ArchitectureAgentOutput,
@@ -93,14 +99,22 @@ from app.schemas.architecture_schema import (
     ArchitectureAgentRunRequest,
     ArchitectureAgentReviseRequest,
 )
+from app.providers.agentic_model_factory import get_agentic_chat_model
 from app.services.artifact_service import artifact_service
 from app.services.in_memory_store import store
 from app.services.llm_provider_service import llm_provider_service
+from app.services.project_memory_service import project_memory_service
 from app.utils.file_manager import read_json_file, write_json_file, write_text_file
 from app.utils.id_generator import generate_id
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Same rationale (and same value) as the Coder Agent's revision planner:
+# read-only exploration is cheap, this exists only so a model that never
+# calls submit_architecture_plan can't loop forever. Hitting it is a
+# recoverable failure -- generation falls back to the single-shot rung.
+ARCHITECTURE_PLANNING_RECURSION_LIMIT = 80
 
 
 class ArchitectureAgent:
@@ -122,6 +136,11 @@ class ArchitectureAgent:
         "architecture_plan_json",
     ]
 
+    # NOTE: implementation_plan is deliberately NOT in this list. The prompt
+    # requires the LLM to produce it, but presence is guaranteed by
+    # _ensure_implementation_plan (mechanical synthesis from design_views/SRS
+    # when the LLM omitted it, and for every legacy/fallback plan), so an
+    # otherwise-good LLM plan is never discarded just for missing it.
     REQUIRED_ARCHITECTURE_PLAN_KEYS = [
         "document_control",
         "feature_overview",
@@ -158,6 +177,13 @@ class ArchitectureAgent:
         "use_cases",
         "relationships",
         "notes",
+    ]
+
+    REQUIRED_IMPLEMENTATION_PLAN_KEYS = [
+        "backend",
+        "frontend",
+        "implementation_order",
+        "constraints",
     ]
 
     def __init__(self):
@@ -244,13 +270,21 @@ class ArchitectureAgent:
         feature["feature_status"] = FeatureStatus.IN_PROGRESS
         feature["current_agent"] = AgentName.ARCHITECTURE
 
+        previous_architecture_plans = self._load_previous_architecture_plans(
+            project_id=feature["project_id"],
+            exclude_feature_id=feature_id,
+        )
+        project_manifest_json = project_memory_service.load_project_manifest(feature["project_id"])
+
         agent_input = ArchitectureAgentInput(
             project=dict(project),
             feature=dict(feature),
             srs_json=srs_json,
             enhanced_srs_json=enhanced_srs_json,
             architecture_notes=request.architecture_notes,
-            human_comment=request.human_comment
+            human_comment=request.human_comment,
+            previous_architecture_plans=previous_architecture_plans,
+            project_manifest_json=project_manifest_json,
         )
 
         output = await self._generate_architecture_output(agent_input)
@@ -296,13 +330,43 @@ class ArchitectureAgent:
 
         provider = llm_provider_service.get_provider()
 
+        srs_for_generation = agent_input.enhanced_srs_json or agent_input.srs_json
+        feature_name = agent_input.feature.get("feature_name", "Feature")
+
+        # Rung 0 (primary): agentic, tool-using, project-aware exploration --
+        # the model reads previous features' approved plans / the project
+        # manifest / the real workspace before submitting its plan. Any
+        # failure here (turn limit, no submission, parse or validation
+        # failure) falls through to the battle-tested single-shot ->
+        # repair -> deterministic-fallback ladder below, which is never
+        # replaced -- only preceded.
+        try:
+            exploration_output = await self._generate_raw_output_via_exploration(agent_input)
+            parsed = self._parse_and_validate_output(exploration_output, srs_for_generation, feature_name)
+            parsed = self._complete_usecase_model(agent_input, parsed)
+            parsed = self._complete_sequence_model(agent_input, parsed)
+            parsed = self._complete_class_model(agent_input, parsed)
+            self._validate_full_output(agent_input, parsed)
+
+            return self._build_output_from_parsed(parsed, raw_output=exploration_output)
+
+        except Exception as exploration_error:
+            logger.warning(
+                "Agentic architecture exploration failed for feature_id=%s -- "
+                "falling back to single-shot generation: %s",
+                agent_input.feature.get("feature_id"),
+                exploration_error,
+            )
+
         prompt = build_architecture_user_prompt(
             project=agent_input.project,
             feature=agent_input.feature,
             srs_json=agent_input.srs_json,
             enhanced_srs_json=agent_input.enhanced_srs_json,
             architecture_notes=agent_input.architecture_notes,
-            human_comment=agent_input.human_comment
+            human_comment=agent_input.human_comment,
+            previous_architecture_plans=agent_input.previous_architecture_plans,
+            project_manifest_json=agent_input.project_manifest_json,
         )
 
         raw_output = await provider.invoke_agent([
@@ -317,7 +381,7 @@ class ArchitectureAgent:
         ])
 
         try:
-            parsed = self._parse_and_validate_output(raw_output)
+            parsed = self._parse_and_validate_output(raw_output, srs_for_generation, feature_name)
             parsed = self._complete_usecase_model(agent_input, parsed)
             parsed = self._complete_sequence_model(agent_input, parsed)
             parsed = self._complete_class_model(agent_input, parsed)
@@ -340,7 +404,7 @@ class ArchitectureAgent:
             ])
 
             try:
-                parsed = self._parse_and_validate_output(repaired_output)
+                parsed = self._parse_and_validate_output(repaired_output, srs_for_generation, feature_name)
                 parsed = self._complete_usecase_model(agent_input, parsed)
                 parsed = self._complete_sequence_model(agent_input, parsed)
                 parsed = self._complete_class_model(agent_input, parsed)
@@ -385,6 +449,17 @@ class ArchitectureAgent:
 
                 raw_output = json.dumps(parsed, indent=2, default=str)
 
+        return self._build_output_from_parsed(parsed, raw_output=raw_output)
+
+    def _build_output_from_parsed(
+        self, parsed: dict[str, Any], raw_output: str
+    ) -> ArchitectureAgentOutput:
+        """
+        Build the final ArchitectureAgentOutput (markdown + PlantUML) from a
+        fully-completed, validated `parsed` dict -- shared by every
+        generation rung (agentic exploration, single-shot, repair, fallback).
+        """
+
         architecture_plan_json = parsed["architecture_plan_json"]
         usecase_analysis_json = parsed["usecase_analysis_json"]
         usecase_json = parsed["usecase_json"]
@@ -408,6 +483,60 @@ class ArchitectureAgent:
             class_puml=class_puml,
             raw_llm_output=raw_output
         )
+
+    async def _generate_raw_output_via_exploration(
+        self, agent_input: ArchitectureAgentInput
+    ) -> str:
+        """
+        Agentic (tool-using) generation rung: the model explores previous
+        features' approved plans, the project manifest, and the real
+        workspace with read-only tools, then submits its full output via
+        submit_architecture_plan -- mirroring the Coder Agent's proven
+        generate_via_exploration pattern.
+
+        Returns the submitted raw JSON string; raises if the loop ended
+        (normally or via the recursion limit) without a submission -- the
+        caller treats any raise as "fall back to the single-shot rung".
+        """
+
+        tools, captured = build_architecture_planning_tools(
+            project_id=agent_input.project.get("project_id", ""),
+            previous_architecture_plans=agent_input.previous_architecture_plans,
+        )
+
+        agent = create_agent(
+            model=get_agentic_chat_model(),
+            tools=tools,
+            system_prompt=ARCHITECTURE_AGENT_AGENTIC_SYSTEM_PROMPT,
+        )
+
+        user_prompt = build_agentic_architecture_user_prompt(
+            project=agent_input.project,
+            feature=agent_input.feature,
+            srs_json=agent_input.srs_json,
+            enhanced_srs_json=agent_input.enhanced_srs_json,
+            architecture_notes=agent_input.architecture_notes,
+            human_comment=agent_input.human_comment,
+            previous_architecture_plans=agent_input.previous_architecture_plans,
+            project_manifest_json=agent_input.project_manifest_json,
+        )
+
+        try:
+            await agent.ainvoke(
+                {"messages": [{"role": "user", "content": user_prompt}]},
+                config={"recursion_limit": ARCHITECTURE_PLANNING_RECURSION_LIMIT},
+            )
+        except GraphRecursionError:
+            pass  # handled uniformly below -- "plan_json" simply won't be captured
+
+        if "plan_json" not in captured:
+            raise ValueError(
+                "Agentic architecture exploration ended without calling "
+                "submit_architecture_plan (stopped early or hit the exploration "
+                f"turn limit of {ARCHITECTURE_PLANNING_RECURSION_LIMIT})."
+            )
+
+        return captured["plan_json"]
 
     def _complete_usecase_model(
         self,
@@ -524,9 +653,17 @@ class ArchitectureAgent:
             class_json=parsed["class_diagram_json"],
         )
 
-    def _parse_and_validate_output(self, raw_output: str) -> dict[str, Any]:
+    def _parse_and_validate_output(
+        self,
+        raw_output: str,
+        srs_json: dict[str, Any] | None = None,
+        feature_name: str = "",
+    ) -> dict[str, Any]:
         """
         Parse and validate Architecture Agent JSON structure.
+
+        srs_json/feature_name feed _ensure_implementation_plan's mechanical
+        synthesis when the LLM omitted the implementation_plan section.
         """
 
         parsed = self._extract_json_object(raw_output)
@@ -536,7 +673,7 @@ class ArchitectureAgent:
         if "architecture_plan_json" not in parsed and isinstance(parsed.get("sds_json"), dict):
             parsed["architecture_plan_json"] = self._convert_sds_to_architecture_plan(
                 sds_json=parsed.pop("sds_json"),
-                srs_json={},
+                srs_json=srs_json or {},
             )
 
         self._ensure_keys(parsed, self.REQUIRED_TOP_LEVEL_KEYS)
@@ -556,6 +693,13 @@ class ArchitectureAgent:
             raise ValueError("architecture_plan_json.design_views must be a JSON object.")
 
         self._ensure_keys(design_views, self.REQUIRED_DESIGN_VIEW_KEYS)
+
+        self._ensure_implementation_plan(
+            architecture_plan_json,
+            srs_json=srs_json,
+            feature_name=feature_name
+            or architecture_plan_json.get("document_control", {}).get("feature_name", "Feature"),
+        )
 
         # Use case output is intentionally completed by _complete_usecase_model().
         # This prevents weak or random LLM usecase_json from becoming the final diagram.
@@ -763,6 +907,15 @@ class ArchitectureAgent:
             )
             raw_output = json.dumps(revised_architecture_plan_json, indent=2, default=str)
 
+        # A revision of a legacy (pre-implementation_plan) plan must not fail
+        # downstream validation just because the original never had one --
+        # synthesize mechanically, same guarantee as the run() path.
+        self._ensure_implementation_plan(
+            revised_architecture_plan_json,
+            srs_json=srs_json,
+            feature_name=feature.get("feature_name", "Feature"),
+        )
+
         agent_input = ArchitectureAgentInput(
             project=project,
             feature=feature,
@@ -868,6 +1021,78 @@ class ArchitectureAgent:
         )
 
         return revised
+
+    def _load_previous_architecture_plans(
+        self, project_id: str, exclude_feature_id: str
+    ) -> list[dict[str, Any]]:
+        """
+        Load the latest APPROVED Architecture Plan JSON of every OTHER
+        feature in this project -- the project-wide context that makes a new
+        feature's plan consistent with (and reuse-aware of) what already
+        exists, instead of being planned blind.
+
+        Includes plans stored under the legacy `sds` artifact type (the live
+        e-commerce project's Login plan is one), same fallback the Coder
+        Agent's own architecture-plan lookup applies.
+
+        Returns [{"feature_id", "feature_name", "architecture_plan_json"}],
+        one entry per feature, latest approved version winning.
+        """
+
+        candidates: list[dict[str, Any]] = []
+        for artifact_type in [ArtifactType.ARCHITECTURE_PLAN, ArtifactType.SDS]:
+            candidates.extend(
+                artifact_service.list_project_artifacts(
+                    project_id=project_id,
+                    agent_name=AgentName.ARCHITECTURE,
+                    artifact_type=artifact_type,
+                    artifact_format=ArtifactFormat.JSON,
+                    approval_status=ApprovalStatus.APPROVED,
+                )
+            )
+
+        latest_by_feature: dict[str, dict[str, Any]] = {}
+        for artifact in candidates:
+            feature_id = artifact.get("feature_id")
+            if not feature_id or feature_id == exclude_feature_id:
+                continue
+            current_best = latest_by_feature.get(feature_id)
+            if current_best is None or artifact.get("version", 1) > current_best.get("version", 1):
+                latest_by_feature[feature_id] = artifact
+
+        previous_plans: list[dict[str, Any]] = []
+        for feature_id, artifact in latest_by_feature.items():
+            try:
+                plan_json = read_json_file(artifact["file_path"])
+            except Exception as error:
+                logger.warning(
+                    "Could not read previous architecture plan for feature_id=%s: %s",
+                    feature_id,
+                    error,
+                )
+                continue
+
+            # Unwrap known historical envelope shapes; a legacy SDS-shaped
+            # document (has "introduction", predates the plan shape) converts
+            # so its design_views/implementation info render consistently.
+            if isinstance(plan_json.get("architecture_plan_json"), dict):
+                plan_json = plan_json["architecture_plan_json"]
+            if isinstance(plan_json.get("sds_json"), dict):
+                plan_json = plan_json["sds_json"]
+            if "introduction" in plan_json and "feature_overview" not in plan_json:
+                plan_json = self._convert_sds_to_architecture_plan(sds_json=plan_json, srs_json={})
+
+            feature_record = store.features.get(feature_id, {})
+            previous_plans.append({
+                "feature_id": feature_id,
+                "feature_name": feature_record.get(
+                    "feature_name",
+                    plan_json.get("document_control", {}).get("feature_name", feature_id),
+                ),
+                "architecture_plan_json": plan_json,
+            })
+
+        return previous_plans
 
     def _find_latest_architecture_plan_json_artifact(self, feature_id: str) -> dict | None:
         """
@@ -1276,6 +1501,11 @@ class ArchitectureAgent:
                 srs=srs_json,
                 design_views=design_views,
             ),
+            "implementation_plan": self._build_implementation_plan(
+                feature_name=feature_name,
+                srs_json=srs_json,
+                design_views=design_views,
+            ),
             "traceability_matrix": self._convert_traceability_to_architecture_plan(
                 sds_json.get("traceability_matrix", [])
             ),
@@ -1290,6 +1520,250 @@ class ArchitectureAgent:
         self._remove_diagram_reference_sections(architecture_plan_json)
         architecture_plan_json = self._clean_architecture_plan_text(architecture_plan_json)
         return architecture_plan_json
+
+    def _ensure_implementation_plan(
+        self,
+        architecture_plan_json: dict[str, Any],
+        srs_json: dict[str, Any] | None,
+        feature_name: str,
+    ) -> None:
+        """
+        Guarantee a structurally-valid implementation_plan exists on the plan.
+
+        The prompt requires the LLM to author one (an LLM-authored plan is
+        richer), but an otherwise-good plan must never be discarded -- or a
+        legacy/fallback plan rejected downstream -- just because it predates
+        or omitted this section. Synthesizes mechanically from the plan's own
+        design_views + the SRS when missing or malformed.
+        """
+
+        existing = architecture_plan_json.get("implementation_plan")
+
+        if isinstance(existing, dict) and all(
+            key in existing for key in self.REQUIRED_IMPLEMENTATION_PLAN_KEYS
+        ):
+            return
+
+        if existing is not None:
+            logger.warning(
+                "implementation_plan was present but malformed (missing keys) -- "
+                "replacing with a mechanically-derived one."
+            )
+
+        architecture_plan_json["implementation_plan"] = self._build_implementation_plan(
+            feature_name=feature_name,
+            srs_json=srs_json or {},
+            design_views=architecture_plan_json.get("design_views", {}) or {},
+        )
+
+    def _build_implementation_plan(
+        self,
+        feature_name: str,
+        srs_json: dict[str, Any],
+        design_views: dict[str, Any],
+    ) -> dict[str, Any]:
+        """
+        Mechanically derive an end-to-end implementation plan for the Coder
+        Agent from the plan's own design_views + the SRS.
+
+        This is the deterministic floor: the LLM (single-shot or agentic) is
+        prompted to author a richer version, but every plan -- including the
+        SRS-derived fallback and converted legacy SDS plans -- must carry a
+        real, structurally-valid implementation_plan, because the Coder Agent
+        treats it as the blueprint to realize. File paths follow the exact
+        scaffold conventions the Coder Agent's own planner prompt teaches
+        (server/src/routes/..., client/src/pages/..., the FEATURE_ROUTES_END
+        and FEATURE_LINKS_END markers).
+        """
+
+        slug = self._slug(feature_name)
+        pascal = self._pascal_case(feature_name)
+        camel = self._camel_case(feature_name)
+
+        interface_view = design_views.get("interface_view", {}) or {}
+        data_view = design_views.get("data_view", {}) or {}
+        error_view = design_views.get("error_handling_view", {}) or {}
+
+        api_endpoints = [e for e in interface_view.get("api_endpoints", []) or [] if isinstance(e, dict)]
+        data_entities = [e for e in data_view.get("data_entities", []) or [] if isinstance(e, dict)]
+        request_models_by_name = {
+            model.get("name"): model
+            for model in interface_view.get("request_models", []) or []
+            if isinstance(model, dict) and model.get("name")
+        }
+
+        routes_file = f"server/src/routes/{slug}.routes.js"
+
+        backend_files: list[dict[str, Any]] = []
+        if api_endpoints:
+            backend_files.append({
+                "path": routes_file,
+                "action": "create",
+                "purpose": f"Express router implementing every {feature_name} API endpoint, "
+                           "with request validation before any handler logic.",
+                "implements_endpoints": [
+                    endpoint.get("endpoint") for endpoint in api_endpoints if endpoint.get("endpoint")
+                ],
+            })
+            backend_files.append({
+                "path": "server/src/app.js",
+                "action": "modify",
+                "purpose": f"Mount the new {feature_name} router with require(...) + app.use(...) "
+                           "inserted at the // FEATURE_ROUTES_END marker.",
+                "implements_endpoints": [],
+            })
+
+        models: list[dict[str, Any]] = []
+        for entity in data_entities:
+            entity_name = str(entity.get("name") or f"{pascal}Data")
+            model_file = f"server/src/models/{self._pascal_case(entity_name)}.js"
+
+            fields = []
+            for field in entity.get("fields", []) or []:
+                if isinstance(field, dict):
+                    fields.append({
+                        "name": field.get("name", "field"),
+                        "type": field.get("type", "string"),
+                        "constraints": str(
+                            field.get("constraints")
+                            or field.get("format")
+                            or field.get("description")
+                            or ""
+                        ),
+                    })
+
+            models.append({"name": entity_name, "file": model_file, "fields": fields})
+            backend_files.append({
+                "path": model_file,
+                "action": "create",
+                "purpose": f"Mongoose model for the {entity_name} entity.",
+                "implements_endpoints": [],
+            })
+
+        error_case_hints = [
+            str(item)
+            for item in (error_view.get("validation_errors", []) or [])[:3]
+        ]
+
+        endpoints: list[dict[str, Any]] = []
+        for endpoint in api_endpoints:
+            request_fields = []
+            request_model = request_models_by_name.get(endpoint.get("request_model"))
+            if request_model:
+                for field in request_model.get("fields", []) or []:
+                    if isinstance(field, dict):
+                        request_fields.append({
+                            "field": field.get("name", "field"),
+                            "type": field.get("type", "string"),
+                            "required": bool(field.get("required", True)),
+                            "validation": str(field.get("format") or field.get("description") or ""),
+                        })
+
+            endpoints.append({
+                "method": endpoint.get("method", "GET"),
+                "path": endpoint.get("endpoint", f"/api/{slug}"),
+                "request_body": request_fields,
+                "response": str(
+                    endpoint.get("success_response_model")
+                    or endpoint.get("purpose")
+                    or "JSON response"
+                ),
+                "error_cases": (
+                    ["400 when required request fields are missing or invalid"]
+                    + error_case_hints
+                    + ["500 when an unexpected server error occurs"]
+                ),
+            })
+
+        page_name = f"{pascal}Page"
+        route_path = f"/{slug}"
+        ui_expectations = self._as_record_list(srs_json.get("ui_expectations", []))
+        page_purpose = f"Main page for the {feature_name} feature."
+        if ui_expectations:
+            page_purpose += " UI expectations: " + "; ".join(
+                self._item_description(item) for item in ui_expectations[:5]
+            )
+
+        pages = [{
+            "path": f"client/src/pages/{page_name}.jsx",
+            "route": route_path,
+            "purpose": page_purpose,
+            "uses_components": [],
+        }]
+
+        service_functions = []
+        for endpoint in endpoints:
+            method = str(endpoint.get("method", "GET")).upper()
+            path = str(endpoint.get("path", ""))
+            static_segments = [
+                segment for segment in path.strip("/").split("/")
+                if segment and not segment.startswith(":") and segment != "api"
+            ]
+            target = self._pascal_case(static_segments[-1]) if static_segments else pascal
+            service_functions.append({
+                "name": f"{method.lower()}{target}",
+                "calls_endpoint": f"{method} {path}",
+            })
+
+        frontend = {
+            "pages": pages,
+            "components_to_reuse": [],
+            "services": [{
+                "path": f"client/src/services/{camel}Service.js",
+                "functions": service_functions,
+            }] if service_functions else [],
+            "routing": {
+                "new_routes": [{"path": route_path, "component": page_name}],
+                "nav_links": [{"to": route_path, "label": feature_name}],
+            },
+        }
+
+        implementation_order = []
+        if models:
+            implementation_order.append(
+                "Create the Mongoose model(s): " + ", ".join(model["file"] for model in models)
+            )
+        if api_endpoints:
+            implementation_order.append(
+                f"Create {routes_file} implementing every endpoint above, validating required "
+                "request fields before use (400 on missing/malformed)."
+            )
+            implementation_order.append(
+                "Mount the new router in server/src/app.js at the // FEATURE_ROUTES_END marker."
+            )
+        if service_functions:
+            implementation_order.append(
+                f"Create client/src/services/{camel}Service.js with one function per endpoint."
+            )
+        implementation_order.append(
+            f"Create client/src/pages/{page_name}.jsx, reusing approved UI/UX components where "
+            "available instead of re-authoring their markup."
+        )
+        implementation_order.append(
+            f"Register <Route path=\"{route_path}\"> AND a HomePage <Link> in client/src/App.jsx "
+            "at the FEATURE_LINKS markers -- a route with no link is not complete."
+        )
+
+        return {
+            "backend": {
+                "files": backend_files,
+                "endpoints": endpoints,
+                "models": models,
+            },
+            "frontend": frontend,
+            "implementation_order": implementation_order,
+            "constraints": [
+                "The Express+Vite scaffold already exists and works -- never recreate "
+                "server/src/app.js, server/src/server.js, client/src/main.jsx, "
+                "client/vite.config.js, or client/index.html.",
+                "Mount new backend routers by patching the // FEATURE_ROUTES_END marker in "
+                "server/src/app.js -- never rewrite the file.",
+                "Register new pages by adding both a <Route> and a reachable <Link> in "
+                "client/src/App.jsx (FEATURE_LINKS markers) -- an unreachable page is not done.",
+                "Reuse approved UI/UX components verbatim (via read_ui_component) instead of "
+                "re-authoring their markup.",
+            ],
+        }
 
     def _clean_architecture_plan_text(self, value: Any) -> Any:
         """

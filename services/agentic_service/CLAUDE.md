@@ -909,6 +909,114 @@ milestone — that file is scratch, **this file is the durable one**.
       backend was connected for this specific check -- expected, not a bug) with zero JS errors,
       and full `coder_verifier.verify()` passes end-to-end (`page reachability` now correctly
       passes too, since `/tasks/:taskId`'s static prefix `/tasks` is registered and linked).
+24. **Architecture Agent upgraded end-to-end: coder-friendly Architecture + Implementation Plan,
+    project-aware, tool-using, enhanced-SRS-exclusive** -- a 5-milestone user-requested upgrade
+    (full plan: it was in `C:\Users\ASUS\.claude\plans\soft-petting-star.md` before being
+    overwritten by the next milestone, per this file's own convention). The Architecture Agent
+    previously produced an SDS-flavored plan from a single-shot LLM call over one feature's SRS,
+    with zero visibility into the rest of the project -- concrete gaps the user pointed at
+    directly (the plan wasn't concrete enough for the Coder Agent to act on unambiguously, and
+    the agent planned each feature blind to the rest of the project). Diagrams (use case,
+    sequence, class) were explicitly **out of scope for this change** and remain exactly as they
+    were -- generated deterministically by dedicated modelers from `(srs, plan)`, never by the LLM.
+    - **M1 -- `implementation_plan`, an AI-executable blueprint, added to the schema** (`prompt.py`,
+      `agent.py`, `sds_validator.py`, `markdown_builder.py`): `backend.files/endpoints/models`,
+      `frontend.pages/components_to_reuse/services/routing`, `implementation_order`,
+      `constraints` -- concrete file paths, exact endpoint method/path/request-fields/response/
+      error-cases, model field lists, matching the scaffold conventions the Coder Agent's own
+      planner prompt already teaches (`server/src/routes/...`, `FEATURE_ROUTES_END`/
+      `FEATURE_LINKS_END` markers). **`design_views` (the Coder Agent's two load-bearing fields,
+      `interface_view.api_endpoints`/`data_view.data_entities`) is completely unchanged** --
+      `implementation_plan` is purely additive.
+      - New `ArchitectureAgent._ensure_implementation_plan`/`_build_implementation_plan`: a
+        deterministic floor guaranteeing every plan -- LLM-authored, single-shot, agentic,
+        SRS-derived fallback, or a converted legacy `sds`-type plan -- carries a structurally-valid
+        `implementation_plan`, mechanically derived from `design_views` + the SRS when the LLM
+        omitted or malformed it. This matters because the fallback rung is a real, frequently-hit
+        path (confirmed again in this milestone's own E2E run, see M5 below), so it can never
+        produce a schema the validator then rejects.
+      - `sds_validator.py`'s `_validate_implementation_plan`: structural presence checks
+        conditioned on what the SRS actually asks for (backend.files non-empty only when the SRS
+        has api_expectations, etc.) -- same coverage-checking idiom already used for `design_views`.
+    - **M2 -- project-aware context (still single-shot at this point)**: new
+      `artifact_service.list_project_artifacts(...)` -- the **first project-scoped artifact
+      query** in this codebase (every artifact already carries `project_id`, but every existing
+      lookup was feature-scoped only). New `ArchitectureAgent._load_previous_architecture_plans`
+      uses it to find every OTHER feature's latest APPROVED plan in the same project (including
+      the legacy `sds`-type lookup, same fallback the Coder Agent's own architecture-plan loader
+      already has). `build_architecture_user_prompt` gained a previous-plans summary (endpoints +
+      entities + implementation file paths only, never the full JSON -- the Ollama context budget
+      is real) and a project-manifest section (reused `project_memory_service`, same as the Coder
+      Agent).
+    - **M3 -- agentic, tool-using generation, as a new FIRST rung on the existing reliability
+      ladder** (never a replacement for it): new `app/agents/architecture_agent/tools.py`
+      (`build_architecture_planning_tools`) and `_generate_raw_output_via_exploration` in
+      `agent.py`, modeled directly on the Coder Agent's proven
+      `build_revision_planning_tools`/`generate_via_exploration` pattern (read-only tools +
+      `submit_architecture_plan(plan_json: str)` + captured dict, `ARCHITECTURE_PLANNING_RECURSION_LIMIT
+      = 80`, `GraphRecursionError`/no-submission both treated as "fall through to single-shot").
+      **Deliberately NOT built by filtering `build_coder_tools`**: that builder calls
+      `workspace_service.ensure_project_repo` at construction time (a side effect that CREATES the
+      workspace) -- wrong here, since the Architecture Agent runs before any code exists and a
+      project's first feature legitimately has no workspace yet (every workspace tool degrades to
+      a clear "no workspace yet" string instead of raising). The ladder is now: agentic exploration
+      -> single-shot (now also with M2's project context) -> JSON-repair -> deterministic
+      fallback -> proceed-with-caveat -- every existing rung preserved, the agentic one only ever
+      precedes them.
+    - **M4 -- input/output integration**: input side -- `srs_for_generation = enhanced_srs_json or
+      srs_json` used consistently everywhere (prompt builder, validators, all three diagram
+      modelers) so an Enhanced SRS, when the (still-stub) Domain Agent someday produces one,
+      supersedes the plain SRS entirely rather than both being sent. Output side --
+      `coder_agent/prompt.py`'s shared context-section builder (used by BOTH the single-shot and
+      agentic revision planners) renders `architecture_plan_json["implementation_plan"]` as a new
+      "follow its file paths, endpoint specs, model fields, and implementation order" section when
+      present, and gracefully omits it for a legacy plan that predates this milestone (confirmed
+      directly against the real, live e-commerce-platform Login plan -- still stored under the
+      legacy `sds` artifact type with old-style `introduction`/`design_context` keys -- prompt
+      builds with no crash, `design_views`-derived `required_endpoints`/`required_entities` still
+      populate correctly since that shape never changed, and the new section is correctly absent).
+    - **M5 -- real, live verification, not just synthetic tests**: full suite **199 passed** (up
+      from 174). Real E2E: created a genuinely new feature ("Task Search") on the live TaskFlow
+      project (`proj_53284a63`, which already has an approved Task Comments plan + a real
+      workspace) via the real Requirement Agent -> real Architecture Agent. The agentic rung hit
+      its turn limit on this real run and correctly fell through; the single-shot rung's raw LLM
+      output was missing every one of the ~15 top-level required keys entirely (a real, severe
+      single-shot miss, unrelated to this milestone's own changes) and repair also failed; the
+      **deterministic fallback rung produced a complete, valid plan** -- confirming the
+      reliability ladder and M1's fallback-schema guarantee both work for real, not just in
+      fixtures. The resulting `implementation_plan` had concrete, real content: 3 backend files,
+      1 model, 1 page, 6 ordered implementation steps.
+      - **Confirmed the actual point of this milestone**: fed this real plan to the real
+        single-shot Coder planner (`code_planner.generate`, bypassing the retry loop for a first
+        look) -- its `files` list was an **exact match** to the implementation_plan's own file
+        paths (`server/src/models/TaskSearchDataEntity1.js`,
+        `server/src/routes/task-search.routes.js`, `server/src/app.js`,
+        `client/src/services/taskSearchService.js`, `client/src/pages/TaskSearchPage.jsx`), with
+        the model's own summary explicitly citing "the approved architecture blueprint." This is
+        a measurably more concrete result than the old abstract SDS ever produced for this class
+        of feature (the SDS-era planner's documented failure mode was exactly *under*-planning
+        backend files -- see the gotcha below, still real, but no longer starting from nothing).
+      - **Also confirmed, honestly, a separate real limitation this milestone does NOT fix**:
+        that same real plan's `maps_to` field values were unreliable across two different LLM
+        calls (once containing the file's own path instead of the required endpoint/entity/FR-ID
+        strings; once missing the field structurally) -- the real `_plan_with_retries` call
+        exhausted both attempts and raised `CodePlanValidationError`, exactly matching this
+        project's **already-documented, pre-existing** Coder Agent planner gotcha (below) that
+        predates this milestone entirely. Not conflated with this milestone's own work, and not
+        fixed here -- fixing Coder Agent planner reliability was never this milestone's scope.
+      - Verified the legacy path directly against the real, live e-commerce-platform Login plan
+        (see M4 above) -- confirmed working, not just asserted.
+    - New test files: `tests/test_architecture_plan_schema.py`, `tests/test_architecture_project_context.py`,
+      `tests/test_architecture_agent_exploration.py`, `tests/test_architecture_enhanced_srs.py`
+      (33 tests total across all four, all passing) plus `scripts/run_taskflow_architecture_e2e.py`
+      (the real E2E script, kept as a reusable verification tool matching this repo's existing
+      `scripts/run_*_manual.py` convention).
+    - **Real state**: `proj_53284a63` (TaskFlow) gained a new feature, `feature_29fa0ed4` ("Task
+      Search"), with an approved SRS and an approved Architecture Plan (`artifact_dc772d18`,
+      approved during this milestone's own M5c verification) plus rendered use case/sequence/class
+      diagrams -- left in place as real, inspectable verification output, not debris. No code was
+      generated for it (the Coder Agent step was only planning-level, per the milestone's own
+      scope) -- a natural next feature to actually build out in a future session.
 
 ## Known model-quality gotchas (not code bugs — prompts already account for these)
 
@@ -936,6 +1044,14 @@ milestone — that file is scratch, **this file is the durable one**.
   everything downstream of planning until this is improved further (candidates: even more
   explicit endpoint-vs-caller wording, one-shot few-shot example in the prompt, or accepting a
   human-edited plan as a valid input to the pipeline instead of only ever an LLM-generated one).
+  **Re-confirmed during the Architecture Agent upgrade (item 24)**, in a new variant: the
+  `files` list itself was excellent (an exact match to the new `implementation_plan`'s file
+  paths -- a real, measurable improvement over the SDS era), but `maps_to` values were
+  unreliable across separate real calls (once the file's own path instead of the required
+  endpoint/entity/FR-ID strings, once missing structurally) -- `_plan_with_retries` correctly
+  exhausted its attempts and raised, rather than passing through a plan that would silently fail
+  Coder Agent coverage. A better `implementation_plan` measurably sharpens *what* the planner
+  plans; it does not yet fix this separate, still-open `maps_to`-reliability gap.
 - The planner is prone to anchoring on the shape of context JSON shown to it (e.g. it once
   echoed the `project_manifest.json` shape back as if it were the required output). Fixed by
   explicitly marking all context as read-only and restating the exact required output schema
