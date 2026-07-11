@@ -53,10 +53,12 @@ from app.agents.architecture_agent.prompt import (
     ARCHITECTURE_AGENT_AGENTIC_SYSTEM_PROMPT,
     ARCHITECTURE_AGENT_SYSTEM_PROMPT,
     JSON_REPAIR_PROMPT,
+    USECASE_REPAIR_SYSTEM_PROMPT,
     build_agentic_architecture_user_prompt,
     build_architecture_user_prompt,
     build_architecture_plan_revision_prompt,
     build_json_repair_prompt,
+    build_usecase_repair_prompt,
     ARCHITECTURE_REVISION_SYSTEM_PROMPT,
 )
 from app.agents.architecture_agent.tools import build_architecture_planning_tools
@@ -115,6 +117,12 @@ logger = get_logger(__name__)
 # calls submit_architecture_plan can't loop forever. Hitting it is a
 # recoverable failure -- generation falls back to the single-shot rung.
 ARCHITECTURE_PLANNING_RECURSION_LIMIT = 80
+
+# Mirrors CoderAgent._plan_with_retries' MAX_PLANNING_ATTEMPTS idiom: a
+# small, cheap, TARGETED repair loop for a use case specification that fails
+# quality validation -- fixes only the flagged issues, without re-running
+# the entire architecture-plan generation.
+MAX_USECASE_REPAIR_ATTEMPTS = 2
 
 
 class ArchitectureAgent:
@@ -343,7 +351,7 @@ class ArchitectureAgent:
         try:
             exploration_output = await self._generate_raw_output_via_exploration(agent_input)
             parsed = self._parse_and_validate_output(exploration_output, srs_for_generation, feature_name)
-            parsed = self._complete_usecase_model(agent_input, parsed)
+            parsed = await self._complete_usecase_model(agent_input, parsed)
             parsed = self._complete_sequence_model(agent_input, parsed)
             parsed = self._complete_class_model(agent_input, parsed)
             self._validate_full_output(agent_input, parsed)
@@ -382,7 +390,7 @@ class ArchitectureAgent:
 
         try:
             parsed = self._parse_and_validate_output(raw_output, srs_for_generation, feature_name)
-            parsed = self._complete_usecase_model(agent_input, parsed)
+            parsed = await self._complete_usecase_model(agent_input, parsed)
             parsed = self._complete_sequence_model(agent_input, parsed)
             parsed = self._complete_class_model(agent_input, parsed)
             self._validate_full_output(agent_input, parsed)
@@ -405,7 +413,7 @@ class ArchitectureAgent:
 
             try:
                 parsed = self._parse_and_validate_output(repaired_output, srs_for_generation, feature_name)
-                parsed = self._complete_usecase_model(agent_input, parsed)
+                parsed = await self._complete_usecase_model(agent_input, parsed)
                 parsed = self._complete_sequence_model(agent_input, parsed)
                 parsed = self._complete_class_model(agent_input, parsed)
                 self._validate_full_output(agent_input, parsed)
@@ -418,7 +426,7 @@ class ArchitectureAgent:
                     agent_input=agent_input,
                     reason=str(second_error)
                 )
-                parsed = self._complete_usecase_model(agent_input, parsed)
+                parsed = await self._complete_usecase_model(agent_input, parsed)
                 parsed = self._complete_sequence_model(agent_input, parsed)
                 parsed = self._complete_class_model(agent_input, parsed)
 
@@ -538,24 +546,37 @@ class ArchitectureAgent:
 
         return captured["plan_json"]
 
-    def _complete_usecase_model(
+    async def _complete_usecase_model(
         self,
         agent_input: ArchitectureAgentInput,
         parsed: dict[str, Any]
     ) -> dict[str, Any]:
         """
-        Build the final use case model using the dedicated modeler.
+        Build the final use case model using the dedicated modeler, then run
+        the full UseCaseQualityValidator right here -- moved earlier than
+        before (previously only run once, later, from _validate_full_output)
+        -- so a quality failure (garbled names, CRUD fragmentation, etc.)
+        gets a chance at a cheap, TARGETED repair before this rung's overall
+        validation ever sees it. The later _validate_full_output call
+        becomes a final, harmless re-confirmation, not the only gate.
 
         The LLM may provide usecase_specification_json, usecase_analysis_json,
         or usecase_json. However, the final diagram must always pass through
         ArchitectureUseCaseModeler so that actors, use cases, relationships,
         and notes are normalized using feature-independent UML rules.
+
+        Never raises for a QUALITY validation failure -- once repair
+        attempts are exhausted (or skipped, see below) it just returns the
+        best model it has, and lets the existing _validate_full_output ->
+        outer reliability ladder handle it, exactly as before this change.
+        The pre-existing structural _ensure_keys/_validate_usecase_json
+        checks may still raise, unchanged.
         """
 
         srs_for_modeling = agent_input.enhanced_srs_json or agent_input.srs_json
+        feature_name = agent_input.feature.get("feature_name", "Feature")
 
         usecase_specification_json = parsed.get("usecase_specification_json")
-
         if not isinstance(usecase_specification_json, dict):
             usecase_specification_json = {}
 
@@ -565,6 +586,48 @@ class ArchitectureAgent:
             usecase_specification_json=usecase_specification_json,
         )
 
+        # Only the true last-resort deterministic-fallback rung reaches here
+        # with a genuinely empty specification (no use_cases at all) -- making
+        # a new LLM call from the rung whose whole purpose is "the LLM
+        # already failed twice" would defeat its purpose, so the repair loop
+        # is gated off entirely in that case.
+        if usecase_specification_json.get("use_cases"):
+            provider = llm_provider_service.get_provider()
+
+            for repair_attempt in range(MAX_USECASE_REPAIR_ATTEMPTS):
+                try:
+                    self.usecase_validator.validate(
+                        srs_for_modeling,
+                        parsed["architecture_plan_json"],
+                        usecase_analysis_json,
+                        usecase_json,
+                    )
+                    break
+                except UseCaseValidationError as error:
+                    logger.warning(
+                        "Use case quality validation failed (repair attempt %d/%d): %s",
+                        repair_attempt + 1,
+                        MAX_USECASE_REPAIR_ATTEMPTS,
+                        error,
+                    )
+
+                    repaired_specification = await self._repair_usecase_specification(
+                        provider=provider,
+                        srs_json=srs_for_modeling,
+                        usecase_specification_json=usecase_specification_json,
+                        feature_name=feature_name,
+                        error_text=str(error),
+                    )
+                    if repaired_specification is None:
+                        break
+
+                    usecase_specification_json = repaired_specification
+                    usecase_analysis_json, usecase_json = self.usecase_modeler.build(
+                        srs_json=srs_for_modeling,
+                        sds_json=parsed["architecture_plan_json"],
+                        usecase_specification_json=usecase_specification_json,
+                    )
+
         parsed["usecase_specification_json"] = usecase_specification_json
         parsed["usecase_analysis_json"] = usecase_analysis_json
         parsed["usecase_json"] = usecase_json
@@ -573,6 +636,42 @@ class ArchitectureAgent:
         self._validate_usecase_json(usecase_json)
 
         return parsed
+
+    async def _repair_usecase_specification(
+        self,
+        provider: Any,
+        srs_json: dict[str, Any],
+        usecase_specification_json: dict[str, Any],
+        feature_name: str,
+        error_text: str,
+    ) -> dict[str, Any] | None:
+        """
+        One small, targeted LLM call to fix a use case specification that
+        failed quality validation -- cheaper and faster than re-running the
+        entire architecture-plan generation just to fix a naming or
+        fragmentation problem. Never raises: returns None on any failure
+        (call error or unparseable output) so the caller can stop repairing
+        and fall through to the existing outer reliability ladder gracefully.
+        """
+
+        repair_prompt = build_usecase_repair_prompt(
+            srs_json=srs_json,
+            usecase_specification_json=usecase_specification_json,
+            validation_error=error_text,
+            feature_name=feature_name,
+        )
+
+        try:
+            raw_output = await provider.invoke_agent([
+                {"role": "system", "content": USECASE_REPAIR_SYSTEM_PROMPT},
+                {"role": "user", "content": repair_prompt},
+            ])
+            repaired = self._extract_json_object(raw_output)
+        except Exception as error:
+            logger.warning("Use case specification repair call failed: %s", error)
+            return None
+
+        return repaired if isinstance(repaired, dict) else None
 
     def _complete_sequence_model(
         self,
@@ -929,7 +1028,7 @@ class ArchitectureAgent:
             "architecture_plan_json": revised_architecture_plan_json,
             "usecase_specification_json": {},
         }
-        parsed = self._complete_usecase_model(agent_input, parsed)
+        parsed = await self._complete_usecase_model(agent_input, parsed)
         parsed = self._complete_sequence_model(agent_input, parsed)
         parsed = self._complete_class_model(agent_input, parsed)
         self._validate_full_output(agent_input, parsed)
@@ -1408,15 +1507,13 @@ class ArchitectureAgent:
             srs_json=srs,
         )
 
-        usecase_analysis_json, usecase_json = self._build_usecase_from_srs(
-            srs=srs,
-            feature_name=feature_name
-        )
-
+        # usecase_analysis_json/usecase_json are deliberately NOT set here --
+        # the caller (_generate_architecture_output) always immediately runs
+        # _complete_usecase_model right after this, which unconditionally
+        # rebuilds both from ArchitectureUseCaseModeler. Computing them here
+        # too was confirmed dead work (the result was always overwritten).
         return {
             "architecture_plan_json": architecture_plan_json,
-            "usecase_analysis_json": usecase_analysis_json,
-            "usecase_json": usecase_json
         }
 
     def _convert_sds_to_architecture_plan(
@@ -2568,246 +2665,6 @@ class ArchitectureAgent:
 
         return decisions
 
-    def _build_usecase_from_srs(
-        self,
-        srs: dict[str, Any],
-        feature_name: str
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """
-        Build generic usecase_analysis_json and usecase_json from SRS.
-        """
-
-        user_roles = self._as_text_list(srs.get("user_roles", [])) or ["User"]
-        functional_requirements = self._as_record_list(srs.get("functional_requirements", []))
-        acceptance_criteria = self._as_record_list(srs.get("acceptance_criteria", []))
-        validation_rules = self._as_record_list(srs.get("validation_rules", []))
-        nfrs = self._as_record_list(srs.get("non_functional_requirements", []))
-        constraints = self._as_text_list(srs.get("constraints", []))
-        risks = self._as_record_list(srs.get("risks", []))
-
-        actors = [
-            {
-                "id": f"ACT-{index:03d}",
-                "name": role,
-                "type": "primary" if index == 1 else "secondary",
-                "description": f"{role} interacts with the {feature_name} feature."
-            }
-            for index, role in enumerate(user_roles, start=1)
-        ]
-
-        main_uc_id = "UC-001"
-
-        use_cases = [
-            {
-                "id": main_uc_id,
-                "name": self._verb_phrase_from_feature(feature_name),
-                "description": f"Main user goal for the {feature_name} feature.",
-                "category": "main",
-                "related_requirements": self._collect_requirement_ids(functional_requirements)
-            }
-        ]
-
-        relationships = [
-            {
-                "from": actor["id"],
-                "to": main_uc_id,
-                "type": "association",
-                "label": "",
-                "related_requirements": []
-            }
-            for actor in actors
-        ]
-
-        mandatory_behaviours = []
-        alternative_flows = []
-        exception_flows = []
-        validation_flows = []
-        security_flows = []
-
-        next_uc_number = 2
-
-        for rule in validation_rules:
-            uc_id = f"UC-{next_uc_number:03d}"
-            name = self._usecase_name_from_text(rule.get("description", str(rule)), prefix="Validate")
-
-            use_cases.append({
-                "id": uc_id,
-                "name": name,
-                "description": rule.get("description", str(rule)),
-                "category": "included",
-                "related_requirements": [rule.get("id")] if rule.get("id") else []
-            })
-
-            relationships.append({
-                "from": main_uc_id,
-                "to": uc_id,
-                "type": "include",
-                "label": "",
-                "related_requirements": [rule.get("id")] if rule.get("id") else []
-            })
-
-            validation_flows.append({
-                "name": name,
-                "rule": rule.get("description", str(rule)),
-                "related_requirements": [rule.get("id")] if rule.get("id") else []
-            })
-
-            next_uc_number += 1
-
-        for requirement in functional_requirements:
-            description = requirement.get("description", str(requirement))
-            description_lower = description.lower()
-            related_ids = [requirement.get("id")] if requirement.get("id") else []
-
-            if self._contains_any(description_lower, ["optional", "alternative", "recover", "forgot", "reset", "retry"]):
-                relationship_type = "extend"
-                category = "extension"
-                flow_target = alternative_flows
-            elif self._contains_any(description_lower, ["invalid", "error", "fail", "prevent"]):
-                relationship_type = "extend"
-                category = "extension"
-                flow_target = exception_flows
-            elif self._contains_any(description_lower, ["validate", "check", "verify", "generate", "calculate", "confirm", "process"]):
-                relationship_type = "include"
-                category = "included"
-                flow_target = mandatory_behaviours
-            else:
-                continue
-
-            uc_id = f"UC-{next_uc_number:03d}"
-            name = self._usecase_name_from_text(description)
-
-            use_cases.append({
-                "id": uc_id,
-                "name": name,
-                "description": description,
-                "category": category,
-                "related_requirements": related_ids
-            })
-
-            if relationship_type == "include":
-                relationships.append({
-                    "from": main_uc_id,
-                    "to": uc_id,
-                    "type": "include",
-                    "label": "",
-                    "related_requirements": related_ids
-                })
-            else:
-                relationships.append({
-                    "from": uc_id,
-                    "to": main_uc_id,
-                    "type": "extend",
-                    "label": "alternative/exception flow",
-                    "related_requirements": related_ids
-                })
-
-            flow_target.append({
-                "name": name,
-                "reason" if relationship_type == "include" else "condition": description,
-                "related_requirements": related_ids
-            })
-
-            next_uc_number += 1
-
-        for criterion in acceptance_criteria:
-            description = criterion.get("description", str(criterion))
-            description_lower = description.lower()
-            related_ids = [criterion.get("id")] if criterion.get("id") else []
-
-            if not self._contains_any(description_lower, ["invalid", "error", "fail", "prevent", "optional", "alternative", "recover", "forgot", "reset", "click", "directed"]):
-                continue
-
-            uc_id = f"UC-{next_uc_number:03d}"
-            name = self._usecase_name_from_text(description, prefix="Handle")
-
-            use_cases.append({
-                "id": uc_id,
-                "name": name,
-                "description": description,
-                "category": "extension",
-                "related_requirements": related_ids
-            })
-
-            relationships.append({
-                "from": uc_id,
-                "to": main_uc_id,
-                "type": "extend",
-                "label": "acceptance/alternative flow",
-                "related_requirements": related_ids
-            })
-
-            if self._contains_any(description_lower, ["invalid", "error", "fail", "prevent"]):
-                exception_flows.append({
-                    "name": name,
-                    "condition": description,
-                    "related_requirements": related_ids
-                })
-            else:
-                alternative_flows.append({
-                    "name": name,
-                    "condition": description,
-                    "related_requirements": related_ids
-                })
-
-            next_uc_number += 1
-
-        notes = []
-
-        note_parts = []
-
-        if constraints:
-            note_parts.append("Constraints: " + "; ".join(constraints))
-
-        if nfrs:
-            note_parts.append("NFRs: " + "; ".join(self._item_description(item) for item in nfrs))
-
-        if risks:
-            note_parts.append("Risks: " + "; ".join(self._item_description(item) for item in risks))
-
-        if note_parts:
-            notes.append({
-                "id": "NOTE-001",
-                "target": main_uc_id,
-                "title": "Design Notes",
-                "description": " | ".join(note_parts),
-                "related_requirements": self._collect_requirement_ids(nfrs)
-            })
-
-        analysis_trace = self._build_usecase_traceability(use_cases, relationships, notes)
-
-        usecase_analysis_json = {
-            "feature_goal": srs.get("business_goal", f"Support the {feature_name} feature."),
-            "primary_actors": [actor["name"] for actor in actors if actor["type"] == "primary"],
-            "secondary_actors": [actor["name"] for actor in actors if actor["type"] != "primary"],
-            "main_success_scenario": self._as_text_list(srs.get("scope", [])) or [f"Actor completes the {feature_name} feature successfully."],
-            "mandatory_included_behaviours": mandatory_behaviours,
-            "alternative_flows": alternative_flows,
-            "exception_flows": exception_flows,
-            "validation_flows": validation_flows,
-            "security_flows": security_flows,
-            "diagram_notes": notes,
-            "traceability": analysis_trace
-        }
-
-        usecase_json = {
-            "system_boundary": f"{feature_name} Feature",
-            "diagram_title": f"{feature_name} Use Case Diagram",
-            "actors": actors,
-            "use_cases": use_cases,
-            "relationships": relationships,
-            "notes": notes,
-            "standards_notes": [
-                "Actors are external roles.",
-                "Use cases are inside the system boundary.",
-                "<<include>> is used for mandatory supporting behaviour.",
-                "<<extend>> is used for optional, alternative, or exception behaviour.",
-                "Constraints, NFRs, and risks are represented as notes where appropriate."
-            ]
-        }
-
-        return usecase_analysis_json, usecase_json
-
     # ---------------------------------------------------------------------
     # Generic helper methods
     # ---------------------------------------------------------------------
@@ -2908,48 +2765,6 @@ class ArchitectureAgent:
             })
 
         return points
-
-    def _build_security_flow_records(self, risks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return [
-            {
-                "name": self._usecase_name_from_text(self._item_description(risk), prefix="Mitigate"),
-                "reason": self._item_description(risk),
-                "related_requirements": []
-            }
-            for risk in risks
-        ]
-
-    def _build_usecase_traceability(self, use_cases: list[dict[str, Any]], relationships: list[dict[str, Any]], notes: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        traceability = []
-
-        for use_case in use_cases:
-            for requirement_id in use_case.get("related_requirements", []):
-                traceability.append({
-                    "source_id": requirement_id,
-                    "source_type": self._guess_source_type(requirement_id),
-                    "mapped_to": use_case.get("name", use_case.get("id")),
-                    "mapping_type": "use_case"
-                })
-
-        for relationship in relationships:
-            for requirement_id in relationship.get("related_requirements", []):
-                traceability.append({
-                    "source_id": requirement_id,
-                    "source_type": self._guess_source_type(requirement_id),
-                    "mapped_to": f"{relationship.get('from')} -> {relationship.get('to')}",
-                    "mapping_type": relationship.get("type", "relationship")
-                })
-
-        for note in notes:
-            for requirement_id in note.get("related_requirements", []):
-                traceability.append({
-                    "source_id": requirement_id,
-                    "source_type": self._guess_source_type(requirement_id),
-                    "mapped_to": note.get("title", note.get("id")),
-                    "mapping_type": "note"
-                })
-
-        return traceability
 
     def _infer_fields_from_text(self, text: str) -> list[dict[str, Any]]:
         words = re.findall(r"[A-Za-z][A-Za-z0-9_ ]{1,30}", text)
@@ -3085,27 +2900,6 @@ class ArchitectureAgent:
             return str(item)
 
         return str(item)
-
-    def _verb_phrase_from_feature(self, feature_name: str) -> str:
-        text = feature_name.strip()
-
-        if not text:
-            return "Use Feature"
-
-        # Generic feature names such as Login, Signup, Checkout, Enrollment already work as use cases.
-        return text
-
-    def _usecase_name_from_text(self, text: str, prefix: str | None = None) -> str:
-        cleaned = re.sub(r"[^a-zA-Z0-9 ]+", " ", text).strip()
-        words = cleaned.split()
-
-        if prefix:
-            words = [prefix] + words
-
-        if not words:
-            return prefix or "Handle Scenario"
-
-        return " ".join(words[:5]).title()
 
     def _contains_any(self, text: str, keywords: list[str]) -> bool:
         return any(keyword in text for keyword in keywords)

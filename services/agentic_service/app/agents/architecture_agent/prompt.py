@@ -97,13 +97,41 @@ Architecture Plan rules:
 - Do not use the phrase "Fallback SDS" or "Software Design Specification" in the generated plan.
 
 Use Case Specification Rules:
-- Create usecase_specification_json only; backend will normalize it into the final UML use case model.
-- Actors must be external user roles or real external systems, not internal components.
+- Create usecase_specification_json only; backend will render it into the final UML use case
+  diagram exactly as you specify it -- you are doing the real use-case modeling work here, not
+  just categorizing raw requirement text. Think like a UML analyst, not a requirements summarizer.
+- actors: list real external user roles or real external systems only.
 - Do not use Database, API, Controller, MongoDB, React, Node, JWT Library, Server, Backend, Frontend, UI Page, or Form as actors.
-- Use cases must be short user-goal actions or visible system behaviours.
-- Main use case must represent the main feature goal.
-- Mandatory supporting behaviours should go in included_behaviours.
-- Optional, alternative, recovery, or error behaviours should go in extension_behaviours or exception_flows.
+- use_cases: exactly ONE entry with type "main" -- the single cohesive user-facing goal of this
+  feature (never the feature name restated verbatim, e.g. not just "Task Search" for a Task Search
+  feature -- name the actual goal, e.g. "Search Tasks by Keyword").
+- Every use_cases entry (main, included, and extension) must have a clean, action-oriented name:
+  2-5 words, a real verb phrase (e.g. "Reset Password", "Submit Comment"), read it aloud -- it
+  must sound like a complete sentence fragment a human would say, not a piece cut out of the
+  middle of a requirement sentence. NEVER include leftover fragment words such as "a", "an",
+  "the", "this", "that", "their", "its", "can", "could", "would", "should", "given", "when", or
+  "then" dangling in the name -- these are signs you cut a sentence instead of naming a goal.
+- type "included": ONLY mandatory behaviours that are genuinely separate, reusable, user-observable
+  steps -- not an internal implementation detail. Do NOT decompose one action into several parallel
+  micro-steps that always happen together (e.g. do NOT create "Validate Email", "Validate
+  Password", AND "Validate Credentials" as three separate use cases for one login attempt --
+  that is a single "Validate Credentials" step, at most one use case). Ask yourself: would a real
+  user or business stakeholder describe this as its own goal? If not, it belongs inside the
+  parent use case's own flow, not as a separate entry.
+- type "extension": optional, alternative, recovery, or error behaviours (what exception_flows
+  used to hold) -- also action-oriented, also not fragmented.
+- related_requirements: every entry MUST list the real SRS requirement ids (FR-xxx/AC-xxx/VR-xxx)
+  it covers -- this is how completeness and duplicate-detection both work, so it must be accurate,
+  not guessed or left empty.
+- included_in / extends: for an "included" entry, name which main use case it supports; for an
+  "extension" entry, name which use case it extends.
+- Before finishing, scan your own use_cases list for near-duplicates -- two entries that describe
+  the same real behaviour under different names (e.g. "Initiate Password Reset" and "Recover
+  Account Access" are the same thing) -- merge them into one entry with the union of their
+  related_requirements instead of keeping both.
+- Every SRS functional requirement must be covered by at least one use case's related_requirements
+  -- this is required for completeness, but covering it does NOT mean inventing a separate use
+  case per requirement; group requirements that describe the same real user goal into one entry.
 - Do not put NFRs, constraints, risks, stack, MVC, database design, API design, or security notes into the use case diagram.
 - Do not add UML notes. Constraints, NFRs, risks, and security rules stay inside the Architecture Plan only.
 - Do not add unrelated features outside the approved feature scope.
@@ -275,12 +303,19 @@ The JSON must have exactly this top-level structure:
   "usecase_specification_json": {
     "system_boundary": "",
     "diagram_title": "",
-    "actors": [],
-    "primary_use_cases": [],
-    "included_behaviours": [],
-    "extension_behaviours": [],
-    "exception_flows": [],
-    "traceability": []
+    "actors": [
+      {"name": "", "type": "primary | secondary", "description": ""}
+    ],
+    "use_cases": [
+      {
+        "name": "",
+        "type": "main | included | extension",
+        "description": "",
+        "related_requirements": ["FR-001"],
+        "included_in": "",
+        "extends": ""
+      }
+    ]
   }
 }
 """
@@ -507,12 +542,19 @@ Important Architecture Plan instructions:
 Important use case instructions:
 - For usecase_specification_json, extract actors from SRS user_roles and real external systems only.
 - Do not create actors from Database, API, Controller, MongoDB, React, Node, JWT, Server, Backend, Frontend, UI pages, or forms.
-- Put only the main feature goal in primary_use_cases.
-- Put mandatory supporting behaviours in included_behaviours.
-- Put optional, alternative, recovery, and exception behaviours in extension_behaviours or exception_flows.
+- Produce exactly one "main" use_cases entry: the real feature goal, never the feature name restated.
+- Produce "included" entries only for genuinely separate, reusable, mandatory user-observable
+  steps -- never split one action into parallel micro-steps (e.g. one "Validate Credentials", not
+  separate "Validate Email"/"Validate Password"/"Validate Credentials" entries).
+- Produce "extension" entries for optional, alternative, recovery, and error behaviours.
+- Every entry needs real related_requirements (FR-xxx/AC-xxx/VR-xxx ids) -- accurate, not guessed.
+- Merge any two entries that describe the same real behaviour under different names before
+  finishing -- do not submit near-duplicate use cases.
 - Do not put constraints, NFRs, risks, architecture style, MERN stack, MVC, database design, API design, or security notes into the use case diagram.
 - Do not add UML notes. Constraints, NFRs, risks, and security rules must stay inside the Architecture Plan only.
-- Keep use case names short, action-oriented, and feature-scoped.
+- Every use case name must be a clean, action-oriented verb phrase, 2-5 words, with no leftover
+  sentence-fragment words (a/an/the/this/that/their/can/given/when/then, etc.) -- read each name
+  aloud before submitting; if it doesn't sound like a real goal, fix it.
 - Return only valid JSON.
 """
 
@@ -638,4 +680,72 @@ def build_json_repair_prompt(raw_output: str) -> str:
 Repair this malformed JSON and return only valid JSON:
 
 {raw_output}
+"""
+
+
+USECASE_REPAIR_SYSTEM_PROMPT = """
+You are repairing a UML use case specification that failed quality validation.
+You do NOT regenerate the whole Architecture Plan -- only the use case
+specification.
+
+Rules:
+- Return the full corrected usecase_specification_json only (system_boundary,
+  diagram_title, actors, use_cases).
+- Fix ONLY the specific issues listed in the validation errors below -- keep
+  everything else that was already correct.
+- Every use case name must be a clean, action-oriented verb phrase, 2-5
+  words, with no leftover sentence-fragment words (a/an/the/this/that/
+  their/its/can/could/would/should/given/when/then, etc.) -- read each name
+  aloud; it must sound like a real goal, not a piece cut out of a sentence.
+- Exactly one use_cases entry has type "main" -- the real feature goal, never
+  the feature name restated verbatim.
+- Do not split one action into parallel "included" micro-steps (e.g. do not
+  keep separate "Validate X"/"Validate Y"/"Validate Z" entries for one
+  action -- combine into a single entry unless each is genuinely an
+  independent, reusable, user-observable goal).
+- Every entry must set related_requirements to real SRS FR/AC/VR ids from
+  the context below -- accurate, not guessed.
+- Merge any two entries that describe the same real behaviour under
+  different names.
+- Return only valid JSON. No markdown fences, no explanation outside JSON.
+"""
+
+
+def build_usecase_repair_prompt(
+    srs_json: dict,
+    usecase_specification_json: dict,
+    validation_error: str,
+    feature_name: str,
+) -> str:
+    """
+    Small, focused repair payload -- only what's needed to fix a failed use
+    case specification, not the entire architecture-plan context. Much
+    cheaper than re-running the whole generation just to fix a naming or
+    fragmentation problem.
+    """
+
+    return f"""
+Feature: {feature_name}
+
+SRS functional requirements (every one must be covered by some use case's
+related_requirements):
+{safe_json_dumps(srs_json.get("functional_requirements", []))}
+
+SRS user stories (short, clean goal phrasing -- useful naming reference):
+{safe_json_dumps(srs_json.get("user_stories", []))}
+
+SRS user roles:
+{safe_json_dumps(srs_json.get("user_roles", []))}
+
+SRS out-of-scope items (must not appear in any use case):
+{safe_json_dumps(srs_json.get("out_of_scope", []))}
+
+Your previous attempt at usecase_specification_json:
+{safe_json_dumps(usecase_specification_json)}
+
+Validation errors found in that attempt -- fix ONLY these:
+{validation_error}
+
+Return the corrected usecase_specification_json object now (system_boundary,
+diagram_title, actors, use_cases) -- valid JSON only.
 """

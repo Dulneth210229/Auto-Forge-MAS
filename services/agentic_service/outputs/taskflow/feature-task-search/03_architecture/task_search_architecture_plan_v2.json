@@ -567,6 +567,13 @@
         "NFR-001",
         "NFR-002"
       ]
+    },
+    {
+      "task_id": "TASK-007",
+      "task": "Review and manually apply architecture revision request: No functional changes requested -- re-running to verify the upgraded use case diagram pipeline (real E2E verification for the Use Case Diagram rewrite).",
+      "layer": "review",
+      "suggested_files": [],
+      "related_requirements": []
     }
   ],
   "implementation_plan": {
@@ -903,6 +910,12 @@
     "Task listing API endpoint must be available",
     "Task detail page routes must be defined"
   ],
-  "revision_metadata": null,
-  "human_approval_note": "This Architecture Plan must be reviewed and approved before the UI/UX Agent or Coder Agent starts. AUTOMATIC VALIDATION FAILED even on the deterministic SRS-derived fallback -- review carefully before approving: Duplicate use case name found: Find Specific Tasks Quickly Using"
+  "revision_metadata": {
+    "revision_type": "architecture_plan_revision",
+    "revision_comment": "No functional changes requested -- re-running to verify the upgraded use case diagram pipeline (real E2E verification for the Use Case Diagram rewrite).",
+    "revised_by": "human_user",
+    "fallback_used": true,
+    "fallback_reason": "Missing required keys: ['document_control', 'feature_overview', 'requirement_interpretation', 'architecture_approach', 'frontend_architecture_plan', 'backend_architecture_plan', 'validation_plan', 'coder_implementation_tasks', 'traceability_matrix', 'assumptions', 'constraints', 'risks', 'dependencies']"
+  },
+  "human_approval_note": "This Architecture Plan revision used a safe fallback. Human review is required before the UI/UX Agent or Coder Agent starts."
 }

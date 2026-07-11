@@ -12,11 +12,9 @@ actor "Registered User" as ACT_001
 rectangle "Task Search Feature" {
   usecase "Task Search" as UC_001
   usecase "Find Specific Tasks Quickly Using" as UC_002
-  usecase "Find Specific Tasks Quickly Using" as UC_003
 }
 
 ACT_001 -- UC_001
 UC_001 .> UC_002 : <<include>>
-UC_003 .> UC_001 : <<extend>>
 
 @enduml

@@ -349,6 +349,10 @@ Integration design should follow the API expectations and dependencies listed in
   - Layer: security
   - Suggested Files: N/A
   - Related Requirements: FR-001, NFR-001, NFR-002
+- **TASK-007**: Review and manually apply architecture revision request: No functional changes requested -- re-running to verify the upgraded use case diagram pipeline (real E2E verification for the Use Case Diagram rewrite).
+  - Layer: review
+  - Suggested Files: N/A
+  - Related Requirements: N/A
 
 ---
 
@@ -402,4 +406,4 @@ Integration design should follow the API expectations and dependencies listed in
 
 ## 17. Human Approval Note
 
-This Architecture Plan must be reviewed and approved before the UI/UX Agent or Coder Agent starts. AUTOMATIC VALIDATION FAILED even on the deterministic SRS-derived fallback -- review carefully before approving: Duplicate use case name found: Find Specific Tasks Quickly Using
+This Architecture Plan revision used a safe fallback. Human review is required before the UI/UX Agent or Coder Agent starts.

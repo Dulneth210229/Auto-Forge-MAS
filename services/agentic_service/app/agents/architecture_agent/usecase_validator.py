@@ -46,6 +46,26 @@ class UseCaseQualityValidator:
         "architecture style", "database collection", "api endpoint",
     ]
 
+    # Articles/determiners/possessive-pronouns/Given-When-Then leftovers only
+    # -- these are the exact tokens observed in real, confirmed-garbled use
+    # case names produced by cutting an SRS sentence mid-phrase instead of
+    # naming a real goal (e.g. "A Task The Can", "A Comment The Authored",
+    # "A Enters A Keyword"). Deliberately excludes generic auxiliary verbs
+    # like do/is/are/does -- a name like "Do Something" is generic but not a
+    # cut sentence fragment, and must not be flagged by this check.
+    FRAGMENT_WORDS = {
+        "a", "an", "the", "this", "that", "these", "those", "their", "its",
+        "his", "her", "our", "your", "my", "can", "could", "would", "should",
+        "given", "when", "then",
+    }
+
+    # Verbs that describe an internal implementation step (validation,
+    # confirmation) rather than a distinct, user-observable goal -- seeing
+    # 2+ included/extension use cases under the same main use case all start
+    # with one of these is the confirmed real "Validate Email"/"Validate
+    # Password"/"Validate Credentials" over-fragmentation anti-pattern.
+    INTERNAL_STEP_VERBS = {"validate", "verify", "check", "confirm"}
+
     STOPWORDS = {
         "the", "a", "an", "and", "or", "to", "via", "by", "for", "of",
         "in", "on", "with", "only", "is", "are", "be", "this", "that",
@@ -71,6 +91,8 @@ class UseCaseQualityValidator:
         errors.extend(self._validate_basic_structure(usecase_json))
         errors.extend(self._validate_actors(usecase_json))
         errors.extend(self._validate_use_cases(usecase_json))
+        errors.extend(self._validate_use_case_name_quality(usecase_json))
+        errors.extend(self._validate_use_case_fragmentation(usecase_json))
         errors.extend(self._validate_relationships(usecase_json))
         errors.extend(self._validate_traceability(srs_json, usecase_analysis_json, usecase_json))
         errors.extend(self._validate_out_of_scope(srs_json, usecase_json))
@@ -166,6 +188,105 @@ class UseCaseQualityValidator:
 
             if len(use_case_name.split()) > 6:
                 errors.append(f"Use case name is too long for a standard diagram: {use_case_name}")
+
+        return errors
+
+    def _validate_use_case_name_quality(self, usecase_json: dict[str, Any]) -> list[str]:
+        """
+        Reject names that read as a cut sentence fragment rather than a real
+        use-case goal -- confirmed real examples: "A Task The Can", "A
+        Comment The Authored", "A Enters A Keyword". A name containing a
+        standalone article/determiner/possessive-pronoun/Given-When-Then
+        token is a strong, evidence-derived signal of this failure mode.
+        """
+        errors: list[str] = []
+
+        for use_case in usecase_json.get("use_cases", []):
+            if not isinstance(use_case, dict):
+                continue
+
+            name = str(use_case.get("name", "")).strip()
+            if not name:
+                continue
+
+            words = [word.lower() for word in re.findall(r"[a-zA-Z0-9']+", name)]
+            fragment_hits = sorted({word for word in words if word in self.FRAGMENT_WORDS})
+
+            if fragment_hits:
+                errors.append(
+                    f"Use case name looks like a cut sentence fragment, not a clean action "
+                    f"phrase: '{name}' (contains: {', '.join(fragment_hits)})"
+                )
+
+        return errors
+
+    def _validate_use_case_fragmentation(self, usecase_json: dict[str, Any]) -> list[str]:
+        """
+        Catch the confirmed real CRUD/step-decomposition anti-pattern: one
+        action split into several parallel included/extension use cases
+        under the same main use case (e.g. "Validate Email"/"Validate
+        Password"/"Validate Credentials" for one login attempt). Two
+        signals, both scoped to use cases relating to the SAME main use case:
+        (a) 2+ share a leading INTERNAL_STEP_VERBS word, (b) 2+ cite the
+        exact same non-empty related_requirements set (duplicate regardless
+        of naming).
+        """
+        errors: list[str] = []
+
+        use_cases_by_id = {
+            str(use_case.get("id")): use_case
+            for use_case in usecase_json.get("use_cases", [])
+            if isinstance(use_case, dict) and use_case.get("id")
+        }
+
+        children_by_main: dict[str, list[dict[str, Any]]] = {}
+
+        for relationship in usecase_json.get("relationships", []):
+            if not isinstance(relationship, dict):
+                continue
+
+            relation_type = relationship.get("type")
+            if relation_type == "include":
+                main_id, child_id = relationship.get("from"), relationship.get("to")
+            elif relation_type == "extend":
+                child_id, main_id = relationship.get("from"), relationship.get("to")
+            else:
+                continue
+
+            child = use_cases_by_id.get(str(child_id))
+            if child is not None:
+                children_by_main.setdefault(str(main_id), []).append(child)
+
+        for children in children_by_main.values():
+            verb_groups: dict[str, list[str]] = {}
+            for child in children:
+                name = str(child.get("name", "")).strip()
+                first_word = name.split()[0].lower() if name else ""
+                if first_word in self.INTERNAL_STEP_VERBS:
+                    verb_groups.setdefault(first_word, []).append(name)
+
+            for verb, names in verb_groups.items():
+                if len(names) >= 2:
+                    errors.append(
+                        f"Use cases {names} look like decomposed internal steps of one action "
+                        f"(all start with '{verb.title()}') -- combine into a single use case "
+                        "unless each is genuinely an independent, reusable, user-observable goal."
+                    )
+
+            requirement_groups: dict[frozenset, list[str]] = {}
+            for child in children:
+                related = frozenset(
+                    str(item) for item in child.get("related_requirements", []) or [] if item
+                )
+                if related:
+                    requirement_groups.setdefault(related, []).append(str(child.get("name", "")))
+
+            for related, names in requirement_groups.items():
+                if len(names) >= 2:
+                    errors.append(
+                        f"Use cases {names} cite the exact same requirements {sorted(related)} -- "
+                        "likely duplicate entries for the same real behaviour; merge them."
+                    )
 
         return errors
 

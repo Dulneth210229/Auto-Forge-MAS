@@ -1018,6 +1018,124 @@ milestone — that file is scratch, **this file is the durable one**.
       generated for it (the Coder Agent step was only planning-level, per the milestone's own
       scope) -- a natural next feature to actually build out in a future session.
 
+25. **Use Case Diagram rewrite: accurate, complete, UML-standard-compliant** -- a user-requested
+    6-milestone rewrite (full plan: `C:\Users\ASUS\.claude\plans\soft-petting-star.md`, overwritten
+    since per this file's convention). The user identified the generated use case diagrams as not
+    accurate/complete enough, with three confirmed real failures directly from saved `.puml`
+    artifacts: **garbled names** (`"A Task The Can"`, `"A Enters A Keyword"`, `"Initiate Page"` --
+    raw SRS sentence fragments mangled by regex), **CRUD over-fragmentation** (`"Validate Email"`/
+    `"Validate Password"`/`"Validate Credentials"` as three separate use cases for one login flow),
+    and **undetected near-duplicates** (`"Initiate Forgot Password Process"` vs. `"Initiate Recovery
+    Flow"` citing the same requirement). Root cause: the LLM only ever produced a loose categorized
+    `usecase_specification_json`; a deterministic modeler then synthesized the actual use case
+    names via regex phrase-surgery on raw SRS sentences (`_make_validation_use_case_name`,
+    `_make_extension_name`, `_extract_error_topic`, `_extract_recovery_topic`, `_short_topic`) --
+    fundamentally NLP-by-regex, reliably broken on ordinary English. **Sequence and class diagrams
+    were explicitly out of scope and remain unchanged.**
+    - **M1 -- strengthened the LLM-facing schema/prompt** (`prompt.py`): the LLM now produces a
+      near-final `use_cases: [{name, type: main|included|extension, description,
+      related_requirements, included_in, extends}]` list directly, replacing the old loose
+      `primary_use_cases`/`included_behaviours`/`extension_behaviours`/`exception_flows` shape.
+      New rules: exactly one `main` entry (never the feature name restated), 2-5 word
+      action-oriented names with no leftover fragment words, explicit anti-CRUD-fragmentation and
+      dedup-by-meaning instructions, mandatory accurate `related_requirements` (this powers M3's
+      new duplicate/fragmentation checks).
+    - **M2 -- thinned `usecase_modeler.py`: trust the LLM's list, add real dedup**: new
+      `_build_use_cases_from_specification` trusts the LLM's `use_cases[]` directly (no regex
+      sentence-mining) whenever it's non-empty; the old `_build_main_use_cases`/
+      `_build_included_use_cases`/`_build_extension_use_cases` become fallback-only (invoked only
+      when the specification is genuinely empty). Replaced the old exact-name-only
+      `_dedupe_and_merge` with a 3-pass `_merge_near_duplicates`: exact normalized name, identical
+      non-empty `related_requirements` sets (catches synonym-level duplicates no string metric
+      would, e.g. the Forgot-Password/Recovery-Flow case above), and stem/token Jaccard overlap on
+      names (small private stemmer, no embeddings library -- nothing in this codebase uses
+      `sentence-transformers` directly today).
+    - **M3 -- strengthened `usecase_validator.py`**: new `_validate_use_case_name_quality` (rejects
+      names containing a standalone article/determiner/possessive-pronoun/Given-When-Then token --
+      catches the real garbled examples, while deliberately excluding generic auxiliary verbs like
+      `do`/`is`/`are` so the pre-existing `"Do Something"` regression fixture keeps passing); new
+      `_validate_use_case_fragmentation` (flags 2+ included/extension use cases under the same main
+      use case sharing a leading `INTERNAL_STEP_VERBS` word, or sharing an identical non-empty
+      `related_requirements` set -- catches the real `"Validate X"/"Validate Y"/"Validate Z"`
+      anti-pattern). **An initially-added fourth check ("main use case name just restates the
+      feature name") was removed after a real regression** -- see the gotcha below.
+    - **M4 -- new targeted use-case repair-retry loop**: `_complete_usecase_model` became `async`
+      and now runs the full `UseCaseQualityValidator` right after building the model (moved
+      earlier than before); on a quality failure it calls a new, cheap, targeted
+      `_repair_usecase_specification` (one `provider.invoke_agent` call with just the FR list,
+      user_stories, out_of_scope, the failed specification, and the exact validator error text --
+      mirrors `CoderAgent._plan_with_retries`'s "generate → validate → retry with the specific
+      error fed back" idiom, capped at `MAX_USECASE_REPAIR_ATTEMPTS = 2`). **Deliberately gated off
+      entirely when the specification is genuinely empty** (the true last-resort fallback rung) --
+      making a new LLM call from the rung whose whole purpose is "the LLM already failed twice"
+      would defeat its purpose. Never raises for a quality failure; the later
+      `_validate_full_output` call remains a final, harmless re-confirmation.
+    - **M5 -- honest, simplified fallback naming + dead-code removal**: the fallback path (reached
+      only when the specification is truly empty) now names the main use case from `feature_name`
+      alone (no business-goal regex-mangling -- a feature name like "Login" or "Task Comments" is
+      already a reasonable use case name); new `_build_fallback_supporting_use_case` names
+      supporting use cases via best-effort stem-overlap match against `user_stories[].goal`, or one
+      gentle `_clean_use_case_name` truncation pass otherwise -- no multi-pass regex verb/topic
+      extraction. `_clean_use_case_name` itself was hardened to strip standalone filler words
+      (`NAME_FILLER_WORDS`) from anywhere in a name, not just the leading position -- a real test
+      failure showed the 5-word truncation alone could still leave a mid-sentence "the"/"my" as a
+      leftover fragment (e.g. "Validate The User Credentials Against"). **Deleted, confirmed dead**
+      in `agent.py`: `_build_usecase_from_srs` (~240 lines, its result was always immediately
+      overwritten by the following `_complete_usecase_model` call), plus
+      `_build_security_flow_records` (a bonus find -- zero callers anywhere, confirmed via
+      `grep -rn` across `app/`), `_build_usecase_traceability`, `_verb_phrase_from_feature`,
+      `_usecase_name_from_text`. In `usecase_modeler.py`: the entire old regex-phrase-surgery
+      cluster (`_build_main_use_case_name`, `_make_validation_use_case_name`, `_make_action_name`,
+      `_make_extension_name`, `_infer_field_name`, `_extract_error_topic`,
+      `_extract_recovery_topic`, `_short_topic`, `_is_generic_use_case_name`) plus their
+      now-unused `COMMON_FIELDS`/`GENERIC_USE_CASE_NAMES` class constants.
+    - **A real regression found and fixed during M6's own test run, not caught by design review**:
+      the M3 "main use case name restates the feature name" check directly contradicted M5's own
+      design (fallback names the main use case from `feature_name` verbatim). For any multi-word
+      feature name (e.g. "Task Comments"), the honest fallback would deterministically trip that
+      check every time, and `test_architecture_agent_exploration.py`'s
+      `test_exploration_submission_is_used_without_any_single_shot_call` caught it immediately --
+      the check made the deterministic fallback (the one rung that must always succeed) fail its
+      own validation, cascading the whole reliability ladder past single-shot into JSON-repair.
+      **Removed the check entirely** rather than special-casing it: a literal feature-name match
+      is not actually incorrect UML (single- and multi-word feature names like "Login" or "Task
+      Comments" are both conventional, legitimate use case names on their own), just not maximally
+      descriptive -- not worth breaking the fallback's designed reliability over.
+    - **A second real bug found only by the M6 real E2E run** (not by any unit test, since it
+      requires two different fallback code paths landing on the same 5-word-truncated name): the
+      deterministic fallback produced a genuine cross-category duplicate --
+      `"Find Specific Tasks Quickly Using"` appeared as BOTH an included use case and an extension
+      use case for the real Task Search feature, because `_merge_near_duplicates` was only ever
+      called once per category list (`included_use_cases`/`extension_use_cases` separately), so a
+      duplicate spanning the include/extend boundary was invisible to it. Fixed with a new
+      `_merge_near_duplicates_across_categories` (runs the same 3-pass dedup over
+      included+extension combined, then splits back by each surviving item's own `category` field,
+      first-seen-category-wins on a cross-boundary collision). Confirmed fixed against the exact
+      real SRS that produced the bug (`outputs/taskflow/feature-task-search/01_requirements/
+      task_search_srs_v2.json`): before the fix, `UseCaseQualityValidator.validate()` raised
+      `"Duplicate use case name found: Find Specific Tasks Quickly Using"`; after, it passes clean.
+    - **Real, live verification, not just synthetic tests**: new
+      `tests/test_architecture_usecase_modeler.py` (16 tests -- LLM-specification trust/dedup +
+      fallback naming/traceability/relationships), `tests/test_architecture_usecase_validator_quality.py`
+      (7 tests -- real garbled names, real 3-way "Validate X" fragmentation, legitimate
+      "Validate Credentials" not raising, shared-requirements duplicate detection), and
+      `tests/test_architecture_usecase_repair.py` (4 tests -- repair fixes on first attempt, repair
+      never succeeds falls through without raising, repair retries up to
+      `MAX_USECASE_REPAIR_ATTEMPTS`, repair loop skipped entirely for the true fallback rung). Full
+      suite (excluding the three pre-existing Docker-dependent files that fail in this environment
+      for unrelated reasons -- `test_coder_tools.py`/`test_coder_verify.py`/`test_render_checker.py`,
+      all needing a reachable Docker daemon this machine doesn't have running): **167 passed, 0
+      failed**. Real E2E: ran `scripts/run_taskflow_architecture_e2e.py` for real (new feature
+      "Task Search" on the live TaskFlow project, `feature_244e26d1`) -- this is the run that
+      surfaced the cross-category duplicate bug above. Also exercised the real, unchanged
+      `ArchitectureAgent.revise()` for this feature (one real LLM call, not the full multi-turn
+      exploration rung) specifically to confirm the new `async _complete_usecase_model` signature
+      works there too, and to produce a v2 diagram reflecting the cross-category-dedup fix for
+      real -- confirmed clean: `outputs/taskflow/feature-task-search/03_architecture/
+      task_search_usecase_v2.puml` has one "Task Search" main use case and one, single, correctly
+      `<<include>>`d "Find Specific Tasks Quickly Using" use case, versus the original (git HEAD)
+      v1's `"Validate Date"`/`"Initiate Recovery Flow"`/`"A Enters A Keyword"` garbled set.
+
 ## Known model-quality gotchas (not code bugs — prompts already account for these)
 
 - `qwen3-coder:latest` sometimes emits function-valued mock props (e.g. `"onSubmit": () => {}`)
@@ -1374,6 +1492,16 @@ milestone — that file is scratch, **this file is the durable one**.
   completely blank page before the fix, fully rendered after). Each commit has its own real,
   independently-approvable artifact set (`artifact_dfc0e118`/`artifact_651f0b96`/`artifact_662fd295`
   and siblings respectively), all with `verification_passed: True`.
+- **Item 25's real E2E feature**: `proj_53284a63` (TaskFlow) gained another new feature,
+  `feature_244e26d1` ("Task Search", a separate feature from item 24's `feature_29fa0ed4` of the
+  same name -- both are real, left in place), with an approved SRS and an Architecture Plan
+  (`artifact_434cc2dd` v1, `artifact_e406e74b` v2 from the `revise()` exercise) plus real rendered
+  use case/sequence/class diagrams for both versions under
+  `outputs/taskflow/feature-task-search/03_architecture/`. v1's use case diagram carries the
+  cross-category-duplicate bug described above (left in place deliberately, as the real evidence
+  for that finding, not cleaned up); v2 is the corrected, validation-clean result. Neither version
+  is approved -- v1's human_approval_note honestly flags the duplicate; a future session could
+  approve v2 and continue this feature through UI/UX and Coder Agent.
 
 ## Where to look
 
