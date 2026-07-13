@@ -57,9 +57,16 @@ class ArtifactType(str, Enum):
     SETUP_INSTRUCTIONS = "setup_instructions"
     PROJECT_MANIFEST = "project_manifest"
 
-    # Security / QA Agent artifacts (placeholders for now)
+     # Security Agent artifacts
     SECURITY_REPORT = "security_report"
+    SECURITY_SUMMARY = "security_summary"
+    SECURITY_GATE = "security_gate"
+    FIX_RECOMMENDATIONS = "fix_recommendations"
+
+    # QA Agent artifacts
     QA_REPORT = "qa_report"
+    TEST_CASES = "test_cases"
+    TEST_RESULTS = "test_results"
 
     UI_DESIGN = "ui_design"
     CODE = "code"
