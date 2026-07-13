@@ -1,0 +1,54 @@
+{
+  "project_id": "proj_a2e3d529",
+  "feature_id": "feature_a44033b8",
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 5,
+    "total_findings": 5
+  },
+  "status": "PASS",
+  "findings": [
+    {
+      "title": "LLM Review Failed",
+      "description": "Client error '404 Not Found' for url 'http://localhost:11434/api/generate'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404",
+      "severity": "Low",
+      "line": 0,
+      "cwe": "N/A",
+      "recommendation": "Check the configured LLM provider."
+    },
+    {
+      "title": "LLM Review Failed",
+      "description": "Client error '404 Not Found' for url 'http://localhost:11434/api/generate'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404",
+      "severity": "Low",
+      "line": 0,
+      "cwe": "N/A",
+      "recommendation": "Check the configured LLM provider."
+    },
+    {
+      "title": "LLM Review Failed",
+      "description": "Client error '404 Not Found' for url 'http://localhost:11434/api/generate'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404",
+      "severity": "Low",
+      "line": 0,
+      "cwe": "N/A",
+      "recommendation": "Check the configured LLM provider."
+    },
+    {
+      "title": "LLM Review Failed",
+      "description": "Client error '404 Not Found' for url 'http://localhost:11434/api/generate'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404",
+      "severity": "Low",
+      "line": 0,
+      "cwe": "N/A",
+      "recommendation": "Check the configured LLM provider."
+    },
+    {
+      "title": "LLM Review Failed",
+      "description": "Client error '404 Not Found' for url 'http://localhost:11434/api/generate'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404",
+      "severity": "Low",
+      "line": 0,
+      "cwe": "N/A",
+      "recommendation": "Check the configured LLM provider."
+    }
+  ]
+}
