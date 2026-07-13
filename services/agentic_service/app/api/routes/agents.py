@@ -22,6 +22,7 @@ from app.services.in_memory_store import store
 from app.agents.requirement_agent.agent import requirement_agent
 from app.agents.architecture_agent.agent import architecture_agent
 from app.agents.coder_agent.agent import coder_agent
+from app.agents.security_agent.agent import security_agent
 from app.core.enums import AgentName, ArtifactType, ArtifactFormat
 from app.schemas.agent_schema import AgentRunRequest, AgentRunResponse
 from app.services.artifact_service import artifact_service
@@ -34,6 +35,7 @@ from app.schemas.architecture_schema import (
     ArchitectureAgentReviseRequest,
 )
 from app.schemas.coder_schema import CoderAgentReviseRequest
+from app.schemas.security_schema import SecurityAgentRunRequest
 from app.services.in_memory_store import store
 from app.services.plantuml_service import plantuml_service
 import traceback
@@ -302,6 +304,48 @@ async def revise_coder_agent(feature_id: str, request: CoderAgentReviseRequest):
         raise HTTPException(
             status_code=500,
             detail=f"Coder Agent revision failed: {str(error)}"
+        )
+
+
+@router.post("/security/run", response_model=AgentRunResponse)
+async def run_security_agent(
+    feature_id: str,
+    request: SecurityAgentRunRequest,
+):
+    """
+    Run the Security Agent.
+
+    This endpoint:
+    - loads the generated project workspace
+    - executes static security scanners
+    - performs optional LLM-assisted review
+    - evaluates the Security Gate
+    - generates Markdown and JSON security reports
+    - saves security artifacts
+    """
+
+    _validate_feature(feature_id)
+
+    try:
+        return await security_agent.run(
+            feature_id=feature_id,
+            request=request,
+        )
+
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
+
+    except Exception as error:
+        print("========== SECURITY AGENT ERROR ==========")
+        print(traceback.format_exc())
+        print("==========================================")
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Security Agent failed: {str(error)}",
         )
 
 
