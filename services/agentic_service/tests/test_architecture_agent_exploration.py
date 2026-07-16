@@ -64,6 +64,42 @@ def _valid_submission(agent, agent_input) -> str:
     }, default=str)
 
 
+def _valid_sequence_submission() -> str:
+    """A structurally-valid sequence_specification_json for the dedicated diagram exploration step."""
+    return json.dumps({
+        "diagram_title": "Task Comments Sequence Diagram",
+        "participants": [
+            {"name": "Registered User", "type": "actor"},
+            {"name": "TaskCommentsBoundary", "type": "boundary"},
+            {"name": "TaskCommentsController", "type": "control"},
+        ],
+        "interactions": [
+            {"kind": "message", "from": "Registered User", "to": "TaskCommentsBoundary",
+             "message": "Submit comment", "message_type": "sync", "related_requirements": ["FR-001"]},
+            {"kind": "message", "from": "TaskCommentsBoundary", "to": "TaskCommentsController",
+             "message": "POST /api/task-comments", "message_type": "sync", "related_requirements": ["FR-001"]},
+            {"kind": "message", "from": "TaskCommentsController", "to": "TaskCommentsBoundary",
+             "message": "Return saved comment", "message_type": "return", "related_requirements": ["AC-001"]},
+        ],
+    })
+
+
+def _valid_class_submission() -> str:
+    """A structurally-valid class_specification_json for the dedicated diagram exploration step."""
+    return json.dumps({
+        "diagram_title": "Task Comments Class Diagram",
+        "classes": [
+            {"name": "TaskCommentsController", "stereotype": "control",
+             "operations": [{"name": "createComment", "parameters": ["request"], "return_type": "Response", "visibility": "+"}],
+             "related_requirements": ["FR-001"]},
+            {"name": "Comment", "stereotype": "entity",
+             "attributes": [{"name": "text", "type": "String", "visibility": "-"}],
+             "related_requirements": ["FR-001"]},
+        ],
+        "relationships": [],
+    })
+
+
 def _mock_exploration_agent(side_effect=None):
     fake_agent = MagicMock()
     fake_agent.ainvoke = AsyncMock(return_value={}, side_effect=side_effect)
@@ -72,13 +108,27 @@ def _mock_exploration_agent(side_effect=None):
 
 @pytest.mark.asyncio
 async def test_exploration_submission_is_used_without_any_single_shot_call(agent, agent_input):
-    captured = {"plan_json": _valid_submission(agent, agent_input)}
+    """
+    When all three dedicated exploration steps (architecture plan, sequence
+    diagram, class diagram) succeed, no single-shot LLM call of any kind is
+    needed -- diagram generation is decoupled from the plan's own success
+    (agent.py's _complete_diagram_models always attempts its own agentic
+    tier), so this test seeds all three captured dicts to simulate all
+    three exploration steps succeeding independently.
+    """
+    plan_captured = {"plan_json": _valid_submission(agent, agent_input)}
+    sequence_captured = {"sequence_json": _valid_sequence_submission()}
+    class_captured = {"class_json": _valid_class_submission()}
     single_shot_provider = MagicMock()
     single_shot_provider.invoke_agent = AsyncMock()
 
     with (
         patch("app.agents.architecture_agent.agent.build_architecture_planning_tools",
-              return_value=([], captured)),
+              return_value=([], plan_captured)),
+        patch("app.agents.architecture_agent.agent.build_sequence_diagram_tools",
+              return_value=([], sequence_captured)),
+        patch("app.agents.architecture_agent.agent.build_class_diagram_tools",
+              return_value=([], class_captured)),
         patch("app.agents.architecture_agent.agent.create_agent",
               return_value=_mock_exploration_agent()),
         patch("app.agents.architecture_agent.agent.get_agentic_chat_model", return_value=MagicMock()),
@@ -89,9 +139,9 @@ async def test_exploration_submission_is_used_without_any_single_shot_call(agent
         output = await agent._generate_architecture_output(agent_input)
 
     assert output.architecture_plan_json["implementation_plan"]
-    assert output.usecase_json["actors"]  # diagrams still built deterministically
+    assert output.usecase_json["actors"]  # use case still built deterministically
     assert output.sequence_puml and output.class_puml
-    single_shot_provider.invoke_agent.assert_not_awaited()  # exploration rung sufficed
+    single_shot_provider.invoke_agent.assert_not_awaited()  # all three exploration steps sufficed
 
 
 @pytest.mark.asyncio

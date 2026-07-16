@@ -102,9 +102,20 @@ class ArchitectureClassPlantUMLBuilder:
         elif relation_type == "dependency":
             arrow = "..>"
 
+        # Standard UML cardinality notation on both ends -- only rendered
+        # when both multiplicities are actually present (e.g. dependency/
+        # inheritance/generalization never carry them), so this stays fully
+        # backward compatible with a relationship that omits them.
+        source_multiplicity = self._safe_label(relationship.get("source_multiplicity", ""))
+        target_multiplicity = self._safe_label(relationship.get("target_multiplicity", ""))
+        if source_multiplicity and target_multiplicity:
+            endpoints = f'{source} "{source_multiplicity}" {arrow} "{target_multiplicity}" {target}'
+        else:
+            endpoints = f"{source} {arrow} {target}"
+
         if label:
-            return f"{source} {arrow} {target} : {label}"
-        return f"{source} {arrow} {target}"
+            return f"{endpoints} : {label}"
+        return endpoints
 
     def _safe_alias(self, value: str) -> str:
         value = str(value).strip()

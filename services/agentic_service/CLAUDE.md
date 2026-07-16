@@ -1136,6 +1136,274 @@ milestone — that file is scratch, **this file is the durable one**.
       `<<include>>`d "Find Specific Tasks Quickly Using" use case, versus the original (git HEAD)
       v1's `"Validate Date"`/`"Initiate Recovery Flow"`/`"A Enters A Keyword"` garbled set.
 
+26. **Sequence + Class Diagram rewrite: dynamic, accurate, UML-standard-compliant** -- a
+    user-requested 6-milestone rewrite (full plan:
+    `C:\Users\ASUS\.claude\plans\soft-petting-star.md`, overwritten since per this file's
+    convention), applying the same LLM-driven pattern item 25 proved for use cases to the
+    remaining two diagrams. Confirmed both were 100% deterministic before this: `sequence_modeler.py`
+    always emitted the SAME fixed 5-8 message template (submit -> validate -> alt success/fail ->
+    optional repo/DB round-trip -> optional external token call) for every feature, only the
+    endpoint/participant names varying; `class_modeler.py` always built the same
+    Controller/Service/Repository/DTO/Entity skeleton, with attribute content coming from
+    `_infer_fields_from_text`/`COMMON_FIELDS` keyword-guessing whenever `design_views`'
+    request/response models or data entities arrived as free text. Confirmed real UML-standards
+    gaps by reading both builders directly: class relationships had **no multiplicity/cardinality
+    notation at all**; the sequence builder supported only `alt`/`opt`/`else` fragments and
+    `sync`/`return`/`self` messages -- no `loop` fragment, no async message type. **Hard
+    constraints honored throughout, unlike item 25's scope**: the use case pipeline
+    (`usecase_modeler.py`/`usecase_validator.py`/`usecase_builder.py`/`usecase_specification_json`/
+    `_complete_usecase_model`/`_repair_usecase_specification`) was never touched, and
+    `architecture_plan_json`'s `design_views`/`implementation_plan` schema was never touched --
+    the new LLM-authored input is two new, additional, sibling top-level fields.
+    - **M1 -- new `sequence_specification_json`/`class_specification_json` schema + rules**
+      (`prompt.py`): both fully LLM-authored (participants/interactions and classes/relationships,
+      not a hybrid of deterministic-skeleton-plus-LLM-content), added as siblings of
+      `usecase_specification_json` in the same top-level JSON object -- automatically inherited by
+      the agentic prompt via the existing `_SHARED_RULES_AND_SCHEMA` string-split, same zero-drift
+      mechanism the use-case schema already relies on. New "Sequence/Class Diagram Specification
+      Rules" blocks: sequence requires real actor/boundary/control participants and a real
+      main-success-then-alternative flow (not a template), new `loop_start`/`async` vocabulary for
+      genuinely repeated/fire-and-forget behavior; class requires real, feature-specific
+      DTO/entity attributes (never a placeholder single field) and mandatory
+      `source_multiplicity`/`target_multiplicity` on every association/aggregation/composition.
+      New `SEQUENCE_REPAIR_SYSTEM_PROMPT`/`build_sequence_repair_prompt` and
+      `CLASS_REPAIR_SYSTEM_PROMPT`/`build_class_repair_prompt`, structurally identical to the
+      use-case repair prompt but fully independent.
+    - **M2 -- thinned both modelers**: new `_build_from_specification` in each trusts the LLM's
+      content directly (deterministic id assignment + name-to-id resolution only -- a message/
+      relationship referencing an unresolvable participant/class name is skipped, not crashed);
+      the entire old template/keyword-derivation body in each was demoted to
+      `_build_fallback`/`_build_fallback_classes_and_relationships`, invoked only when the
+      specification is genuinely empty, unchanged in behavior.
+    - **M3 -- new validator quality checks**: `sequence_validator.py` gained
+      `_validate_message_quality` (flags a message repeated verbatim between the same two
+      participants outside a loop fragment -- correctly suspended for anything nested inside a
+      `loop_start`/`end` block, including nested `alt`/`opt`) and extended fragment-balance to
+      accept `loop_start`. `class_validator.py` gained `_validate_multiplicity` (every
+      association/aggregation/composition must carry standard UML cardinality notation on both
+      ends; dependency/inheritance/generalization exempt) and `_validate_class_quality` (flags an
+      anemic dto/entity with zero attributes, or one whose attributes are ALL generic placeholder
+      names like a lone `id`/`field`/`value`/`data` -- a genuine mix of real and generic-named
+      fields is not flagged).
+    - **M4 -- new, fully independent repair-retry loops**: `_complete_sequence_model`/
+      `_complete_class_model` became `async`, mirroring `_complete_usecase_model`'s shape exactly
+      (`MAX_SEQUENCE_REPAIR_ATTEMPTS`/`MAX_CLASS_REPAIR_ATTEMPTS = 2`, own new
+      `_repair_sequence_specification`/`_repair_class_specification`, gated off entirely when the
+      specification is genuinely empty -- no LLM call from the rung whose purpose is "the LLM
+      already failed twice") -- never sharing prompts, state, or calls with the use-case repair
+      loop. All 5 existing call sites for each (3 ladder rungs, the fallback rung, `revise()`)
+      updated to `await`.
+    - **M5 -- additive builder changes, fully backward compatible**: `sequence_builder.py` gained
+      `loop` fragment rendering and an `async` (open-arrowhead `->>`) message type, alongside the
+      unchanged `sync`/`return`/`self`. `class_builder.py` gained UML cardinality label rendering
+      (`"1" --> "0..*"`-style) on relationships that carry `source_multiplicity`/
+      `target_multiplicity`, rendering exactly as before when either is absent (e.g.
+      dependency/inheritance). The fallback's one deterministic `association` relationship
+      (Repository manages Entity) was given a default `"1"`/`"0..*"` multiplicity so the fallback
+      path itself passes the new multiplicity gate, not just the LLM-driven path.
+    - **Two real bugs found only by the M6 real E2E run, both in the pre-existing, unmodified
+      fallback logic** (not by any unit test, since both require a specific upstream data shape
+      the synthetic fixtures didn't have): re-running `ArchitectureAgent.revise()` for real against
+      `feature_244e26d1` (the same real TaskFlow "Task Search" feature item 25 created) surfaced
+      that its real, previously-approved architecture plan's `design_views.interface_view.
+      api_endpoints` contains the exact same endpoint (`GET /api/task-search`) as **two separate
+      dict entries** -- a pre-existing, upstream architecture-plan data-quality issue, out of scope
+      to fix at the source per this milestone's own "don't touch the architecture plan" constraint.
+      This silently produced (a) a genuine duplicate sequence message (now correctly rejected by
+      the new `_validate_message_quality` check) and (b) a genuine duplicate class operation on the
+      Controller (`getApiTaskSearch` twice, since `_controller_operations` had no dedup pass unlike
+      `_service_operations`, which already called `_dedupe_operations` on its own result). Fixed
+      both at the point each modeler *consumes* the endpoint list, not by touching the plan itself:
+      new `_dedupe_endpoints` in `sequence_modeler.py`'s fallback (normalized method+path key), and
+      `_controller_operations` in `class_modeler.py` now calls the already-existing
+      `_dedupe_operations` just like `_service_operations` does. Confirmed fixed directly against
+      the real data that produced the bug.
+    - **A third, more serious real bug found only by the same E2E run**: `revise()` had **no
+      safety net around its own `_validate_full_output` call**, unlike the main generation ladder's
+      true last-resort rung (`_build_fallback_architecture_output`'s caller wraps it in a
+      try/except and proceeds with a caveat on the plan -- an already-established, approved
+      pattern in this exact file). Since `revise()` always uses an empty usecase/sequence/class
+      specification (only the plan text itself is revised by the LLM; every diagram always comes
+      from the deterministic fallback), a heuristic validator failure on ANY diagram would crash
+      the entire revision outright with no recourse -- a real, reproducible crash confirmed live
+      (a genuinely anemic `dto` class from the SAME real feature's architecture plan, whose
+      request/response model fields are literally named `"field"` upstream with the real
+      description stuffed into a `"format"`/`"description"` key instead -- another pre-existing,
+      out-of-scope-to-fix architecture-plan data-quality issue). Fixed by wrapping
+      `_validate_full_output` in `_revise_architecture_plan_output` with the identical
+      try/except-and-caveat-note pattern already used by the main ladder's fallback rung, rather
+      than inventing new handling. Confirmed fixed live: `revise()` now completes with
+      `status: revised` and a `human_approval_note` caveat instead of raising.
+    - **A confirmed, honest model-quality observation, not a code bug**: a real single-shot LLM
+      call (bypassing the slow, turn-limited agentic exploration rung on purpose, to keep real
+      verification cheap) against the real Task Search SRS twice failed to produce ANY
+      schema-conformant output at all -- once inventing an entirely different, flattened JSON shape
+      with none of the required top-level keys, once returning a near-empty 2-character response.
+      This is the SAME class of pre-existing single-shot unreliability item 25's M5 already
+      documented (a severe single-shot miss, unrelated to this milestone's own changes) -- but the
+      now-larger combined schema (three full specification blocks instead of one) plausibly makes
+      it worse for this local model by pressuring its generation budget. Not fixed here (out of
+      scope -- this milestone's job was the pipeline, not single-shot model reliability); the
+      existing reliability ladder (single-shot -> JSON-repair -> deterministic fallback ->
+      proceed-with-caveat) already tolerates this without crashing, confirmed by the real
+      `revise()` runs above landing cleanly on the fallback path both times.
+    - **Real, live verification, not just synthetic tests**: new
+      `tests/test_architecture_sequence_modeler.py` (7 tests), `tests/test_architecture_class_modeler.py`
+      (7 tests) -- LLM-specification trust (including unresolvable-name skip, loop/async
+      preservation, invalid-enum-value defaulting) + fallback path; `tests/test_architecture_sequence_validator_quality.py`
+      (5 tests -- duplicate-message detection in/out of loops, nested-fragment suppression,
+      loop fragment balance) and `tests/test_architecture_class_validator_quality.py` (9 tests --
+      anemic/placeholder-only dto/entity detection, multiplicity presence/notation/exemption) --
+      new files, no pre-existing sequence/class quality test files existed; `tests/test_architecture_sequence_repair.py`/
+      `tests/test_architecture_class_repair.py` (4 tests each -- repair fixes on first attempt,
+      repair never succeeds falls through without raising, repair retries up to the attempt cap,
+      repair loop skipped entirely for the true fallback rung). Full suite (same 3 pre-existing
+      Docker-dependent exclusions as item 25): **203 passed, 0 failed** (up from 167). Real E2E:
+      re-ran the real, unchanged `ArchitectureAgent.revise()` against `feature_244e26d1` four
+      times across the fix cycle above, each run driven by an actual real bug the previous run's
+      output exposed -- (1) crashed on the sequence duplicate-message validation error (no safety
+      net yet); after adding the `_dedupe_endpoints` fix, (2) still crashed, now on the class
+      anemic-DTO validation error, which is what exposed `revise()`'s missing safety net in the
+      first place; after adding that safety net, (3) completed successfully with an honest
+      caveat, but its own v3 `.puml` output visually revealed the *separate*, validator-uncaught
+      duplicate-operation bug in the Controller class; after adding the `_controller_operations`
+      dedupe fix, (4) completed fully clean. Final `task_search_sequence_v4.puml`/
+      `task_search_class_v4.puml` confirmed directly: no duplicate messages/operations, real
+      `CLS_REPOSITORY "1" --> "0..*" CLS_ENTITY_00N : manages` multiplicity notation rendering
+      correctly, and an honest, accurate `human_approval_note` caveat surfacing the genuinely
+      anemic (upstream-data-caused) DTO fields for human review rather than hiding the problem.
+    - **Real state**: `feature_244e26d1` (the same TaskFlow "Task Search" feature from item 25)
+      gained `task_search_sequence_v3/v4.puml`/`.png` and `task_search_class_v3/v4.puml`/`.png`
+      (v1/v2 from item 25's use-case verification predate this milestone's fixes and are left in
+      place, not debris) plus three more Architecture Plan JSON/Markdown versions from the three
+      real `revise()` calls above -- all left in place as real, inspectable verification output.
+
+27. **Architect Agent: dynamic, tool-using, reliably-generated diagrams** -- a user-requested
+    5-milestone follow-up to item 26, prompted by the user directly observing that every generated
+    sequence/class diagram still had the identical structure regardless of feature (full plan:
+    `C:\Users\ASUS\.claude\plans\soft-petting-star.md`, overwritten since per this file's
+    convention). **Confirmed with hard evidence**: read `login_class_v6.puml`,
+    `task_comments_class_v1.puml`, and every `task_search_class_v*.puml` directly -- all had the
+    exact same Controller/Service/Repository/DTO/Entity skeleton, with the Repository's operations
+    being the **literal, hardcoded strings** `findRequiredData()`/`saveChanges()` in every single
+    one regardless of feature. This is the deterministic fallback's own literal output --
+    item 26's LLM-authored path was essentially never reached in real usage.
+    - **Root cause, confirmed by direct testing**: the single mega-call (agentic exploration or
+      single-shot) asked the local LLM to produce `architecture_plan_json` (~15 top-level keys
+      including a detailed `implementation_plan`) **plus** `usecase_specification_json` **plus**
+      `sequence_specification_json` **plus** `class_specification_json`, all in one JSON response.
+      Real testing against this exact model (item 26's own verification) showed it failing to
+      produce schema-conformant output at that size -- once inventing an entirely different
+      flattened JSON shape, once returning a near-empty 2-character response. The agentic
+      exploration rung's tools were all about gathering context for the *plan* -- none helped the
+      model construct or validate the diagrams themselves.
+    - **Independent design review before implementation** (a Plan agent that read the full real
+      implementation and this file's own history of a *different* agentic loop -- the Coder
+      Agent's revision planner -- taking up to ~4.5 real hours on this same local model) refined
+      the initial one-combined-loop design into **two sequential, independently-gated loops**
+      (sequence first, then class informed by the finalized sequence names) for two concrete
+      reasons: smaller per-loop turn budget, and -- more importantly -- **nothing structurally
+      keeps a class diagram's names consistent with its sequence diagram's names once both are
+      freely LLM-authored** (today's deterministic fallback only agrees because it derives both
+      from the same feature name mechanically); running class second with a
+      `read_finalized_sequence_names` tool makes consistency a property of the design, not a
+      hoped-for prompt convention.
+    - **M1 -- shrank the main plan prompt back down** (`prompt.py`): removed
+      `sequence_specification_json`/`class_specification_json` and their rule blocks from
+      `ARCHITECTURE_AGENT_SYSTEM_PROMPT` entirely (also fixed `tools.py`'s
+      `submit_architecture_plan` docstring, which independently told the tool-calling LLM to
+      produce the same two fields via the tool schema itself, not just the system prompt) -- the
+      main call goes back to just `architecture_plan_json` + `usecase_specification_json`, a
+      reliability win for that call on its own. New, relocated (not deleted) content split into
+      four new prompt pairs: `SEQUENCE_DIAGRAM_AGENTIC_SYSTEM_PROMPT`/
+      `build_sequence_diagram_user_prompt` and `CLASS_DIAGRAM_AGENTIC_SYSTEM_PROMPT`/
+      `build_class_diagram_user_prompt` for the two new agentic loops; `DIAGRAM_FOCUSED_BOTH_
+      SYSTEM_PROMPT`/`build_diagram_focused_both_prompt` and `DIAGRAM_FOCUSED_CLASS_ONLY_
+      SYSTEM_PROMPT`/`build_diagram_focused_class_only_prompt` for the new non-agentic fallback
+      tier.
+    - **M2 -- new `diagram_tools.py`**: `build_sequence_diagram_tools`/`build_class_diagram_tools`,
+      each returning read tools (`read_functional_requirements`/`read_acceptance_criteria`/
+      `read_interface_and_data_context`), a **validate-in-the-loop tool**
+      (`validate_sequence_draft`/`validate_class_draft` -- parses the model's draft, runs it
+      through the real modeler+validator, returns `"VALID"` or the exact error text so the model
+      can self-correct BEFORE submitting, not just react after a final failure), and a submit
+      tool. The class builder's tools additionally include `read_finalized_sequence_names`.
+      Deliberately no "read a previous feature's diagram" tool on either builder -- the whole
+      point is diagrams grounded in THIS feature's real content, not a structural precedent
+      pulling the model back toward sameness. Each validate tool tracks a failed-attempt counter
+      and, after 3 failures, appends a soft nudge ("submit your current best draft now") to its
+      own return text -- the same "efficiency-hint feedback" idiom already established for the
+      Coder Agent's revision planner in this codebase, so an unproductive loop is more likely to
+      still submit *something* before the hard recursion-limit backstop discards everything.
+    - **M3 -- new agentic diagram-generation steps in `agent.py`**: `SEQUENCE_DIAGRAM_RECURSION_
+      LIMIT`/`CLASS_DIAGRAM_RECURSION_LIMIT = 20` (smaller than the main plan's 80 -- each loop
+      covers one narrow artifact). New `_generate_sequence_diagram_via_exploration`/
+      `_generate_class_diagram_via_exploration`, mirroring `_generate_raw_output_via_exploration`'s
+      exact `create_agent`/`ainvoke`/`GraphRecursionError` pattern at a smaller scope. The class
+      step is only ever invoked after the sequence step has already succeeded.
+    - **M4 -- new `_complete_diagram_models`, replacing 5 call sites**: three tiers, most-dynamic
+      first -- (1) the two sequential agentic loops; (2) a focused, non-agentic single-shot call
+      for whichever specification(s) are still missing (combined, if sequence itself failed since
+      there's nothing yet to keep class consistent with; class-only with the finalized sequence
+      embedded, if only class failed -- **a successful sequence result is never discarded just
+      because class alone failed**); (3) the existing deterministic fallback inside the modelers,
+      unchanged, reached only if both above produce nothing. **A real design subtlety found while
+      implementing this**: `parsed` is recreated fresh at every ladder rung within
+      `_generate_architecture_output` (confirmed by reading the code), so memoizing "has the
+      agentic tier been attempted" *inside* `parsed` -- the review's original suggestion -- would
+      not actually survive a rung cascade. Fixed by threading a separate
+      `diagram_generation_state` dict explicitly from the caller instead (the same dict passed to
+      every `_complete_diagram_models` call within one `_generate_architecture_output` invocation),
+      which both bounds the expensive agentic tier to one attempt per outer call AND caches a
+      successful result outright for free reuse by a later cascaded rung, an improvement on the
+      original "memoize a bool" suggestion. `attempt_agentic=False` (used for the deterministic-
+      fallback rung and `revise()`) skips tier 1 entirely -- both still get real, feature-grounded
+      diagrams via tier 2 instead of a fixed template, without the potentially-long agentic tail
+      on paths that are supposed to be fast/reliable.
+    - **Real, live verification, not just synthetic tests**: new `tests/test_architecture_diagram_
+      tools.py` (15 tests) and `tests/test_architecture_diagram_exploration.py` (11 tests --
+      capture/raise contracts for both exploration methods, and the full `_complete_diagram_
+      models` rung matrix: both-agentic-succeed, sequence-succeeds-class-fails, sequence-fails,
+      both-fail, `attempt_agentic=False`, and memoization across two simulated cascading calls).
+      One pre-existing test (`test_exploration_submission_is_used_without_any_single_shot_call`)
+      needed updating -- its old assertion ("exploration succeeding means zero single-shot calls")
+      no longer held now that diagram generation is fully decoupled from the plan's own success;
+      fixed by extending its mocks to also simulate the two new diagram exploration steps
+      succeeding, preserving the test's original intent rather than weakening the assertion. Full
+      suite (same 3 pre-existing Docker-dependent exclusions as before): **229 passed, 0 failed**
+      (up from 203). Real E2E: called `_complete_diagram_models(attempt_agentic=True)` directly
+      against the real, already-established architecture plan for `feature_244e26d1` (Task
+      Search) -- isolating the new capability from the separately-slow main plan-generation
+      exploration, which was not what this verification targeted. **Result, recorded honestly**:
+      the agentic **sequence** loop hit its 20-turn limit without submitting (~4.5 real minutes,
+      7 LLM calls) -- but the new **focused single-shot fallback tier** then produced genuinely
+      dynamic, feature-specific content in one call: sequence messages like "Enters keyword in
+      search bar" -> "Validate keyword length (min 2 chars)" -> queries against two real data
+      entities, and a class diagram with real DTO attributes (`TaskSearchResult.taskId/title/
+      description/detailUrl`) and real distinct operations (`searchTasks`, `findMatchingTasks`) --
+      **not** the old `findRequiredData`/`saveChanges` literals. Both validators passed. Total
+      elapsed: 505s. **A real rendering bug found and fixed from this run**: the LLM authored
+      operation parameters as rich `{"name", "type"}` objects rather than plain strings; the
+      schema never constrained the shape, and `class_modeler.py`'s `_operation_record` was
+      rendering them via a raw Python dict `str()`, producing PlantUML like
+      `+handleSearchRequest(name request, type TaskSearchRequest)`. Fixed with a new
+      `_parameter_text` helper that renders either shape as a clean `"name: type"`. Also exercised
+      the real, updated `revise()` (focused single-shot tier only, `attempt_agentic=False`) for a
+      second, independent real run -- this one triggered item 26's own reactive class-repair loop
+      for real (`ClassDiagramValidationError: Entity class 'TaskSearchController' has no
+      attributes`), which self-corrected on its one retry and completed cleanly, confirming both
+      milestones' mechanisms compose correctly. **An honest, un-fixed observation from that same
+      run**: the repair fixed the *reported* anemic-attribute error, but not a deeper stereotype
+      mismatch it didn't directly address -- the final diagram has "TaskSearchController" labeled
+      `<<entity>>` and "TaskSearchService" labeled `<<control>>` (swapped from what their names
+      imply). This is a real limitation of the repair loop's design (it only addresses the exact
+      validator error text, not a full semantic review) inherited from item 26, not introduced
+      here -- left as-is and recorded honestly rather than expanding scope to fix it now.
+    - **Real state**: `feature_244e26d1` gained `task_search_sequence_v5.puml`/`.png` and
+      `task_search_class_v5.puml`/`.png` (from the real `revise()` run above) plus another
+      Architecture Plan JSON/Markdown version -- left in place as real, inspectable verification
+      output, including the honest stereotype-mismatch quirk noted above.
+
 ## Known model-quality gotchas (not code bugs — prompts already account for these)
 
 - `qwen3-coder:latest` sometimes emits function-valued mock props (e.g. `"onSubmit": () => {}`)
@@ -1502,6 +1770,28 @@ milestone — that file is scratch, **this file is the durable one**.
   for that finding, not cleaned up); v2 is the corrected, validation-clean result. Neither version
   is approved -- v1's human_approval_note honestly flags the duplicate; a future session could
   approve v2 and continue this feature through UI/UX and Coder Agent.
+- **Item 26's real E2E verification, on the same `feature_244e26d1`**: four real `revise()`
+  calls across the sequence/class dedup-bug fix cycle -- the first two crashed before saving any
+  new artifact (sequence duplicate-message bug, then the class anemic-DTO check propagating
+  uncaught since `revise()` had no safety net yet); the third (post sequence-fix and
+  safety-net-fix, pre operation-dedup-fix) produced Architecture Plan v3 (JSON+Markdown) and
+  `task_search_sequence_v3.puml`/`.png` + `task_search_class_v3.puml`/`.png`, completing via the
+  new caveat safety net but still visually showing the class duplicate-operation bug; the fourth
+  (all fixes in place) produced Architecture Plan v4 and `task_search_sequence_v4.puml`/`.png` +
+  `task_search_class_v4.puml`/`.png`, clean of both duplicate bugs -- all left in place as real,
+  inspectable verification output. None of these versions are approved; v4's
+  `human_approval_note` honestly flags the upstream anemic-DTO data-quality issue described above
+  (real, but out of this milestone's scope to fix at the source).
+- **Item 27's real E2E verification, on the same `feature_244e26d1`**: a direct
+  `_complete_diagram_models(attempt_agentic=True)` call (not saved as artifacts -- used to isolate
+  and verify the new agentic loops specifically) confirmed the sequence agentic loop hits its
+  20-turn limit on this real feature/model combination but the new focused single-shot fallback
+  produces genuinely dynamic content; a second, real `revise()` call (`attempt_agentic=False`)
+  produced Architecture Plan v5 and `task_search_sequence_v5.puml`/`.png` +
+  `task_search_class_v5.puml`/`.png`, saved as real, inspectable output -- this run also exercised
+  item 26's reactive class-repair loop for real (a genuine anemic-attribute validation failure
+  that self-corrected on retry). Not approved; left in place with the honest stereotype-mismatch
+  quirk noted above still visible for a future session to judge.
 
 ## Where to look
 
