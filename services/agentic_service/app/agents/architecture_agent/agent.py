@@ -54,14 +54,30 @@ from app.agents.architecture_agent.prompt import (
     ARCHITECTURE_AGENT_SYSTEM_PROMPT,
     JSON_REPAIR_PROMPT,
     USECASE_REPAIR_SYSTEM_PROMPT,
+    SEQUENCE_REPAIR_SYSTEM_PROMPT,
+    CLASS_REPAIR_SYSTEM_PROMPT,
+    SEQUENCE_DIAGRAM_AGENTIC_SYSTEM_PROMPT,
+    CLASS_DIAGRAM_AGENTIC_SYSTEM_PROMPT,
+    DIAGRAM_FOCUSED_BOTH_SYSTEM_PROMPT,
+    DIAGRAM_FOCUSED_CLASS_ONLY_SYSTEM_PROMPT,
     build_agentic_architecture_user_prompt,
     build_architecture_user_prompt,
     build_architecture_plan_revision_prompt,
     build_json_repair_prompt,
     build_usecase_repair_prompt,
+    build_sequence_repair_prompt,
+    build_class_repair_prompt,
+    build_sequence_diagram_user_prompt,
+    build_class_diagram_user_prompt,
+    build_diagram_focused_both_prompt,
+    build_diagram_focused_class_only_prompt,
     ARCHITECTURE_REVISION_SYSTEM_PROMPT,
 )
 from app.agents.architecture_agent.tools import build_architecture_planning_tools
+from app.agents.architecture_agent.diagram_tools import (
+    build_sequence_diagram_tools,
+    build_class_diagram_tools,
+)
 from app.agents.architecture_agent.schemas import (
     ArchitectureAgentInput,
     ArchitectureAgentOutput,
@@ -123,6 +139,20 @@ ARCHITECTURE_PLANNING_RECURSION_LIMIT = 80
 # quality validation -- fixes only the flagged issues, without re-running
 # the entire architecture-plan generation.
 MAX_USECASE_REPAIR_ATTEMPTS = 2
+
+# Same idiom, fully independent repair loops for the sequence and class
+# diagram specifications -- never share state or calls with the use-case
+# repair loop above.
+MAX_SEQUENCE_REPAIR_ATTEMPTS = 2
+MAX_CLASS_REPAIR_ATTEMPTS = 2
+
+# Recursion limits for the two dedicated diagram-generation agentic loops.
+# Smaller than ARCHITECTURE_PLANNING_RECURSION_LIMIT because each loop
+# covers one narrow artifact (read context once or twice, draft, validate,
+# fix, submit) rather than a whole architecture plan -- treat these as a
+# hypothesis validated by real E2E runs, not a settled number.
+SEQUENCE_DIAGRAM_RECURSION_LIMIT = 20
+CLASS_DIAGRAM_RECURSION_LIMIT = 20
 
 
 class ArchitectureAgent:
@@ -341,6 +371,13 @@ class ArchitectureAgent:
         srs_for_generation = agent_input.enhanced_srs_json or agent_input.srs_json
         feature_name = agent_input.feature.get("feature_name", "Feature")
 
+        # Threaded through every _complete_diagram_models call in this
+        # method (all of which get attempt_agentic=True, the default) so
+        # the expensive agentic diagram tier is attempted AT MOST ONCE per
+        # run() call, however many rungs cascade -- and so a successful
+        # result is reused for free on a later rung instead of discarded.
+        diagram_generation_state: dict[str, Any] = {}
+
         # Rung 0 (primary): agentic, tool-using, project-aware exploration --
         # the model reads previous features' approved plans / the project
         # manifest / the real workspace before submitting its plan. Any
@@ -352,8 +389,7 @@ class ArchitectureAgent:
             exploration_output = await self._generate_raw_output_via_exploration(agent_input)
             parsed = self._parse_and_validate_output(exploration_output, srs_for_generation, feature_name)
             parsed = await self._complete_usecase_model(agent_input, parsed)
-            parsed = self._complete_sequence_model(agent_input, parsed)
-            parsed = self._complete_class_model(agent_input, parsed)
+            parsed = await self._complete_diagram_models(agent_input, parsed, diagram_generation_state)
             self._validate_full_output(agent_input, parsed)
 
             return self._build_output_from_parsed(parsed, raw_output=exploration_output)
@@ -391,8 +427,7 @@ class ArchitectureAgent:
         try:
             parsed = self._parse_and_validate_output(raw_output, srs_for_generation, feature_name)
             parsed = await self._complete_usecase_model(agent_input, parsed)
-            parsed = self._complete_sequence_model(agent_input, parsed)
-            parsed = self._complete_class_model(agent_input, parsed)
+            parsed = await self._complete_diagram_models(agent_input, parsed, diagram_generation_state)
             self._validate_full_output(agent_input, parsed)
 
         except Exception as first_error:
@@ -414,8 +449,7 @@ class ArchitectureAgent:
             try:
                 parsed = self._parse_and_validate_output(repaired_output, srs_for_generation, feature_name)
                 parsed = await self._complete_usecase_model(agent_input, parsed)
-                parsed = self._complete_sequence_model(agent_input, parsed)
-                parsed = self._complete_class_model(agent_input, parsed)
+                parsed = await self._complete_diagram_models(agent_input, parsed, diagram_generation_state)
                 self._validate_full_output(agent_input, parsed)
                 raw_output = repaired_output
 
@@ -427,8 +461,15 @@ class ArchitectureAgent:
                     reason=str(second_error)
                 )
                 parsed = await self._complete_usecase_model(agent_input, parsed)
-                parsed = self._complete_sequence_model(agent_input, parsed)
-                parsed = self._complete_class_model(agent_input, parsed)
+                # The plan text itself already needed the deterministic
+                # fallback (the model failed at least twice) -- this is
+                # supposed to be the fast, reliable safety net, so skip the
+                # expensive agentic diagram tier here (attempt_agentic=
+                # False); still get real, feature-grounded diagrams via the
+                # focused single-shot tier instead of a fixed template.
+                parsed = await self._complete_diagram_models(
+                    agent_input, parsed, diagram_generation_state, attempt_agentic=False
+                )
 
                 # The fallback is generated deterministically from the approved SRS, so it
                 # should normally pass -- but it is still built from LLM-authored diagram
@@ -545,6 +586,265 @@ class ArchitectureAgent:
             )
 
         return captured["plan_json"]
+
+    async def _generate_sequence_diagram_via_exploration(
+        self,
+        agent_input: ArchitectureAgentInput,
+        architecture_plan_json: dict[str, Any],
+        feature_name: str,
+    ) -> dict[str, Any]:
+        """
+        Dedicated, narrow agentic (tool-using) generation step for JUST the
+        sequence diagram specification -- mirrors
+        _generate_raw_output_via_exploration's exact create_agent/ainvoke/
+        GraphRecursionError pattern, but scoped to one small artifact
+        instead of the whole architecture plan, with dedicated read tools
+        grounding it in this feature's real SRS/plan content plus a
+        validate-in-the-loop tool for proactive self-correction.
+
+        Returns the parsed sequence_specification_json dict; raises if the
+        loop ended without a submission -- the caller falls through to the
+        focused single-shot tier.
+        """
+
+        srs_for_modeling = agent_input.enhanced_srs_json or agent_input.srs_json
+
+        tools, captured = build_sequence_diagram_tools(
+            srs_json=srs_for_modeling,
+            architecture_plan_json=architecture_plan_json,
+            sequence_modeler=self.sequence_modeler,
+            sequence_validator=self.sequence_validator,
+        )
+
+        agent = create_agent(
+            model=get_agentic_chat_model(),
+            tools=tools,
+            system_prompt=SEQUENCE_DIAGRAM_AGENTIC_SYSTEM_PROMPT,
+        )
+
+        user_prompt = build_sequence_diagram_user_prompt(feature_name)
+
+        try:
+            await agent.ainvoke(
+                {"messages": [{"role": "user", "content": user_prompt}]},
+                config={"recursion_limit": SEQUENCE_DIAGRAM_RECURSION_LIMIT},
+            )
+        except GraphRecursionError:
+            pass  # handled uniformly below -- "sequence_json" simply won't be captured
+
+        if "sequence_json" not in captured:
+            raise ValueError(
+                "Sequence diagram exploration ended without calling "
+                "submit_sequence_specification (stopped early or hit the "
+                f"exploration turn limit of {SEQUENCE_DIAGRAM_RECURSION_LIMIT})."
+            )
+
+        parsed = self._extract_json_object(captured["sequence_json"])
+        if not isinstance(parsed, dict):
+            raise ValueError("Submitted sequence specification was not a JSON object.")
+
+        return parsed
+
+    async def _generate_class_diagram_via_exploration(
+        self,
+        agent_input: ArchitectureAgentInput,
+        architecture_plan_json: dict[str, Any],
+        feature_name: str,
+        sequence_specification_json: dict[str, Any],
+    ) -> dict[str, Any]:
+        """
+        Same shape as _generate_sequence_diagram_via_exploration, for the
+        class diagram specification. Only ever called after the sequence
+        step has already succeeded -- its read_finalized_sequence_names
+        tool is what structurally keeps the two diagrams' naming
+        consistent, rather than hoping a shared prompt keeps them in sync.
+        """
+
+        srs_for_modeling = agent_input.enhanced_srs_json or agent_input.srs_json
+
+        tools, captured = build_class_diagram_tools(
+            srs_json=srs_for_modeling,
+            architecture_plan_json=architecture_plan_json,
+            sequence_specification_json=sequence_specification_json,
+            class_modeler=self.class_modeler,
+            class_validator=self.class_validator,
+        )
+
+        agent = create_agent(
+            model=get_agentic_chat_model(),
+            tools=tools,
+            system_prompt=CLASS_DIAGRAM_AGENTIC_SYSTEM_PROMPT,
+        )
+
+        user_prompt = build_class_diagram_user_prompt(feature_name)
+
+        try:
+            await agent.ainvoke(
+                {"messages": [{"role": "user", "content": user_prompt}]},
+                config={"recursion_limit": CLASS_DIAGRAM_RECURSION_LIMIT},
+            )
+        except GraphRecursionError:
+            pass  # handled uniformly below -- "class_json" simply won't be captured
+
+        if "class_json" not in captured:
+            raise ValueError(
+                "Class diagram exploration ended without calling "
+                "submit_class_specification (stopped early or hit the "
+                f"exploration turn limit of {CLASS_DIAGRAM_RECURSION_LIMIT})."
+            )
+
+        parsed = self._extract_json_object(captured["class_json"])
+        if not isinstance(parsed, dict):
+            raise ValueError("Submitted class specification was not a JSON object.")
+
+        return parsed
+
+    async def _complete_diagram_models(
+        self,
+        agent_input: ArchitectureAgentInput,
+        parsed: dict[str, Any],
+        diagram_generation_state: dict[str, Any] | None = None,
+        attempt_agentic: bool = True,
+    ) -> dict[str, Any]:
+        """
+        Populate parsed["sequence_specification_json"]/
+        parsed["class_specification_json"] via a dedicated, narrow
+        generation mechanism -- fully decoupled from however
+        parsed["architecture_plan_json"] itself was produced -- then hand
+        off to the existing _complete_sequence_model/_complete_class_model
+        (unchanged internally) for modeling and the existing reactive
+        repair loop.
+
+        Three tiers, most-dynamic first: (1) two SEQUENTIAL agentic
+        tool-using loops (sequence, then class informed by the finalized
+        sequence names -- this ordering is what structurally keeps the two
+        diagrams' naming consistent, not a hoped-for prompt convention);
+        (2) a focused, non-agentic single-shot call for whichever
+        specification(s) are still missing (both together if the sequence
+        agentic step itself failed, since there's nothing meaningful yet to
+        keep class consistent with; class-only, with the finalized sequence
+        embedded, if only class failed); (3) the existing deterministic
+        fallback inside the modelers themselves, reached only if both above
+        produce nothing.
+
+        `diagram_generation_state` is a plain dict the CALLER creates once
+        and threads through every call within one run()/revise() invocation
+        (unlike `parsed`, which is recreated fresh at each ladder rung, so
+        memoizing inside `parsed` would not survive a rung cascade). It
+        caches whether the agentic tier has already been attempted this
+        invocation (so a diagram-specific validation failure on one rung
+        cannot re-trigger a fresh ~20-40 turn agentic attempt from every
+        subsequent rung) AND caches a successful agentic result outright, so
+        a later rung reuses it for free instead of regenerating anything.
+        Pass `None` for a single-invocation caller (the deterministic
+        fallback rung, revise()) where cross-rung memoization does not
+        apply.
+
+        `attempt_agentic=False` skips tier 1 entirely -- used for the
+        deterministic-fallback rung and revise(), where the plan itself
+        already needed its own fallback / a human is synchronously waiting,
+        so a potentially long agentic diagram attempt is a poor trade; they
+        still get real, feature-grounded content via tier 2 instead of a
+        fixed template.
+        """
+
+        if diagram_generation_state is None:
+            diagram_generation_state = {}
+
+        architecture_plan_json = parsed["architecture_plan_json"]
+        feature_name = agent_input.feature.get("feature_name", "Feature")
+        srs_for_modeling = agent_input.enhanced_srs_json or agent_input.srs_json
+        feature_id = agent_input.feature.get("feature_id")
+
+        sequence_specification_json: dict[str, Any] = diagram_generation_state.get(
+            "sequence_specification_json"
+        ) or {}
+        class_specification_json: dict[str, Any] = diagram_generation_state.get(
+            "class_specification_json"
+        ) or {}
+
+        if (
+            attempt_agentic
+            and not diagram_generation_state.get("attempted")
+            and not (sequence_specification_json and class_specification_json)
+        ):
+            diagram_generation_state["attempted"] = True
+
+            try:
+                sequence_specification_json = await self._generate_sequence_diagram_via_exploration(
+                    agent_input, architecture_plan_json, feature_name,
+                )
+                diagram_generation_state["sequence_specification_json"] = sequence_specification_json
+            except Exception as error:
+                logger.warning(
+                    "Agentic sequence diagram exploration failed for feature_id=%s: %s",
+                    feature_id, error,
+                )
+
+            if sequence_specification_json:
+                try:
+                    class_specification_json = await self._generate_class_diagram_via_exploration(
+                        agent_input, architecture_plan_json, feature_name, sequence_specification_json,
+                    )
+                    diagram_generation_state["class_specification_json"] = class_specification_json
+                except Exception as error:
+                    logger.warning(
+                        "Agentic class diagram exploration failed for feature_id=%s: %s",
+                        feature_id, error,
+                    )
+
+        if not sequence_specification_json and not class_specification_json:
+            try:
+                provider = llm_provider_service.get_provider()
+                raw_output = await provider.invoke_agent([
+                    {"role": "system", "content": DIAGRAM_FOCUSED_BOTH_SYSTEM_PROMPT},
+                    {"role": "user", "content": build_diagram_focused_both_prompt(
+                        feature_name=feature_name,
+                        srs_json=srs_for_modeling,
+                        architecture_plan_json=architecture_plan_json,
+                    )},
+                ])
+                combined = self._extract_json_object(raw_output)
+                if isinstance(combined, dict):
+                    candidate_sequence = combined.get("sequence_specification_json")
+                    candidate_class = combined.get("class_specification_json")
+                    if isinstance(candidate_sequence, dict):
+                        sequence_specification_json = candidate_sequence
+                    if isinstance(candidate_class, dict):
+                        class_specification_json = candidate_class
+            except Exception as error:
+                logger.warning(
+                    "Focused single-shot diagram generation (both) failed for feature_id=%s: %s",
+                    feature_id, error,
+                )
+        elif not class_specification_json:
+            try:
+                provider = llm_provider_service.get_provider()
+                raw_output = await provider.invoke_agent([
+                    {"role": "system", "content": DIAGRAM_FOCUSED_CLASS_ONLY_SYSTEM_PROMPT},
+                    {"role": "user", "content": build_diagram_focused_class_only_prompt(
+                        feature_name=feature_name,
+                        srs_json=srs_for_modeling,
+                        architecture_plan_json=architecture_plan_json,
+                        sequence_specification_json=sequence_specification_json,
+                    )},
+                ])
+                candidate_class = self._extract_json_object(raw_output)
+                if isinstance(candidate_class, dict):
+                    class_specification_json = candidate_class
+            except Exception as error:
+                logger.warning(
+                    "Focused single-shot diagram generation (class-only) failed for feature_id=%s: %s",
+                    feature_id, error,
+                )
+
+        parsed["sequence_specification_json"] = sequence_specification_json
+        parsed["class_specification_json"] = class_specification_json
+
+        parsed = await self._complete_sequence_model(agent_input, parsed)
+        parsed = await self._complete_class_model(agent_input, parsed)
+
+        return parsed
 
     async def _complete_usecase_model(
         self,
@@ -673,51 +973,235 @@ class ArchitectureAgent:
 
         return repaired if isinstance(repaired, dict) else None
 
-    def _complete_sequence_model(
+    async def _complete_sequence_model(
         self,
         agent_input: ArchitectureAgentInput,
         parsed: dict[str, Any]
     ) -> dict[str, Any]:
         """
-        Build the sequence diagram model from approved SRS/Architecture Plan.
+        Build the final sequence diagram model using the dedicated modeler,
+        then run the full SequenceDiagramValidator right here so a quality
+        failure (duplicate messages, unbalanced fragments, etc.) gets a
+        chance at a cheap, TARGETED repair before the outer
+        _validate_full_output ever sees it -- mirrors
+        _complete_usecase_model's shape exactly, but fully independent (own
+        specification field, own repair prompt/method, own attempt cap).
 
-        The LLM does not directly control this diagram.
-        This keeps the sequence diagram deterministic and aligned with the Architecture Plan.
+        The LLM may provide sequence_specification_json. The final diagram
+        always passes through ArchitectureSequenceModeler so participants
+        and interactions are normalized/id-assigned consistently.
+
+        Never raises for a QUALITY validation failure -- once repair
+        attempts are exhausted (or skipped, see below) it just returns the
+        best model it has, and lets the existing outer reliability ladder
+        handle it, exactly as before this change.
         """
 
         srs_for_modeling = agent_input.enhanced_srs_json or agent_input.srs_json
+        feature_name = agent_input.feature.get("feature_name", "Feature")
+
+        sequence_specification_json = parsed.get("sequence_specification_json")
+        if not isinstance(sequence_specification_json, dict):
+            sequence_specification_json = {}
 
         sequence_diagram_json = self.sequence_modeler.build(
             srs_json=srs_for_modeling,
             sds_json=parsed["architecture_plan_json"],
+            sequence_specification_json=sequence_specification_json,
         )
 
+        # Only the true last-resort deterministic-fallback rung reaches here
+        # with a genuinely empty specification (no participants/interactions
+        # at all) -- making a new LLM call from the rung whose whole purpose
+        # is "the LLM already failed twice" would defeat its purpose, so the
+        # repair loop is gated off entirely in that case.
+        if sequence_specification_json.get("participants") and sequence_specification_json.get("interactions"):
+            provider = llm_provider_service.get_provider()
+
+            for repair_attempt in range(MAX_SEQUENCE_REPAIR_ATTEMPTS):
+                try:
+                    self.sequence_validator.validate(srs_for_modeling, sequence_diagram_json)
+                    break
+                except SequenceDiagramValidationError as error:
+                    logger.warning(
+                        "Sequence diagram quality validation failed (repair attempt %d/%d): %s",
+                        repair_attempt + 1,
+                        MAX_SEQUENCE_REPAIR_ATTEMPTS,
+                        error,
+                    )
+
+                    repaired_specification = await self._repair_sequence_specification(
+                        provider=provider,
+                        srs_json=srs_for_modeling,
+                        sequence_specification_json=sequence_specification_json,
+                        feature_name=feature_name,
+                        error_text=str(error),
+                    )
+                    if repaired_specification is None:
+                        break
+
+                    sequence_specification_json = repaired_specification
+                    sequence_diagram_json = self.sequence_modeler.build(
+                        srs_json=srs_for_modeling,
+                        sds_json=parsed["architecture_plan_json"],
+                        sequence_specification_json=sequence_specification_json,
+                    )
+
+        parsed["sequence_specification_json"] = sequence_specification_json
         parsed["sequence_diagram_json"] = sequence_diagram_json
 
         return parsed
 
-    def _complete_class_model(
+    async def _repair_sequence_specification(
+        self,
+        provider: Any,
+        srs_json: dict[str, Any],
+        sequence_specification_json: dict[str, Any],
+        feature_name: str,
+        error_text: str,
+    ) -> dict[str, Any] | None:
+        """
+        One small, targeted LLM call to fix a sequence diagram specification
+        that failed quality validation. Never raises: returns None on any
+        failure (call error or unparseable output) so the caller can stop
+        repairing and fall through to the existing outer reliability ladder
+        gracefully. Fully independent of _repair_usecase_specification --
+        no shared state or calls.
+        """
+
+        repair_prompt = build_sequence_repair_prompt(
+            srs_json=srs_json,
+            sequence_specification_json=sequence_specification_json,
+            validation_error=error_text,
+            feature_name=feature_name,
+        )
+
+        try:
+            raw_output = await provider.invoke_agent([
+                {"role": "system", "content": SEQUENCE_REPAIR_SYSTEM_PROMPT},
+                {"role": "user", "content": repair_prompt},
+            ])
+            repaired = self._extract_json_object(raw_output)
+        except Exception as error:
+            logger.warning("Sequence specification repair call failed: %s", error)
+            return None
+
+        return repaired if isinstance(repaired, dict) else None
+
+    async def _complete_class_model(
         self,
         agent_input: ArchitectureAgentInput,
         parsed: dict[str, Any]
     ) -> dict[str, Any]:
         """
-        Build the class diagram model from approved SRS/Architecture Plan.
+        Build the final class diagram model using the dedicated modeler,
+        then run the full ClassDiagramValidator right here so a quality
+        failure (missing multiplicity, anemic DTO/entity, etc.) gets a
+        chance at a cheap, TARGETED repair before the outer
+        _validate_full_output ever sees it -- mirrors
+        _complete_usecase_model's shape exactly, but fully independent (own
+        specification field, own repair prompt/method, own attempt cap).
 
-        The class diagram is derived from the Architecture Plan logical, interface,
-        and data views rather than directly from free-form LLM PlantUML.
+        The LLM may provide class_specification_json. The final diagram
+        always passes through ArchitectureClassModeler so classes and
+        relationships are normalized/id-assigned/deduped consistently.
+
+        Never raises for a QUALITY validation failure -- once repair
+        attempts are exhausted (or skipped, see below) it just returns the
+        best model it has, and lets the existing outer reliability ladder
+        handle it, exactly as before this change.
         """
 
         srs_for_modeling = agent_input.enhanced_srs_json or agent_input.srs_json
+        feature_name = agent_input.feature.get("feature_name", "Feature")
+
+        class_specification_json = parsed.get("class_specification_json")
+        if not isinstance(class_specification_json, dict):
+            class_specification_json = {}
 
         class_diagram_json = self.class_modeler.build(
             srs_json=srs_for_modeling,
             sds_json=parsed["architecture_plan_json"],
+            class_specification_json=class_specification_json,
         )
 
+        # Only the true last-resort deterministic-fallback rung reaches here
+        # with a genuinely empty specification (no classes at all) -- making
+        # a new LLM call from the rung whose whole purpose is "the LLM
+        # already failed twice" would defeat its purpose, so the repair loop
+        # is gated off entirely in that case.
+        if class_specification_json.get("classes"):
+            provider = llm_provider_service.get_provider()
+
+            for repair_attempt in range(MAX_CLASS_REPAIR_ATTEMPTS):
+                try:
+                    self.class_validator.validate(srs_for_modeling, class_diagram_json)
+                    break
+                except ClassDiagramValidationError as error:
+                    logger.warning(
+                        "Class diagram quality validation failed (repair attempt %d/%d): %s",
+                        repair_attempt + 1,
+                        MAX_CLASS_REPAIR_ATTEMPTS,
+                        error,
+                    )
+
+                    repaired_specification = await self._repair_class_specification(
+                        provider=provider,
+                        srs_json=srs_for_modeling,
+                        class_specification_json=class_specification_json,
+                        feature_name=feature_name,
+                        error_text=str(error),
+                    )
+                    if repaired_specification is None:
+                        break
+
+                    class_specification_json = repaired_specification
+                    class_diagram_json = self.class_modeler.build(
+                        srs_json=srs_for_modeling,
+                        sds_json=parsed["architecture_plan_json"],
+                        class_specification_json=class_specification_json,
+                    )
+
+        parsed["class_specification_json"] = class_specification_json
         parsed["class_diagram_json"] = class_diagram_json
 
         return parsed
+
+    async def _repair_class_specification(
+        self,
+        provider: Any,
+        srs_json: dict[str, Any],
+        class_specification_json: dict[str, Any],
+        feature_name: str,
+        error_text: str,
+    ) -> dict[str, Any] | None:
+        """
+        One small, targeted LLM call to fix a class diagram specification
+        that failed quality validation. Never raises: returns None on any
+        failure (call error or unparseable output) so the caller can stop
+        repairing and fall through to the existing outer reliability ladder
+        gracefully. Fully independent of _repair_usecase_specification --
+        no shared state or calls.
+        """
+
+        repair_prompt = build_class_repair_prompt(
+            srs_json=srs_json,
+            class_specification_json=class_specification_json,
+            validation_error=error_text,
+            feature_name=feature_name,
+        )
+
+        try:
+            raw_output = await provider.invoke_agent([
+                {"role": "system", "content": CLASS_REPAIR_SYSTEM_PROMPT},
+                {"role": "user", "content": repair_prompt},
+            ])
+            repaired = self._extract_json_object(raw_output)
+        except Exception as error:
+            logger.warning("Class specification repair call failed: %s", error)
+            return None
+
+        return repaired if isinstance(repaired, dict) else None
 
     def _validate_full_output(
         self,
@@ -1029,9 +1513,35 @@ class ArchitectureAgent:
             "usecase_specification_json": {},
         }
         parsed = await self._complete_usecase_model(agent_input, parsed)
-        parsed = self._complete_sequence_model(agent_input, parsed)
-        parsed = self._complete_class_model(agent_input, parsed)
-        self._validate_full_output(agent_input, parsed)
+        # revise() always uses an empty usecase specification (only the plan
+        # text itself is revised by the LLM), but diagrams still get a real,
+        # feature-grounded generation attempt via the focused single-shot
+        # tier -- attempt_agentic=False skips only the expensive agentic
+        # tool-using tier, since a human is synchronously waiting on what's
+        # usually a small plan-text edit, not the potentially long diagram
+        # exploration. No diagram_generation_state is threaded through since
+        # revise() only calls this once (no cascading rungs to memoize
+        # across).
+        parsed = await self._complete_diagram_models(agent_input, parsed, attempt_agentic=False)
+
+        # This still tolerates a heuristic-validator failure (proceed with a
+        # caveat noted on the plan, since there is no further fallback to
+        # try) rather than crashing -- mirrors the main generation ladder's
+        # true last-resort rung.
+        try:
+            self._validate_full_output(agent_input, parsed)
+        except Exception as validation_error:
+            logger.warning(
+                "Architecture Plan revision diagram validation failed for feature_id=%s "
+                "-- proceeding anyway for human review: %s",
+                feature.get("feature_id"),
+                validation_error,
+            )
+            parsed["architecture_plan_json"]["human_approval_note"] = (
+                f"{parsed['architecture_plan_json'].get('human_approval_note', '')} "
+                f"AUTOMATIC VALIDATION FAILED on the revised diagrams -- review carefully "
+                f"before approving: {validation_error}"
+            ).strip()
 
         architecture_plan_markdown = self.markdown_builder.build(revised_architecture_plan_json)
         usecase_puml = self.usecase_builder.build(parsed["usecase_json"])

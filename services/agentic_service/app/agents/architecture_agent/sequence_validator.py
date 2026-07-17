@@ -48,6 +48,7 @@ class SequenceDiagramValidator:
         errors.extend(self._validate_structure(sequence_json))
         errors.extend(self._validate_participants(sequence_json))
         errors.extend(self._validate_interactions(sequence_json))
+        errors.extend(self._validate_message_quality(sequence_json))
         errors.extend(self._validate_traceability(srs_json, sequence_json))
         errors.extend(self._validate_out_of_scope(srs_json, sequence_json))
 
@@ -120,7 +121,7 @@ class SequenceDiagramValidator:
 
             kind = str(interaction.get("kind", "message"))
 
-            if kind in ["alt_start", "opt_start"]:
+            if kind in ["alt_start", "opt_start", "loop_start"]:
                 fragment_stack.append(kind)
                 continue
 
@@ -159,6 +160,50 @@ class SequenceDiagramValidator:
 
         if message_count < 3:
             errors.append("Sequence diagram is too weak; it must contain at least three messages.")
+
+        return errors
+
+    def _validate_message_quality(self, sequence_json: dict[str, Any]) -> list[str]:
+        """
+        Flags a message repeated verbatim (same from/to pair + normalized
+        text) outside a loop fragment -- inside a loop, repeating the same
+        message each iteration is the whole point, so duplicate-checking is
+        suspended for anything nested inside a loop_start/end block
+        (including nested alt/opt fragments), not just a bare loop body.
+        """
+        errors: list[str] = []
+        seen: set[tuple[str, str, str]] = set()
+        fragment_stack: list[str] = []
+
+        for interaction in sequence_json.get("interactions", []):
+            if not isinstance(interaction, dict):
+                continue
+
+            kind = str(interaction.get("kind", "message"))
+
+            if kind in ("alt_start", "opt_start", "loop_start"):
+                fragment_stack.append(kind)
+                continue
+
+            if kind == "end":
+                if fragment_stack:
+                    fragment_stack.pop()
+                continue
+
+            if kind != "message" or "loop_start" in fragment_stack:
+                continue
+
+            source = str(interaction.get("from", "")).strip()
+            target = str(interaction.get("to", "")).strip()
+            message_text = str(interaction.get("message", "")).strip()
+            key = (source, target, self._normalize(message_text))
+
+            if key in seen:
+                errors.append(
+                    f"Duplicate sequence message found outside a loop: '{message_text}' "
+                    f"from {source} to {target}."
+                )
+            seen.add(key)
 
         return errors
 

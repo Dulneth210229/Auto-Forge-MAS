@@ -46,7 +46,192 @@ class ArchitectureClassModeler:
         "date": ("date", "Date"),
     }
 
-    def build(self, srs_json: dict[str, Any], sds_json: dict[str, Any]) -> dict[str, Any]:
+    def build(
+        self,
+        srs_json: dict[str, Any],
+        sds_json: dict[str, Any],
+        class_specification_json: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        specification = class_specification_json or {}
+        classes_spec = specification.get("classes")
+
+        if isinstance(classes_spec, list) and classes_spec:
+            # Primary path: the LLM supplied a real specification -- trust
+            # its classes/attributes/operations/relationships directly
+            # rather than re-deriving a generic fixed skeleton (the
+            # confirmed source of today's placeholder "id: String"-only
+            # DTOs/entities regardless of what the feature actually needs).
+            classes, relationships = self._build_from_specification(specification, srs_json)
+        else:
+            # Last-resort fallback: no usable specification at all (every
+            # generation rung including repair failed).
+            classes, relationships = self._build_fallback_classes_and_relationships(srs_json, sds_json)
+
+        classes = self._dedupe_classes(classes)
+        relationships = self._filter_relationships(relationships, classes)
+
+        feature_name = self._feature_name(srs_json, sds_json)
+        return {
+            "diagram_title": specification.get("diagram_title") or f"{feature_name} Class Diagram",
+            "feature_name": feature_name,
+            "classes": classes,
+            "relationships": relationships,
+            "traceability": self._build_traceability(classes, relationships),
+            "rules_applied": [
+                "Classes represent real, feature-specific structural design elements.",
+                "DTO classes come from real request and response models.",
+                "Entity classes come from real data entities and requirements.",
+                "Controller, service, and repository classes represent feature-level layered responsibilities.",
+                "Association/aggregation/composition relationships carry real UML multiplicities.",
+                "NFRs, risks, constraints, and architecture notes are not generated as classes.",
+            ],
+        }
+
+    def _build_from_specification(
+        self,
+        specification: dict[str, Any],
+        srs_json: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """
+        Build classes/relationships directly from the LLM's own
+        specification -- trusted as-is (only deterministic id assignment,
+        name-to-id resolution, and light field/operation normalization), no
+        regex/keyword derivation. This is the primary path whenever the LLM
+        supplied a real specification; _build_fallback_classes_and_relationships
+        remains only as the last-resort path for a genuinely empty specification.
+        """
+
+        allowed_stereotypes = {"control", "service", "repository", "dto", "entity", "external"}
+        allowed_relationship_types = {
+            "association", "dependency", "aggregation", "composition", "inheritance", "generalization"
+        }
+
+        classes: list[dict[str, Any]] = []
+        name_to_id: dict[str, str] = {}
+        stereotype_counters: dict[str, int] = {}
+
+        for item in specification.get("classes", []):
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "")).strip()
+            if not name:
+                continue
+
+            stereotype = str(item.get("stereotype", "")).strip().lower()
+            if stereotype not in allowed_stereotypes:
+                stereotype = "entity"
+
+            stereotype_counters[stereotype] = stereotype_counters.get(stereotype, 0) + 1
+            class_id = f"CLS_{stereotype.upper()}_{stereotype_counters[stereotype]:03d}"
+            class_name = self._safe_class_name(name)
+
+            attributes = [
+                record for record in (
+                    self._attribute_record(field) for field in self._as_list(item.get("attributes"))
+                ) if record
+            ]
+            operations = [
+                record for record in (
+                    self._operation_record(operation) for operation in self._as_list(item.get("operations"))
+                ) if record
+            ]
+
+            classes.append({
+                "id": class_id,
+                "name": class_name,
+                "stereotype": stereotype,
+                "attributes": attributes,
+                "operations": operations,
+                "related_requirements": [str(v) for v in item.get("related_requirements", []) or [] if v],
+            })
+            name_to_id[self._normalize(name)] = class_id
+
+        relationships: list[dict[str, Any]] = []
+        for item in specification.get("relationships", []):
+            if not isinstance(item, dict):
+                continue
+
+            source_id = name_to_id.get(self._normalize(str(item.get("from", ""))))
+            target_id = name_to_id.get(self._normalize(str(item.get("to", ""))))
+            if not source_id or not target_id:
+                continue
+
+            relation_type = str(item.get("type", "")).strip().lower()
+            if relation_type not in allowed_relationship_types:
+                relation_type = "association"
+
+            relationships.append({
+                "from": source_id,
+                "to": target_id,
+                "type": relation_type,
+                "label": str(item.get("label", "")).strip(),
+                "source_multiplicity": str(item.get("source_multiplicity", "")).strip(),
+                "target_multiplicity": str(item.get("target_multiplicity", "")).strip(),
+            })
+
+        return classes, relationships
+
+    def _attribute_record(self, field: Any) -> dict[str, Any] | None:
+        if not isinstance(field, dict):
+            return None
+        name = str(field.get("name", "")).strip()
+        if not name:
+            return None
+        return {
+            "name": self._camel(name),
+            "type": self._normalize_type(field.get("type", "String")),
+            "visibility": str(field.get("visibility", "+")).strip() or "+",
+        }
+
+    def _operation_record(self, operation: Any) -> dict[str, Any] | None:
+        if not isinstance(operation, dict):
+            return None
+        name = str(operation.get("name", "")).strip()
+        if not name:
+            return None
+        parameters = [
+            text for text in (self._parameter_text(param) for param in self._as_list(operation.get("parameters")))
+            if text
+        ]
+        return {
+            "name": name,
+            "parameters": parameters,
+            "return_type": self._normalize_type(operation.get("return_type", "void")),
+            "visibility": str(operation.get("visibility", "+")).strip() or "+",
+        }
+
+    def _parameter_text(self, parameter: Any) -> str:
+        """
+        A real agentic run showed the LLM sometimes authors a parameter as a
+        rich {"name", "type"} object rather than a plain string -- render
+        either shape as a clean "name: type" (or just "name"/"type" alone)
+        instead of a raw Python dict repr like "{'name': 'x', 'type': 'Y'}".
+        """
+        if isinstance(parameter, dict):
+            name = str(parameter.get("name", "")).strip()
+            param_type = str(parameter.get("type", "")).strip()
+            if name and param_type:
+                return f"{name}: {param_type}"
+            return name or param_type
+        return str(parameter).strip()
+
+    def _build_fallback_classes_and_relationships(
+        self,
+        srs_json: dict[str, Any],
+        sds_json: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """
+        Build classes/relationships the old way (fallback path only -- see
+        _build_from_specification for the primary, LLM-trusting path).
+
+        Every feature gets the same fixed Controller/Service/Repository/DTO
+        skeleton here, with keyword-guessed attributes when the SDS's
+        request/response models or data entities arrive as free text -- this
+        is exactly the "static/deterministic" limitation the LLM-driven path
+        exists to fix, kept only as a last resort for when the specification
+        is genuinely empty.
+        """
+
         feature_name = self._feature_name(srs_json, sds_json)
         feature_pascal = self._pascal(feature_name)
         design_views = sds_json.get("design_views", {}) if isinstance(sds_json, dict) else {}
@@ -170,6 +355,10 @@ class ArchitectureClassModeler:
                     "to": entity_id,
                     "type": "association",
                     "label": "manages",
+                    # A repository manages zero or many records of an entity --
+                    # a safe, standard default cardinality, not a guess.
+                    "source_multiplicity": "1",
+                    "target_multiplicity": "0..*",
                 })
 
         if self._needs_security_provider(srs_json):
@@ -191,23 +380,7 @@ class ArchitectureClassModeler:
                 "label": "generates",
             })
 
-        classes = self._dedupe_classes(classes)
-        relationships = self._filter_relationships(relationships, classes)
-
-        return {
-            "diagram_title": f"{feature_name} Class Diagram",
-            "feature_name": feature_name,
-            "classes": classes,
-            "relationships": relationships,
-            "traceability": self._build_traceability(classes, relationships),
-            "rules_applied": [
-                "Classes are derived from SDS interface, logical, and data views.",
-                "DTO classes come from request and response models.",
-                "Entity classes come from SDS data entities or SRS data requirements.",
-                "Controller, service, and repository classes represent feature-level MVC/design responsibilities.",
-                "NFRs, risks, constraints, and architecture notes are not generated as classes.",
-            ],
-        }
+        return classes, relationships
 
     # ------------------------------------------------------------------
     # Class construction helpers
@@ -227,7 +400,12 @@ class ArchitectureClassModeler:
                 "return_type": "Response",
                 "visibility": "+",
             })
-        return operations
+        # A real run surfaced design_views.interface_view.api_endpoints
+        # containing the exact same endpoint as two separate dict entries
+        # (an upstream architecture-plan data-quality issue) -- dedupe here
+        # the same way _service_operations already dedupes its own result,
+        # so a duplicate endpoint entry doesn't produce a duplicate operation.
+        return self._dedupe_operations(operations)
 
     def _service_operations(self, requirements: list[Any], feature_name: str) -> list[dict[str, Any]]:
         operations: list[dict[str, Any]] = []
