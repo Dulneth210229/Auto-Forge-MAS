@@ -1,0 +1,32 @@
+{
+  "project_id": "proj_53284a63",
+  "feature_id": "feature_5521adbd",
+  "summary": {
+    "critical": 0,
+    "high": 1,
+    "medium": 1,
+    "low": 0,
+    "total_findings": 2
+  },
+  "status": "WARN",
+  "findings": [
+    {
+      "title": "Missing Input Validation",
+      "description": "The API endpoint /api/health does not validate any input, which could lead to potential security issues.",
+      "severity": "Medium",
+      "line": 15,
+      "cwe": "",
+      "recommendation": "Implement input validation for all API endpoints.",
+      "confidence": 0.9
+    },
+    {
+      "title": "Hardcoded Secrets",
+      "description": "MONGODB_URI is hardcoded in the source code.",
+      "severity": "High",
+      "line": 6,
+      "cwe": "CWE-259: Use of Hard-Coded Password",
+      "recommendation": "Use environment variables or a secure configuration file to store sensitive data.",
+      "confidence": 1.0
+    }
+  ]
+}

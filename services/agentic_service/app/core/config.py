@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     # via init_chat_model. Kept separate from DEFAULT_LLM_MODEL because the one-shot
     # prose-generation agents (Requirement/Domain/Architecture/UI-UX) and the agentic
     # coding loop have different model-quality tradeoffs.
-    AGENTIC_MODEL_OVERRIDE: str = "qwen3-coder:latest"
+    AGENTIC_MODEL_OVERRIDE: str = "llama3:latest"
 
     # Ollama's own server-side default context window is much smaller than most
     # models' real capability and gets silently exceeded by tool results containing

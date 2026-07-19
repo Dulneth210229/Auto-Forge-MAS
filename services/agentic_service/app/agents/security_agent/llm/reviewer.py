@@ -1,7 +1,8 @@
 """
 LLM Reviewer.
 
-Performs LLM-assisted secure code review.
+Performs LLM-assisted secure code review using the shared
+Agentic Chat Model (LangChain).
 """
 
 from __future__ import annotations
@@ -9,20 +10,22 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from langchain_core.messages import HumanMessage
+
 from app.agents.security_agent.prompt import SecurityPromptBuilder
+from app.providers.agentic_model_factory import get_agentic_chat_model
 
 
 class LLMReviewer:
     """
     Performs LLM-assisted security review.
 
-    The reviewer is independent from any specific provider.
-    It works with the existing provider abstraction
-    (Ollama, OpenAI, Anthropic, etc.).
+    Uses the shared Agentic Chat Model so the Security Agent
+    follows the same LLM architecture as the Coder Agent.
     """
 
-    def __init__(self, llm_provider):
-        self.llm_provider = llm_provider
+    def __init__(self):
+        self.chat_model = get_agentic_chat_model()
 
     async def review(self, file_path: Path) -> list[dict]:
         """
@@ -49,7 +52,42 @@ class LLMReviewer:
         )
 
         try:
-            response = await self.llm_provider.generate(prompt)
+            response = await self.chat_model.ainvoke(
+                [
+                    HumanMessage(content=prompt)
+                ]
+            )
+
+            content = response.content
+
+            # Some providers may return a list of content blocks.
+            if isinstance(content, list):
+                content = "".join(
+                    block.get("text", "")
+                    if isinstance(block, dict)
+                    else str(block)
+                    for block in content
+                )
+
+            data = json.loads(content)
+
+            if isinstance(data, dict):
+                return data.get("findings", [])
+
+            return []
+
+        except json.JSONDecodeError:
+            return [
+                {
+                    "title": "Invalid LLM Response",
+                    "description": "The LLM returned invalid JSON.",
+                    "severity": "Low",
+                    "line": 0,
+                    "cwe": "N/A",
+                    "recommendation": "Adjust the prompt so the model returns valid JSON.",
+                }
+            ]
+
         except Exception as ex:
             return [
                 {
@@ -58,27 +96,6 @@ class LLMReviewer:
                     "severity": "Low",
                     "line": 0,
                     "cwe": "N/A",
-                    "recommendation": "Check the configured LLM provider.",
-                }
-            ]
-
-        try:
-            data = json.loads(response)
-
-            if isinstance(data, dict):
-                return data.get("findings", [])
-
-            return []
-
-        except Exception:
-
-            return [
-                {
-                    "title": "Invalid LLM Response",
-                    "description": "The LLM returned invalid JSON.",
-                    "severity": "Low",
-                    "line": 0,
-                    "cwe": "N/A",
-                    "recommendation": "Adjust the prompt or provider output format.",
+                    "recommendation": "Check the configured LLM provider or model.",
                 }
             ]

@@ -25,7 +25,6 @@ from app.schemas.agent_schema import AgentRunResponse
 from app.schemas.security_schema import SecurityAgentRunRequest
 from app.services.artifact_service import artifact_service
 from app.services.in_memory_store import store
-from app.services.llm_provider_service import llm_provider_service
 from app.services.workspace_service import workspace_service
 from app.utils.logger import get_logger
 
@@ -103,19 +102,19 @@ class SecurityAgent:
             workspace_path,
         )
 
-        try:
-            provider = llm_provider_service.get_provider()
-        except Exception as exc:
-            logger.warning(
-                "Security LLM provider unavailable: %s",
-                exc,
-            )
-            provider = None
-
+        # ---------------------------------
+        # LLM Reviewer Initialization (Updated)
+        # ---------------------------------
         llm_reviewer = None
 
-        if request.enable_llm_review and provider is not None:
-            llm_reviewer = LLMReviewer(provider)
+        if request.enable_llm_review:
+            try:
+                llm_reviewer = LLMReviewer()
+            except Exception as exc:
+                logger.warning(
+                    "Unable to initialize LLM Reviewer: %s",
+                    exc,
+                )
 
         findings = await self._run_security_analysis(
             workspace_path=workspace_path,
@@ -217,7 +216,6 @@ class SecurityAgent:
         # AST Scanner
         # ---------------------------------
         for file_path in source_files:
-
             if file_path.suffix.lower() == ".py":
                 findings.extend(
                     self.ast_scanner.scan(file_path)
@@ -244,7 +242,6 @@ class SecurityAgent:
         # LLM Review
         # ---------------------------------
         if llm_reviewer is not None:
-
             findings.extend(
                 await self._run_llm_review(
                     llm_reviewer,
@@ -268,20 +265,10 @@ class SecurityAgent:
     ) -> list[str]:
         """
         Save Security Agent artifacts.
-
-        Artifacts:
-        - Security Report (Markdown)
-        - Security Report (JSON)
-
-        Returns:
-            List of generated artifact IDs.
         """
 
         artifact_ids: list[str] = []
 
-        # ---------------------------------------
-        # Save Markdown artifact
-        # ---------------------------------------
         markdown_artifact = self.artifact_service.save_text_artifact(
             project=project,
             feature=feature,
@@ -299,9 +286,6 @@ class SecurityAgent:
 
         artifact_ids.append(markdown_artifact.artifact_id)
 
-        # ---------------------------------------
-        # Save JSON artifact
-        # ---------------------------------------
         json_artifact = self.artifact_service.save_json_artifact(
             project=project,
             feature=feature,
@@ -332,73 +316,31 @@ class SecurityAgent:
         version_placeholder: bool = True,
         version: int | None = None,
     ) -> str:
-        """
-        Build the Security Report filename.
-
-        Example:
-            Login
-
-            login_security_report_v1.md
-            login_security_report_v1.json
-        """
-
         import re
 
         feature_name = feature.get("feature_name", "feature")
 
         feature_slug = feature_name.lower().strip()
-
-        feature_slug = re.sub(
-            r"[^a-z0-9]+",
-            "_",
-            feature_slug,
-        )
-
+        feature_slug = re.sub(r"[^a-z0-9]+", "_", feature_slug)
         feature_slug = feature_slug.strip("_")
 
         if not feature_slug:
             feature_slug = "feature"
 
         if version_placeholder:
-            return (
-                f"{feature_slug}_security_report_"
-                f"v{{version}}.{extension}"
-            )
+            return f"{feature_slug}_security_report_v{{version}}.{extension}"
 
         if version is None:
-            raise ValueError(
-                "version is required when "
-                "version_placeholder=False"
-            )
+            raise ValueError("version is required when version_placeholder=False")
 
-        return (
-            f"{feature_slug}_security_report_"
-            f"v{version}.{extension}"
-        )
+        return f"{feature_slug}_security_report_v{version}.{extension}"
 
     def _collect_source_files(
         self,
         workspace_path: Path,
     ) -> list[Path]:
-        """
-        Collect supported source files.
 
-        Currently supported:
-
-        - Python
-        - JavaScript
-        - React JSX
-        - TypeScript
-        - TSX
-        """
-
-        supported_extensions = {
-            ".py",
-            ".js",
-            ".jsx",
-            ".ts",
-            ".tsx",
-        }
+        supported_extensions = {".py", ".js", ".jsx", ".ts", ".tsx"}
 
         ignored_directories = {
             ".git",
@@ -413,7 +355,6 @@ class SecurityAgent:
         source_files: list[Path] = []
 
         for file_path in workspace_path.rglob("*"):
-
             if not file_path.is_file():
                 continue
 
@@ -435,18 +376,11 @@ class SecurityAgent:
         llm_reviewer: LLMReviewer,
         source_files: list[Path],
     ) -> list[dict]:
-        """
-        Execute LLM-assisted security review.
-        """
 
         findings: list[dict] = []
 
         for file_path in source_files:
-
-            logger.debug(
-                "LLM reviewing %s",
-                file_path,
-            )
+            logger.debug("LLM reviewing %s", file_path)
 
             findings.extend(
                 await llm_reviewer.review(file_path)
