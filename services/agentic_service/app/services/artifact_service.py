@@ -375,5 +375,48 @@ class ArtifactService:
 
         with open(file_path, "r", encoding="utf-8") as file:
             return file.read()
+        
+    def save_code_artifact(
+        self,
+        project: dict[str, Any],
+        feature: dict[str, Any],
+        agent_name: AgentName,
+        artifact_type: ArtifactType,
+        artifact_format: ArtifactFormat,
+        filename: str,
+        code_content: str,
+        version_override: int | None = None,
+    ) -> ArtifactResponse:
+        """
+        Save a code artifact.
+
+        Supports version_override so multiple files share same version.
+        """
+
+        version = version_override or self.get_next_version(
+            feature_id=feature["feature_id"],
+            agent_name=agent_name,
+            artifact_type=artifact_type,
+        )
+
+        stage_folder = self.get_stage_folder(
+            project["project_name"],
+            feature["feature_name"],
+            agent_name,
+        )
+
+        file_path = stage_folder / filename.replace("{version}", str(version))
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(code_content, encoding="utf-8")
+
+        return self._register_artifact(
+            project_id=project["project_id"],
+            feature_id=feature["feature_id"],
+            agent_name=agent_name,
+            artifact_type=artifact_type,
+            artifact_format=artifact_format,
+            file_path=str(file_path),
+            version=version,
+        )
 
 artifact_service = ArtifactService()

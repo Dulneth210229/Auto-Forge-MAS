@@ -23,6 +23,7 @@ from app.agents.requirement_agent.agent import requirement_agent
 from app.agents.architecture_agent.agent import architecture_agent
 from app.agents.coder_agent.agent import coder_agent
 from app.agents.security_agent.agent import security_agent
+from app.agents.qa_agent.agent import qa_agent
 from app.core.enums import AgentName, ArtifactType, ArtifactFormat
 from app.schemas.agent_schema import AgentRunRequest, AgentRunResponse
 from app.services.artifact_service import artifact_service
@@ -36,6 +37,7 @@ from app.schemas.architecture_schema import (
 )
 from app.schemas.coder_schema import CoderAgentReviseRequest
 from app.schemas.security_schema import SecurityAgentRunRequest
+from app.agents.qa_agent.schemas import TestingRunRequest
 from app.services.in_memory_store import store
 from app.services.plantuml_service import plantuml_service
 import traceback
@@ -363,3 +365,42 @@ def run_deployment_agent(feature_id: str, request: AgentRunRequest):
         message="Deployment Agent endpoint is ready. Real logic will be added later.",
         artifact_ids=[]
     )
+
+@router.post("/qa/run", response_model=AgentRunResponse)
+async def run_qa_agent(
+    feature_id: str,
+    request: TestingRunRequest,
+):
+    """
+    Run the QA Agent.
+
+    This endpoint:
+    - loads the generated project workspace
+    - generates functional test cases
+    - generates QA Markdown and JSON reports
+    - saves all QA artifacts
+    """
+
+    _validate_feature(feature_id)
+
+    try:
+        return await qa_agent.run(
+            feature_id=feature_id,
+            request=request,
+        )
+
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
+
+    except Exception as error:
+        print("========== QA AGENT ERROR ==========")
+        print(traceback.format_exc())
+        print("====================================")
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"QA Agent failed: {str(error)}",
+        )

@@ -1,0 +1,19 @@
+{
+  "feature_id": "feature_a44033b8",
+  "summary": {
+    "total_tests": 5,
+    "passed": 5,
+    "failed": 0,
+    "skipped": 0,
+    "pass_rate": 100.0,
+    "status": "GENERATED"
+  },
+  "findings": [],
+  "metrics": {
+    "generated_test_files": 5,
+    "generation_time_seconds": 469.982185699977,
+    "execution_time_seconds": 0.0,
+    "total_duration_seconds": 469.982185699977
+  },
+  "generated_at": "2026-07-21T00:45:55.062522"
+}

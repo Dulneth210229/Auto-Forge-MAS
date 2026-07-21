@@ -158,17 +158,30 @@ def _security_node(state: FeaturePipelineState) -> dict[str, Any]:
 
 def _qa_node(state: FeaturePipelineState) -> dict[str, Any]:
     """
-    QA Agent call. See _security_node for why this calls the real (still
-    placeholder) agent class instead of a generic pass-through.
-    """
-    feature_id = state["feature_id"]
-    logger.info("Running QA Agent (placeholder) for feature_id=%s", feature_id)
+    Run the real QA Agent.
 
-    asyncio.run(qa_agent.run(feature_id=feature_id))
+    The QA Agent automatically generates test cases, saves all QA artifacts,
+    and returns their artifact IDs. The stage is currently auto-approved
+    (no interrupt gate), but this node is ready to become a gated stage
+    once QA outputs require human review.
+    """
+
+    feature_id = state["feature_id"]
+
+    logger.info(
+        "Running QA Agent for feature_id=%s",
+        feature_id,
+    )
+
+    output = asyncio.run(
+        qa_agent.run(
+            feature_id=feature_id,
+        )
+    )
 
     return {
         "last_agent": "qa",
-        "last_artifact_ids": [],
+        "last_artifact_ids": output.artifact_ids,
         "human_comment": None,
     }
 
