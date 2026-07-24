@@ -45,10 +45,11 @@ class TestGenerator:
     - Collect source files
     - Generate tests using the LLM
     - Validate generated tests
+    - Save validated tests into workspace/generated_tests
     - Return generated test results
 
-    Saving generated tests is handled by the QA Agent through
-    the ArtifactService.
+    Saving generated tests as project artifacts is handled
+    by the QA Agent through the ArtifactService.
     """
 
     def __init__(self):
@@ -96,6 +97,26 @@ class TestGenerator:
         return source_files
 
     # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_test_filename(
+        source_file: Path,
+    ) -> str:
+        """
+        Build the generated test filename according
+        to the source language.
+        """
+
+        extension = source_file.suffix.lower()
+
+        if extension == ".py":
+            return f"test_{source_file.stem}.py"
+
+        return f"{source_file.stem}.test{extension}"
+
+    # ------------------------------------------------------------------
     # Generate tests
     # ------------------------------------------------------------------
 
@@ -104,21 +125,33 @@ class TestGenerator:
         workspace: Path,
     ) -> List[GeneratedTestFile]:
         """
-        Generate and validate test code for every supported source file.
-
-        This method does NOT save files.
-        The QA Agent is responsible for artifact creation.
+        Generate, validate and save test code for every supported source file.
         """
 
         generated_files: List[GeneratedTestFile] = []
 
         source_files = self.collect_source_files(workspace)
 
+        generated_tests_dir = workspace / "generated_tests"
+        generated_tests_dir.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        logger.info(
+            "Generated tests directory: %s",
+            generated_tests_dir,
+        )
+
         for source_file in source_files:
 
             logger.info(
                 "Generating tests for %s",
                 source_file,
+            )
+
+            test_filename = self._build_test_filename(
+                source_file
             )
 
             try:
@@ -129,12 +162,14 @@ class TestGenerator:
                 )
 
                 generated_test = await self.llm_generator.generate_tests(
-                    source_code
+                    source_code=source_code,
+                    file_extension=source_file.suffix,
                 )
 
                 validation = test_validator.validate(
-                    filename=f"test_{source_file.stem}.py",
+                    filename=test_filename,
                     code=generated_test,
+                    file_extension=source_file.suffix,
                 )
 
                 # ------------------------------------------------------
@@ -157,7 +192,7 @@ class TestGenerator:
                     generated_files.append(
                         GeneratedTestFile(
                             source_file=str(source_file),
-                            test_file=f"test_{source_file.stem}.py",
+                            test_file=test_filename,
                             generated_code=None,
                             status="FAILED",
                             error="; ".join(
@@ -184,13 +219,29 @@ class TestGenerator:
                     )
 
                 # ------------------------------------------------------
+                # Save generated test
+                # ------------------------------------------------------
+
+                output_file = generated_tests_dir / test_filename
+
+                output_file.write_text(
+                    generated_test,
+                    encoding="utf-8",
+                )
+
+                logger.info(
+                    "Saved generated test: %s",
+                    output_file,
+                )
+
+                # ------------------------------------------------------
                 # Validation succeeded
                 # ------------------------------------------------------
 
                 generated_files.append(
                     GeneratedTestFile(
                         source_file=str(source_file),
-                        test_file=f"test_{source_file.stem}.py",
+                        test_file=test_filename,
                         generated_code=generated_test,
                         status="SUCCESS",
                         validation_score=validation.score,
@@ -209,7 +260,7 @@ class TestGenerator:
                 generated_files.append(
                     GeneratedTestFile(
                         source_file=str(source_file),
-                        test_file=f"test_{source_file.stem}.py",
+                        test_file=test_filename,
                         generated_code=None,
                         status="FAILED",
                         error=str(exc),

@@ -11,9 +11,9 @@
   "findings": [],
   "metrics": {
     "generated_test_files": 5,
-    "generation_time_seconds": 469.982185699977,
+    "generation_time_seconds": 323.7536583999172,
     "execution_time_seconds": 0.0,
-    "total_duration_seconds": 469.982185699977
+    "total_duration_seconds": 323.7536583999172
   },
-  "generated_at": "2026-07-21T00:45:55.062522"
+  "generated_at": "2026-07-24T23:26:36.067701"
 }

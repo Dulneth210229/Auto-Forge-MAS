@@ -2,6 +2,8 @@
 LLM-based functional test generator for the QA Agent.
 """
 
+from __future__ import annotations
+
 import logging
 
 from langchain_core.messages import HumanMessage
@@ -14,28 +16,41 @@ logger = logging.getLogger(__name__)
 
 class LLMTestGenerator:
     """
-    Uses the configured LLM to generate functional pytest test cases
-    from application source code.
+    Uses the configured LLM to generate functional tests
+    for different source code languages.
     """
 
     def __init__(self):
         self.chat_model = get_agentic_chat_model()
 
-    async def generate_tests(self, source_code: str) -> str:
+    async def generate_tests(
+        self,
+        source_code: str,
+        file_extension: str,
+    ) -> str:
         """
-        Generate pytest test cases from source code.
+        Generate functional test cases.
 
         Args:
             source_code: Source code to analyse.
+            file_extension: Extension of the source file.
 
         Returns:
-            Executable pytest code.
+            Executable test code.
         """
 
-        logger.info("Generating functional tests using the LLM.")
+        framework = self._get_test_framework(file_extension)
+
+        logger.info(
+            "Generating %s tests for %s files.",
+            framework,
+            file_extension,
+        )
 
         prompt = FUNCTIONAL_TEST_PROMPT.format(
-            source_code=source_code
+            framework=framework,
+            language=file_extension,
+            source_code=source_code,
         )
 
         try:
@@ -44,12 +59,15 @@ class LLMTestGenerator:
                 [HumanMessage(content=prompt)]
             )
 
-            if hasattr(response, "content"):
-                generated_code = response.content
-            else:
-                generated_code = str(response)
+            generated_code = (
+                response.content
+                if hasattr(response, "content")
+                else str(response)
+            )
 
-            generated_code = self._clean_response(generated_code)
+            generated_code = self._clean_response(
+                generated_code
+            )
 
             if not generated_code.strip():
                 raise RuntimeError(
@@ -57,7 +75,8 @@ class LLMTestGenerator:
                 )
 
             logger.info(
-                "Successfully generated pytest test cases."
+                "Successfully generated %s test cases.",
+                framework,
             )
 
             return generated_code
@@ -65,7 +84,7 @@ class LLMTestGenerator:
         except Exception as exc:
 
             logger.exception(
-                "Failed to generate functional tests."
+                "Failed generating functional tests."
             )
 
             raise RuntimeError(
@@ -73,27 +92,50 @@ class LLMTestGenerator:
             ) from exc
 
     @staticmethod
-    def _clean_response(response: str) -> str:
+    def _get_test_framework(
+        file_extension: str,
+    ) -> str:
+        """
+        Determine the appropriate testing framework.
+        """
+
+        extension = file_extension.lower()
+
+        mapping = {
+            ".py": "pytest",
+            ".js": "Jest",
+            ".jsx": "React Testing Library with Jest",
+            ".ts": "Jest",
+            ".tsx": "React Testing Library with Jest",
+        }
+
+        return mapping.get(
+            extension,
+            "pytest",
+        )
+
+    @staticmethod
+    def _clean_response(
+        response: str,
+    ) -> str:
         """
         Remove markdown formatting returned by the LLM.
-
-        Args:
-            response: Raw LLM response.
-
-        Returns:
-            Clean executable Python code.
         """
 
         response = response.strip()
 
-        response = response.replace(
+        replacements = [
             "```python",
-            ""
-        )
-
-        response = response.replace(
+            "```javascript",
+            "```typescript",
+            "```jsx",
+            "```tsx",
+            "```js",
+            "```ts",
             "```",
-            ""
-        )
+        ]
+
+        for item in replacements:
+            response = response.replace(item, "")
 
         return response.strip()
