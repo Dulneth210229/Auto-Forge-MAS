@@ -3,7 +3,7 @@ QA Agent request, response, and report schemas.
 """
 
 from datetime import datetime
-from typing import List, Optional
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 # Request Schema
 # ------------------------------------------------------------------
 
+
 class TestingRunRequest(BaseModel):
     """
     Request payload for running the QA Agent.
@@ -19,28 +20,57 @@ class TestingRunRequest(BaseModel):
 
     enable_llm_generation: bool = Field(
         default=True,
-        description="Generate tests using the configured LLM."
+        description="Generate tests using the configured LLM.",
     )
 
     enable_regression: bool = Field(
         default=False,
-        description="Generate regression test cases."
+        description="Generate regression test cases.",
     )
 
     enable_security_validation: bool = Field(
         default=False,
-        description="Generate security validation test cases."
+        description="Generate security validation test cases.",
     )
 
     human_comment: str | None = Field(
         default=None,
-        example="Generate comprehensive functional test cases."
+        description="Optional human instructions for the QA Agent.",
+        examples=["Generate comprehensive functional test cases."],
+    )
+
+
+# ------------------------------------------------------------------
+# Validation Result
+# ------------------------------------------------------------------
+
+
+class ValidationResult(BaseModel):
+    """
+    Result returned by the Test Validator.
+    """
+
+    valid: bool = True
+
+    score: int = Field(
+        default=100,
+        ge=0,
+        le=100,
+    )
+
+    validation_errors: list[str] = Field(
+        default_factory=list,
+    )
+
+    validation_warnings: list[str] = Field(
+        default_factory=list,
     )
 
 
 # ------------------------------------------------------------------
 # Generated Test File
 # ------------------------------------------------------------------
+
 
 class GeneratedTestFile(BaseModel):
     """
@@ -53,14 +83,58 @@ class GeneratedTestFile(BaseModel):
 
     generated_code: str | None = None
 
-    status: str
+    status: Literal["SUCCESS", "FAILED"]
 
-    error: Optional[str] = None
+    error: str | None = None
+
+    validation_score: int = Field(
+        default=100,
+        ge=0,
+        le=100,
+    )
+
+    validation_errors: list[str] = Field(
+        default_factory=list,
+    )
+
+    validation_warnings: list[str] = Field(
+        default_factory=list,
+    )
+
+
+# ------------------------------------------------------------------
+# Execution Result
+# ------------------------------------------------------------------
+
+
+class ExecutionResult(BaseModel):
+    """
+    Result of executing generated test cases.
+    """
+
+    success: bool = False
+
+    exit_code: int = -1
+
+    total_tests: int = 0
+
+    passed: int = 0
+
+    failed: int = 0
+
+    skipped: int = 0
+
+    duration_seconds: float = 0.0
+
+    stdout: str = ""
+
+    stderr: str = ""
 
 
 # ------------------------------------------------------------------
 # Finding Schema
 # ------------------------------------------------------------------
+
 
 class QAFinding(BaseModel):
     """
@@ -71,13 +145,16 @@ class QAFinding(BaseModel):
 
     description: str
 
-    severity: str = Field(
-        description="Low | Medium | High | Critical"
-    )
+    severity: Literal[
+        "Low",
+        "Medium",
+        "High",
+        "Critical",
+    ]
 
-    file: Optional[str] = None
+    file: str | None = None
 
-    line: Optional[int] = None
+    line: int | None = None
 
     recommendation: str
 
@@ -92,6 +169,7 @@ class QAFinding(BaseModel):
 # Summary Schema
 # ------------------------------------------------------------------
 
+
 class QASummary(BaseModel):
     """
     Overall QA summary.
@@ -105,14 +183,23 @@ class QASummary(BaseModel):
 
     skipped: int = 0
 
-    pass_rate: float = 0.0
+    pass_rate: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=100.0,
+    )
 
-    status: str = "GENERATED"
+    status: Literal[
+        "GENERATED",
+        "PASSED",
+        "FAILED",
+    ] = "GENERATED"
 
 
 # ------------------------------------------------------------------
 # Metrics
 # ------------------------------------------------------------------
+
 
 class QAMetrics(BaseModel):
     """
@@ -132,6 +219,7 @@ class QAMetrics(BaseModel):
 # QA Report
 # ------------------------------------------------------------------
 
+
 class QAReport(BaseModel):
     """
     Final QA report.
@@ -141,36 +229,12 @@ class QAReport(BaseModel):
 
     summary: QASummary
 
-    findings: List[QAFinding] = Field(default_factory=list)
+    findings: list[QAFinding] = Field(
+        default_factory=list,
+    )
 
     metrics: QAMetrics
 
     generated_at: datetime = Field(
-        default_factory=datetime.utcnow
+        default_factory=datetime.utcnow,
     )
-
-
-# ------------------------------------------------------------------
-# API Response
-# ------------------------------------------------------------------
-
-# class TestingRunResponse(BaseModel):
-#     """
-#     Response returned after QA Agent execution.
-#     """
-
-#     feature_id: str
-
-#     status: str
-
-#     json_report: Optional[str] = None
-
-#     markdown_report: Optional[str] = None
-
-#     generated_tests_path: str
-
-#     generated_files: List[GeneratedTestFile] = Field(
-#         default_factory=list
-#     )
-
-#     summary: QASummary

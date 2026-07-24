@@ -10,6 +10,7 @@ from typing import List
 
 from app.agents.qa_agent.llm_generator import LLMTestGenerator
 from app.agents.qa_agent.schemas import GeneratedTestFile
+from app.agents.qa_agent.validator import test_validator
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +41,11 @@ class TestGenerator:
     """
     Generates functional test code for a project workspace.
 
-    This class is only responsible for:
-    - Collecting source files
-    - Calling the LLM
-    - Returning generated test code
+    Responsibilities:
+    - Collect source files
+    - Generate tests using the LLM
+    - Validate generated tests
+    - Return generated test results
 
     Saving generated tests is handled by the QA Agent through
     the ArtifactService.
@@ -102,11 +104,10 @@ class TestGenerator:
         workspace: Path,
     ) -> List[GeneratedTestFile]:
         """
-        Generate test code for every supported source file.
+        Generate and validate test code for every supported source file.
 
-        This method DOES NOT save files.
-        The generated code is returned to the QA Agent,
-        which is responsible for artifact creation.
+        This method does NOT save files.
+        The QA Agent is responsible for artifact creation.
         """
 
         generated_files: List[GeneratedTestFile] = []
@@ -127,11 +128,64 @@ class TestGenerator:
                     errors="ignore",
                 )
 
-                generated_test = (
-                    await self.llm_generator.generate_tests(
-                        source_code
-                    )
+                generated_test = await self.llm_generator.generate_tests(
+                    source_code
                 )
+
+                validation = test_validator.validate(
+                    filename=f"test_{source_file.stem}.py",
+                    code=generated_test,
+                )
+
+                # ------------------------------------------------------
+                # Validation failed
+                # ------------------------------------------------------
+
+                if not validation.valid:
+
+                    logger.warning(
+                        "Generated test failed validation for %s",
+                        source_file,
+                    )
+
+                    for error in validation.validation_errors:
+                        logger.warning(
+                            "Validation Error: %s",
+                            error,
+                        )
+
+                    generated_files.append(
+                        GeneratedTestFile(
+                            source_file=str(source_file),
+                            test_file=f"test_{source_file.stem}.py",
+                            generated_code=None,
+                            status="FAILED",
+                            error="; ".join(
+                                validation.validation_errors
+                            ),
+                            validation_score=validation.score,
+                            validation_errors=validation.validation_errors,
+                            validation_warnings=validation.validation_warnings,
+                        )
+                    )
+
+                    continue
+
+                # ------------------------------------------------------
+                # Validation warnings
+                # ------------------------------------------------------
+
+                for warning in validation.validation_warnings:
+
+                    logger.warning(
+                        "Validation Warning (%s): %s",
+                        source_file.name,
+                        warning,
+                    )
+
+                # ------------------------------------------------------
+                # Validation succeeded
+                # ------------------------------------------------------
 
                 generated_files.append(
                     GeneratedTestFile(
@@ -139,6 +193,9 @@ class TestGenerator:
                         test_file=f"test_{source_file.stem}.py",
                         generated_code=generated_test,
                         status="SUCCESS",
+                        validation_score=validation.score,
+                        validation_errors=validation.validation_errors,
+                        validation_warnings=validation.validation_warnings,
                     )
                 )
 
@@ -152,10 +209,13 @@ class TestGenerator:
                 generated_files.append(
                     GeneratedTestFile(
                         source_file=str(source_file),
-                        test_file="",
+                        test_file=f"test_{source_file.stem}.py",
                         generated_code=None,
                         status="FAILED",
                         error=str(exc),
+                        validation_score=0,
+                        validation_errors=[str(exc)],
+                        validation_warnings=[],
                     )
                 )
 
