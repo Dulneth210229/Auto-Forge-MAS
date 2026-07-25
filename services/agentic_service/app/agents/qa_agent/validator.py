@@ -8,7 +8,7 @@ Validation checks:
 - Empty file
 - Python syntax (Python only)
 - Test structure (Python only)
-- File naming convention
+- File naming convention (language-aware)
 - Duplicate test functions (Python only)
 """
 
@@ -29,6 +29,13 @@ class TestValidator:
     """
 
     PYTHON_EXTENSIONS = {".py"}
+
+    JS_TS_EXTENSIONS = {
+        ".js",
+        ".jsx",
+        ".ts",
+        ".tsx",
+    }
 
     def validate(
         self,
@@ -53,8 +60,10 @@ class TestValidator:
             )
             return result
 
+        # ✅ Updated call (now passes file_extension)
         self._validate_filename(
             filename=filename,
+            file_extension=file_extension,
             result=result,
         )
 
@@ -176,17 +185,54 @@ class TestValidator:
     def _validate_filename(
         self,
         filename: str,
+        file_extension: str,
         result: ValidationResult,
     ) -> None:
         """
-        Ensure test naming convention.
+        Ensure test naming convention based on language.
         """
 
-        if not filename.startswith("test_"):
+        ext = file_extension.lower()
 
-            self._add_warning(
-                result,
-                "Filename should start with 'test_'.",
+        # ---------------------------
+        # Python (pytest)
+        # ---------------------------
+        if ext == ".py":
+
+            if not filename.startswith("test_"):
+
+                self._add_warning(
+                    result,
+                    "Python test filenames should start with 'test_'.",
+                )
+
+        # ---------------------------
+        # JavaScript / TypeScript (Jest)
+        # ---------------------------
+        elif ext in self.JS_TS_EXTENSIONS:
+
+            valid = (
+                filename.endswith(".test.js")
+                or filename.endswith(".test.jsx")
+                or filename.endswith(".test.ts")
+                or filename.endswith(".test.tsx")
+            )
+
+            if not valid:
+
+                self._add_warning(
+                    result,
+                    "Jest test filenames should end with "
+                    "'.test.js', '.test.jsx', '.test.ts', or '.test.tsx'.",
+                )
+
+        # ---------------------------
+        # Other languages (no strict rule yet)
+        # ---------------------------
+        else:
+            logger.debug(
+                "No filename convention enforced for extension: %s",
+                ext,
             )
 
     def _validate_pytest_structure(

@@ -1,0 +1,29 @@
+{
+  "feature_id": "feature_a44033b8",
+  "summary": {
+    "total_tests": 0,
+    "passed": 0,
+    "failed": 0,
+    "skipped": 0,
+    "pass_rate": 0.0,
+    "status": "GENERATED"
+  },
+  "findings": [
+    {
+      "title": "Generated Tests Not Executed",
+      "description": "Test files were successfully generated, but no supported execution framework was available.",
+      "severity": "Low",
+      "file": null,
+      "line": null,
+      "recommendation": "Execute the generated tests using the appropriate test framework (pytest or Jest).",
+      "confidence": 1.0
+    }
+  ],
+  "metrics": {
+    "generated_test_files": 5,
+    "generation_time_seconds": 391.4934644000605,
+    "execution_time_seconds": 4.0996542000211775,
+    "total_duration_seconds": 395.59311860008165
+  },
+  "generated_at": "2026-07-25T02:00:06.057153"
+}

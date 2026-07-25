@@ -10,12 +10,12 @@ from pathlib import Path
 
 from fastapi.encoders import jsonable_encoder
 
+from app.agents.qa_agent.evaluator import QAEvaluator
+from app.agents.qa_agent.executor import TestExecutor
 from app.agents.qa_agent.generator import TestGenerator
 from app.agents.qa_agent.markdown_builder import QAMarkdownBuilder
 from app.agents.qa_agent.schemas import (
-    QAMetrics,
     QAReport,
-    QASummary,
     TestingRunRequest,
 )
 from app.core.enums import (
@@ -42,14 +42,17 @@ class QAAgent:
     1. Load feature/project
     2. Load project workspace
     3. Generate functional tests
-    4. Save generated test files
-    5. Generate QA report
-    6. Save Markdown & JSON reports
-    7. Return AgentRunResponse
+    4. Execute generated tests
+    5. Evaluate execution results
+    6. Save generated tests
+    7. Save Markdown & JSON reports
+    8. Return AgentRunResponse
     """
 
     def __init__(self):
         self.generator = TestGenerator()
+        self.executor = TestExecutor()
+        self.evaluator = QAEvaluator()
         self.markdown_builder = QAMarkdownBuilder()
 
     async def run(
@@ -58,125 +61,170 @@ class QAAgent:
         request: TestingRunRequest | None = None,
     ) -> AgentRunResponse:
 
-        logger.info("QA Agent started for feature_id=%s", feature_id)
+        logger.info(
+            "QA Agent started for feature_id=%s",
+            feature_id,
+        )
 
         request = request or TestingRunRequest()
 
         feature = store.features.get(feature_id)
+
         if not feature:
             raise ValueError("Feature not found.")
 
-        project = store.projects.get(feature["project_id"])
+        project = store.projects.get(
+            feature["project_id"]
+        )
+
         if not project:
-            raise ValueError("Project not found for this feature.")
+            raise ValueError(
+                "Project not found for this feature."
+            )
 
         feature["feature_status"] = FeatureStatus.IN_PROGRESS
         feature["current_agent"] = AgentName.QA
 
-        repo = workspace_service.ensure_project_repo(
-            project["project_id"]
-        )
+        try:
 
-        workspace = Path(repo.working_tree_dir)
-
-        if not workspace.exists():
-            raise FileNotFoundError(
-                f"Workspace not found: {workspace}"
+            repo = workspace_service.ensure_project_repo(
+                project["project_id"]
             )
 
-        start_time = time.perf_counter()
+            workspace = Path(repo.working_tree_dir)
 
-        logger.info("Generating QA test cases...")
+            if not workspace.exists():
+                raise FileNotFoundError(
+                    f"Workspace not found: {workspace}"
+                )
 
-        generated_files = await self.generator.generate_tests(
-            workspace=workspace,
-        )
+            #
+            # ----------------------------------------------------------
+            # Generate Tests
+            # ----------------------------------------------------------
+            #
 
-        passed = sum(
-            1 for file in generated_files if file.status == "SUCCESS"
-        )
+            logger.info("Generating QA test cases...")
 
-        failed = sum(
-            1 for file in generated_files if file.status == "FAILED"
-        )
+            generation_start = time.perf_counter()
 
-        total = len(generated_files)
+            (
+                generated_files,
+                generated_tests_dir,
+            ) = await self.generator.generate_tests(
+                workspace=workspace,
+            )
 
-        pass_rate = (passed / total) * 100 if total else 0.0
+            generation_time = (
+                time.perf_counter()
+                - generation_start
+            )
 
-        summary = QASummary(
-            total_tests=total,
-            passed=passed,
-            failed=failed,
-            skipped=0,
-            pass_rate=pass_rate,
-            status="GENERATED" if failed == 0 else "PARTIAL_SUCCESS",
-        )
+            #
+            # ----------------------------------------------------------
+            # Execute Tests
+            # ----------------------------------------------------------
+            #
 
-        duration = time.perf_counter() - start_time
+            execution_result = self.executor.execute(
+                tests_directory=generated_tests_dir,
+            )
 
-        metrics = QAMetrics(
-            generated_test_files=passed,
-            generation_time_seconds=duration,
-            execution_time_seconds=0.0,
-            total_duration_seconds=duration,
-        )
+            #
+            # ----------------------------------------------------------
+            # Evaluate Results
+            # ----------------------------------------------------------
+            #
 
-        report = QAReport(
-            feature_id=feature_id,
-            summary=summary,
-            findings=[],
-            metrics=metrics,
-        )
-
-        artifact_ids: list[str] = []
-
-        artifact_ids.extend(
-            self._save_generated_tests(
-                project=project,
-                feature=feature,
+            report = self.evaluator.evaluate(
+                feature_id=feature_id,
                 generated_files=generated_files,
+                execution_result=execution_result,
+                generation_time=generation_time,
             )
-        )
 
-        markdown = self.markdown_builder.build(
-            project_name=project["project_name"],
-            feature_name=feature["feature_name"],
-            report=report,
-        )
+            #
+            # ----------------------------------------------------------
+            # Save Artifacts
+            # ----------------------------------------------------------
+            #
 
-        artifact_ids.extend(
-            self._save_reports(
-                project=project,
-                feature=feature,
+            artifact_ids: list[str] = []
+
+            artifact_ids.extend(
+                self._save_generated_tests(
+                    project=project,
+                    feature=feature,
+                    generated_files=generated_files,
+                    generated_tests_dir=generated_tests_dir,
+                )
+            )
+
+            markdown = self.markdown_builder.build(
+                project_name=project["project_name"],
+                feature_name=feature["feature_name"],
                 report=report,
-                markdown=markdown,
             )
-        )
 
-        feature["feature_status"] = FeatureStatus.COMPLETED
-        feature["current_agent"] = None
+            artifact_ids.extend(
+                self._save_reports(
+                    project=project,
+                    feature=feature,
+                    report=report,
+                    markdown=markdown,
+                )
+            )
 
-        logger.info(
-            "QA Agent completed successfully. Generated=%d Passed=%d Failed=%d",
-            total,
-            passed,
-            failed,
-        )
+            #
+            # ----------------------------------------------------------
+            # Finish Success
+            # ----------------------------------------------------------
+            #
 
-        return AgentRunResponse(
-            feature_id=feature_id,
-            agent_name=AgentName.QA,
-            status="completed",
-            message="QA Agent completed successfully.",
-            artifact_ids=artifact_ids,
-        )
+            feature["feature_status"] = FeatureStatus.COMPLETED
+
+            logger.info(
+                "QA Agent completed successfully. "
+                "Generated=%d Executed=%d Passed=%d Failed=%d",
+                len(generated_files),
+                execution_result.total_tests,
+                execution_result.passed,
+                execution_result.failed,
+            )
+
+            return AgentRunResponse(
+                feature_id=feature_id,
+                agent_name=AgentName.QA,
+                status="completed",
+                message="QA Agent completed successfully.",
+                artifact_ids=artifact_ids,
+            )
+
+        except Exception as exc:
+
+            logger.exception(
+                "QA Agent failed for feature_id=%s",
+                feature_id,
+            )
+
+            feature["feature_status"] = FeatureStatus.FAILED
+
+            raise
+
+        finally:
+            # Always reset agent
+            feature["current_agent"] = None
+
+    # ------------------------------------------------------------------
+    # Save Generated Test Files
+    # ------------------------------------------------------------------
 
     def _save_generated_tests(
         self,
         project: dict,
         feature: dict,
         generated_files: list,
+        generated_tests_dir: Path,  # kept for future use
     ) -> list[str]:
 
         artifact_ids: list[str] = []
@@ -188,6 +236,7 @@ class QAAgent:
         )
 
         for generated_file in generated_files:
+
             if (
                 generated_file.status != "SUCCESS"
                 or not generated_file.generated_code
@@ -205,9 +254,15 @@ class QAAgent:
                 version_override=version,
             )
 
-            artifact_ids.append(artifact.artifact_id)
+            artifact_ids.append(
+                artifact.artifact_id
+            )
 
         return artifact_ids
+
+    # ------------------------------------------------------------------
+    # Save QA Reports
+    # ------------------------------------------------------------------
 
     def _save_reports(
         self,
@@ -227,7 +282,6 @@ class QAAgent:
 
         feature_slug = self._feature_slug(feature)
 
-        # Convert every datetime/Enum/Pydantic object into JSON-safe values
         payload = jsonable_encoder(report)
 
         logger.info(
@@ -245,7 +299,9 @@ class QAAgent:
             version_override=version,
         )
 
-        artifact_ids.append(json_artifact.artifact_id)
+        artifact_ids.append(
+            json_artifact.artifact_id
+        )
 
         markdown_artifact = artifact_service.save_text_artifact(
             project=project,
@@ -258,16 +314,46 @@ class QAAgent:
             version_override=version,
         )
 
-        artifact_ids.append(markdown_artifact.artifact_id)
+        artifact_ids.append(
+            markdown_artifact.artifact_id
+        )
 
         return artifact_ids
 
-    def _feature_slug(self, feature: dict) -> str:
-        return self._slug(feature.get("feature_name", "feature"))
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
 
-    def _slug(self, value: str) -> str:
+    def _feature_slug(
+        self,
+        feature: dict,
+    ) -> str:
+        """
+        Build a slug for the current feature.
+        """
+
+        return self._slug(
+            feature.get(
+                "feature_name",
+                "feature",
+            )
+        )
+
+    def _slug(
+        self,
+        value: str,
+    ) -> str:
+        """
+        Convert text into a filesystem-safe slug.
+        """
+
         slug = value.lower().strip()
-        slug = re.sub(r"[^a-z0-9]+", "_", slug)
+        slug = re.sub(
+            r"[^a-z0-9]+",
+            "_",
+            slug,
+        )
+
         return slug.strip("_") or "item"
 
 

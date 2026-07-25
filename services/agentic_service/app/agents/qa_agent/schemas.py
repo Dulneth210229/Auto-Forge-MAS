@@ -81,9 +81,17 @@ class GeneratedTestFile(BaseModel):
 
     test_file: str
 
+    framework: Literal[
+        "pytest",
+        "jest",
+    ] | None = None
+
     generated_code: str | None = None
 
-    status: Literal["SUCCESS", "FAILED"]
+    status: Literal[
+        "SUCCESS",
+        "FAILED",
+    ]
 
     error: str | None = None
 
@@ -109,7 +117,7 @@ class GeneratedTestFile(BaseModel):
 
 class ExecutionResult(BaseModel):
     """
-    Result of executing generated test cases.
+    Aggregated result of executing generated test cases.
     """
 
     success: bool = False

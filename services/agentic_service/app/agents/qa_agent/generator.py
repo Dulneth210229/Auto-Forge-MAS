@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import List
+from typing import List, Tuple
 
 from app.agents.qa_agent.llm_generator import LLMTestGenerator
 from app.agents.qa_agent.schemas import GeneratedTestFile
@@ -116,6 +116,22 @@ class TestGenerator:
 
         return f"{source_file.stem}.test{extension}"
 
+    @staticmethod
+    def _get_framework(
+        extension: str,
+    ) -> str:
+        """
+        Determine the testing framework based on
+        the source file extension.
+        """
+
+        extension = extension.lower()
+
+        if extension == ".py":
+            return "pytest"
+
+        return "jest"
+
     # ------------------------------------------------------------------
     # Generate tests
     # ------------------------------------------------------------------
@@ -123,9 +139,14 @@ class TestGenerator:
     async def generate_tests(
         self,
         workspace: Path,
-    ) -> List[GeneratedTestFile]:
+    ) -> Tuple[List[GeneratedTestFile], Path]:
         """
         Generate, validate and save test code for every supported source file.
+
+        Returns:
+            Tuple[List[GeneratedTestFile], Path]:
+                - List of generated test results
+                - Path to generated tests directory
         """
 
         generated_files: List[GeneratedTestFile] = []
@@ -152,6 +173,10 @@ class TestGenerator:
 
             test_filename = self._build_test_filename(
                 source_file
+            )
+
+            framework = self._get_framework(
+                source_file.suffix
             )
 
             try:
@@ -193,6 +218,7 @@ class TestGenerator:
                         GeneratedTestFile(
                             source_file=str(source_file),
                             test_file=test_filename,
+                            framework=framework,
                             generated_code=None,
                             status="FAILED",
                             error="; ".join(
@@ -242,6 +268,7 @@ class TestGenerator:
                     GeneratedTestFile(
                         source_file=str(source_file),
                         test_file=test_filename,
+                        framework=framework,
                         generated_code=generated_test,
                         status="SUCCESS",
                         validation_score=validation.score,
@@ -261,6 +288,7 @@ class TestGenerator:
                     GeneratedTestFile(
                         source_file=str(source_file),
                         test_file=test_filename,
+                        framework=framework,
                         generated_code=None,
                         status="FAILED",
                         error=str(exc),
@@ -288,4 +316,7 @@ class TestGenerator:
             failure_count,
         )
 
-        return generated_files
+        return (
+            generated_files,
+            generated_tests_dir,
+        )

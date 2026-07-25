@@ -1,31 +1,30 @@
-jest
 import { start } from './app';
-import mongoose from 'mongoose';
 
 describe('App', () => {
-  describe('start function', () => {
-    it('should connect to MongoDB when MONGODB_URI is set', async () => {
-      process.env.MONGODB_URI = 'mongodb://localhost:27017/mydatabase';
-      await start();
-      expect(mongoose.connection.readyState).toBe(1);
-    });
+  it('starts with a database connection when MONGODB_URI is set', async () => {
+    process.env.MONGODB_URI = 'mongodb://localhost:27017/mydatabase';
+    await start();
+    expect(mongoose.connection.readyState).toBe(1);
+  });
 
-    it('should log error message and not connect to MongoDB when MONGODB_URI is not set', async () => {
-      delete process.env.MONGODB_URI;
-      await start();
-      expect(console.error).toHaveBeenCalledTimes(1);
-      expect(mongoose.connection.readyState).toBe(-1);
-    });
+  it('starts without a database connection when MONGODB_URI is not set', async () => {
+    delete process.env.MONGODB_URI;
+    await start();
+    expect(mongoose.connection.readyState).toBe(-1);
+  });
 
-    it('should start server on port 5000 by default', async () => {
-      await start();
-      expect(app.listen).toHaveBeenCalledWith(5000, expect.any(Function));
-    });
+  it('logs an error message when connecting to MongoDB fails', async () => {
+    const error = new Error('Mock error');
+    mongoose.connect = jest.fn(() => { throw error; });
+    await start();
+    expect(console.error).toHaveBeenCalledTimes(1);
+    expect(console.error).toHaveBeenCalledWith('Failed to connect to MongoDB:', error.message);
+  });
 
-    it('should start server on custom port when PORT is set', async () => {
-      process.env.PORT = '8080';
-      await start();
-      expect(app.listen).toHaveBeenCalledWith(8080, expect.any(Function));
-    });
+  it('logs a warning message when MONGODB_URI is not set', async () => {
+    delete process.env.MONGODB_URI;
+    await start();
+    expect(console.warn).toHaveBeenCalledTimes(1);
+    expect(console.warn).toHaveBeenCalledWith('MONGODB_URI is not set -- starting without a database connection.');
   });
 });

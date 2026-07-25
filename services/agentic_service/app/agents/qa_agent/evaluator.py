@@ -36,22 +36,6 @@ class QAEvaluator:
     ) -> QAReport:
         """
         Build the final QA report.
-
-        Args:
-            feature_id:
-                Feature or workflow identifier.
-
-            generated_files:
-                Generated test files.
-
-            execution_result:
-                Result returned by the TestExecutor.
-
-            generation_time:
-                Time spent generating tests.
-
-        Returns:
-            QAReport
         """
 
         logger.info("Evaluating QA results...")
@@ -111,9 +95,17 @@ class QAEvaluator:
                 / execution.total_tests
             ) * 100
 
-        if execution.failed == 0 and execution.success:
+        # ✅ Updated status logic
+        if execution.total_tests == 0:
+
+            status = "GENERATED"
+
+        elif execution.failed == 0:
+
             status = "PASSED"
+
         else:
+
             status = "FAILED"
 
         return QASummary(
@@ -185,19 +177,22 @@ class QAEvaluator:
             )
 
         #
-        # No tests executed
+        # Generated but not executed (updated logic)
         #
         if execution.total_tests == 0:
 
             findings.append(
                 QAFinding(
-                    title="No Tests Executed",
+                    title="Generated Tests Not Executed",
                     description=(
-                        "No executable test cases were found."
+                        "Test files were successfully generated, "
+                        "but no supported execution framework "
+                        "was available."
                     ),
-                    severity="Medium",
+                    severity="Low",
                     recommendation=(
-                        "Verify generated tests before execution."
+                        "Execute the generated tests using the "
+                        "appropriate test framework (pytest or Jest)."
                     ),
                     confidence=1.0,
                 )

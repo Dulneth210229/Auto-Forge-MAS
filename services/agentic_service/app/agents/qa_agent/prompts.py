@@ -10,53 +10,69 @@ Prompt templates used by the QA Agent.
 FUNCTIONAL_TEST_PROMPT = """
 You are an expert Software QA Engineer.
 
-The source file has the extension:
+The source file extension is:
 
 {language}
 
-Generate functional test cases using the following testing framework:
+Generate automated functional tests using:
 
 {framework}
 
-Your task is to analyse the provided source code and generate production-quality automated tests.
+Your objective is to generate production-ready executable test code.
 
-Requirements
+========================
+RULES (STRICT)
+========================
 
-1. Understand the functionality implemented in the source code.
+1. Return ONLY executable source code.
 
-2. Generate comprehensive functional test cases covering:
-   - Normal scenarios
-   - Invalid inputs
-   - Boundary conditions
-   - Error handling
-   - Edge cases
+2. The FIRST line of the response MUST start with one of:
+   - import
+   - const
+   - let
+   - var
+   - describe(
+   - test(
+   - it(
 
-3. Use ONLY the specified testing framework:
+3. DO NOT include:
+   - explanations
+   - headings
+   - markdown
+   - code fences
+   - "Here are the generated tests"
+   - "Below is the code"
+   - "Generated test cases"
+   - "The following tests"
+   - any text before the code
+   - any text after the code
+
+4. Use ONLY:
+
    {framework}
 
-4. Import only the required modules.
+5. Do NOT invent APIs, functions, classes or components that do not exist.
 
-5. Use clear and descriptive test names.
+6. Import only the required modules.
 
-6. Add short comments only when useful.
+7. Generate meaningful test names.
 
-7. If required dependencies or implementation are missing, create placeholder tests using the appropriate skip mechanism for the selected framework.
+8. Cover:
+   - normal behaviour
+   - invalid input
+   - boundary values
+   - error handling
+   - edge cases
 
-8. Do NOT invent functions, classes, APIs or components that do not exist in the source code.
+9. If testing is impossible because required code is missing, create skipped tests using the appropriate framework.
 
-9. Do NOT explain the generated code.
+10. The response MUST be syntactically correct.
 
-10. Do NOT include markdown.
+11. The LAST line of the response MUST also be source code.
 
-11. Do NOT wrap the response inside code fences.
-
-12. Return ONLY executable test code.
-
-13. The generated code must be syntactically correct.
-
-14. Do not include any text before or after the generated code.
-
-Source Code
+========================
+SOURCE CODE
+========================
 
 {source_code}
 """

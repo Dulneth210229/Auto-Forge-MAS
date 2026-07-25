@@ -5,6 +5,7 @@ LLM-based functional test generator for the QA Agent.
 from __future__ import annotations
 
 import logging
+import re
 
 from langchain_core.messages import HumanMessage
 
@@ -69,6 +70,21 @@ class LLMTestGenerator:
                 generated_code
             )
 
+            valid_prefixes = (
+                "import",
+                "const",
+                "let",
+                "var",
+                "describe",
+                "test",
+                "it",
+            )
+
+            if not generated_code.lstrip().startswith(valid_prefixes):
+                raise RuntimeError(
+                    "LLM returned non-executable test code."
+                )
+
             if not generated_code.strip():
                 raise RuntimeError(
                     "LLM returned an empty response."
@@ -115,27 +131,43 @@ class LLMTestGenerator:
         )
 
     @staticmethod
-    def _clean_response(
-        response: str,
-    ) -> str:
+    def _clean_response(response: str) -> str:
         """
-        Remove markdown formatting returned by the LLM.
+        Remove markdown and explanatory text returned by the LLM.
         """
 
         response = response.strip()
 
-        replacements = [
-            "```python",
-            "```javascript",
-            "```typescript",
-            "```jsx",
-            "```tsx",
-            "```js",
-            "```ts",
-            "```",
+        # Remove markdown fences
+        response = re.sub(r"^```[a-zA-Z]*\n?", "", response)
+        response = re.sub(r"\n?```$", "", response)
+
+        # Remove everything before the first line of code
+        start_match = re.search(
+            r"^(import\s|const\s|let\s|var\s|describe\s*\(|test\s*\(|it\s*\()",
+            response,
+            flags=re.MULTILINE,
+        )
+
+        if start_match:
+            response = response[start_match.start():]
+
+        # Remove common explanatory text appended after the code
+        end_patterns = [
+            r"\nNote that.*",
+            r"\nThe above.*",
+            r"\nThese tests.*",
+            r"\nThis test.*",
+            r"\nExplanation:.*",
+            r"\nIn summary.*",
         ]
 
-        for item in replacements:
-            response = response.replace(item, "")
+        for pattern in end_patterns:
+            response = re.sub(
+                pattern,
+                "",
+                response,
+                flags=re.DOTALL | re.IGNORECASE,
+            )
 
         return response.strip()
