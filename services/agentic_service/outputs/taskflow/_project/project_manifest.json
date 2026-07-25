@@ -1,0 +1,40 @@
+{
+  "routes": [],
+  "api_endpoints": [],
+  "models": [],
+  "shared_components": [
+    "client/src/components/NavBar.jsx",
+    "client/src/components/Footer.jsx"
+  ],
+  "features": {
+    "feature_5521adbd": {
+      "feature_name": "Task Comments",
+      "files": [
+        "client/package-lock.json",
+        "client/package.json",
+        "client/postcss.config.cjs",
+        "client/src/App.jsx",
+        "client/src/components/CommentInput.jsx",
+        "client/src/components/CommentList.jsx",
+        "client/src/components/Footer.css",
+        "client/src/components/Footer.jsx",
+        "client/src/components/NavBar.css",
+        "client/src/components/NavBar.jsx",
+        "client/src/components/TaskComments.jsx",
+        "client/src/index.css",
+        "client/src/pages/HomePage.jsx",
+        "client/src/pages/TaskDetailPage.jsx",
+        "client/src/pages/TaskflowHomePage.jsx",
+        "client/src/services/taskCommentsService.js",
+        "client/src/services/taskService.js",
+        "client/tailwind.config.js",
+        "server/package-lock.json",
+        "server/src/app.js",
+        "server/src/models/Comment.js",
+        "server/src/models/Task.js",
+        "server/src/routes/task-comments.routes.js",
+        "server/src/routes/tasks.routes.js"
+      ]
+    }
+  }
+}

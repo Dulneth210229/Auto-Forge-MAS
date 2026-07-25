@@ -125,6 +125,17 @@ class RequirementAgent:
             human_comment=request.human_comment
         )
 
+        # Compute one shared version up front so the Markdown/JSON pair are always the same
+        # version (matching _save_revised_srs_artifacts's approach below) -- artifact_service
+        # does support this via version_override; calling save_text_artifact/save_json_artifact
+        # without it (the old behavior here) let each call independently claim the next version,
+        # producing mismatched pairs like SRS_v1.md next to SRS_v2.json for the same generation.
+        version = artifact_service.get_next_version(
+            feature_id=feature["feature_id"],
+            agent_name=AgentName.REQUIREMENT,
+            artifact_type=ArtifactType.SRS
+        )
+
         # Save Markdown artifact.
         markdown_artifact = artifact_service.save_text_artifact(
             project=project,
@@ -135,16 +146,14 @@ class RequirementAgent:
             filename=self._build_feature_srs_filename(
             feature=feature,
             extension="md",
-            version_placeholder=True
+            version_placeholder=False,
+            version=version
             ),
-            content=output.srs_markdown
+            content=output.srs_markdown,
+            version_override=version
         )
 
         # Save JSON artifact.
-        # Note:
-        # If your artifact service does not support grouped versions,
-        # this may become SRS_v2.json after SRS_v1.md.
-        # That is acceptable for now because we are avoiding shared file changes.
         json_artifact = artifact_service.save_json_artifact(
             project=project,
             feature=feature,
@@ -153,9 +162,11 @@ class RequirementAgent:
             filename=self._build_feature_srs_filename(
             feature=feature,
             extension="json",
-            version_placeholder=True
+            version_placeholder=False,
+            version=version
         ),
-            data=output.srs_json
+            data=output.srs_json,
+            version_override=version
         )
 
         logger.info(
@@ -190,7 +201,7 @@ class RequirementAgent:
         - Convert final JSON to Markdown.
         """
 
-        provider = llm_provider_service.get_provider()
+        provider = llm_provider_service.get_provider(agent_name=AgentName.REQUIREMENT.value)
 
         prompt = build_requirement_user_prompt(
             project=project,
@@ -604,7 +615,7 @@ class RequirementAgent:
         If LLM revision fails, fallback revision is created safely.
         """
 
-        provider = llm_provider_service.get_provider()
+        provider = llm_provider_service.get_provider(agent_name=AgentName.REQUIREMENT.value)
 
         prompt = build_requirement_revision_prompt(
             project=project,

@@ -4,8 +4,10 @@ Domain Agent.
 Purpose:
 - Retrieve domain knowledge (RAG: embed query -> ChromaDB similarity search -> top-K chunks)
   for the approved SRS of one feature.
-- Ask the LLM to enhance the SRS using ONLY that retrieved knowledge, producing a full
-  Enhanced SRS JSON (inline-flagged with what was added/changed) plus a human-readable
+- Ask the LLM to propose a SMALL enrichment plan (new items + description enrichments, citing
+  only the retrieved knowledge) -- never to retype the whole SRS.
+- Deterministically merge the validated plan into a full copy of the SRS in Python, producing
+  the Enhanced SRS JSON (inline-flagged with what was added/changed) and a human-readable
   Domain Improvements JSON summary.
 - Convert JSON to Markdown inside Domain Agent (mirrors Requirement Agent's approach).
 - Save Markdown, Enhanced SRS JSON, and Domain Improvements JSON as a shared-version artifact
@@ -19,6 +21,15 @@ This file does not change:
 Retrieval is deterministic Python (via domain_knowledge_service), never an LLM tool-calling
 loop -- the Domain Agent stays on the one-shot BaseLLMProvider path like Requirement and
 Architecture Agents, per this repo's build spec.
+
+Design note (why the LLM never retypes the SRS -- see also prompt.py):
+An earlier version of this agent asked the LLM to return the ENTIRE enhanced SRS JSON verbatim
+plus a separate improvements summary in one response. Real end-to-end testing against three
+different locally-hosted models (qwen3-coder, gemma4, llama3) showed this reliably fails --
+models silently dropped required sections, omitted top-level keys, or produced
+truncated/malformed JSON. The LLM now proposes only a small enrichment PLAN (see
+_apply_enrichment_plan below); Python performs the actual merge, so required LLM output stays
+small regardless of SRS size and IDs are never invented by the model.
 """
 
 import copy
@@ -53,6 +64,15 @@ logger = get_logger(__name__)
 # query focused on dense, domain-relevant text rather than the entire SRS JSON dump.
 RETRIEVAL_QUERY_MAX_CHARS = 3000
 
+# Section -> new-ID prefix, for deterministic "-DOM-" ID assignment (never left to the LLM).
+SECTION_PREFIX_MAP = {
+    "functional_requirements": "FR",
+    "non_functional_requirements": "NFR",
+    "acceptance_criteria": "AC",
+    "validation_rules": "VR",
+    "user_stories": "US",
+}
+
 
 class DomainAgent:
     """
@@ -61,28 +81,12 @@ class DomainAgent:
     This class controls the full Domain Agent process:
     1. Read the latest approved SRS JSON for a feature.
     2. Retrieve relevant domain knowledge chunks (RAG).
-    3. Call LLM to produce Enhanced SRS JSON + Domain Improvements JSON.
-    4. Validate the result against the raw SRS and the retrieved chunks.
-    5. Build Markdown from the validated JSON.
-    6. Save all three artifacts under one shared version.
+    3. Ask the LLM for a small enrichment plan (additions/modifications only).
+    4. Validate the plan against the raw SRS and the retrieved chunks.
+    5. Deterministically merge the plan into a full SRS copy (Python, not the LLM).
+    6. Build Markdown from the merged result.
+    7. Save all three artifacts under one shared version.
     """
-
-    REQUIRED_KEYS = [
-        "project_id",
-        "project_name",
-        "project_type",
-        "feature_id",
-        "feature_name",
-        "target_stack",
-        "architectural_style",
-        "business_goal",
-        "functional_requirements",
-        "non_functional_requirements",
-        "acceptance_criteria",
-        "constraints",
-        "assumptions",
-        "traceability",
-    ]
 
     def __init__(self):
         self.markdown_builder = DomainEnhancedSRSMarkdownBuilder()
@@ -210,13 +214,15 @@ class DomainAgent:
         Generate Enhanced SRS + Domain Improvements output.
 
         Reliability ladder (mirrors Requirement Agent):
-        - one-shot LLM call
-        - parse + validate
+        - one-shot LLM call for a small enrichment PLAN (not the full SRS)
+        - parse + validate the plan
         - on failure, one JSON-repair LLM call
-        - on failure again, a deterministic fallback that never fails
+        - on failure again, a deterministic empty-plan fallback that never fails
+        - the plan (real or fallback) is always merged into the SRS by the same
+          deterministic Python code, so the final artifacts are always well-formed.
         """
 
-        provider = llm_provider_service.get_provider()
+        provider = llm_provider_service.get_provider(agent_name=AgentName.DOMAIN.value)
 
         prompt = build_domain_user_prompt(
             project=project,
@@ -235,12 +241,10 @@ class DomainAgent:
         fallback_reason = None
 
         try:
-            enhanced_srs_json, domain_improvements_json = self._parse_and_validate_json(
-                raw_output, srs_json, retrieved_chunks
-            )
+            plan = self._parse_and_validate_plan(raw_output, srs_json, retrieved_chunks)
 
         except Exception as first_error:
-            logger.warning("Initial Enhanced SRS JSON parse/validation failed: %s", first_error)
+            logger.warning("Initial Domain Agent enrichment plan parse/validation failed: %s", first_error)
 
             repair_prompt = build_json_repair_prompt(raw_output)
 
@@ -250,18 +254,16 @@ class DomainAgent:
             ])
 
             try:
-                enhanced_srs_json, domain_improvements_json = self._parse_and_validate_json(
-                    repaired_output, srs_json, retrieved_chunks
-                )
+                plan = self._parse_and_validate_plan(repaired_output, srs_json, retrieved_chunks)
 
             except Exception as second_error:
-                logger.warning("Enhanced SRS JSON repair failed. Using fallback. Error=%s", second_error)
+                logger.warning("Domain Agent enrichment plan repair failed. Using fallback. Error=%s", second_error)
 
                 fallback_used = True
                 fallback_reason = str(second_error)
-                enhanced_srs_json, domain_improvements_json = self._build_fallback_domain_output(
-                    srs_json, retrieved_chunks, reason=fallback_reason
-                )
+                plan = self._build_fallback_plan(retrieved_chunks, reason=fallback_reason)
+
+        enhanced_srs_json, domain_improvements_json = self._apply_enrichment_plan(srs_json, plan, retrieved_chunks)
 
         self._finalize_enhanced_srs_metadata(
             enhanced_srs_json, srs_version, retrieved_chunks, fallback_used, fallback_reason
@@ -275,39 +277,24 @@ class DomainAgent:
             domain_improvements_json=domain_improvements_json,
         )
 
-    def _parse_and_validate_json(
-        self, raw_output: str, srs_json: dict, retrieved_chunks: list[dict]
-    ) -> tuple[dict, dict]:
+    def _parse_and_validate_plan(self, raw_output: str, base_srs_json: dict, retrieved_chunks: list[dict]) -> dict:
         """
-        Parse and validate LLM JSON output.
+        Parse and validate the LLM's small enrichment plan.
 
         Kept inside Domain Agent to avoid changing shared/common JSON utilities.
         """
 
         parsed = self._extract_json_object(raw_output)
 
-        if "enhanced_srs_json" not in parsed or "domain_improvements_json" not in parsed:
-            raise ValueError(
-                "LLM output missing required top-level keys: enhanced_srs_json, domain_improvements_json"
-            )
-
-        enhanced_srs_json = parsed["enhanced_srs_json"]
-        domain_improvements_json = parsed["domain_improvements_json"]
-
-        if not isinstance(enhanced_srs_json, dict) or not isinstance(domain_improvements_json, dict):
-            raise ValueError("enhanced_srs_json and domain_improvements_json must both be JSON objects.")
-
-        missing = [key for key in self.REQUIRED_KEYS if key not in enhanced_srs_json]
-
-        if missing:
-            raise ValueError(f"Missing required Enhanced SRS keys: {missing}")
+        if "additions" not in parsed or "modifications" not in parsed:
+            raise ValueError("LLM output missing required keys: additions, modifications")
 
         try:
-            self.validator.validate(srs_json, enhanced_srs_json, domain_improvements_json, retrieved_chunks)
+            self.validator.validate_plan(base_srs_json, parsed, retrieved_chunks)
         except DomainEnhancementValidationError as error:
             raise ValueError(str(error)) from error
 
-        return enhanced_srs_json, domain_improvements_json
+        return parsed
 
     def _extract_json_object(self, text: str) -> dict:
         """
@@ -337,34 +324,188 @@ class DomainAgent:
 
         return json.loads(possible_json)
 
-    def _build_fallback_domain_output(
-        self, srs_json: dict, retrieved_chunks: list[dict], reason: str
-    ) -> tuple[dict, dict]:
+    def _build_fallback_plan(self, retrieved_chunks: list[dict], reason: str) -> dict:
         """
-        Build a fallback Enhanced SRS + Domain Improvements pair if LLM generation fails.
+        Build a fallback enrichment plan (no additions/modifications) if LLM generation fails.
 
-        Why no fabricated FR-DOM-* items:
+        Why no fabricated content:
         There is no sensible way to regex/keyword-enrich real domain content, and inventing
-        content here would violate the RAG honesty guarantee. The fallback leaves the SRS
-        content unchanged and honestly reports why no enrichment was applied.
+        content here would violate the RAG honesty guarantee. The fallback plan is empty and
+        _apply_enrichment_plan turns that into an unchanged SRS copy plus an honest explanation
+        of why no enrichment was applied.
         """
-
-        enhanced_srs_json = copy.deepcopy(srs_json)
 
         if not retrieved_chunks:
             no_changes_note = "No relevant domain knowledge was retrieved for this feature."
         else:
             no_changes_note = f"Domain knowledge was retrieved but automatic enrichment failed: {reason}"
 
-        domain_improvements_json = {
+        return {
             "summary": "No domain enrichment was applied to this SRS.",
-            "knowledge_sources_used": [],
             "additions": [],
             "modifications": [],
             "no_changes_note": no_changes_note,
         }
 
+    def _apply_enrichment_plan(
+        self, base_srs_json: dict, plan: dict, retrieved_chunks: list[dict]
+    ) -> tuple[dict, dict]:
+        """
+        Deterministically merge a validated enrichment plan into a full copy of base_srs_json.
+
+        This is the core of the redesign: the LLM never retypes the SRS or invents IDs. Python
+        guarantees, by construction, that every original item survives untouched, every new
+        item gets a correctly-namespaced "-DOM-" ID, and domain_improvements_json stays exactly
+        consistent with what was actually applied to enhanced_srs_json.
+        """
+
+        enhanced_srs_json = copy.deepcopy(base_srs_json)
+
+        for section_key in SECTION_PREFIX_MAP:
+            enhanced_srs_json.setdefault(section_key, [])
+
+        applied_additions: list[dict] = []
+        applied_modifications: list[dict] = []
+        citation_tally: dict[str, set[str]] = {}
+
+        for addition in plan.get("additions", []):
+            if not isinstance(addition, dict):
+                continue
+
+            target_section = addition.get("target_section")
+            prefix = SECTION_PREFIX_MAP.get(target_section)
+            description = str(addition.get("description", "")).strip()
+
+            if not prefix or not description:
+                continue
+
+            new_id = self._next_dom_id(enhanced_srs_json[target_section], prefix)
+            citation = addition.get("domain_citation") or {}
+
+            new_item = {
+                "id": new_id,
+                "description": description,
+                "origin": "domain_agent",
+                "domain_citation": citation,
+            }
+
+            if target_section == "functional_requirements":
+                new_item["priority"] = addition.get("priority") or "Should Have"
+            elif target_section == "non_functional_requirements":
+                new_item["category"] = addition.get("category") or "Domain"
+
+            enhanced_srs_json[target_section].append(new_item)
+
+            applied_additions.append({
+                "target_section": target_section,
+                "new_id": new_id,
+                "description": description,
+                "rationale": addition.get("rationale", ""),
+                "domain_citation": citation,
+            })
+
+            self._tally_citation(citation_tally, citation)
+
+        for modification in plan.get("modifications", []):
+            if not isinstance(modification, dict):
+                continue
+
+            target_section = modification.get("target_section")
+            item_id = modification.get("id")
+            enhanced_description = str(modification.get("enhanced_description", "")).strip()
+
+            if target_section not in SECTION_PREFIX_MAP or not item_id or not enhanced_description:
+                continue
+
+            item = self._find_item_by_id(enhanced_srs_json.get(target_section, []), item_id)
+
+            if item is None:
+                continue
+
+            original_description = item.get("description", "")
+            citation = modification.get("domain_citation") or {}
+
+            item["description"] = enhanced_description
+            item["modified_by_domain_agent"] = True
+            item["original_description"] = original_description
+            item["domain_citation"] = citation
+
+            applied_modifications.append({
+                "target_section": target_section,
+                "id": item_id,
+                "original_description": original_description,
+                "enhanced_description": enhanced_description,
+                "rationale": modification.get("rationale", ""),
+                "domain_citation": citation,
+            })
+
+            self._tally_citation(citation_tally, citation)
+
+        knowledge_sources_used = [
+            {"source_document": source, "chunks_used": len(chunk_ids)}
+            for source, chunk_ids in sorted(citation_tally.items())
+        ]
+
+        if applied_additions or applied_modifications:
+            summary = plan.get("summary") or (
+                f"Added {len(applied_additions)} domain requirement(s) and enriched "
+                f"{len(applied_modifications)} existing item(s) using retrieved domain knowledge."
+            )
+            no_changes_note = None
+        else:
+            summary = "No domain enrichment was applied to this SRS."
+            no_changes_note = plan.get("no_changes_note") or (
+                "No relevant domain knowledge was retrieved for this feature."
+                if not retrieved_chunks
+                else "Domain knowledge was retrieved but no enrichment was proposed."
+            )
+
+        domain_improvements_json = {
+            "summary": summary,
+            "knowledge_sources_used": knowledge_sources_used,
+            "additions": applied_additions,
+            "modifications": applied_modifications,
+            "no_changes_note": no_changes_note,
+        }
+
         return enhanced_srs_json, domain_improvements_json
+
+    def _next_dom_id(self, section_items: list[dict], prefix: str) -> str:
+        """
+        Deterministically assign the next "-DOM-" ID in a section, continuing past any that
+        already exist (important for revisions, which merge onto an already-enriched SRS).
+        """
+
+        marker = f"{prefix}-DOM-"
+        existing_numbers = []
+
+        for item in section_items:
+            item_id = str(item.get("id", ""))
+
+            if item_id.startswith(marker):
+                suffix = item_id[len(marker):]
+                if suffix.isdigit():
+                    existing_numbers.append(int(suffix))
+
+        next_number = (max(existing_numbers) + 1) if existing_numbers else 1
+
+        return f"{marker}{next_number:03d}"
+
+    def _tally_citation(self, tally: dict[str, set[str]], citation: dict) -> None:
+        source = citation.get("source_document")
+
+        if not source:
+            return
+
+        chunk_id = citation.get("chunk_id") or source
+        tally.setdefault(source, set()).add(chunk_id)
+
+    def _find_item_by_id(self, items: list, item_id) -> dict | None:
+        for item in items:
+            if isinstance(item, dict) and item.get("id") == item_id:
+                return item
+
+        return None
 
     def _finalize_enhanced_srs_metadata(
         self,
@@ -375,8 +516,8 @@ class DomainAgent:
         fallback_reason: str | None,
     ) -> None:
         """
-        Deterministically set domain_enrichment_metadata, overwriting whatever (if anything)
-        the LLM produced for it -- this data must be trustworthy regardless of LLM behavior.
+        Deterministically set domain_enrichment_metadata -- this data must be trustworthy
+        regardless of LLM behavior, so it is never taken from the LLM's output.
         """
 
         sources_considered = sorted({
@@ -398,6 +539,10 @@ class DomainAgent:
     async def revise(self, feature_id: str, request: DomainAgentReviseRequest) -> AgentRunResponse:
         """
         Revise the latest Enhanced SRS for a feature.
+
+        The revision plan is merged onto the CURRENT enhanced SRS (not the original raw SRS),
+        so every previous domain addition/enrichment is preserved automatically -- the LLM only
+        needs to describe the new change, never carry forward or re-cite prior work.
         """
 
         logger.info("Domain Agent revision started for feature_id=%s", feature_id)
@@ -429,14 +574,10 @@ class DomainAgent:
             read_json_file(latest_improvements_artifact["file_path"]) if latest_improvements_artifact else {}
         )
 
-        # Validation must be against the ORIGINAL raw SRS (dropped-id / consistency checks),
-        # not the already-enhanced one.
         srs_artifact = self._find_latest_approved_srs_artifact(feature_id)
 
         if not srs_artifact:
             raise ValueError("No approved SRS JSON artifact found for this feature.")
-
-        srs_json = read_json_file(srs_artifact["file_path"])
 
         retrieved_chunks = self._retrieve_domain_knowledge_for_revision(
             existing_enhanced_srs_json, request.revision_comment
@@ -445,8 +586,7 @@ class DomainAgent:
         output = await self._revise_domain_output(
             project=project,
             feature=feature,
-            srs_json=srs_json,
-            existing_enhanced_srs_json=existing_enhanced_srs_json,
+            base_srs_json=existing_enhanced_srs_json,
             existing_domain_improvements_json=existing_domain_improvements_json,
             retrieved_chunks=retrieved_chunks,
             revision_comment=request.revision_comment,
@@ -479,52 +619,11 @@ class DomainAgent:
         query = self._build_retrieval_query(existing_enhanced_srs_json, extra_text=revision_comment)
         return domain_knowledge_service.retrieve(query)
 
-    def _carry_forward_previous_citations(self, existing_domain_improvements_json: dict) -> list[dict]:
-        """
-        Build synthetic chunk stubs for every source/chunk already cited in the previous
-        Domain Improvements JSON.
-
-        Why: revision retrieval is a fresh query and may not resurface every chunk a prior
-        run legitimately cited. Without this, the validator's honesty check (no additions/
-        modifications without retrieved evidence) would falsely fail a revision that simply
-        preserves already-valid prior enrichment. These stubs are used for validation only --
-        they are never shown to the LLM (the prompt only shows the fresh retrieval).
-        """
-
-        carried: dict[str, dict] = {}
-
-        for section in ("additions", "modifications"):
-            for record in existing_domain_improvements_json.get(section, []) or []:
-                citation = record.get("domain_citation") or {}
-                source_document = citation.get("source_document")
-                chunk_id = citation.get("chunk_id")
-
-                if source_document and chunk_id and chunk_id not in carried:
-                    carried[chunk_id] = {
-                        "chunk_id": chunk_id,
-                        "source_document": source_document,
-                        "text": "",
-                    }
-
-        return list(carried.values())
-
-    def _merge_chunks(self, primary: list[dict], extra: list[dict]) -> list[dict]:
-        seen = {chunk.get("chunk_id") for chunk in primary}
-        merged = list(primary)
-
-        for chunk in extra:
-            if chunk.get("chunk_id") not in seen:
-                merged.append(chunk)
-                seen.add(chunk.get("chunk_id"))
-
-        return merged
-
     async def _revise_domain_output(
         self,
         project: dict,
         feature: dict,
-        srs_json: dict,
-        existing_enhanced_srs_json: dict,
+        base_srs_json: dict,
         existing_domain_improvements_json: dict,
         retrieved_chunks: list[dict],
         revision_comment: str,
@@ -532,17 +631,18 @@ class DomainAgent:
         srs_version: int,
     ) -> DomainAgentOutput:
         """
-        Use the LLM to revise the existing Enhanced SRS + Domain Improvements JSON.
-
-        If LLM revision fails, a fallback revision is created safely.
+        Use the LLM to propose a small revision enrichment plan, then merge it onto
+        base_srs_json (the current enhanced SRS) using the same deterministic merge as
+        initial generation. If LLM generation fails, the fallback is an empty plan --
+        base_srs_json (and everything it already contains) is preserved unchanged.
         """
 
-        provider = llm_provider_service.get_provider()
+        provider = llm_provider_service.get_provider(agent_name=AgentName.DOMAIN.value)
 
         prompt = build_domain_revision_prompt(
             project=project,
             feature=feature,
-            existing_enhanced_srs_json=existing_enhanced_srs_json,
+            base_srs_json=base_srs_json,
             existing_domain_improvements_json=existing_domain_improvements_json,
             retrieved_chunks=retrieved_chunks,
             revision_comment=revision_comment,
@@ -554,29 +654,48 @@ class DomainAgent:
             {"role": "user", "content": prompt},
         ])
 
-        validation_chunks = self._merge_chunks(
-            retrieved_chunks, self._carry_forward_previous_citations(existing_domain_improvements_json)
-        )
-
         fallback_used = False
         fallback_reason = None
 
         try:
-            enhanced_srs_json, domain_improvements_json = self._parse_and_validate_json(
-                raw_output, srs_json, validation_chunks
-            )
+            plan = self._parse_and_validate_plan(raw_output, base_srs_json, retrieved_chunks)
 
-        except Exception as error:
-            logger.warning("LLM Enhanced SRS revision failed. Using fallback revision. Error=%s", error)
+        except Exception as first_error:
+            logger.warning("Initial Domain Agent revision plan parse/validation failed: %s", first_error)
 
-            fallback_used = True
-            fallback_reason = str(error)
-            enhanced_srs_json, domain_improvements_json = self._build_fallback_revise_domain_output(
-                existing_enhanced_srs_json,
-                existing_domain_improvements_json,
-                revision_comment,
-                revised_by,
-                fallback_reason,
+            repair_prompt = build_json_repair_prompt(raw_output)
+
+            repaired_output = await provider.invoke_agent([
+                {"role": "system", "content": JSON_REPAIR_PROMPT},
+                {"role": "user", "content": repair_prompt},
+            ])
+
+            try:
+                plan = self._parse_and_validate_plan(repaired_output, base_srs_json, retrieved_chunks)
+
+            except Exception as second_error:
+                logger.warning("Domain Agent revision plan repair failed. Using fallback. Error=%s", second_error)
+
+                fallback_used = True
+                fallback_reason = str(second_error)
+                plan = self._build_fallback_plan(retrieved_chunks, reason=fallback_reason)
+
+        enhanced_srs_json, domain_improvements_json = self._apply_enrichment_plan(
+            base_srs_json, plan, retrieved_chunks
+        )
+
+        enhanced_srs_json["revision_metadata"] = {
+            "revision_type": "domain_enrichment_revision",
+            "revision_comment": revision_comment,
+            "revised_by": revised_by,
+            "fallback_used": fallback_used,
+            **({"fallback_reason": fallback_reason} if fallback_used and fallback_reason else {}),
+        }
+
+        if fallback_used:
+            domain_improvements_json["no_changes_note"] = (
+                f"Revision requested ('{revision_comment}') could not be automatically applied: "
+                f"{fallback_reason}. Existing enrichment was preserved unchanged."
             )
 
         self._finalize_enhanced_srs_metadata(
@@ -590,60 +709,6 @@ class DomainAgent:
             enhanced_srs_json=enhanced_srs_json,
             domain_improvements_json=domain_improvements_json,
         )
-
-    def _build_fallback_revise_domain_output(
-        self,
-        existing_enhanced_srs_json: dict,
-        existing_domain_improvements_json: dict,
-        revision_comment: str,
-        revised_by: str,
-        reason: str,
-    ) -> tuple[dict, dict]:
-        """
-        Create a safe fallback revision if the LLM fails. Does not overwrite existing
-        enrichment -- appends revision information and a review note.
-        """
-
-        enhanced_srs_json = copy.deepcopy(existing_enhanced_srs_json)
-
-        enhanced_srs_json["revision_metadata"] = {
-            "revision_type": "domain_enrichment_revision",
-            "revision_comment": revision_comment,
-            "revised_by": revised_by,
-            "fallback_used": True,
-            "fallback_reason": reason,
-        }
-
-        assumptions = enhanced_srs_json.get("assumptions", [])
-
-        if not isinstance(assumptions, list):
-            assumptions = []
-
-        assumptions.append(f"Domain Agent revision requested by {revised_by}: {revision_comment}")
-        assumptions.append(f"Fallback revision was used because LLM revision failed: {reason}")
-
-        enhanced_srs_json["assumptions"] = assumptions
-
-        domain_improvements_json = (
-            copy.deepcopy(existing_domain_improvements_json)
-            if existing_domain_improvements_json
-            else {
-                "summary": "",
-                "knowledge_sources_used": [],
-                "additions": [],
-                "modifications": [],
-                "no_changes_note": None,
-            }
-        )
-
-        domain_improvements_json.setdefault("additions", [])
-        domain_improvements_json.setdefault("modifications", [])
-        domain_improvements_json["no_changes_note"] = (
-            f"Revision requested ('{revision_comment}') could not be automatically applied: "
-            f"{reason}. Existing enrichment was preserved unchanged."
-        )
-
-        return enhanced_srs_json, domain_improvements_json
 
     def _find_latest_approved_srs_artifact(self, feature_id: str) -> dict | None:
         """

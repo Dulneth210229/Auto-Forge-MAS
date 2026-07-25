@@ -22,8 +22,10 @@ from typing import Any
 from app.agents.uiux_agent.prompt import (
     COMPONENT_GENERATOR_SYSTEM_PROMPT,
     build_component_generator_user_prompt,
+    build_component_render_repair_prompt,
     build_component_repair_prompt,
 )
+from app.core.enums import AgentName
 from app.services.llm_provider_service import llm_provider_service
 
 MOCK_PROPS_MARKER = "---MOCK_PROPS_JSON---"
@@ -54,7 +56,7 @@ class UIUXComponentGenerator:
         Returns ({"jsx_code": str, "mock_props": dict}, raw_llm_output).
         """
 
-        provider = llm_provider_service.get_provider()
+        provider = llm_provider_service.get_provider(agent_name=AgentName.UIUX.value)
 
         prompt = build_component_generator_user_prompt(
             project=project,
@@ -94,6 +96,27 @@ class UIUXComponentGenerator:
                 f"Component '{component_name}' could not be generated in the required "
                 f"format after one repair attempt: {error}"
             ) from error
+
+    async def repair_for_render_error(
+        self, jsx_code: str, mock_props: dict[str, Any], render_error: str
+    ) -> tuple[dict[str, Any], str]:
+        """
+        One targeted repair attempt for JSX that parsed fine but crashed during the real
+        Playwright preview render (e.g. a ReferenceError for an undefined sub-component name)
+        -- distinct from generate()'s own format-only repair, which never sees the browser.
+        """
+
+        provider = llm_provider_service.get_provider(agent_name=AgentName.UIUX.value)
+        repair_prompt = build_component_render_repair_prompt(jsx_code, mock_props, render_error)
+
+        repaired_output = await provider.invoke_agent(
+            [
+                {"role": "system", "content": COMPONENT_GENERATOR_SYSTEM_PROMPT},
+                {"role": "user", "content": repair_prompt},
+            ]
+        )
+
+        return self._parse(repaired_output), repaired_output
 
     def _parse(self, text: str) -> dict[str, Any]:
         if MOCK_PROPS_MARKER not in text or JSX_CODE_MARKER not in text:

@@ -46,6 +46,7 @@ class ApprovalService:
         approval = {
             "approval_id": approval_id,
             "artifact_id": artifact_id,
+            "feature_id": artifact["feature_id"],
             "agent_name": artifact["agent_name"],
             "status": request.status,
             "reviewer_comment": request.reviewer_comment,
@@ -132,6 +133,35 @@ class ApprovalService:
                 )
 
         return ApprovalResponse(**approval)
+
+    def list_feature_approvals(self, feature_id: str) -> list[ApprovalResponse]:
+        """
+        Return every approval decision recorded for a feature, oldest first -- powers the
+        frontend's per-stage activity timeline (a real, chronological record of what was
+        approved/rejected/revision-requested and when, not a reconstruction).
+
+        Matches via each approval's OWN artifact's feature_id, not the approval's own
+        `feature_id` field (added in submit_approval going forward) -- every approval ever made
+        before that field existed would otherwise be permanently invisible here, and this
+        feature's entire pre-existing approval history is exactly that case. The artifact join
+        works identically for old and new records, so it's used unconditionally rather than as a
+        fallback.
+        """
+        results = []
+
+        for approval in store.approvals.values():
+            artifact = store.artifacts.get(approval.get("artifact_id"))
+
+            if not artifact or artifact.get("feature_id") != feature_id:
+                continue
+
+            try:
+                results.append(ApprovalResponse(**approval))
+            except Exception:
+                logger.warning("Skipping unparseable approval %s", approval.get("approval_id"))
+
+        results.sort(key=lambda a: a.approved_at)
+        return results
 
     def is_artifact_approved(self, artifact_id: str) -> bool:
         """

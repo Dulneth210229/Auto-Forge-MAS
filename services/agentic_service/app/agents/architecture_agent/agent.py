@@ -366,7 +366,7 @@ class ArchitectureAgent:
         8. Convert diagram JSON models to PlantUML.
         """
 
-        provider = llm_provider_service.get_provider()
+        provider = llm_provider_service.get_provider(agent_name=AgentName.ARCHITECTURE.value)
 
         srs_for_generation = agent_input.enhanced_srs_json or agent_input.srs_json
         feature_name = agent_input.feature.get("feature_name", "Feature")
@@ -554,7 +554,7 @@ class ArchitectureAgent:
         )
 
         agent = create_agent(
-            model=get_agentic_chat_model(),
+            model=get_agentic_chat_model(agent_name=AgentName.ARCHITECTURE.value),
             tools=tools,
             system_prompt=ARCHITECTURE_AGENT_AGENTIC_SYSTEM_PROMPT,
         )
@@ -617,7 +617,7 @@ class ArchitectureAgent:
         )
 
         agent = create_agent(
-            model=get_agentic_chat_model(),
+            model=get_agentic_chat_model(agent_name=AgentName.ARCHITECTURE.value),
             tools=tools,
             system_prompt=SEQUENCE_DIAGRAM_AGENTIC_SYSTEM_PROMPT,
         )
@@ -671,7 +671,7 @@ class ArchitectureAgent:
         )
 
         agent = create_agent(
-            model=get_agentic_chat_model(),
+            model=get_agentic_chat_model(agent_name=AgentName.ARCHITECTURE.value),
             tools=tools,
             system_prompt=CLASS_DIAGRAM_AGENTIC_SYSTEM_PROMPT,
         )
@@ -795,7 +795,7 @@ class ArchitectureAgent:
 
         if not sequence_specification_json and not class_specification_json:
             try:
-                provider = llm_provider_service.get_provider()
+                provider = llm_provider_service.get_provider(agent_name=AgentName.ARCHITECTURE.value)
                 raw_output = await provider.invoke_agent([
                     {"role": "system", "content": DIAGRAM_FOCUSED_BOTH_SYSTEM_PROMPT},
                     {"role": "user", "content": build_diagram_focused_both_prompt(
@@ -819,7 +819,7 @@ class ArchitectureAgent:
                 )
         elif not class_specification_json:
             try:
-                provider = llm_provider_service.get_provider()
+                provider = llm_provider_service.get_provider(agent_name=AgentName.ARCHITECTURE.value)
                 raw_output = await provider.invoke_agent([
                     {"role": "system", "content": DIAGRAM_FOCUSED_CLASS_ONLY_SYSTEM_PROMPT},
                     {"role": "user", "content": build_diagram_focused_class_only_prompt(
@@ -892,7 +892,7 @@ class ArchitectureAgent:
         # already failed twice" would defeat its purpose, so the repair loop
         # is gated off entirely in that case.
         if usecase_specification_json.get("use_cases"):
-            provider = llm_provider_service.get_provider()
+            provider = llm_provider_service.get_provider(agent_name=AgentName.ARCHITECTURE.value)
 
             for repair_attempt in range(MAX_USECASE_REPAIR_ATTEMPTS):
                 try:
@@ -1016,7 +1016,7 @@ class ArchitectureAgent:
         # is "the LLM already failed twice" would defeat its purpose, so the
         # repair loop is gated off entirely in that case.
         if sequence_specification_json.get("participants") and sequence_specification_json.get("interactions"):
-            provider = llm_provider_service.get_provider()
+            provider = llm_provider_service.get_provider(agent_name=AgentName.ARCHITECTURE.value)
 
             for repair_attempt in range(MAX_SEQUENCE_REPAIR_ATTEMPTS):
                 try:
@@ -1131,7 +1131,7 @@ class ArchitectureAgent:
         # already failed twice" would defeat its purpose, so the repair loop
         # is gated off entirely in that case.
         if class_specification_json.get("classes"):
-            provider = llm_provider_service.get_provider()
+            provider = llm_provider_service.get_provider(agent_name=AgentName.ARCHITECTURE.value)
 
             for repair_attempt in range(MAX_CLASS_REPAIR_ATTEMPTS):
                 try:
@@ -1454,7 +1454,7 @@ class ArchitectureAgent:
         Use the LLM to revise the Architecture Plan, then regenerate diagrams.
         """
 
-        provider = llm_provider_service.get_provider()
+        provider = llm_provider_service.get_provider(agent_name=AgentName.ARCHITECTURE.value)
 
         prompt = build_architecture_plan_revision_prompt(
             project=project,

@@ -8,83 +8,84 @@ Why:
 - Keeps prompt engineering separate from business logic.
 - Makes it easy to update Domain Agent prompts later.
 - Does not affect other agents.
+
+Design note (why the LLM never retypes the SRS):
+Earlier versions of this prompt asked the LLM to return the ENTIRE enhanced
+SRS JSON verbatim (every untouched field/item) plus a separate improvements
+summary in one response. Real end-to-end testing against three different
+locally-hosted models showed this reliably fails -- models silently drop
+required sections, omit top-level keys, or produce truncated/malformed JSON
+when asked to retype a large structure they don't need to change. The LLM
+now proposes only a SMALL enrichment plan (new items + description
+enrichments, no IDs to invent); deterministic Python (DomainAgent.
+_apply_enrichment_plan) merges that plan into a full copy of the SRS. This
+keeps required LLM output small regardless of SRS size.
 """
 
 DOMAIN_AGENT_SYSTEM_PROMPT = """
 You are the Domain Agent in a Human-in-the-Loop Multi-Agent SDLC Automation System.
 
-Your task is to enhance an approved Software Requirements Specification (SRS) JSON using ONLY
-the domain knowledge chunks given to you in this prompt (retrieved from real domain documents).
-You are a retrieval-augmented generation (RAG) system, not a general knowledge source: every
-addition or modification you make must be traceable to one of the numbered [KB-N] knowledge
-chunks shown to you.
+Your task is to propose a SMALL enrichment PLAN for an approved Software Requirements
+Specification (SRS), using ONLY the domain knowledge chunks given to you in this prompt
+(retrieved from real domain documents). You are a retrieval-augmented generation (RAG) system,
+not a general knowledge source: every addition or modification you propose must be traceable to
+one of the numbered [KB-N] knowledge chunks shown to you.
+
+Critical: Do NOT reproduce the SRS. Do NOT invent IDs for new items -- the system assigns IDs
+automatically. Return only the small plan described below.
 
 Rules:
 - Return only valid JSON. Do not return Markdown, code fences, or explanations.
-- Preserve the original BA intention. Never change the meaning of an existing requirement
-  unless you are enriching it with a missing domain detail.
-- Never remove or renumber an existing item from any section. Every original ID must still be
-  present in your output, unchanged, unless you are enriching its description in place.
-- The output enhanced_srs_json MUST be the FULL SRS JSON (every original field, every original
-  item), not a diff or a patch. Untouched items must appear byte-for-byte identical to the input.
-- To ADD a new requirement/criterion/rule/story derived from domain knowledge: give it a brand
-  new ID that continues the existing prefix convention but inserts "-DOM-" before the number,
-  for example FR-DOM-001, NFR-DOM-001, AC-DOM-001, VR-DOM-001, US-DOM-001. Never reuse or
-  renumber an existing ID for a new item.
-- Every added item must include: "origin": "domain_agent" and a "domain_citation" object with
-  "source_document" (must exactly match one of the "source:" values shown below) and
-  "chunk_id" (must exactly match one of the chunk IDs shown below).
-- To ENRICH an existing item's description with a missing domain detail: keep its original ID,
-  update "description" in place, and add "modified_by_domain_agent": true, plus
-  "original_description" containing the EXACT original text (verbatim, unchanged), plus the same
-  "domain_citation" object described above.
-- Do NOT add "origin" or "domain_citation" fields to items you did not touch.
+- Preserve the original BA intention. Only propose an addition/modification when a retrieved
+  knowledge chunk reveals a real, missing domain requirement, edge case, or business rule.
+- To ADD a new requirement/criterion/rule/story derived from domain knowledge, append an object
+  to "additions" with:
+  - "target_section": one of functional_requirements, non_functional_requirements,
+    acceptance_criteria, validation_rules, user_stories.
+  - "description": the full requirement text (a complete, standalone sentence).
+  - "priority": only for functional_requirements -- one of "Must Have", "Should Have",
+    "Could Have".
+  - "category": only for non_functional_requirements -- e.g. "Security", "Performance".
+  - "rationale": one sentence on why this matters, in your own words.
+  - "domain_citation": {{"source_document": "...", "chunk_id": "..."}} -- must exactly match one
+    of the "source:"/chunk_id values shown below.
+- To ENRICH an existing item's description with a missing domain detail, append an object to
+  "modifications" with:
+  - "target_section": same five allowed values as above.
+  - "id": the EXACT existing ID from the SRS shown below (e.g. "AC-003"). Never invent an ID here.
+  - "enhanced_description": the complete new description (not just an appended sentence -- write
+    the full, improved requirement text).
+  - "rationale" and "domain_citation": same as above.
+- Never touch project/feature-level fields (business_goal, scope, constraints, etc.) -- only
+  propose additions/modifications to individual FR/NFR/AC/VR/US items.
 - If NO knowledge chunks are shown below (retrieval returned nothing relevant), you MUST NOT
   invent or hallucinate domain knowledge from your own general training. In that case return
-  enhanced_srs_json identical to the given SRS JSON (no additions, no modifications) and an
-  empty domain_improvements_json with additions: [] and modifications: [], and set
-  no_changes_note to explain that no relevant domain knowledge was retrieved.
+  empty "additions": [] and "modifications": [], and set "no_changes_note" explaining that no
+  relevant domain knowledge was retrieved.
 - Do not generate architecture, UI, or code.
-- Add a top-level "domain_enrichment_metadata" object to enhanced_srs_json with:
-  "based_on_srs_version", "knowledge_sources_used" (list of source_document names actually
-  used), "fallback_used": false.
 
-Required JSON structure (top-level object with exactly these two keys):
+Required JSON structure:
 {
-  "enhanced_srs_json": {
-    ... every original SRS field and item, plus any -DOM- additions and enriched descriptions ...,
-    "domain_enrichment_metadata": {
-      "based_on_srs_version": 1,
-      "knowledge_sources_used": ["source_file.txt"],
-      "fallback_used": false
+  "summary": "Plain-language summary of what was added/enriched and why.",
+  "additions": [
+    {
+      "target_section": "functional_requirements",
+      "description": "The system must ... (full requirement text).",
+      "priority": "Should Have",
+      "rationale": "Why this domain requirement matters.",
+      "domain_citation": {"source_document": "source_file.txt", "chunk_id": "source_file.txt#0"}
     }
-  },
-  "domain_improvements_json": {
-    "summary": "Plain-language summary of what was added/enriched and why.",
-    "knowledge_sources_used": [
-      {"source_document": "source_file.txt", "chunks_used": 2}
-    ],
-    "additions": [
-      {
-        "target_section": "functional_requirements",
-        "new_id": "FR-DOM-001",
-        "description": "",
-        "rationale": "Why this domain requirement matters.",
-        "domain_citation": {"source_document": "source_file.txt", "chunk_id": "source_file.txt#0"}
-      }
-    ],
-    "modifications": [
-      {
-        "target_section": "acceptance_criteria",
-        "id": "AC-003",
-        "original_description": "verbatim original text",
-        "enhanced_description": "enriched text",
-        "rationale": "Why this domain detail was added.",
-        "domain_citation": {"source_document": "source_file.txt", "chunk_id": "source_file.txt#1"}
-      }
-    ],
-    "no_changes_note": null
-  }
+  ],
+  "modifications": [
+    {
+      "target_section": "acceptance_criteria",
+      "id": "AC-003",
+      "enhanced_description": "The full, improved acceptance criterion text.",
+      "rationale": "Why this domain detail was added.",
+      "domain_citation": {"source_document": "source_file.txt", "chunk_id": "source_file.txt#1"}
+    }
+  ],
+  "no_changes_note": null
 }
 """
 
@@ -107,38 +108,42 @@ Rules:
 DOMAIN_REVISION_SYSTEM_PROMPT = """
 You are the Domain Agent in a Human-in-the-Loop Multi-Agent SDLC Automation System.
 
-Your task is to revise an existing Enhanced SRS JSON and its Domain Improvements JSON, using
-ONLY the domain knowledge chunks given to you in this prompt, based on a human revision comment.
+Your task is to propose a SMALL, additional enrichment PLAN for an already-enhanced SRS, based on
+a human revision comment and ONLY the domain knowledge chunks given to you in this prompt. The
+current enhanced SRS (including any prior domain additions/enrichments) is shown to you as
+context -- it is already preserved automatically. You only need to describe what should change
+NOW, in response to the revision comment.
 
 Rules:
 - Return only valid JSON. Do not return Markdown, code fences, or explanations.
-- Preserve all existing items and IDs unless the revision comment explicitly asks to change them.
-- Follow the exact same -DOM- ID namespace, origin/modified_by_domain_agent flagging, and
+- Do NOT reproduce the SRS. Do NOT invent IDs -- the system assigns IDs for new items
+  automatically.
+- Follow the exact same additions/modifications shape, target_section values, and
   domain_citation rules as initial generation.
-- If no knowledge chunks are shown below, you MUST NOT invent domain knowledge -- make only the
-  structural change the human explicitly asked for (if any), and do not add new domain-cited
-  content.
-- The returned enhanced_srs_json must be the FULL revised SRS JSON, not a patch.
+- A "modifications[].id" may reference either an original SRS item or a previously domain-added
+  item (its "-DOM-" ID) shown in the current enhanced SRS below -- use whichever the revision
+  comment is actually about.
+- If no knowledge chunks are shown below, you MUST NOT invent domain knowledge -- return empty
+  additions/modifications and set no_changes_note explaining why.
 - Do not generate architecture, UI, or code.
 
-Return the same top-level JSON shape as initial generation:
-{"enhanced_srs_json": {...}, "domain_improvements_json": {...}}
+Return the same JSON shape as initial generation:
+{"summary": "...", "additions": [...], "modifications": [...], "no_changes_note": null}
 """
 
 
 def _format_retrieved_chunks(retrieved_chunks: list[dict]) -> str:
     """
     Format retrieved domain knowledge chunks into numbered [KB-N] blocks for
-    the prompt. Every addition/modification the LLM makes must cite one of
-    the "source:" values shown here -- mechanically checked afterward by
+    the prompt. Every addition/modification the LLM proposes must cite one
+    of the "source:" values shown here -- mechanically checked afterward by
     DomainEnhancementValidator, not just prompted.
     """
 
     if not retrieved_chunks:
         return (
             "No domain knowledge chunks were retrieved for this feature. "
-            "You MUST NOT invent any domain knowledge. Return enhanced_srs_json identical "
-            "to the given SRS JSON, with empty additions and modifications."
+            "You MUST NOT invent any domain knowledge. Return empty additions and modifications."
         )
 
     blocks = []
@@ -160,7 +165,10 @@ def build_domain_user_prompt(
     human_comment: str | None = None,
 ) -> str:
     """
-    Build the user prompt sent to the LLM for initial Enhanced SRS generation.
+    Build the user prompt sent to the LLM for initial enrichment plan generation.
+
+    The SRS is shown here as INPUT CONTEXT ONLY -- the LLM does not need to
+    (and must not) reproduce it in its output.
     """
 
     revision_text = ""
@@ -172,7 +180,8 @@ def build_domain_user_prompt(
       """
 
     return f"""
-        Enhance this approved SRS JSON using the retrieved domain knowledge below.
+        Propose a domain enrichment plan for this approved SRS JSON, using the retrieved domain
+        knowledge below. The SRS is shown for context only -- do not reproduce it.
 
         Project:
         {project}
@@ -180,7 +189,7 @@ def build_domain_user_prompt(
         Feature:
         {feature}
 
-        Approved SRS JSON:
+        Approved SRS JSON (context only -- existing IDs to reference in "modifications"):
         {srs_json}
 
         Retrieved domain knowledge chunks:
@@ -189,8 +198,8 @@ def build_domain_user_prompt(
         {revision_text}
 
         Important:
-        Return only valid JSON with exactly the two top-level keys described in your
-        instructions: enhanced_srs_json and domain_improvements_json.
+        Return only valid JSON matching the small plan schema described in your instructions:
+        summary, additions, modifications, no_changes_note. Do not return the SRS itself.
     """
 
 
@@ -209,18 +218,24 @@ Repair this malformed JSON and return only valid JSON:
 def build_domain_revision_prompt(
     project: dict,
     feature: dict,
-    existing_enhanced_srs_json: dict,
+    base_srs_json: dict,
     existing_domain_improvements_json: dict,
     retrieved_chunks: list[dict],
     revision_comment: str,
     revised_by: str,
 ) -> str:
     """
-    Build the user prompt for Enhanced SRS revision.
+    Build the user prompt for enrichment plan revision.
+
+    base_srs_json is the CURRENT enhanced SRS (already including any prior
+    domain additions/enrichments) -- shown as context only, not to be
+    reproduced.
     """
 
     return f"""
-      Revise the following existing Enhanced SRS JSON and Domain Improvements JSON.
+      Propose an additional domain enrichment plan for this feature, based on the revision
+      comment below. The current enhanced SRS and its prior improvements summary are shown for
+      context only -- they are already preserved automatically. Only describe the NEW change(s).
 
       Project:
       {project}
@@ -228,10 +243,11 @@ def build_domain_revision_prompt(
       Feature:
       {feature}
 
-      Existing Enhanced SRS JSON:
-      {existing_enhanced_srs_json}
+      Current enhanced SRS JSON (context only -- existing IDs, including prior "-DOM-" IDs, to
+      reference in "modifications"):
+      {base_srs_json}
 
-      Existing Domain Improvements JSON:
+      Prior Domain Improvements summary (context only):
       {existing_domain_improvements_json}
 
       Retrieved domain knowledge chunks:
@@ -244,9 +260,7 @@ def build_domain_revision_prompt(
       {revised_by}
 
       Instructions:
-      - Return the full revised enhanced_srs_json and domain_improvements_json.
-      - Keep existing IDs and existing domain_citation values where unchanged.
-      - Add new -DOM- IDs only for newly added domain-derived content.
-      - Return only valid JSON with exactly the two top-level keys: enhanced_srs_json and
-        domain_improvements_json.
+      - Return only the small plan JSON: summary, additions, modifications, no_changes_note.
+      - Do not reproduce the SRS.
+      - Add new "-DOM-" IDs are assigned automatically -- never invent one yourself.
     """

@@ -1,0 +1,237 @@
+{
+  "project_id": "proj_983f2941",
+  "project_name": "QuickCart",
+  "project_type": "E-commerce",
+  "feature_id": "feature_89878ec1",
+  "feature_name": "Item Management",
+  "target_stack": "MERN",
+  "architectural_style": "modular",
+  "business_goal": "Allow admin users to manage the product catalog by creating, editing, updating, and deleting items.",
+  "scope": [
+    "Admin can add a new item to the catalog with name, description, price, and stock quantity.",
+    "Admin can edit an existing item's name, description, and price.",
+    "Admin can update an item's stock quantity.",
+    "Admin can delete an item from the catalog.",
+    "System displays a list of all catalog items to the admin."
+  ],
+  "out_of_scope": [],
+  "user_roles": [
+    "Admin"
+  ],
+  "functional_requirements": [
+    {
+      "id": "FR-001",
+      "description": "Admin can add a new item to the catalog with name, description, price, and stock quantity.",
+      "priority": "Must Have"
+    },
+    {
+      "id": "FR-002",
+      "description": "Admin can edit an existing item's name, description, and price.",
+      "priority": "Must Have"
+    },
+    {
+      "id": "FR-003",
+      "description": "Admin can update an item's stock quantity.",
+      "priority": "Must Have"
+    },
+    {
+      "id": "FR-004",
+      "description": "Admin can delete an item from the catalog.",
+      "priority": "Must Have"
+    },
+    {
+      "id": "FR-005",
+      "description": "System displays a list of all catalog items to the admin.",
+      "priority": "Must Have"
+    }
+  ],
+  "non_functional_requirements": [
+    {
+      "id": "NFR-001",
+      "description": "Item CRUD operations should complete within 2 seconds under normal load.",
+      "category": "Performance"
+    },
+    {
+      "id": "NFR-002",
+      "description": "The admin interface must be responsive on desktop and tablet screens.",
+      "category": "Usability"
+    },
+    {
+      "id": "NFR-003",
+      "description": "Only authenticated admin users can perform CRUD operations on items.",
+      "category": "Security"
+    },
+    {
+      "id": "NFR-DOM-001",
+      "description": "The system must retain a complete price history for each product variant, ensuring that completed orders display the exact price paid at the time of purchase.",
+      "origin": "domain_agent",
+      "domain_citation": {
+        "source_document": "product_catalog_and_inventory.txt",
+        "chunk_id": "product_catalog_and_inventory.txt#3"
+      },
+      "category": "Data Integrity"
+    }
+  ],
+  "user_stories": [
+    {
+      "id": "US-001",
+      "role": "Admin",
+      "goal": "To manage the product catalog by adding new items",
+      "benefit": "Ensure the catalog is up-to-date with current inventory"
+    },
+    {
+      "id": "US-002",
+      "role": "Admin",
+      "goal": "To edit existing items in the catalog",
+      "benefit": "Keep item details accurate and current"
+    },
+    {
+      "id": "US-003",
+      "role": "Admin",
+      "goal": "To update stock quantities for items",
+      "benefit": "Maintain accurate inventory levels"
+    },
+    {
+      "id": "US-004",
+      "role": "Admin",
+      "goal": "To remove outdated or discontinued items",
+      "benefit": "Keep the catalog clean and relevant"
+    }
+  ],
+  "acceptance_criteria": [
+    {
+      "id": "AC-001",
+      "description": "Given valid item details, when admin submits the add item form, a new item is created and appears in the catalog list."
+    },
+    {
+      "id": "AC-002",
+      "description": "Given an existing item, when admin edits and saves changes, the item's details are updated."
+    },
+    {
+      "id": "AC-003",
+      "description": "Given an existing item, when admin clicks delete and confirms, the item is removed from the catalog only if no active orders or carts contain that item; otherwise, a warning is shown.",
+      "modified_by_domain_agent": true,
+      "original_description": "Given an existing item, when admin clicks delete and confirms, the item is removed from the catalog.",
+      "domain_citation": {
+        "source_document": "checkout_and_cart_conventions.txt",
+        "chunk_id": "checkout_and_cart_conventions.txt#2"
+      }
+    }
+  ],
+  "input_requirements": [
+    "Item name",
+    "Item description",
+    "Item price",
+    "Item stock quantity",
+    "Item SKU"
+  ],
+  "output_requirements": [
+    "List of all catalog items",
+    "Success confirmation for CRUD operations",
+    "Error messages for invalid inputs"
+  ],
+  "ui_expectations": [
+    "Item list table with add/edit/delete actions",
+    "Add/Edit item form with validation",
+    "Delete confirmation dialog"
+  ],
+  "api_expectations": [
+    "POST /api/items",
+    "GET /api/items",
+    "PUT /api/items/:id",
+    "DELETE /api/items/:id"
+  ],
+  "data_requirements": [
+    "Item name",
+    "Item description",
+    "Item price",
+    "Item stock quantity",
+    "Item SKU"
+  ],
+  "validation_rules": [
+    {
+      "id": "VR-001",
+      "description": "Item name must be unique within the catalog, and each product variant must have a unique SKU code.",
+      "modified_by_domain_agent": true,
+      "original_description": "Item name must be unique within the catalog.",
+      "domain_citation": {
+        "source_document": "product_catalog_and_inventory.txt",
+        "chunk_id": "product_catalog_and_inventory.txt#0"
+      }
+    },
+    {
+      "id": "VR-002",
+      "description": "Item price must be a positive number and explicitly stored with a currency code.",
+      "modified_by_domain_agent": true,
+      "original_description": "Item price must be a positive number.",
+      "domain_citation": {
+        "source_document": "product_catalog_and_inventory.txt",
+        "chunk_id": "product_catalog_and_inventory.txt#3"
+      }
+    },
+    {
+      "id": "VR-003",
+      "description": "Item stock quantity must be a non-negative integer."
+    }
+  ],
+  "constraints": [
+    "Use MERN stack",
+    "Admin-only access enforced via authentication middleware"
+  ],
+  "assumptions": [
+    "Admin authentication system already exists",
+    "Item SKU is auto-generated if not provided",
+    "The system supports at least 1000 items in the catalog"
+  ],
+  "risks": [
+    "Performance degradation under high load",
+    "Data inconsistency during concurrent updates",
+    "Insecure access if authentication middleware is bypassed"
+  ],
+  "dependencies": [
+    "Authentication system",
+    "Database schema for items"
+  ],
+  "traceability": [
+    {
+      "requirement_id": "FR-001",
+      "related_acceptance_criteria": [
+        "AC-001"
+      ],
+      "notes": ""
+    },
+    {
+      "requirement_id": "FR-002",
+      "related_acceptance_criteria": [
+        "AC-002"
+      ],
+      "notes": ""
+    },
+    {
+      "requirement_id": "FR-003",
+      "related_acceptance_criteria": [],
+      "notes": ""
+    },
+    {
+      "requirement_id": "FR-004",
+      "related_acceptance_criteria": [
+        "AC-003"
+      ],
+      "notes": ""
+    },
+    {
+      "requirement_id": "FR-005",
+      "related_acceptance_criteria": [],
+      "notes": ""
+    }
+  ],
+  "domain_enrichment_metadata": {
+    "generated_at": "2026-07-25T07:22:13.461376+00:00",
+    "based_on_srs_version": 2,
+    "knowledge_sources_considered": [
+      "checkout_and_cart_conventions.txt",
+      "product_catalog_and_inventory.txt"
+    ],
+    "fallback_used": false
+  }
+}

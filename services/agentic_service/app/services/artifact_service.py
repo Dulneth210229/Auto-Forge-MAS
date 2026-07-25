@@ -28,13 +28,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from app.core.config import settings
 from app.core.enums import ApprovalStatus, AgentName, ArtifactType, ArtifactFormat
 from app.schemas.artifact_schema import ArtifactResponse
 from app.services.in_memory_store import store
 from app.utils.file_manager import ensure_directory, write_text_file, write_json_file
 from app.utils.id_generator import generate_id
+from app.utils.logger import get_logger
 from app.utils.slugify import slugify
+
+logger = get_logger(__name__)
 
 
 class ArtifactService:
@@ -180,6 +185,21 @@ class ArtifactService:
             version=version
         )
 
+    def _hydrate_artifact_response(self, artifact: dict[str, Any]) -> ArtifactResponse:
+        """
+        Build an ArtifactResponse, computing size_bytes from the file on disk (never stored --
+        the file is the source of truth, and this stays correct even if a file changes size for
+        any reason). None if the file is missing rather than raising -- purely cosmetic, so a
+        missing file should degrade gracefully, not break the whole list.
+        """
+        size_bytes = None
+        try:
+            size_bytes = Path(artifact["file_path"]).stat().st_size
+        except OSError:
+            pass
+
+        return ArtifactResponse(**artifact, size_bytes=size_bytes)
+
     def _register_artifact(
         self,
         project_id: str,
@@ -211,17 +231,33 @@ class ArtifactService:
 
         store.artifacts[artifact_id] = artifact
 
-        return ArtifactResponse(**artifact)
+        return self._hydrate_artifact_response(artifact)
 
     def list_feature_artifacts(self, feature_id: str) -> list[ArtifactResponse]:
         """
         Return all artifacts generated for a feature.
+
+        Skips (and logs a warning for) any individual record that fails to validate against
+        ArtifactResponse -- e.g. a legacy artifact_type value no longer in the ArtifactType enum
+        (confirmed real case: old qa_agent "test_cases" records predating QA Agent being
+        simplified to a stub) -- rather than letting one such record break this list for every
+        other, perfectly valid artifact belonging to the same feature.
         """
-        return [
-            ArtifactResponse(**artifact)
-            for artifact in store.artifacts.values()
-            if artifact["feature_id"] == feature_id
-        ]
+        results = []
+
+        for artifact in store.artifacts.values():
+            if artifact["feature_id"] != feature_id:
+                continue
+
+            try:
+                results.append(self._hydrate_artifact_response(artifact))
+            except ValidationError as error:
+                logger.warning(
+                    "Skipping unparseable artifact %s for feature_id=%s: %s",
+                    artifact.get("artifact_id"), feature_id, error,
+                )
+
+        return results
 
     def list_project_artifacts(
         self,
@@ -265,7 +301,7 @@ class ArtifactService:
         if not artifact:
             return None
 
-        return ArtifactResponse(**artifact)
+        return self._hydrate_artifact_response(artifact)
     def save_binary_artifact(
         self,
         project: dict[str, Any],
@@ -354,7 +390,7 @@ class ArtifactService:
             return None
 
         latest = max(matching_artifacts, key=lambda item: item["version"])
-        return ArtifactResponse(**latest)
+        return self._hydrate_artifact_response(latest)
 
     def read_artifact_content(self, artifact_id: str) -> str:
         """
@@ -374,6 +410,21 @@ class ArtifactService:
         file_path = artifact["file_path"]
 
         with open(file_path, "r", encoding="utf-8") as file:
+            return file.read()
+
+    def read_artifact_binary(self, artifact_id: str) -> bytes:
+        """
+        Read artifact file content as raw bytes (PNG diagrams/screenshots).
+
+        Sibling of read_artifact_content -- used by the artifact content-serving
+        API route so the frontend can display images directly.
+        """
+        artifact = store.artifacts.get(artifact_id)
+
+        if not artifact:
+            raise ValueError(f"Artifact not found: {artifact_id}")
+
+        with open(artifact["file_path"], "rb") as file:
             return file.read()
 
 artifact_service = ArtifactService()

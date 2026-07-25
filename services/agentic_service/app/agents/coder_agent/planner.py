@@ -31,6 +31,7 @@ from app.agents.coder_agent.prompt import (
     build_code_planner_user_prompt,
 )
 from app.agents.coder_agent.tools import build_revision_planning_tools
+from app.core.enums import AgentName
 from app.providers.agentic_model_factory import get_agentic_chat_model
 from app.services.llm_provider_service import llm_provider_service
 
@@ -89,7 +90,7 @@ class CodePlanner:
         this method just knows how to build one better-informed attempt.
         """
 
-        provider = llm_provider_service.get_provider()
+        provider = llm_provider_service.get_provider(agent_name=AgentName.CODER.value)
 
         prompt = build_code_planner_user_prompt(
             project=project,
@@ -208,7 +209,7 @@ class CodePlanner:
         except ValueError:
             pass
 
-        repaired_output = await llm_provider_service.get_provider().invoke_agent(
+        repaired_output = await llm_provider_service.get_provider(agent_name=AgentName.CODER.value).invoke_agent(
             [
                 {"role": "system", "content": CODE_PLAN_JSON_REPAIR_PROMPT},
                 {"role": "user", "content": build_code_plan_repair_prompt(raw_output)},

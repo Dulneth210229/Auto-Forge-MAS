@@ -127,6 +127,31 @@ def build_uiux_json_repair_prompt(raw_output: str) -> str:
     return f"Previous invalid output:\n{raw_output}\n\nReturn corrected ui_metadata_json now."
 
 
+def build_uiux_validation_repair_prompt(raw_output: str, validation_error: str) -> str:
+    """
+    Unlike build_uiux_json_repair_prompt (malformed/unparseable JSON), this is for output that
+    parsed fine but failed the coverage/structure validator -- e.g. a page missing one of the
+    required "states" values. The fix is targeted: keep everything else, correct only what the
+    error names.
+    """
+
+    return f"""
+Your previous ui_metadata_json output was valid JSON but failed validation with this specific
+error:
+
+{validation_error}
+
+Your previous output:
+{raw_output}
+
+Fix ONLY the issue(s) described in the validation error above. Return the complete, corrected
+ui_metadata_json object (not a patch or partial object) -- keep everything else from your
+previous output unchanged unless it is directly related to the error.
+
+Return only valid JSON. No prose, no markdown fences, no comments.
+"""
+
+
 COMPONENT_GENERATOR_SYSTEM_PROMPT = """
 You are the UI/UX Agent's component generator. You write ONE React component
 at a time, in plain JSX with Tailwind CSS utility classes, using realistic
@@ -154,6 +179,13 @@ Hard rules:
    or any executable code as a prop value there (e.g. `"onSubmit": () => {}`
    is INVALID and will be rejected) -- rule 7 means you should not need any
    function-valued props in the first place.
+9. The file must be fully self-contained: never reference a component, type,
+   or variable that is not either a React global (useState, useEffect, ...),
+   a value from `props`, or defined locally inside this function. In
+   particular, do NOT factor a per-row/per-item element out into a separate
+   named component (e.g. `<Item ... />` or `<ItemRow ... />`) unless you
+   define that component's function in this same file too -- inline that
+   markup directly inside your `.map(...)` call instead.
 
 Return your answer in EXACTLY this format, with both markers present and
 nothing outside them:
@@ -213,3 +245,32 @@ def build_component_repair_prompt(raw_output: str) -> str:
         f"Previous output:\n{raw_output}\n\n"
         "Return the corrected component now, in the exact required format."
     )
+
+
+def build_component_render_repair_prompt(jsx_code: str, mock_props: dict, render_error: str) -> str:
+    """
+    Distinct from build_component_repair_prompt (output format issues): this is for JSX that
+    parsed fine but crashed when actually rendered in a real browser -- e.g. a ReferenceError
+    for an undefined sub-component name. Feeding back the real error is far more targeted than
+    a blind full regeneration.
+    """
+
+    return f"""
+Your previously generated component crashed when rendered in a real browser, with this error:
+
+{render_error}
+
+Your previous JSX code:
+{jsx_code}
+
+Your previous MOCK_PROPS_JSON:
+{json.dumps(mock_props, indent=2)}
+
+Fix the runtime error above. A common cause is referencing a component, type, or variable name
+(for example, a per-row/per-item sub-component) that is not defined anywhere in this file -- see
+rule 9 in your instructions: this file must be fully self-contained. Inline that markup directly
+inside your `.map(...)` call instead of referencing an external name.
+
+Return the complete corrected component now, in the exact required format (both markers, full
+JSX -- not a patch).
+"""

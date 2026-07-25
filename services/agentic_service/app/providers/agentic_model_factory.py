@@ -13,10 +13,13 @@ per-provider wrappers.
 
 The provider comes from the same shared `store.llm_settings` document the rest
 of the app uses, so switching provider in one place still works. The *model*
-defaults to `settings.AGENTIC_MODEL_OVERRIDE` instead of the shared
-`llm_settings["model"]`, because the one-shot prose model and the agentic
-coding model have different quality tradeoffs and are usually not the same
-model in practice.
+prefers a per-agent override set through the LLM Settings UI
+(`store.llm_settings["agent_overrides"]["coder_agent"]`, same mechanism
+`llm_provider_service.get_provider(agent_name=...)` uses for the one-shot
+agents), then falls back to `settings.AGENTIC_MODEL_OVERRIDE` (.env) if no
+override has ever been set, then the shared `llm_settings["model"]` -- because
+the one-shot prose model and the agentic coding model have different quality
+tradeoffs and are usually not the same model in practice.
 """
 
 from langchain.chat_models import init_chat_model
@@ -26,13 +29,24 @@ from app.core.config import settings
 from app.services.in_memory_store import store
 
 
-def get_agentic_chat_model() -> BaseChatModel:
+def get_agentic_chat_model(agent_name: str = "coder_agent") -> BaseChatModel:
     """
     Build the chat model used by agentic (tool-calling) LangGraph nodes.
     """
-    llm_settings = store.llm_settings
-    provider = llm_settings.get("provider", settings.DEFAULT_LLM_PROVIDER)
-    model = settings.AGENTIC_MODEL_OVERRIDE or llm_settings.get("model")
+    # One round-trip for the whole document, not one per field -- each `store.llm_settings["x"]`
+    # access independently re-fetches the entire document from MongoDB Atlas (a real, non-local
+    # cluster), so reading several fields one at a time here previously cost several round-trips
+    # per agentic call (see llm_provider_service.py's get_document() docstring for the full story
+    # -- this function had the identical anti-pattern).
+    llm_settings = store.llm_settings.get_document()
+    override = llm_settings.get("agent_overrides", {}).get(agent_name, {})
+    provider = override.get("provider") or llm_settings.get("provider", settings.DEFAULT_LLM_PROVIDER)
+
+    # AGENTIC_MODEL_OVERRIDE (.env) was always specifically "the Coder Agent's tool-calling
+    # model" -- it must never leak into another agent's agentic calls (e.g. Architecture
+    # Agent's own exploration loops) just because that agent has no override configured yet.
+    env_fallback = settings.AGENTIC_MODEL_OVERRIDE if agent_name == "coder_agent" else None
+    model = override.get("model") or env_fallback or llm_settings.get("model")
 
     model_string = f"{provider}:{model}"
 
@@ -48,9 +62,17 @@ def get_agentic_chat_model() -> BaseChatModel:
         # context length, for the agentic path specifically.
         extra_kwargs["num_ctx"] = settings.AGENTIC_OLLAMA_NUM_CTX
 
+    temperature = override.get("temperature")
+    if temperature is None:
+        temperature = llm_settings.get("temperature", settings.LLM_TEMPERATURE)
+
+    timeout = override.get("timeout_seconds")
+    if timeout is None:
+        timeout = llm_settings.get("timeout_seconds", settings.LLM_TIMEOUT_SECONDS)
+
     return init_chat_model(
         model_string,
-        temperature=llm_settings.get("temperature", settings.LLM_TEMPERATURE),
-        timeout=llm_settings.get("timeout_seconds", settings.LLM_TIMEOUT_SECONDS),
+        temperature=temperature,
+        timeout=timeout,
         **extra_kwargs,
     )

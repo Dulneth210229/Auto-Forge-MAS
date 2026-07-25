@@ -1,0 +1,55 @@
+{
+  "summary": "Added a requirement for account lockout after failed login attempts based on domain knowledge. Enhanced the 'Forgot Password' acceptance criterion to clarify the reset token behavior. Also added a clarification about email verification gating checkout, which impacts user experience and security.",
+  "knowledge_sources_used": [
+    {
+      "source_document": "user_account_and_authentication.txt",
+      "chunks_used": 3
+    }
+  ],
+  "additions": [
+    {
+      "target_section": "functional_requirements",
+      "new_id": "FR-DOM-001",
+      "description": "The system must lock an account temporarily after five consecutive failed login attempts.",
+      "rationale": "This prevents brute-force attacks and protects user accounts from unauthorized access.",
+      "domain_citation": {
+        "source_document": "user_account_and_authentication.txt",
+        "chunk_id": "user_account_and_authentication.txt#0"
+      }
+    },
+    {
+      "target_section": "functional_requirements",
+      "new_id": "FR-DOM-002",
+      "description": "The system must invalidate a password reset token immediately after it is used once.",
+      "rationale": "This ensures that reset tokens cannot be reused, maintaining the security of the password recovery process.",
+      "domain_citation": {
+        "source_document": "user_account_and_authentication.txt",
+        "chunk_id": "user_account_and_authentication.txt#1"
+      }
+    },
+    {
+      "target_section": "functional_requirements",
+      "new_id": "FR-DOM-003",
+      "description": "The system must require email verification before allowing a user to proceed with checkout.",
+      "rationale": "This ensures that order confirmations and shipping updates can be reliably sent to a valid email address.",
+      "domain_citation": {
+        "source_document": "user_account_and_authentication.txt",
+        "chunk_id": "user_account_and_authentication.txt#2"
+      }
+    }
+  ],
+  "modifications": [
+    {
+      "target_section": "acceptance_criteria",
+      "id": "AC-003",
+      "original_description": "When the user clicks the 'Forgot Password' link, they must be directed to the password recovery initiation page.",
+      "enhanced_description": "When the user clicks the 'Forgot Password' link, they must be directed to the password recovery initiation page, where they can enter their email address and receive a time-limited reset token via email.",
+      "rationale": "The enhanced description clarifies the expected behavior of the password recovery flow, including token handling and delivery.",
+      "domain_citation": {
+        "source_document": "user_account_and_authentication.txt",
+        "chunk_id": "user_account_and_authentication.txt#1"
+      }
+    }
+  ],
+  "no_changes_note": null
+}

@@ -1472,26 +1472,79 @@ milestone — that file is scratch, **this file is the durable one**.
   bug in this project would again not be caught until a real test suite exists (M7/QA Agent
   territory) — `npm install` alone only checks that declared dependencies resolve, not that
   the code correctly declares every dependency it uses.
-- **Local Ollama models struggle to faithfully reproduce a large two-part JSON structure in one
-  shot** (Domain Agent build, item 28): the Domain Agent's prompt asks for a single JSON object
-  containing both a full `enhanced_srs_json` (the entire original SRS, verbatim, plus any
-  domain-cited additions/enrichments) and a full `domain_improvements_json` summary in the same
-  response. Real end-to-end runs against the real, approved `Login` feature SRS (`E-commerce
-  Platform` project) with three different locally-hosted models — `qwen3-coder:latest` (twice,
-  `max_tokens` 4097 then 8192), `gemma4:latest` (8192), and `llama3:latest` (8192) — **all four
-  attempts** failed structurally: `qwen3-coder` twice silently dropped
-  `non_functional_requirements` (and once also `acceptance_criteria`) from its output;
-  `gemma4:latest` omitted the required `enhanced_srs_json`/`domain_improvements_json` top-level
-  keys entirely; `llama3:latest` produced JSON that was outright malformed partway through
-  (`Expecting value: line 57 column 24`). This looks like a genuine local-model-capacity
-  limitation for this task's size/complexity, not a prompt bug — every failure was still caught
-  correctly by `DomainEnhancementValidator`/JSON parsing, triggered the one JSON-repair retry,
-  and then the deterministic fallback, which **never crashed and never fabricated content** in
-  any of the four attempts (see item 28 below for the real artifacts this produced). If this
-  keeps happening with better local models later, the next thing to try is splitting the LLM
-  call in two (enrich-only, without asking the model to also retype the entire unchanged SRS) —
-  not attempted here since it would change the approved one-call design; flagged as a future
-  option, not applied.
+- **RESOLVED (item 29): asking the LLM to retype the entire SRS verbatim was the actual defect,
+  not a model-capacity ceiling.** The Domain Agent gotcha directly above (three models, four
+  attempts, all structurally failing to reproduce a full two-part `enhanced_srs_json` +
+  `domain_improvements_json` JSON blob) was diagnosed at the time as "a genuine local-model-
+  capacity limitation." The user reported the Domain Agent still wasn't enriching anything and
+  asked for a real fix, not just a documented limitation — redesigning the LLM contract so it
+  proposes only a SMALL enrichment PLAN (new items + description enrichments, no IDs to invent,
+  no SRS retyping) and letting deterministic Python (`DomainAgent._apply_enrichment_plan`) merge
+  that into a full SRS copy **fixed it outright**: `qwen3-coder:latest` succeeded on the very
+  first attempt, 3/3 real runs, no fallback triggered, for both the `Login` feature and a brand
+  new `Item Management` CRUD feature (`QuickCart` project) — see item 29 below. The lesson: when
+  a local model fails a large structured-output task, first ask whether the task itself can be
+  shrunk before concluding the model can't handle it. See `app/agents/domain_agent/agent.py`'s
+  and `prompt.py`'s module docstrings for the full design rationale.
+- **RESOLVED (item 29): the Architecture Agent "taking over an hour" was a GPU/VRAM mismatch, not
+  a hang.** `qwen3-coder:latest` is a 30.5B-parameter Q4 model (~18GB) on a machine with only a
+  6GB GPU (RTX 4050) — Ollama could only offload ~3.4GB to VRAM, running ~85% of the model on
+  CPU. A trivial "say OK" prompt didn't even complete in 15 seconds. Confirmed via `ollama ps`
+  (`size_vram` far below the model's real size) and `nvidia-smi` (6141MiB total VRAM). Fix:
+  switched `DEFAULT_LLM_MODEL` and `AGENTIC_MODEL_OVERRIDE` (both `.env` and the live Mongo-
+  backed `store.llm_settings`) to `llama3:latest` (4.7GB, the only locally-cached model that
+  actually fits this GPU) — Architecture Agent then completed in ~4.5 minutes instead of stalling
+  past 90. **If this machine ever gets more VRAM, or a smaller code-specialized model is pulled
+  (e.g. `qwen2.5-coder:7b`, ~4.7GB), revisit `AGENTIC_MODEL_OVERRIDE` specifically** — llama3 is a
+  general instruct model, not code-specialized, and was only chosen because it's what already fit
+  and was already cached.
+- **UI/UX Agent had no reliability ladder at all for its two riskiest steps -- fixed (item 29).**
+  `metadata_modeler.py` already had a JSON-parse repair ladder, but the SEPARATE coverage/
+  structure validator call in `agent.py` had zero retries: any schema-valid-but-incomplete output
+  (e.g. a page missing one of the required `states`) crashed the whole run immediately. Worse,
+  `UIMetadataValidator.validate()`'s `if not errors:` gate meant only ONE category of problems
+  was ever revealed per attempt — fixing the "states" gap on repair just exposed a previously-
+  hidden `covers_requirements` gap on the next attempt, one layer at a time. Fixed both: the
+  validator now only skips coverage checks when the structure is genuinely unsafe to inspect
+  (not a list, or a page isn't a dict) — everything else reports all real errors together, so a
+  single repair attempt sees the full picture. `_generate_and_validate_metadata` now retries up
+  to `MAX_VALIDATION_REPAIR_ATTEMPTS = 4` (real testing against `llama3:latest` showed the
+  missing-ID count genuinely shrinking each round -- 6→4→1 in one run -- true convergence, not
+  flailing, which is why the bound is higher than Requirement/Domain/Architecture's usual "one
+  repair"). Component generation got the same treatment: a real run hit
+  `ReferenceError: Item is not defined` (the model factored a per-row `<Item />` sub-component
+  instead of inlining it) — added rule 9 to `COMPONENT_GENERATOR_SYSTEM_PROMPT` explicitly
+  forbidding this, plus `component_generator.repair_for_render_error` /
+  `UIUXAgent._repair_page_components` to feed the real browser console error back for up to
+  `MAX_RENDER_REPAIR_ATTEMPTS = 3` attempts (real testing showed a repair can trade one error for
+  a different one -- fixing the ReferenceError once produced a JSX syntax error instead -- so one
+  attempt was provably not always enough).
+- **Playwright's per-call `Locator.screenshot(timeout=...)` kwarg does not reliably override the
+  default timeout in this environment -- confirmed by direct testing** (a call with
+  `timeout=8000` still took the full ~30s default before failing). `page.set_default_timeout(N)`
+  does work correctly (confirmed: set to 5000, failed at exactly 5.0s). `preview_renderer.py` now
+  calls `page.set_default_timeout(90000)` right after `browser.new_page(...)` instead of passing
+  `timeout=` to the screenshot call itself.
+- **A preview-render failure that reproduces only inside the live LangGraph-invoked pipeline, not
+  in direct isolation -- still unexplained, worked around rather than root-caused.** A real
+  `item-management-page` render (`QuickCart`/`Item Management`, item 29) failed with
+  `Locator.screenshot: Timeout ... element is not visible` -- consistently, across many retries,
+  even after confirming `page.set_default_timeout(90000)` was genuinely honored (the error
+  message itself changed from `~30000ms` to `~90000ms exceeded`, so the fix was real, but the
+  element still never stabilized in 90 real seconds). Extensive direct testing could not
+  reproduce this: the exact same JSX + mock_props, run via `sync_playwright()` directly, via
+  `asyncio.to_thread` from a plain async function, and via `async_playwright()` natively, all
+  rendered successfully and quickly every time. The only remaining unverified difference is the
+  live LangGraph/MongoDB-checkpointer execution context itself (nested thread/event-loop
+  interaction with Playwright's sync API that a standalone script can't reproduce). **Rather than
+  keep guessing at a root cause I can't reproduce, made preview rendering non-fatal**: after
+  `MAX_RENDER_REPAIR_ATTEMPTS` are exhausted, `_render_pages` now logs an error and skips that
+  page's screenshot instead of raising -- a defensible tradeoff since nothing downstream
+  (Architecture/Coder Agent) reads `page_screenshots`; it exists purely for human preview. If this
+  recurs, the next thing to try is switching `preview_renderer.py` from `sync_api` to
+  `async_api` end-to-end (removing the `asyncio.to_thread` wrapper entirely) — not done yet since
+  it's a bigger refactor than tonight's fix budget allowed and the non-fatal skip already unblocks
+  the pipeline.
 - **Windows: `shutil.rmtree` on a git repo directory reliably fails** with either a
   `PermissionError` from git's read-only object files, or (worse, and non-obvious) "the process
   cannot access the file because it is being used by another process" from GitPython's `Repo`
@@ -1858,6 +1911,234 @@ milestone — that file is scratch, **this file is the durable one**.
   a future session with a more capable model (larger local model or a hosted provider) could
   re-run `domain_agent.run('feature_a44033b8', ...)` to get a genuinely enriched (non-fallback)
   version for human approval.
+- **Item 29: Domain Agent redesigned to actually enrich (not just fall back safely), plus a real,
+  full pipeline run through Coder Agent on a brand-new project.** The user reported item 28's
+  Domain Agent still wasn't enriching anything and asked for a real fix plus a fresh end-to-end
+  pipeline test. Root cause: asking the LLM to retype the entire SRS verbatim in one JSON blob
+  was itself the defect (see the RESOLVED gotchas above), not a model ceiling as item 28
+  concluded. Redesigned the LLM contract to a small enrichment PLAN (additions/modifications
+  only, no SRS retyping, no ID invention -- `DomainAgent._apply_enrichment_plan` merges it into a
+  full SRS copy deterministically); `domain_validator.py` rewritten to `validate_plan()`,
+  checking the small plan pre-merge instead of the merged output post-merge.
+  `tests/test_domain_validator.py` and `test_domain_agent_fallback.py` fully rewritten for the
+  new shape (34 domain tests total, all passing). **Real result: `qwen3-coder:latest` succeeded
+  on the first attempt, 3/3 real runs, zero fallbacks** -- both re-run against the existing
+  `Login` feature (`login_enhanced_srs_v5/v6/v7.json`, correctly adding an account-lockout
+  requirement and enriching the forgot-password acceptance criterion, both genuinely cited from
+  `user_account_and_authentication.txt`) and against a brand-new feature created this session (see
+  below). Also fixed in passing: `RequirementAgent.run()` was saving its Markdown/JSON pair at
+  MISMATCHED versions (`SRS_v1.md` next to `SRS_v2.json` -- confirmed present since this
+  project's very first-ever SRS) because neither `save_text_artifact` nor `save_json_artifact`
+  was passed `version_override`, unlike `_save_revised_srs_artifacts` which already did this
+  correctly; now computes one shared version up front for both, matching that established
+  pattern. **A new real project/feature exists**: `proj_983f2941` ("QuickCart", E-commerce/MERN),
+  `feature_89878ec1` ("Item Management" -- add/edit/update/delete catalog items), created and
+  driven entirely through the real HTTP API (`fastapi.testclient.TestClient`, not shortcuts) to
+  verify the whole pipeline end-to-end for real: approved SRS v1 → real Domain Agent enrichment
+  (SKU uniqueness, currency-code, price-history, and prevent-deleting-items-in-active-orders
+  additions, all correctly cited from `product_catalog_and_inventory.txt`/
+  `checkout_and_cart_conventions.txt`) → approved Enhanced SRS → real Architecture Agent (~4.5 min
+  after the model swap below) → approved Architecture Plan → real UI/UX Agent (see the fixes
+  below) → approved UI metadata → real Coder Agent, which hit its long-documented planner
+  limitation (`CodePlanValidationError` after 2/2 attempts, missing backend files/routes for the
+  CRUD endpoints -- the exact same pre-existing gap documented earlier in this file, not a new
+  issue) and parked the graph at `next: ['coder_node']`, exactly matching the established M6-era
+  precedent. **Along the way, diagnosed that "Architecture Agent takes over an hour" was a
+  GPU/VRAM mismatch** (`qwen3-coder:latest` doesn't fit this machine's 6GB RTX 4050), user chose
+  to switch both `DEFAULT_LLM_MODEL` and `AGENTIC_MODEL_OVERRIDE` to `llama3:latest` (`.env` and
+  the live `store.llm_settings`) -- see the RESOLVED gotcha above for the full diagnosis. **UI/UX
+  Agent needed three additional real fixes** to get through a fresh feature with the smaller
+  `llama3:latest` model: a validation repair ladder where none existed before, a validator fix so
+  a repair attempt sees every real error at once instead of one category at a time, and a
+  component render-repair ladder plus a preventive prompt rule for a real
+  `ReferenceError: Item is not defined` bug (the model factored out an undefined `<Item />`
+  sub-component) -- see the gotchas above for the full detail on each. One page's preview
+  screenshot (`item-management-page`) was ultimately skipped (logged as an error, not fatal) after
+  a render failure that would not reproduce in any direct isolation test -- see the "still
+  unexplained" gotcha above; every other artifact (ui_metadata, 3 components, integration
+  manifest, markdown) saved and approved normally. Full test suite re-run clean at the end (301
+  passed, only the same pre-existing Docker-daemon-dependent failures, unrelated to any of this).
+30. **Built the AutoForge operator-dashboard frontend end-to-end (new top-level `frontend/`,
+    React + Vite + Tailwind v4 + React Query + react-router-dom), covering the full
+    Requirement → Domain → Architecture → UI/UX → Coder pipeline with Security/QA/Deployment as
+    visible placeholders, per user request.** Full spec: the plan this session followed (now
+    overwritten per this file's own convention, see `C:\Users\ASUS\.claude\plans\soft-petting-star.md`).
+    Two small, additive backend routes were prerequisites: `GET /artifacts/{artifact_id}/content`
+    (`app/api/routes/artifacts.py` — unified text/JSON/PNG content-serving, since `GET
+    /artifacts/{id}` only ever returned file-path metadata) and `GET
+    /features/{feature_id}/graph-status` (`app/api/routes/features.py` — thin wrapper exposing
+    `graph_orchestrator_service.get_status()`, previously only ever returned inline from `POST
+    /start`). Also fixed two **pre-existing, unrelated** `list_*` 500-crash bugs hit along the way
+    (same "one malformed record breaks the whole list" pattern in both): `list_projects()`
+    (13 confirmed test-debris Mongo documents, deleted with explicit user consent) and
+    `list_feature_artifacts()`/`list_project_features()` (55+ real, historical `qa_agent`
+    `"test_cases"` artifacts predating QA Agent's simplification to a stub — genuine data, not
+    debris, so fixed with the same defensive per-record try/except-and-log pattern instead of
+    deleting).
+    - **Milestones M1–M2** (scaffold, Project/Feature CRUD, Requirement Agent run/review,
+      artifact viewers) matched the plan's design directly with no real bugs found.
+    - **M3 (Domain + Architecture + polling) surfaced one real, confirmed frontend bug**, found
+      only by actually driving a fresh feature through the browser rather than reading the code:
+      `FeatureDetailPage.jsx`'s `pipelineStarted` was computed as
+      `Boolean(graphStatus?.next?.length) || allArtifacts.length > 0` — since Requirement/
+      Architecture generate real artifacts via their manual `/run` endpoints *without* the graph
+      ever being started (the documented hybrid trigger model), the "Start Pipeline" button
+      vanished permanently the moment a human ran Requirement, before the graph had ever actually
+      started, leaving no way to make Domain auto-trigger after approval. Fixed by deriving
+      `pipelineStarted` from `Object.keys(graphStatus.values || {}).length > 0` instead — a
+      graph run that's ever been started leaves its input/output keys in `state.values`
+      permanently, even after `next` empties out on completion, confirmed directly against a real
+      completed feature (Signup) whose graph-status still carries a populated `values` with an
+      empty `next`.
+    - **M4 (UI/UX stage) surfaced a more fundamental gap**, found by loading the real, live
+      QuickCart "Item Management" feature (approved `ui_metadata` but 3 still-pending
+      `ui_component_code` artifacts — the exact scenario the plan's own destructive-warning copy
+      was written for): `ArtifactRow.jsx` had no approve/reject action at all (only View/Revise),
+      and `ApprovalPanel` only ever targets the stage's single gating artifact — meaning
+      individual UI/UX components had **no approval path anywhere**, and once `ui_metadata` itself
+      was approved, `currentStage` moved past `uiux` entirely, making the components permanently
+      unreachable through the main flow. Fixed two ways: (1) `ArtifactRow.jsx` gained inline
+      Approve/Request Revision/Reject buttons (reusing `useApprovalMutation` directly) shown
+      whenever a `featureId` prop is passed and the artifact is `pending` — `ArtifactList.jsx`
+      only passes `featureId` for non-gating rows, since the gating artifact already has the
+      bigger `ApprovalPanel` below it; (2) `FeatureDetailPage.jsx` gained a persistent "UI/UX
+      components awaiting review" section, always visible regardless of `currentStage`, showing
+      any `ui_component_code` artifact still `pending` — verified live: approving one component
+      via the new inline button correctly dropped the count from 3 to 2 and the artifact's
+      `approval_status` genuinely flipped in the backend. Diagram PNGs (`use_case_diagram`/etc.)
+      have this same class of reachability gap once their stage is approved, but — unlike
+      components — were never meant to be individually approved (no gate depends on them), so this
+      was left as a known, lower-severity, not-fixed limitation rather than scope-creeping into a
+      full "browse every artifact regardless of stage" feature nobody asked for.
+    - **M5 (Coder Agent stage) surfaced two more real bugs**, found by loading the real, live
+      TaskFlow "Task Comments" feature (18 real Coder Agent versions, genuinely still pending —
+      this project's actual, already-most-exercised real Coder Agent history):
+      1. `currentStage` was computed as `GATED_STAGES.find(stage => stageStatuses[stage] !==
+         APPROVED)` — a purely sequential scan. This feature predates Domain Agent becoming a real
+         gated stage (item 28), so it has no `enhanced_srs` artifact and never will, even though
+         the graph's real position (`graph-status`: `next: ["coder_node"]`) shows Coder is
+         genuinely what's pending. The sequential scan got stuck reporting "Domain: not started"
+         forever, making the real, pending `code_diff` permanently unreachable. Fixed by
+         prioritizing the graph's own ground truth first: `next` names either `"{stage}_node"`
+         (actively auto-running) or `"approve_{stage}"` (paused at a human gate) — either way,
+         that's definitively the current stage — falling back to the sequential heuristic only
+         when `next` gives no signal at all (never started, or fully finished).
+      2. `pickViewer()` routed `artifact_type === "code_diff"` straight to `DiffViewer`
+         regardless of format — but `code_diff` exists in BOTH formats: markdown is the real merge
+         report `DiffViewer` parses (prose + a fenced diff block), while the JSON one is just a
+         `{added, modified, deleted}` file-tree summary with no diff text at all. Viewing the JSON
+         variant showed its raw JSON as if it were prose, with a permanent "No diff content found"
+         underneath. Fixed by making `pickViewer` only special-case `code_diff` when
+         `artifact_format === "markdown"`, letting the JSON variant fall through to the normal
+         `JsonViewer` path. Verified both live: the JSON variant now renders as a clean collapsible
+         tree; the markdown variant correctly shows the merge report prose (verification steps,
+         PASSED status, informational placeholder-stub/feature-page-render findings) followed by
+         a real diff2html-rendered diff with truncation notice and file stats.
+    - **M6 (LLM Settings page)** built the real GET/PUT/test UI (previously a bare placeholder),
+      and in doing so **surfaced and fixed a real, live misconfiguration**: the Mongo-backed
+      `store.llm_settings.model` (which one-shot agents actually read, distinct from `.env`'s
+      `DEFAULT_LLM_MODEL`) was still `qwen3-coder:latest` — leftover from an earlier, since-paused
+      testing thread in this same session — silently making every one-shot agent call (this
+      session's own M3 verification included) take 5+ minutes instead of under a minute, since
+      that model doesn't fit this machine's 6GB VRAM. Used the newly-built page itself to correct
+      it back to `llama3:latest`, verified via a real end-to-end test-prompt call (clean response
+      in well under a minute) and via `GET /settings/llm` showing the persisted change.
+      `AGENTIC_MODEL_OVERRIDE` (Coder Agent's separate tool-calling model) was untouched, per the
+      deliberate, already-documented split.
+    - **Real, live verification throughout, not synthetic**: every milestone was driven through
+      an actual running backend (`uvicorn`, port 8001) and frontend (`vite dev`, port 5174) via
+      Playwright (invoked directly through the backend venv's own Playwright install, since no
+      Playwright MCP tool was available this session) — screenshots and `page.inner_text`/
+      `pageerror`/console-error capture at each step, never just code review. A throwaway
+      "Frontend Verify Test" project/feature created for the M3 hybrid-trigger-model check was
+      fully cleaned up afterward (Mongo documents deleted directly via `store.<collection>.
+      collection.delete_one(...)`, since no DELETE route exists for projects/features; matching
+      output directory removed from disk) — confirmed gone from `GET /projects` afterward.
+    - `npm run build` (production Vite build) re-run clean after every fix in this item, zero
+      errors — only a pre-existing, unrelated bundle-size advisory (single chunk >500kB,
+      no code-splitting configured yet).
+
+31. **AutoForge Frontend v2: redesigned from a linear approve-and-advance wizard into an
+    interactive multi-agent dashboard**, per direct user feedback with reference screenshots of a
+    comparable system (fixed left pipeline nav, center interaction pane, right "Governance"
+    panel). Full plan: `C:\Users\ASUS\.claude\plans\soft-petting-star.md` (overwritten since, per
+    this file's convention). Six backend additions, all additive/non-breaking:
+    - **Per-agent LLM overrides**: `store.llm_settings` gained a nested `agent_overrides:
+      {agent_name: {...}}` map (schema: `AgentLLMOverrideUpdateRequest`/`AgentLLMSettingsResponse`
+      in `llm_schema.py`). `llm_provider_service.get_provider(agent_name=...)` and
+      `agentic_model_factory.get_agentic_chat_model(agent_name=...)` both check this before
+      falling back to the global default (the latter falls back to `.env`'s
+      `AGENTIC_MODEL_OVERRIDE` **only** for `agent_name == "coder_agent"` specifically -- a real
+      bug caught and fixed during this work: that env var was leaking into Architecture Agent's
+      own agentic exploration calls whenever Architecture had no override configured, silently
+      forcing it onto Coder Agent's model instead of the global default). New routes: `GET/PUT/
+      DELETE /settings/llm/agents/{agent_name}`, `POST /settings/llm/agents/{agent_name}/test`.
+      Every one-shot agent's `get_provider()` call site updated to pass its own `agent_name`.
+    - **A real, serious performance bug found and fixed in the process**: `MongoLLMSettingsProxy`
+      re-fetches the **entire** settings document from MongoDB on every single `["field"]` access
+      (no per-instance caching at all) -- pre-existing before this session, but the new per-agent
+      code multiplied it across 5 agents x ~6 fields, observed taking **5+ seconds** for what
+      should be one cheap read (confirmed directly: a real save via the new LLM Settings UI got
+      stuck on "Saving..." for 5+ seconds; curl timing confirmed `PUT .../agents/{name}` alone
+      took 5.37s). Fixed by adding `MongoLLMSettingsProxy.get_document()` -- one `find_one` call,
+      reused as a plain dict everywhere in `llm_provider_service.py`'s new methods and in
+      `agentic_model_factory.py` (which had the identical anti-pattern) -- verified down to
+      ~0.15-0.22s per call after the fix (curl-timed, ~25-40x faster). **Any future code touching
+      `store.llm_settings` for more than one field should use `get_document()` once, never
+      `store.llm_settings["x"]` repeatedly in the same call** -- the existing single-field proxy
+      interface is fine for genuinely single-field reads/writes (e.g. the pre-existing
+      `update_settings()` still writes field-by-field and works fine for its actual usage), but
+      silently re-fetching per field is a real trap for anything reading several fields at once.
+    - **Conversation-history data**: new `stage_events` Mongo collection (`stage_event_schema.py`,
+      `stage_event_service.py`) records every human-initiated `run()`/`revise()` request's
+      `human_comment`/`revision_comment` at the API route layer (`agents.py`, right after
+      `_validate_feature`, before the try block -- so it's captured even if the agent call itself
+      later fails). `ApprovalResponse` gained an optional `feature_id`, and
+      `approval_service.list_feature_approvals(feature_id)` joins via **each approval's own
+      artifact's feature_id** (not the approval's own new field) specifically so it works for
+      approvals made before this field existed too -- confirmed necessary live: every
+      historical approval's own `feature_id` was `null`, and the join-based lookup was what made
+      them show up at all. New routes: `GET /features/{feature_id}/approvals`, `GET
+      /features/{feature_id}/events`.
+    - **Downloads**: `GET /artifacts/{id}/download` (raw bytes + `Content-Disposition: attachment`,
+      sibling of the existing JSON-wrapped `/content`). `workspace_service.export_zip(project_id,
+      ref)` reads a git ref's **committed tree directly** (`repo.commit(ref).tree.traverse()`),
+      never checking the ref out first -- safe to call regardless of what's currently checked out
+      on disk. `GET /features/{id}/code/download` zips the feature's own branch if it still
+      exists (pre-merge, so a reviewer can try the code locally before deciding), else falls back
+      to `main`; `GET /projects/{id}/code/download` always zips `main`. Verified for real:
+      downloaded zips for both the merged Login feature (22 real files, confirmed no `.git`
+      internals) and the still-unmerged Task Comments branch (32 real files) via actual button
+      clicks in a real browser, not just curl.
+    - **Artifact `size_bytes`** (cosmetic, shown in the new Governance panel): computed from the
+      file on disk at every read (`artifact_service._hydrate_artifact_response`), never stored --
+      `None` on a missing file rather than raising.
+    - Frontend: `FeatureDetailPage.jsx` rebuilt as a three-panel layout (`PipelineNav.jsx` --
+      every stage independently clickable regardless of approval status, the direct general fix
+      for the prior design's "artifacts become unreachable once a stage is approved" gap;
+      `GovernancePanel.jsx` -- Stage Actions/Trace Links/Stage Artifacts; center Interaction/
+      Output/Artifacts tabs). `StageInteractionPanel.jsx` merges stage_events + approvals +
+      artifact-versions into one real chronological chat-style timeline (not a live
+      back-and-forth -- a real activity log presented conversationally), with static per-stage
+      suggestion chips (`lib/suggestionChips.js`). New `components/documents/` (`DocumentValue.jsx`
+      -- a generic JSON-to-readable-sections/tables renderer; `SrsDocumentViewer.jsx`/
+      `ArchitecturePlanDocumentViewer.jsx` -- real formatted-document views for SRS/Enhanced
+      SRS/Architecture Plan JSON, wired into `pickViewer`) replace raw JSON dumps for those three
+      artifact types specifically, verified against real generated QuickCart data (proper headers,
+      tables for functional/non-functional requirements/user stories/traceability, nested
+      design_views/implementation_plan sections). `ArtifactContentView.jsx` factored out of
+      `ArtifactViewerModal.jsx` so the same viewer-dispatch logic renders both inside the popup
+      and inline in the Output tab. Retired `StageActionPanel.jsx`/`PipelineStageTracker.jsx`
+      (superseded, deleted as dead code) and the previous session's special-cased "pending UI/UX
+      components" banner (superseded by the general per-stage Artifacts tab reachability fix).
+    - **Real, live verification throughout** (same methodology as the prior frontend session --
+      actual running backend + frontend, Playwright via the backend venv, no synthetic fixtures):
+      every milestone screenshotted against real data (Task Comments' 18 real Coder Agent
+      versions, QuickCart's real SRS/Architecture Plan, Login's real merge history). Full backend
+      suite re-run clean after every milestone (263 passed throughout, same pre-existing
+      Docker-dependent exclusions as always). Final 9-page smoke test (project list, 3 project
+      detail pages, 5 features at different real pipeline stages, LLM Settings) -- zero page
+      errors, zero console errors.
 
 ## Where to look
 

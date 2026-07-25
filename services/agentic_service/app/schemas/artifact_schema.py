@@ -46,3 +46,6 @@ class ArtifactResponse(BaseModel):
     version: int
     approval_status: ApprovalStatus
     created_at: datetime
+    # Computed from the file on disk at read time (not stored) -- None if the file is missing.
+    # Purely cosmetic (shown next to each artifact in the frontend), never used for any decision.
+    size_bytes: int | None = None

@@ -57,7 +57,15 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-MAX_PLANNING_ATTEMPTS = 2
+# Bumped 2 -> 4. The long-documented "planner under-plans backend files" gap (see CLAUDE.md)
+# was retested for real against a fresh feature (QuickCart/Item Management): attempt 1 omitted
+# "maps_to" entirely from every file; attempt 2 (after specific feedback) added it but still
+# left some endpoints/entities/FR-ids uncovered -- real, incremental convergence identical in
+# shape to what UI/UX Agent's metadata validation needed 4 attempts to fully resolve, just cut
+# off here at 2 before finishing. The retry loop already does the right thing (exact validation
+# error + previous plan + "fix only these gaps" framing, see prompt.py's validation_feedback
+# section) -- this was a budget problem, not a prompt-wording problem.
+MAX_PLANNING_ATTEMPTS = 4
 MAX_CODING_ATTEMPTS = 3
 # Bumped 50 -> 65 -> 100. 65 (raised specifically to accommodate the new
 # list_unimplemented_planned_files/check_syntax self-check tool calls) still hit

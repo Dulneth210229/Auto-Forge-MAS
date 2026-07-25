@@ -41,6 +41,7 @@ from app.schemas.architecture_schema import (
 from app.schemas.coder_schema import CoderAgentReviseRequest
 from app.services.in_memory_store import store
 from app.services.plantuml_service import plantuml_service
+from app.services.stage_event_service import stage_event_service
 import traceback
 
 router = APIRouter(prefix="/features/{feature_id}/agents", tags=["Agents"])
@@ -77,6 +78,7 @@ async def run_requirement_agent(
     Human approval is required after this.
     """
     _validate_feature(feature_id)
+    stage_event_service.record(feature_id, AgentName.REQUIREMENT, "run", request.human_comment)
 
     try:
         return await requirement_agent.run(
@@ -111,6 +113,9 @@ async def revise_requirement_agent(
     """
 
     _validate_feature(feature_id)
+    stage_event_service.record(
+        feature_id, AgentName.REQUIREMENT, "revise", request.revision_comment, request.revised_by
+    )
 
     try:
         return await requirement_agent.revise(
@@ -143,6 +148,7 @@ async def run_domain_agent(
     Human approval is required after this before Architecture Agent can use the Enhanced SRS.
     """
     _validate_feature(feature_id)
+    stage_event_service.record(feature_id, AgentName.DOMAIN, "run", request.human_comment)
 
     try:
         return await domain_agent.run(
@@ -178,6 +184,9 @@ async def revise_domain_agent(
     """
 
     _validate_feature(feature_id)
+    stage_event_service.record(
+        feature_id, AgentName.DOMAIN, "revise", request.revision_comment, request.revised_by
+    )
 
     try:
         return await domain_agent.revise(
@@ -218,6 +227,7 @@ async def run_architecture_agent(
     """
 
     _validate_feature(feature_id)
+    stage_event_service.record(feature_id, AgentName.ARCHITECTURE, "run", request.human_comment)
 
     try:
         return await architecture_agent.run(
@@ -256,6 +266,9 @@ async def revise_architecture_agent(
     """
 
     _validate_feature(feature_id)
+    stage_event_service.record(
+        feature_id, AgentName.ARCHITECTURE, "revise", request.revision_comment, request.revised_by
+    )
 
     try:
         return await architecture_agent.revise(
@@ -334,6 +347,9 @@ async def revise_coder_agent(feature_id: str, request: CoderAgentReviseRequest):
     Human approval is required again after this, same as after a normal run.
     """
     _validate_feature(feature_id)
+    stage_event_service.record(
+        feature_id, AgentName.CODER, "revise", request.revision_comment, request.revised_by
+    )
 
     try:
         output = await coder_agent.revise(feature_id=feature_id, request=request)

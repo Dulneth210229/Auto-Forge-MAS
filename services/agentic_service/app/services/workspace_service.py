@@ -14,7 +14,9 @@ Every feature is developed on its own branch (feature/{feature_slug}) and only
 merged into main after human approval.
 """
 
+import io
 import json
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -871,6 +873,46 @@ class WorkspaceService:
 
         if branch_name in [head.name for head in repo.heads]:
             repo.git.branch("-D", branch_name)
+
+    def export_zip(self, project_id: str, ref: str) -> bytes:
+        """
+        Zip a git ref's tree (committed content only -- uncommitted working-tree changes are
+        never included) into an in-memory archive, excluding .git itself.
+
+        Reads directly from the commit's tree object (repo.commit(ref).tree.traverse()) rather
+        than checking the ref out first -- this can be called regardless of whatever branch is
+        currently checked out, with no risk of disturbing it (e.g. a coding loop that might be
+        mid-run on a different branch at the same time).
+        """
+        repo = self.ensure_project_repo(project_id)
+
+        try:
+            commit = repo.commit(ref)
+        except Exception as error:
+            raise ValueError(f"No such ref '{ref}' in this project's repo.") from error
+
+        buffer = io.BytesIO()
+
+        with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for item in commit.tree.traverse():
+                if item.type != "blob":
+                    continue
+
+                archive.writestr(item.path, item.data_stream.read())
+
+        return buffer.getvalue()
+
+    def export_feature_code_zip(self, project_id: str, feature_id: str) -> bytes:
+        """
+        Zip a feature's own code -- its branch if it still exists (pre-merge/pre-approval, so a
+        reviewer can try the code locally before deciding), otherwise falls back to `main` (the
+        branch is deleted once merged, per merge_feature_branch).
+        """
+        repo = self.ensure_project_repo(project_id)
+        branch_name = self._feature_branch_name(feature_id)
+        ref = branch_name if branch_name in [head.name for head in repo.heads] else MAIN_BRANCH
+
+        return self.export_zip(project_id, ref)
 
 
 workspace_service = WorkspaceService()

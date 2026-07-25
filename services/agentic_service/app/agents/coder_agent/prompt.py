@@ -102,14 +102,27 @@ _CODE_PLANNER_SHARED_HARD_RULES = """
    only frontend files (pages/components/hooks/services) without the backend
    route/controller/model files that actually implement each required
    endpoint and entity below is INCOMPLETE and will be rejected.
+2a. "maps_to" is a JSON ARRAY OF STRINGS, never a single string, and its
+   elements are NOT a description of the file or a note about "where this
+   comes from in the architecture plan" -- each element must be one exact,
+   verbatim string COPIED CHARACTER-FOR-CHARACTER from the
+   required_endpoints / required_entities / required_requirement_ids lists
+   below (e.g. copy "/api/items" or "Item" or "FR-002" exactly as shown,
+   never paraphrase, prefix, or describe it). One file's "maps_to" commonly
+   needs MULTIPLE array elements -- e.g. a single routes file implementing
+   three endpoints needs all three endpoint strings in its "maps_to" array.
+   CORRECT:   "maps_to": ["/api/items", "/api/items/:id", "Item", "FR-002"]
+   WRONG:     "maps_to": "Architecture Plan: server/src/routes/items.js"
+   WRONG:     "maps_to": "implements the Item entity and item endpoints"
+   WRONG (not an array): "maps_to": "/api/items"
 3. Every API endpoint listed under "required_endpoints" below must be
-   referenced (by its literal endpoint string) in the "maps_to" list of at
-   least one planned BACKEND file (e.g. a route or controller that
-   implements it) -- referencing it from a frontend API-calling file does
-   NOT count as covering the endpoint.
+   referenced (by its literal endpoint string, copied exactly, per rule 2a)
+   in the "maps_to" list of at least one planned BACKEND file (e.g. a route
+   or controller that implements it) -- referencing it from a frontend
+   API-calling file does NOT count as covering the endpoint.
 4. Every data entity listed under "required_entities" below must be
-   referenced (by its literal name string) in the "maps_to" list of at least
-   one planned backend model/schema file.
+   referenced (by its literal name string, copied exactly, per rule 2a) in
+   the "maps_to" list of at least one planned backend model/schema file.
 5. Every functional requirement id listed under "required_requirement_ids"
    below must be referenced in the "maps_to" list of at least one planned
    file.
@@ -163,14 +176,21 @@ _CODE_PLANNER_SHARED_HARD_RULES = """
 """
 
 _CODE_PLAN_JSON_SHAPE = """
-Return exactly this JSON shape:
+Return exactly this JSON shape ("maps_to" is always an array, per rule 2a -- note the route file
+below covers TWO endpoints, both listed):
 {
   "files": [
     {
-      "path": "server/src/routes/auth.routes.js",
+      "path": "server/src/models/Item.js",
       "action": "create",
-      "rationale": "short reason this file is needed",
-      "maps_to": ["/api/auth/login", "FR-001"]
+      "rationale": "Mongoose schema for the Item entity",
+      "maps_to": ["Item"]
+    },
+    {
+      "path": "server/src/routes/items.routes.js",
+      "action": "create",
+      "rationale": "Express router implementing the item CRUD endpoints",
+      "maps_to": ["/api/items", "/api/items/:id", "FR-001", "FR-002"]
     }
   ],
   "new_dependencies": ["npm-package-name"],
