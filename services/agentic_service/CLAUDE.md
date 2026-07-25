@@ -1472,6 +1472,26 @@ milestone — that file is scratch, **this file is the durable one**.
   bug in this project would again not be caught until a real test suite exists (M7/QA Agent
   territory) — `npm install` alone only checks that declared dependencies resolve, not that
   the code correctly declares every dependency it uses.
+- **Local Ollama models struggle to faithfully reproduce a large two-part JSON structure in one
+  shot** (Domain Agent build, item 28): the Domain Agent's prompt asks for a single JSON object
+  containing both a full `enhanced_srs_json` (the entire original SRS, verbatim, plus any
+  domain-cited additions/enrichments) and a full `domain_improvements_json` summary in the same
+  response. Real end-to-end runs against the real, approved `Login` feature SRS (`E-commerce
+  Platform` project) with three different locally-hosted models — `qwen3-coder:latest` (twice,
+  `max_tokens` 4097 then 8192), `gemma4:latest` (8192), and `llama3:latest` (8192) — **all four
+  attempts** failed structurally: `qwen3-coder` twice silently dropped
+  `non_functional_requirements` (and once also `acceptance_criteria`) from its output;
+  `gemma4:latest` omitted the required `enhanced_srs_json`/`domain_improvements_json` top-level
+  keys entirely; `llama3:latest` produced JSON that was outright malformed partway through
+  (`Expecting value: line 57 column 24`). This looks like a genuine local-model-capacity
+  limitation for this task's size/complexity, not a prompt bug — every failure was still caught
+  correctly by `DomainEnhancementValidator`/JSON parsing, triggered the one JSON-repair retry,
+  and then the deterministic fallback, which **never crashed and never fabricated content** in
+  any of the four attempts (see item 28 below for the real artifacts this produced). If this
+  keeps happening with better local models later, the next thing to try is splitting the LLM
+  call in two (enrich-only, without asking the model to also retype the entire unchanged SRS) —
+  not attempted here since it would change the approved one-call design; flagged as a future
+  option, not applied.
 - **Windows: `shutil.rmtree` on a git repo directory reliably fails** with either a
   `PermissionError` from git's read-only object files, or (worse, and non-obvious) "the process
   cannot access the file because it is being used by another process" from GitPython's `Repo`
@@ -1792,6 +1812,52 @@ milestone — that file is scratch, **this file is the durable one**.
   item 26's reactive class-repair loop for real (a genuine anemic-attribute validation failure
   that self-corrected on retry). Not approved; left in place with the honest stereotype-mismatch
   quirk noted above still visible for a future session to judge.
+
+- **Item 28: Domain Agent built as a real RAG system** (previously a stub, `raise
+  NotImplementedError`), per the plan at the top of this session
+  (`C:\Users\ASUS\.claude\plans\soft-petting-star.md` at time of writing). New
+  `app/services/rag/` package (`loaders.py`/`chunking.py`/`embedding.py`/`vector_store.py`) +
+  `app/services/domain_knowledge_service.py` do real deterministic retrieval (embed query with a
+  local `sentence-transformers/all-MiniLM-L6-v2` model, loaded lazily; similarity-search a
+  persistent local ChromaDB collection at `vector_db/chroma`) — never an LLM tool-calling loop,
+  per this repo's own build-spec constraint that Domain/Requirement/Architecture stay on the
+  one-shot `BaseLLMProvider` path. Seed e-commerce knowledge base authored at
+  `knowledge_base/ecommerce/` (5 `.txt` files: checkout/cart, payment/PCI, catalog/inventory,
+  order lifecycle, account/auth) and really ingested via `scripts/ingest_domain_knowledge.py`
+  (5 files, 21 chunks) — `scripts/verify_domain_rag_e2e.py` confirms real retrieval returns the
+  correct on-topic source document for 4/4 representative e-commerce queries plus the empty-query
+  edge case. `AgentName.DOMAIN`/`ArtifactType.ENHANCED_SRS` were already pre-wired; added
+  `ArtifactType.DOMAIN_IMPROVEMENTS` for the new human-readable "what changed and why" summary
+  artifact. `domain_validator.py`'s honesty check (no additions/modifications may be claimed when
+  retrieval returned zero chunks) is the enforcement mechanism that makes "Domain Agent is a real
+  RAG system" a checked fact rather than a claim. `graph_orchestrator_service.py`: `domain` moved
+  from `AUTO_APPROVED_STAGES` into `GATED_STAGES` with a real `_domain_node` (mirrors `_uiux_node`)
+  — this is exactly the flip the M6-era docstring said to make "the moment Domain Agent produces
+  real output." `tests/test_graph_orchestrator.py` updated accordingly: the fast, throwaway-feature
+  mechanics tests now anchor entirely at the `requirement` gate (same reasoning that already
+  excluded `uiux`/`coder` — `domain` now needs a real approved SRS artifact + a real LLM call, so
+  it can no longer be cheaply traversed by a mechanics-only test). New agent files:
+  `app/agents/domain_agent/{agent.py,domain_validator.py,markdown_builder.py}` (schemas.py/
+  prompt.py extended in place), `app/schemas/domain_schema.py`; real `/domain/run` and new
+  `/domain/revise` endpoints replace the old placeholder in `app/api/routes/agents.py`. 29 new
+  unit tests (chunking/validator/markdown-builder/fallback/retrieval-query), all pure Python, all
+  passing, plus the full existing suite re-run clean (only pre-existing, unrelated Docker-daemon-
+  dependent failures in `test_coder_tools.py`/`test_coder_verify.py`/`test_render_checker.py`,
+  environmental, not caused by this change). **Real e2e verification against the real, approved
+  `Login` feature (`feature_a44033b8`, `E-commerce Platform` project, approved SRS v3)**: real
+  retrieval genuinely found 3 relevant e-commerce knowledge sources for this feature
+  (`checkout_and_cart_conventions.txt`, `payment_and_pci_basics.txt`,
+  `user_account_and_authentication.txt` — a sensible match for a Login feature). All four real
+  LLM generation attempts (see the model-quality gotcha above) hit the fallback path, producing
+  `login_enhanced_srs_v1.json`/`.md` and `login_domain_improvements_v1.json` through
+  `login_enhanced_srs_v4.json`/`.md` and `login_domain_improvements_v4.json` under
+  `outputs/e-commerce-platform/feature-login/02_domain/` — each fallback artifact set is real,
+  honest, validator-clean output (unchanged SRS content, `fallback_used: true`, a correct,
+  specific `fallback_reason`), left in place as genuine evidence the reliability ladder holds up
+  under real repeated LLM failure, not synthetic test debris. None of these are approved yet —
+  a future session with a more capable model (larger local model or a hosted provider) could
+  re-run `domain_agent.run('feature_a44033b8', ...)` to get a genuinely enriched (non-fallback)
+  version for human approval.
 
 ## Where to look
 

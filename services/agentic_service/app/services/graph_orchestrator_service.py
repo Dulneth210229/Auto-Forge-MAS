@@ -15,12 +15,13 @@ POST /features/{id}/agents/{requirement,architecture}/run endpoints; approving
 the resulting artifact (unchanged approval flow) is what resumes the graph
 past their gates, exactly as it always has.
 
-domain_node moved from a gated stage to an auto-approved pass-through stage
-in Milestone 6: Domain Agent is still a stub with no artifact a human could
-ever approve, so leaving it gated made the pipeline permanently stuck at
-approve_domain with no way through the normal approval endpoint. It now joins
-security/qa as an auto-approved no-op -- flip it back to a real gate the
-moment Domain Agent produces real output.
+domain_node moved back to a real gated stage once Domain Agent shipped its real
+RAG-based Enhanced SRS implementation (see app/agents/domain_agent/agent.py):
+it now produces a real, human-reviewable artifact triple (Enhanced SRS
+Markdown/JSON + Domain Improvements JSON), so a human approval gate is both
+possible and required -- Architecture Agent's use_enhanced_srs_if_available
+lookup only ever finds an artifact if one was actually approved, so leaving
+Domain auto-approved would silently defeat that feature.
 
 Milestone 7: security_node and qa_node now call the real (still placeholder)
 SecurityAgent/QAAgent classes instead of the generic Milestone 0 pass-through
@@ -40,11 +41,13 @@ from langgraph.types import Command, interrupt
 from typing_extensions import TypedDict
 
 from app.agents.coder_agent.agent import coder_agent
+from app.agents.domain_agent.agent import domain_agent
 from app.agents.qa_agent.agent import qa_agent
 from app.agents.security_agent.agent import security_agent
 from app.agents.uiux_agent.agent import uiux_agent
 from app.core.config import settings
 from app.schemas.coder_schema import CoderAgentRunRequest
+from app.schemas.domain_schema import DomainAgentRunRequest
 from app.schemas.uiux_schema import UIUXAgentRunRequest
 from app.services.in_memory_store import store
 from app.utils.logger import get_logger
@@ -56,11 +59,11 @@ logger = get_logger(__name__)
 STAGE_SEQUENCE = ["requirement", "domain", "architecture", "uiux", "coder", "security", "qa"]
 
 # Stages that stop for a human approval gate.
-GATED_STAGES = ["requirement", "architecture", "uiux", "coder"]
+GATED_STAGES = ["requirement", "domain", "architecture", "uiux", "coder"]
 
 # Stages that run automatically with no human gate (no agent implementation
-# yet for domain/security/qa -- there is nothing for a human to review).
-AUTO_APPROVED_STAGES = ["domain", "security", "qa"]
+# yet for security/qa -- there is nothing for a human to review).
+AUTO_APPROVED_STAGES = ["security", "qa"]
 
 
 class FeaturePipelineState(TypedDict, total=False):
@@ -90,6 +93,23 @@ def _make_stage_node(stage_name: str):
         }
 
     return _node
+
+
+def _domain_node(state: FeaturePipelineState) -> dict[str, Any]:
+    """
+    Real Domain Agent call. See _uiux_node for the asyncio.run() safety note.
+    """
+    feature_id = state["feature_id"]
+    logger.info("Running real DomainAgent for feature_id=%s", feature_id)
+
+    request = DomainAgentRunRequest(human_comment=state.get("human_comment"))
+    output = asyncio.run(domain_agent.run(feature_id, request))
+
+    return {
+        "last_agent": "domain",
+        "last_artifact_ids": output.artifact_ids,
+        "human_comment": None,
+    }
 
 
 def _uiux_node(state: FeaturePipelineState) -> dict[str, Any]:
@@ -174,6 +194,7 @@ def _qa_node(state: FeaturePipelineState) -> dict[str, Any]:
 
 
 REAL_NODE_FUNCTIONS = {
+    "domain": _domain_node,
     "uiux": _uiux_node,
     "coder": _coder_node,
     "security": _security_node,

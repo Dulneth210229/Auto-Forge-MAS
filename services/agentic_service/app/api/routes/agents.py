@@ -20,6 +20,7 @@ from app.core.enums import AgentName
 from app.schemas.agent_schema import AgentRunRequest, AgentRunResponse
 from app.services.in_memory_store import store
 from app.agents.requirement_agent.agent import requirement_agent
+from app.agents.domain_agent.agent import domain_agent
 from app.agents.architecture_agent.agent import architecture_agent
 from app.agents.coder_agent.agent import coder_agent
 from app.core.enums import AgentName, ArtifactType, ArtifactFormat
@@ -28,6 +29,10 @@ from app.services.artifact_service import artifact_service
 from app.schemas.requirement_schema import (
     RequirementAgentRunRequest,
     RequirementAgentReviseRequest,
+)
+from app.schemas.domain_schema import (
+    DomainAgentRunRequest,
+    DomainAgentReviseRequest,
 )
 from app.schemas.architecture_schema import (
     ArchitectureAgentRunRequest,
@@ -123,19 +128,75 @@ async def revise_requirement_agent(
         )
 
 @router.post("/domain/run", response_model=AgentRunResponse)
-async def run_domain_agent(feature_id: str, request: AgentRunRequest):
+async def run_domain_agent(
+    feature_id: str,
+    request: DomainAgentRunRequest
+):
     """
-    Placeholder endpoint for Domain Agent.
+    Run the Domain Agent.
+
+    This endpoint:
+    - requires an approved SRS JSON artifact
+    - retrieves relevant domain knowledge (RAG) from the vector store
+    - generates Enhanced SRS Markdown, Enhanced SRS JSON, and Domain Improvements JSON
+
+    Human approval is required after this before Architecture Agent can use the Enhanced SRS.
     """
     _validate_feature(feature_id)
 
-    return AgentRunResponse(
-        feature_id=feature_id,
-        agent_name=AgentName.DOMAIN,
-        status="not_implemented_yet",
-        message="Domain Agent endpoint is ready. Real logic will be added later.",
-        artifact_ids=[]
-    )
+    try:
+        return await domain_agent.run(
+            feature_id=feature_id,
+            request=request
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    except Exception as error:
+        print("========== DOMAIN AGENT ERROR ==========")
+        print(traceback.format_exc())
+        print("=========================================")
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Domain Agent failed: {str(error)}"
+        )
+
+
+@router.post("/domain/revise", response_model=AgentRunResponse)
+async def revise_domain_agent(
+    feature_id: str,
+    request: DomainAgentReviseRequest
+):
+    """
+    Revise the latest Domain Agent Enhanced SRS.
+
+    This endpoint:
+    - loads the latest Enhanced SRS JSON artifact
+    - applies the human revision comment
+    - creates a new Enhanced SRS version
+    - keeps previous versions unchanged
+    """
+
+    _validate_feature(feature_id)
+
+    try:
+        return await domain_agent.revise(
+            feature_id=feature_id,
+            request=request
+        )
+
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+    except Exception as error:
+        print("========== DOMAIN AGENT REVISION ERROR ==========")
+        print(traceback.format_exc())
+        print("===================================================")
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Domain Agent revision failed: {str(error)}"
+        )
 
 
 @router.post("/architecture/run", response_model=AgentRunResponse)

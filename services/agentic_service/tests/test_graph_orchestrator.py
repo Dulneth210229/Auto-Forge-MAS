@@ -1,16 +1,19 @@
 """
 Graph orchestrator mechanics test (interrupt/resume/checkpoint survival).
 
-Milestone 6 note: uiux_node and coder_node now call the real UIUXAgent/
-CoderAgent pipelines, which require real approved SRS/Architecture Plan
-artifacts and make real LLM calls -- not appropriate for a throwaway-feature
-fast test. These tests exercise the graph mechanics through the stages that
-are still pass-through/auto-approved (requirement -> domain (auto) ->
-architecture), which is exactly where M0 originally proved
-interrupt/resume/checkpoint-survival works, and stays true for the same
-reason today. The real, full run-to-completion proof (through the real
-uiux_node/coder_node) is exercised manually against the real, approved
-Login feature -- see CLAUDE.md for that verification.
+Domain Agent update: domain_node now calls the real DomainAgent RAG pipeline
+(same class as uiux_node/coder_node -- requires a real approved SRS artifact
+and makes a real LLM call), so it moved out of the "auto-approved pass-
+through" set into GATED_STAGES. That means these throwaway-feature mechanics
+tests can no longer cheaply advance past the requirement gate the way they
+used to (there is nothing beyond it left that's still a no-op pass-through --
+requirement_node itself is the only stage before a real agent runs). These
+tests exercise interrupt/resume/reject-loop/restart-survival entirely at the
+requirement gate, which is representative of the generic
+_make_approval_gate/_make_router mechanics regardless of which stage they're
+applied to. The real, full run-to-completion proof (through the real
+domain_node/uiux_node/coder_node) is exercised manually against the real,
+approved Login feature -- see CLAUDE.md for that verification.
 
 Requires a reachable MongoDB (the same one configured in .env / MONGODB_URI).
 Every project/feature this test creates is deleted in a fixture teardown, and
@@ -66,30 +69,31 @@ def test_start_pauses_at_first_approval_gate(feature):
     assert status["next"] == ["approve_requirement"]
 
 
-def test_approve_skips_auto_approved_domain_and_reaches_architecture(feature):
+def test_domain_is_a_real_gated_stage_requiring_an_approved_srs(feature):
+    """
+    Domain Agent is no longer an auto-approved pass-through: approving
+    requirement now advances into the real domain_node, which enforces its
+    own precondition (an approved SRS JSON artifact must exist) exactly like
+    Architecture Agent's own precondition -- there is no approved SRS for
+    this throwaway feature, so the real DomainAgent.run() raises, proving
+    the gate is real rather than a no-op.
+    """
     orchestrator = GraphOrchestratorService()
     orchestrator.start(feature["project_id"], feature["feature_id"])
 
-    orchestrator.resume(feature["feature_id"], "approved")
-
-    status = orchestrator.get_status(feature["feature_id"])
-    # domain has no gate (auto-approved, Domain Agent is still a stub) -- one
-    # resume from approve_requirement lands directly on approve_architecture.
-    assert status["next"] == ["approve_architecture"]
-    assert status["values"]["last_agent"] == "architecture"
+    with pytest.raises(ValueError, match="No approved SRS JSON artifact found"):
+        orchestrator.resume(feature["feature_id"], "approved")
 
 
 def test_rejection_loops_back_to_same_stage(feature):
     orchestrator = GraphOrchestratorService()
     orchestrator.start(feature["project_id"], feature["feature_id"])
-    orchestrator.resume(feature["feature_id"], "approved")  # -> approve_architecture
 
     orchestrator.resume(feature["feature_id"], "revision_requested")
 
     status = orchestrator.get_status(feature["feature_id"])
-    # Still paused at the architecture gate, not advanced to uiux.
-    assert status["next"] == ["approve_architecture"]
-    assert status["values"]["last_agent"] == "architecture"
+    # Still paused at the requirement gate, not advanced into domain.
+    assert status["next"] == ["approve_requirement"]
 
 
 def test_resume_without_a_paused_run_raises(feature):
@@ -107,15 +111,15 @@ def test_resume_survives_a_fresh_orchestrator_instance(feature):
     """
     first_instance = GraphOrchestratorService()
     first_instance.start(feature["project_id"], feature["feature_id"])
-    first_instance.resume(feature["feature_id"], "approved")  # -> approve_architecture
+    first_instance.resume(feature["feature_id"], "revision_requested")  # loops back to requirement
 
     second_instance = GraphOrchestratorService()
     status_before = second_instance.get_status(feature["feature_id"])
-    assert status_before["next"] == ["approve_architecture"]
+    assert status_before["next"] == ["approve_requirement"]
 
-    # Prove routing still works correctly post-restart (reject -> loop back).
+    # Prove routing still works correctly post-restart (reject -> loop back again).
     second_instance.resume(feature["feature_id"], "revision_requested")
 
     final_status = second_instance.get_status(feature["feature_id"])
-    assert final_status["next"] == ["approve_architecture"]
-    assert final_status["values"]["last_agent"] == "architecture"
+    assert final_status["next"] == ["approve_requirement"]
+    assert final_status["values"]["last_agent"] == "requirement"

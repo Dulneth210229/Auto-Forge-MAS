@@ -33,6 +33,7 @@ class AgentName(str, Enum):
 class ArtifactType(str, Enum):
     SRS = "srs"
     ENHANCED_SRS = "enhanced_srs"
+    DOMAIN_IMPROVEMENTS = "domain_improvements"
 
     # Architecture Agent artifacts
     ARCHITECTURE_PLAN = "architecture_plan"
