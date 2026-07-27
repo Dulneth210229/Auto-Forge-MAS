@@ -1,0 +1,29 @@
+{
+  "routes": [
+    "server/src/routes/auth.routes.js"
+  ],
+  "api_endpoints": [
+    "/api/auth/login",
+    "/api/auth/forgot-password"
+  ],
+  "models": [
+    "server/src/models/UserCredentials.js"
+  ],
+  "shared_components": [
+    "client/src/components/LoginForm.jsx"
+  ],
+  "features": {
+    "feature_a44033b8": {
+      "feature_name": "Login",
+      "files": [
+        "client/src/components/LoginForm.jsx",
+        "client/src/pages/LoginPage.jsx",
+        "client/src/services/authService.js",
+        "package-lock.json",
+        "package.json",
+        "server/src/models/UserCredentials.js",
+        "server/src/routes/auth.routes.js"
+      ]
+    }
+  }
+}

@@ -8,8 +8,9 @@ Rules applied:
 - Actor lifelines use actor notation.
 - Boundary/control/entity/database/external participants use UML stereotypes.
 - Messages are rendered in the provided order.
-- Return messages use dashed arrows.
-- Optional/alternative/error flows are rendered using UML combined fragments.
+- Return messages use dashed arrows; async messages use an open arrowhead.
+- Optional/alternative/error/repeated flows are rendered using UML combined
+  fragments (alt/opt/loop).
 """
 
 from __future__ import annotations
@@ -64,6 +65,11 @@ class ArchitectureSequencePlantUMLBuilder:
                 lines.append(f"opt {condition}")
                 continue
 
+            if kind == "loop_start":
+                condition = self._safe_label(interaction.get("condition", "Repeat"))
+                lines.append(f"loop {condition}")
+                continue
+
             if kind == "else":
                 condition = self._safe_label(interaction.get("condition", "Else"))
                 lines.append(f"else {condition}")
@@ -112,7 +118,12 @@ class ArchitectureSequencePlantUMLBuilder:
         if source == target or message_type == "self":
             return f"{source} -> {target}: {message}"
 
-        arrow = "-->" if message_type == "return" else "->"
+        if message_type == "async":
+            arrow = "->>"
+        elif message_type == "return":
+            arrow = "-->"
+        else:
+            arrow = "->"
         return f"{source} {arrow} {target}: {message}"
 
     def _safe_alias(self, value: str) -> str:

@@ -37,11 +37,6 @@ class ArchitectureUseCaseModeler:
         "service layer",
     ]
 
-    GENERIC_USE_CASE_NAMES = [
-        "use feature", "use the feature", "manage feature", "access feature",
-        "perform feature", "do feature", "feature action", "use system",
-    ]
-
     OPTIONAL_WORDS = [
         "optional", "alternative", "recover", "recovery", "forgot", "reset",
         "retry", "re enter", "re-enter", "cancel", "skip", "if", "when",
@@ -58,12 +53,6 @@ class ArchitectureUseCaseModeler:
         "validate", "verify", "check", "calculate", "generate", "create", "save",
         "store", "retrieve", "process", "submit", "confirm", "apply", "update",
         "delete", "return",
-    ]
-
-    COMMON_FIELDS = [
-        "credentials", "credential", "email", "password", "username", "token",
-        "jwt", "quantity", "price", "amount", "date", "phone", "name",
-        "address", "role", "status", "total",
     ]
 
     def build(
@@ -83,12 +72,34 @@ class ArchitectureUseCaseModeler:
         )
 
         actors = self._build_actors(specification, srs_json, sds_json)
-        main_use_cases = self._build_main_use_cases(specification, srs_json)
-        included_use_cases = self._build_included_use_cases(specification, srs_json)
-        extension_use_cases = self._build_extension_use_cases(specification, srs_json)
 
-        included_use_cases = self._dedupe_and_merge(included_use_cases)
-        extension_use_cases = self._dedupe_and_merge(extension_use_cases)
+        if specification["use_cases"]:
+            # Primary path: the LLM supplied a real use_cases[] list -- trust
+            # its naming/categorization directly rather than re-deriving use
+            # cases from raw SRS sentences via regex (the confirmed source of
+            # garbled/fragmented names).
+            main_use_cases, included_use_cases, extension_use_cases = (
+                self._build_use_cases_from_specification(specification, srs_json)
+            )
+        else:
+            # Last-resort fallback: no usable specification at all (every
+            # generation rung including repair failed). See the fallback
+            # naming helpers below for how this stays honest/minimal instead
+            # of aggressively fabricating names from raw requirement text.
+            main_use_cases = self._build_main_use_cases(specification, srs_json)
+            included_use_cases = self._build_included_use_cases(specification, srs_json)
+            extension_use_cases = self._build_extension_use_cases(specification, srs_json)
+
+        # Dedup across included+extension together, not each list separately
+        # -- a real run surfaced two differently-categorized entries (one
+        # included, one extension) that both named the same underlying
+        # behaviour (confirmed: both truncated to the identical fallback
+        # name "Find Specific Tasks Quickly Using" for a Task Search
+        # feature). Per-list dedup alone cannot catch a duplicate that
+        # spans a category boundary.
+        included_use_cases, extension_use_cases = self._merge_near_duplicates_across_categories(
+            included_use_cases, extension_use_cases
+        )
 
         main_use_cases, included_use_cases, extension_use_cases = self._renumber_use_cases(
             main_use_cases=main_use_cases,
@@ -150,27 +161,34 @@ class ArchitectureUseCaseModeler:
         specification: dict[str, Any],
     ) -> dict[str, Any]:
         """
-        Normalize LLM specification and fill missing values from SRS/SDS.
+        Normalize LLM specification and fill missing boilerplate from SRS/SDS.
+
+        `use_cases` (the current, trusted schema -- see build()) is passed
+        through as-is when the LLM supplied one. The legacy
+        `primary_use_cases`/`included_behaviours`/`extension_behaviours`/
+        `exception_flows` keys are kept only as a defensive secondary read
+        (for an older-shaped specification) -- deliberately NOT populated
+        with synthesized defaults here anymore, so a genuinely empty
+        specification is never silently disguised as "the LLM already
+        provided something usable." That synthesis now lives only in the
+        deterministic fallback path in build().
         """
 
         feature_name = self._get_feature_name(srs_json, sds_json)
-        business_goal = self._get_text(srs_json, "business_goal")
+
+        use_cases_raw = specification.get("use_cases")
+        if not isinstance(use_cases_raw, list):
+            use_cases_raw = []
 
         return {
             "system_boundary": specification.get("system_boundary") or f"{feature_name} Feature",
             "diagram_title": specification.get("diagram_title") or f"{feature_name} Use Case Diagram",
             "actors": specification.get("actors") or specification.get("primary_actors") or srs_json.get("user_roles", []),
-            "primary_use_cases": specification.get("primary_use_cases") or specification.get("main_use_cases") or [
-                {
-                    "name": self._build_main_use_case_name(feature_name, business_goal),
-                    "description": business_goal or f"Main user goal for the {feature_name} feature.",
-                    "related_requirements": self._collect_ids(srs_json.get("functional_requirements", [])),
-                }
-            ],
+            "use_cases": use_cases_raw,
+            "primary_use_cases": specification.get("primary_use_cases") or specification.get("main_use_cases") or [],
             "included_behaviours": specification.get("included_behaviours") or specification.get("mandatory_included_behaviours") or [],
             "extension_behaviours": specification.get("extension_behaviours") or specification.get("alternative_flows") or [],
             "exception_flows": specification.get("exception_flows") or [],
-            "traceability": specification.get("traceability", []),
         }
 
     def _build_actors(
@@ -216,41 +234,120 @@ class ArchitectureUseCaseModeler:
 
         return actors
 
+    def _build_use_cases_from_specification(
+        self,
+        specification: dict[str, Any],
+        srs_json: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        """
+        Build main/included/extension use-case lists directly from the LLM's
+        own use_cases[] list -- trusted as-is (only light name cleanup via
+        _new_use_case), no regex-based sentence-mining. This is the primary
+        path whenever the LLM supplied a real use_cases list;
+        _build_main_use_cases/_build_included_use_cases/_build_extension_use_cases
+        remain only as the last-resort fallback for a genuinely empty
+        specification.
+        """
+
+        main: list[dict[str, Any]] = []
+        included: list[dict[str, Any]] = []
+        extension: list[dict[str, Any]] = []
+
+        for item in specification.get("use_cases", []):
+            if not isinstance(item, dict):
+                continue
+
+            name = self._extract_name(item)
+            if not name:
+                continue
+
+            description = self._extract_description(item) or name
+            related = self._extract_related_ids(item)
+            category = str(item.get("type") or item.get("category") or "included").strip().lower()
+            if category not in {"main", "included", "extension"}:
+                category = "included"
+
+            use_case = self._new_use_case(name, description, category, related)
+
+            if category == "main":
+                main.append(use_case)
+            elif category == "extension":
+                extension.append(use_case)
+            else:
+                included.append(use_case)
+
+        # Guarantee exactly one main use case even if the LLM mis-categorized
+        # -- promote the first available entry rather than silently
+        # producing a diagram with no main goal at all. Update the
+        # "category" field itself, not just which list it lives in, so
+        # downstream category filters (validator, tests, PlantUML builder)
+        # see it consistently.
+        if not main and included:
+            promoted = included.pop(0)
+            promoted["category"] = "main"
+            main.append(promoted)
+        elif not main and extension:
+            promoted = extension.pop(0)
+            promoted["category"] = "main"
+            main.append(promoted)
+        elif not main:
+            feature_name = self._get_feature_name(srs_json, {})
+            main.append(self._new_use_case(
+                feature_name,
+                f"Main user goal for the {feature_name} feature.",
+                "main",
+                self._collect_ids(srs_json.get("functional_requirements", [])),
+            ))
+
+        # A feature-level diagram has exactly one main goal -- if the LLM
+        # produced more than one "main" entry, keep the first and fold the
+        # rest in as included behaviours rather than discarding them.
+        if len(main) > 1:
+            demoted = main[1:]
+            for use_case in demoted:
+                use_case["category"] = "included"
+            included = demoted + included
+            main = main[:1]
+
+        return main, included, extension
+
     def _build_main_use_cases(
         self,
         specification: dict[str, Any],
         srs_json: dict[str, Any],
     ) -> list[dict[str, Any]]:
         """
-        Build the main use case.
+        Build the main use case (fallback path only -- see
+        _build_use_cases_from_specification for the primary, LLM-trusting
+        path).
+
+        Named cleanly from feature_name only -- no business-goal regex
+        mangling. A feature name (e.g. "Login", "Task Search") is already a
+        reasonable, human-authored use case name; synthesizing something
+        "better" from a raw business_goal sentence via regex phrase-surgery
+        is exactly the failure mode this last-resort path exists to avoid.
         """
 
         feature_name = self._get_feature_name(srs_json, {})
-        business_goal = self._get_text(srs_json, "business_goal")
-        primary_items = self._as_list(specification.get("primary_use_cases")) or []
+        primary_items = self._as_list(specification.get("primary_use_cases"))
 
-        if not primary_items:
-            primary_items = [{
-                "name": self._build_main_use_case_name(feature_name, business_goal),
-                "description": business_goal or f"Main user goal for the {feature_name} feature.",
-                "related_requirements": self._collect_ids(srs_json.get("functional_requirements", [])),
-            }]
+        if primary_items:
+            item = primary_items[0]
+            name = self._extract_name(item) or feature_name
+            description = self._extract_description(item) or f"Main user goal for the {feature_name} feature."
+            related = self._extract_related_ids(item) or self._collect_ids(srs_json.get("functional_requirements", []))
+        else:
+            name = feature_name
+            description = self._get_text(srs_json, "business_goal") or f"Main user goal for the {feature_name} feature."
+            related = self._collect_ids(srs_json.get("functional_requirements", []))
 
-        result = []
-        for item in primary_items[:1]:  # Feature-level diagram should have one main user goal.
-            name = self._extract_name(item)
-            if self._is_generic_use_case_name(name):
-                name = self._build_main_use_case_name(feature_name, business_goal)
-
-            result.append({
-                "id": "UC-001",
-                "name": self._clean_use_case_name(name),
-                "description": self._extract_description(item) or business_goal or f"Main user goal for the {feature_name} feature.",
-                "category": "main",
-                "related_requirements": self._extract_related_ids(item) or self._collect_ids(srs_json.get("functional_requirements", [])),
-            })
-
-        return result
+        return [{
+            "id": "UC-001",
+            "name": self._clean_use_case_name(name),
+            "description": description,
+            "category": "main",
+            "related_requirements": related,
+        }]
 
     def _build_included_use_cases(
         self,
@@ -258,25 +355,34 @@ class ArchitectureUseCaseModeler:
         srs_json: dict[str, Any],
     ) -> list[dict[str, Any]]:
         """
-        Build included use cases from mandatory behaviours and validation rules.
+        Build included use cases from mandatory behaviours and validation
+        rules (fallback path only). Names come from
+        _build_fallback_supporting_use_case -- a user-story goal match, or
+        one gentle truncation -- no multi-pass regex verb/topic extraction.
         """
 
         result: list[dict[str, Any]] = []
 
         for item in self._as_list(specification.get("included_behaviours")):
             description = self._extract_description(item) or self._extract_name(item)
+            if not description:
+                continue
             related = self._extract_related_ids(item)
-            name = self._extract_name(item) or self._make_action_name(description)
+            name = self._extract_name(item) or self._build_fallback_supporting_use_case(item, srs_json)
             if name:
                 result.append(self._new_use_case(name, description, "included", related))
 
         for rule in self._as_list(srs_json.get("validation_rules")):
             rule_text = self._extract_description(rule) or self._extract_name(rule)
             rule_id = self._extract_id(rule)
-            if rule_text:
+            if not rule_text:
+                continue
+
+            name = self._build_fallback_supporting_use_case(rule, srs_json)
+            if name:
                 result.append(
                     self._new_use_case(
-                        name=self._make_validation_use_case_name(rule_text),
+                        name=name,
                         description=rule_text,
                         category="included",
                         related=[rule_id] if rule_id else [],
@@ -299,7 +405,7 @@ class ArchitectureUseCaseModeler:
             if not self._has_any(lowered, self.INTERNAL_ACTION_VERBS):
                 continue
 
-            name = self._make_action_name(description)
+            name = self._build_fallback_supporting_use_case(requirement, srs_json)
             if name:
                 result.append(
                     self._new_use_case(
@@ -318,7 +424,10 @@ class ArchitectureUseCaseModeler:
         srs_json: dict[str, Any],
     ) -> list[dict[str, Any]]:
         """
-        Build extension use cases from optional, alternative, recovery, and error flows.
+        Build extension use cases from optional, alternative, recovery, and
+        error flows (fallback path only). Names come from
+        _build_fallback_supporting_use_case -- a user-story goal match, or
+        one gentle truncation -- no multi-pass regex verb/topic extraction.
         """
 
         result: list[dict[str, Any]] = []
@@ -329,8 +438,10 @@ class ArchitectureUseCaseModeler:
 
         for item in extension_sources:
             description = self._extract_description(item) or self._extract_name(item)
+            if not description:
+                continue
             related = self._extract_related_ids(item)
-            name = self._extract_name(item) or self._make_extension_name(description)
+            name = self._extract_name(item) or self._build_fallback_supporting_use_case(item, srs_json)
             if name:
                 result.append(self._new_use_case(name, description, "extension", related))
 
@@ -344,14 +455,16 @@ class ArchitectureUseCaseModeler:
             if not (self._has_any(lowered, self.OPTIONAL_WORDS) or self._has_any(lowered, self.ERROR_WORDS)):
                 continue
 
-            result.append(
-                self._new_use_case(
-                    name=self._make_extension_name(description),
-                    description=description,
-                    category="extension",
-                    related=[req_id] if req_id else [],
+            name = self._build_fallback_supporting_use_case(requirement, srs_json)
+            if name:
+                result.append(
+                    self._new_use_case(
+                        name=name,
+                        description=description,
+                        category="extension",
+                        related=[req_id] if req_id else [],
+                    )
                 )
-            )
 
         for criterion in self._as_list(srs_json.get("acceptance_criteria")):
             description = self._extract_description(criterion) or self._extract_name(criterion)
@@ -363,14 +476,16 @@ class ArchitectureUseCaseModeler:
             if not (self._has_any(lowered, self.OPTIONAL_WORDS) or self._has_any(lowered, self.ERROR_WORDS)):
                 continue
 
-            result.append(
-                self._new_use_case(
-                    name=self._make_extension_name(description),
-                    description=description,
-                    category="extension",
-                    related=[ac_id] if ac_id else [],
+            name = self._build_fallback_supporting_use_case(criterion, srs_json)
+            if name:
+                result.append(
+                    self._new_use_case(
+                        name=name,
+                        description=description,
+                        category="extension",
+                        related=[ac_id] if ac_id else [],
+                    )
                 )
-            )
 
         return result
 
@@ -502,118 +617,51 @@ class ArchitectureUseCaseModeler:
     # Naming helpers
     # ------------------------------------------------------------------
 
-    def _build_main_use_case_name(self, feature_name: str, business_goal: str) -> str:
+    def _build_fallback_supporting_use_case(self, requirement: Any, srs_json: dict[str, Any]) -> str:
         """
-        Build the main use case name.
+        Name one fallback supporting (included/extension) use case for an
+        SRS requirement/rule/criterion (fallback path only).
 
-        For a feature-level diagram, the feature name is normally the cleanest
-        standard main use case name, for example Login, Checkout, Manage Cart,
-        Enroll in Course.
+        Best-effort: look for a user story whose goal shares the most
+        stemmed-token overlap with the requirement text, and use that
+        already-clean, action-oriented `goal` phrase. When no story matches,
+        fall back to one gentle pass over the requirement text itself via
+        _clean_use_case_name (strip a common boilerplate lead-in, keep
+        ~5 words, title-case) -- deliberately no multi-pass regex
+        verb/topic extraction, which is what produced garbled names
+        elsewhere in this module.
         """
 
-        if feature_name and not self._is_generic_use_case_name(feature_name):
-            return self._clean_use_case_name(feature_name)
+        description = self._extract_description(requirement) or self._extract_name(requirement)
+        if not description:
+            return ""
 
-        if business_goal:
-            cleaned = self._remove_requirement_noise(business_goal)
-            cleaned = re.sub(r"^(allow|enable|let|provide)\s+", "", cleaned, flags=re.IGNORECASE).strip()
-            cleaned = re.sub(r"\b(users?|customers?|admins?|students?|instructors?)\b\s+to\s+", "", cleaned, flags=re.IGNORECASE).strip()
-            return self._clean_use_case_name(cleaned)
+        matched_goal = self._best_matching_user_story_goal(description, srs_json)
+        return self._clean_use_case_name(matched_goal or description)
 
-        return "Perform Feature Action"
+    def _best_matching_user_story_goal(self, requirement_text: str, srs_json: dict[str, Any]) -> str:
+        requirement_stems = self._name_stems(requirement_text)
+        if not requirement_stems:
+            return ""
 
-    def _make_validation_use_case_name(self, text: str) -> str:
-        field = self._infer_field_name(text)
-        if field:
-            return f"Validate {field}"
-        return "Validate Input"
+        best_goal = ""
+        best_overlap = 0
 
-    def _make_action_name(self, text: str) -> str:
-        lowered = self._normalize_words(text)
+        for story in self._as_list(srs_json.get("user_stories")):
+            if not isinstance(story, dict):
+                continue
+            goal = str(story.get("goal", "")).strip()
+            if not goal:
+                continue
+            goal_stems = self._name_stems(goal)
+            if not goal_stems:
+                continue
+            overlap = len(requirement_stems & goal_stems)
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_goal = goal
 
-        if self._has_any(lowered, ["validate", "verify", "check"]):
-            field = self._infer_field_name(text)
-            if field:
-                return f"Validate {field}"
-            return "Validate Input"
-
-        if self._has_any(lowered, ["generate", "create"]):
-            field = self._infer_field_name(text)
-            if field:
-                return f"Generate {field}"
-            return "Generate Result"
-
-        if "calculate" in lowered:
-            field = self._infer_field_name(text) or "Total"
-            return f"Calculate {field}"
-
-        cleaned = self._remove_requirement_noise(text)
-        match = re.search(
-            r"\b(validate|verify|check|calculate|generate|create|save|store|retrieve|process|submit|confirm|apply|update|delete|return)\b\s+(.+)",
-            cleaned,
-            flags=re.IGNORECASE,
-        )
-
-        if match:
-            verb = match.group(1)
-            target = self._short_topic(match.group(2), default="Required Behaviour")
-            return self._clean_use_case_name(f"{verb} {target}")
-
-        return self._clean_use_case_name(cleaned)
-
-    def _make_extension_name(self, text: str) -> str:
-        lowered = self._normalize_words(text)
-
-        if self._has_any(lowered, self.ERROR_WORDS):
-            topic = self._extract_error_topic(text)
-            return self._clean_use_case_name(f"Handle {topic}")
-
-        if self._has_any(lowered, ["forgot", "recover", "recovery", "reset", "retry", "initiate", "link", "redirect", "direct"]):
-            topic = self._extract_recovery_topic(text)
-            return self._clean_use_case_name(f"Initiate {topic}")
-
-        topic = self._short_topic(text, default="Alternative Flow")
-        return self._clean_use_case_name(topic)
-
-    def _infer_field_name(self, text: str) -> str:
-        lowered = self._normalize_words(text)
-
-        # Prefer stronger domain nouns if present in the requirement text.
-        if "credential" in lowered:
-            return "Credentials"
-        if "jwt" in lowered or "token" in lowered:
-            return "Token"
-
-        for field in self.COMMON_FIELDS:
-            if field in lowered:
-                return self._title_case(field)
-
-        return ""
-
-    def _extract_error_topic(self, text: str) -> str:
-        cleaned = self._remove_requirement_noise(text)
-        lowered = cleaned.lower()
-
-        for word in ["invalid", "incorrect", "failed", "failure", "denied", "unauthorized", "forbidden", "error"]:
-            match = re.search(rf"\b{word}\b\s+([a-zA-Z0-9 ]{{1,40}})", lowered)
-            if match:
-                return self._short_topic(f"{word} {match.group(1)}", default="Exception")
-
-        return self._short_topic(cleaned, default="Exception")
-
-    def _extract_recovery_topic(self, text: str) -> str:
-        cleaned = self._remove_requirement_noise(text)
-        lowered = cleaned.lower()
-
-        match = re.search(r"\binitiat(?:e|es|ion)\b\s+(?:the\s+)?([a-zA-Z0-9 ]{1,50})", lowered)
-        if match:
-            return self._short_topic(match.group(1), default="Recovery Flow")
-
-        match = re.search(r"\b(forgot|recover|recovery|reset|retry)\b\s+([a-zA-Z0-9 ]{0,40})", lowered)
-        if match:
-            return self._short_topic(f"{match.group(1)} {match.group(2)}", default="Recovery Flow")
-
-        return "Recovery Flow"
+        return best_goal
 
     def _new_use_case(self, name: str, description: str, category: str, related: list[str]) -> dict[str, Any]:
         return {
@@ -624,11 +672,22 @@ class ArchitectureUseCaseModeler:
             "related_requirements": self._unique([str(item) for item in related if item]),
         }
 
+    # Standalone filler words that would otherwise survive gentle truncation
+    # as a leftover fragment (e.g. "Validate The User Credentials Against").
+    # Mirrors usecase_validator.py's FRAGMENT_WORDS check -- kept as a
+    # separate copy per this codebase's convention of not sharing files
+    # between these deterministic agent modules.
+    NAME_FILLER_WORDS = {
+        "a", "an", "the", "this", "that", "these", "those", "their", "its",
+        "his", "her", "our", "your", "my", "can", "could", "would", "should",
+        "given", "when", "then",
+    }
+
     def _clean_use_case_name(self, name: str) -> str:
         cleaned = self._remove_requirement_noise(name)
         cleaned = re.sub(r"[^a-zA-Z0-9 ]+", " ", cleaned)
         cleaned = re.sub(r"\s+", " ", cleaned).strip()
-        words = cleaned.split()
+        words = [word for word in cleaned.split() if word.lower() not in self.NAME_FILLER_WORDS]
 
         if not words:
             return "Perform Feature Action"
@@ -637,25 +696,67 @@ class ArchitectureUseCaseModeler:
         cleaned = " ".join(words[:5])
         return self._title_case(cleaned)
 
-    def _short_topic(self, text: str, default: str) -> str:
-        cleaned = self._remove_requirement_noise(text)
-        cleaned = re.sub(
-            r"\b(the system must|system must|must|shall|should|user|users|actor|actors|clicks|click|given|when|then|using|with|against|provided|provide|return|returns|display|displays|direct|directs|redirect|redirects|link|mechanism)\b",
-            " ",
-            cleaned,
-            flags=re.IGNORECASE,
-        )
-        cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
-        words = cleaned.split()
-        if not words:
-            return default
-        return " ".join(words[:4])
-
     # ------------------------------------------------------------------
     # Deduplication and IDs
     # ------------------------------------------------------------------
 
-    def _dedupe_and_merge(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # Small, purpose-scoped stopword set for name-similarity dedup only --
+    # deliberately separate from usecase_validator.py's STOPWORDS (that one
+    # is tuned for out-of-scope stem matching, a different job).
+    DEDUP_STOPWORDS = {
+        "the", "a", "an", "and", "or", "to", "via", "by", "for", "of", "in",
+        "on", "with", "only", "is", "are", "be", "this", "that", "flow",
+        "feature", "process", "scope", "out", "from", "as", "at", "using",
+    }
+
+    # Jaccard overlap threshold (on stemmed name tokens) above which two use
+    # cases are treated as naming the same real behaviour.
+    NAME_SIMILARITY_THRESHOLD = 0.6
+
+    def _merge_near_duplicates(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """
+        Three passes, cheapest/most-certain first:
+        1. Exact normalized-name match (today's original behaviour).
+        2. Identical, non-empty related_requirements sets -- two use cases
+           citing the exact same SRS requirement ids are almost certainly the
+           same real behaviour regardless of wording (catches synonym-level
+           duplicates like "Initiate Forgot Password Process" vs "Initiate
+           Recovery Flow" citing the same FR, which no name-similarity
+           metric would catch, since they share no meaningful stems).
+        3. Stem/token Jaccard overlap on names above NAME_SIMILARITY_THRESHOLD
+           (catches paraphrase-level near-duplicates the first two passes
+           miss, e.g. differently-worded restatements of the same action).
+        """
+        merged = self._dedupe_by_exact_name(items)
+        merged = self._dedupe_by_shared_requirements(merged)
+        merged = self._dedupe_by_name_similarity(merged)
+        return merged
+
+    def _merge_near_duplicates_across_categories(
+        self,
+        included_use_cases: list[dict[str, Any]],
+        extension_use_cases: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """
+        Run _merge_near_duplicates over included+extension combined, then
+        split back by each surviving item's own "category" field -- a
+        duplicate can span the include/extend boundary (two differently-
+        categorized entries naming the same real behaviour), which per-list
+        deduping alone cannot catch. When a duplicate does span the
+        boundary, the first-seen item's category wins (included is listed
+        first below, so an included/extension collision resolves to
+        included -- the more conservative, mandatory-by-default choice).
+        """
+
+        combined = included_use_cases + extension_use_cases
+        merged = self._merge_near_duplicates(combined)
+
+        merged_included = [item for item in merged if item.get("category") != "extension"]
+        merged_extension = [item for item in merged if item.get("category") == "extension"]
+
+        return merged_included, merged_extension
+
+    def _dedupe_by_exact_name(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         merged: dict[str, dict[str, Any]] = {}
 
         for item in items:
@@ -670,16 +771,93 @@ class ArchitectureUseCaseModeler:
                 merged[key]["related_requirements"] = self._unique(item.get("related_requirements", []))
                 continue
 
-            merged[key]["related_requirements"] = self._unique(
-                merged[key].get("related_requirements", []) + item.get("related_requirements", [])
-            )
-
-            existing_description = str(merged[key].get("description", ""))
-            new_description = str(item.get("description", ""))
-            if new_description and new_description not in existing_description:
-                merged[key]["description"] = f"{existing_description} | {new_description}" if existing_description else new_description
+            merged[key] = self._merge_two_use_cases(merged[key], item)
 
         return list(merged.values())
+
+    def _dedupe_by_shared_requirements(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        seen: list[tuple[frozenset, int]] = []
+
+        for item in items:
+            related = frozenset(str(r) for r in item.get("related_requirements", []) if r)
+
+            match_index = None
+            if related:
+                match_index = next((index for existing, index in seen if existing == related), None)
+
+            if match_index is not None:
+                result[match_index] = self._merge_two_use_cases(result[match_index], item)
+                continue
+
+            result.append(dict(item))
+            if related:
+                seen.append((related, len(result) - 1))
+
+        return result
+
+    def _dedupe_by_name_similarity(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        result_stems: list[set[str]] = []
+
+        for item in items:
+            stems = self._name_stems(item.get("name", ""))
+
+            match_index = None
+            if stems:
+                for index, existing_stems in enumerate(result_stems):
+                    if not existing_stems:
+                        continue
+                    overlap = stems & existing_stems
+                    union = stems | existing_stems
+                    if union and len(overlap) / len(union) >= self.NAME_SIMILARITY_THRESHOLD:
+                        match_index = index
+                        break
+
+            if match_index is not None:
+                result[match_index] = self._merge_two_use_cases(result[match_index], item)
+                continue
+
+            result.append(dict(item))
+            result_stems.append(stems)
+
+        return result
+
+    def _merge_two_use_cases(self, existing: dict[str, Any], new_item: dict[str, Any]) -> dict[str, Any]:
+        existing = dict(existing)
+        existing["related_requirements"] = self._unique(
+            existing.get("related_requirements", []) + new_item.get("related_requirements", [])
+        )
+
+        existing_description = str(existing.get("description", ""))
+        new_description = str(new_item.get("description", ""))
+        if new_description and new_description not in existing_description:
+            existing["description"] = (
+                f"{existing_description} | {new_description}" if existing_description else new_description
+            )
+
+        return existing
+
+    def _name_stems(self, name: str) -> set[str]:
+        words = re.findall(r"[a-zA-Z0-9]+", str(name).lower())
+        return {self._stem_word(word) for word in words if word not in self.DEDUP_STOPWORDS and len(word) >= 3}
+
+    def _stem_word(self, word: str) -> str:
+        word = word.lower()
+
+        # Very small generic stemmer -- mirrors usecase_validator.py's own
+        # _stem (kept as a separate copy per this codebase's convention of
+        # not sharing files between these deterministic agent modules).
+        if word.startswith("verif"):
+            return "verif"
+        if word.startswith("initiat"):
+            return "initiat"
+
+        for suffix in ["ations", "ation", "itions", "ition", "ments", "ment", "ing", "ed", "es", "s"]:
+            if word.endswith(suffix) and len(word) > len(suffix) + 3:
+                return word[: -len(suffix)]
+
+        return word
 
     def _renumber_use_cases(
         self,
@@ -781,10 +959,6 @@ class ArchitectureUseCaseModeler:
     def _is_technical_actor(self, name: str) -> bool:
         lowered = self._normalize_words(name)
         return any(word in lowered for word in self.TECHNICAL_ACTOR_WORDS)
-
-    def _is_generic_use_case_name(self, name: str) -> bool:
-        lowered = self._normalize_words(name)
-        return not lowered or lowered in self.GENERIC_USE_CASE_NAMES or re.fullmatch(r"use .+ feature", lowered) is not None
 
     def _remove_requirement_noise(self, text: str) -> str:
         cleaned = str(text).strip()

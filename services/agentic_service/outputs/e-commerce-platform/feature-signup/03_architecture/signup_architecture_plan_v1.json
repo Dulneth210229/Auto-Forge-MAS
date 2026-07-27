@@ -1,0 +1,324 @@
+{
+  "document_control": {
+    "document_title": "Architecture Plan: Signup",
+    "document_type": "Feature Architecture Plan",
+    "project_id": "proj_a2e3d529",
+    "feature_id": "feature_f74fb38a",
+    "feature_name": "Signup",
+    "target_stack": "MERN",
+    "architecture_style": "modular",
+    "version": "v1",
+    "generated_by": "Hand-authored for M8 -- the real Architecture Agent failed due to a pre-existing, out-of-scope fallback use-case validator bug (false-positive out-of-scope detection); see CLAUDE.md.",
+    "approval_status": "pending"
+  },
+  "feature_overview": {
+    "business_goal": "Allow new users to create an account so they can access personalized shopping features.",
+    "scope": [
+      "Register a new user with full name, email, and password.",
+      "Reuse the existing UserCredentials model and JWT issuance from the Login feature."
+    ],
+    "out_of_scope": [
+      "Email verification.",
+      "Password recovery.",
+      "Profile customization after signup."
+    ],
+    "user_roles": [
+      "Customer"
+    ],
+    "feature_boundary": "This plan covers only the Signup feature."
+  },
+  "requirement_interpretation": {
+    "functional_requirements": [
+      {
+        "id": "FR-001",
+        "description": "User can register using full name, email, and password"
+      },
+      {
+        "id": "FR-002",
+        "description": "System must validate that the email is not already registered"
+      },
+      {
+        "id": "FR-003",
+        "description": "System must hash the password before storing it"
+      },
+      {
+        "id": "FR-004",
+        "description": "Upon successful registration, the system must create a new user record and return a JWT authentication token"
+      },
+      {
+        "id": "FR-005",
+        "description": "System must reuse the existing User/UserCredentials data model used by the Login feature"
+      }
+    ],
+    "acceptance_criteria": [],
+    "validation_rules": [],
+    "non_functional_requirements": []
+  },
+  "architecture_approach": {
+    "architecture_style": "modular",
+    "architecture_rationale": "Reuse the existing UserCredentials model and auth infrastructure from Login; add a new signup route.",
+    "frontend_overview": "A new SignupPage/SignupForm reusing the design system where applicable.",
+    "backend_overview": "A new /api/auth/signup route reusing the existing UserCredentials Mongoose model.",
+    "data_overview": "Reuses the existing User Credentials data entity; no new entity needed.",
+    "integration_overview": "Links to the existing Login page for users who already have an account.",
+    "design_tradeoffs": []
+  },
+  "design_views": {
+    "context_view": {
+      "actors": [
+        "Customer"
+      ],
+      "external_systems": [],
+      "feature_boundary": "Signup feature boundary.",
+      "main_interactions": []
+    },
+    "logical_view": {
+      "frontend_modules": [
+        {
+          "name": "SignupFrontendModule",
+          "responsibility": "Handle frontend responsibilities for Signup."
+        }
+      ],
+      "backend_modules": [
+        {
+          "name": "SignupBackendModule",
+          "responsibility": "Handle backend responsibilities for Signup."
+        }
+      ],
+      "domain_services": [
+        {
+          "name": "SignupService",
+          "responsibility": "Apply business rules for Signup."
+        }
+      ],
+      "data_modules": [
+        {
+          "name": "UserCredentials",
+          "responsibility": "Existing shared data model, reused from Login."
+        }
+      ],
+      "integration_points": []
+    },
+    "interface_view": {
+      "api_endpoints": [
+        {
+          "endpoint": "/api/auth/signup",
+          "method": "POST",
+          "purpose": "Registers a new user and returns a JWT.",
+          "request_model": "SignupRequest",
+          "success_response_model": "SignupSuccessResponse",
+          "error_response_model": "SignupErrorResponse",
+          "related_requirements": [
+            "FR-001",
+            "FR-002",
+            "FR-003",
+            "FR-004"
+          ]
+        }
+      ],
+      "request_models": [
+        {
+          "name": "SignupRequest",
+          "fields": [
+            {
+              "name": "fullName",
+              "type": "String",
+              "required": true
+            },
+            {
+              "name": "email",
+              "type": "String",
+              "required": true
+            },
+            {
+              "name": "password",
+              "type": "String",
+              "required": true
+            }
+          ],
+          "related_requirements": [
+            "FR-001"
+          ]
+        }
+      ],
+      "response_models": [
+        {
+          "name": "SignupSuccessResponse",
+          "fields": [
+            {
+              "name": "token",
+              "type": "String"
+            }
+          ]
+        }
+      ]
+    },
+    "data_view": {
+      "data_entities": [
+        {
+          "name": "User Credentials",
+          "purpose": "Reused from Login: stores hashed passwords and unique emails; extended with fullName for Signup.",
+          "fields": [
+            {
+              "name": "fullName",
+              "type": "String",
+              "required": true
+            },
+            {
+              "name": "email",
+              "type": "String",
+              "required": true
+            },
+            {
+              "name": "password",
+              "type": "String",
+              "required": true
+            }
+          ],
+          "relationships": [],
+          "indexes_or_constraints": [
+            "Unique constraint on email (already exists)."
+          ],
+          "related_requirements": [
+            "FR-001",
+            "FR-002",
+            "FR-003",
+            "FR-005"
+          ]
+        }
+      ],
+      "storage_rules": [
+        "Reuses the existing UserCredentials collection from Login."
+      ],
+      "data_validation_rules": [
+        {
+          "rule_id": "VR-001",
+          "rule": "Email must be unique and conform to standard email format.",
+          "related_requirements": [
+            "FR-002"
+          ]
+        }
+      ]
+    },
+    "behavior_view": {
+      "flows": []
+    },
+    "error_handling_view": {
+      "validation_errors": [
+        "Email already registered.",
+        "Missing required fields."
+      ]
+    },
+    "security_authorization_view": {
+      "notes": "Passwords hashed via bcrypt (reused from Login), JWT issued the same way as Login."
+    },
+    "quality_attributes_view": {
+      "performance": "Signup response should be comparable to login.",
+      "usability": "Responsive UI."
+    }
+  },
+  "frontend_architecture_plan": {
+    "responsibilities": [
+      "Collect full name, email, password, confirm password.",
+      "Link to the existing Login page."
+    ],
+    "pages_or_components": [
+      {
+        "name": "SignupPage"
+      },
+      {
+        "name": "SignupForm"
+      }
+    ],
+    "state_and_feedback": [
+      "Show validation errors",
+      "Redirect to dashboard on success"
+    ]
+  },
+  "backend_architecture_plan": {
+    "responsibilities": [
+      "Validate uniqueness of email.",
+      "Hash password.",
+      "Create UserCredentials record.",
+      "Issue JWT."
+    ],
+    "layers": [
+      "SignupService",
+      "UserCredentials model (reused)"
+    ],
+    "integration_points": []
+  },
+  "validation_plan": {
+    "input_validation": [
+      "Email format",
+      "Password length",
+      "Required fields"
+    ],
+    "processing_validation": [
+      "Duplicate email check before insert"
+    ]
+  },
+  "coder_implementation_tasks": [
+    {
+      "task_id": "TASK-001",
+      "task": "Create SignupPage/SignupForm reusing design system conventions from Login.",
+      "layer": "frontend",
+      "suggested_files": [
+        "client/src/pages/SignupPage.jsx",
+        "client/src/components/SignupForm.jsx"
+      ],
+      "related_requirements": [
+        "FR-001"
+      ]
+    },
+    {
+      "task_id": "TASK-002",
+      "task": "Implement POST /api/auth/signup reusing the existing UserCredentials model.",
+      "layer": "backend",
+      "suggested_files": [
+        "server/src/routes/auth.routes.js",
+        "server/src/models/UserCredentials.js"
+      ],
+      "related_requirements": [
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005"
+      ]
+    }
+  ],
+  "traceability_matrix": [
+    {
+      "source_id": "FR-001",
+      "architecture_plan_section": "interface_view"
+    },
+    {
+      "source_id": "FR-002",
+      "architecture_plan_section": "validation_plan"
+    },
+    {
+      "source_id": "FR-003",
+      "architecture_plan_section": "security_authorization_view"
+    },
+    {
+      "source_id": "FR-004",
+      "architecture_plan_section": "interface_view"
+    },
+    {
+      "source_id": "FR-005",
+      "architecture_plan_section": "data_view"
+    }
+  ],
+  "assumptions": [
+    "The Login feature and its UserCredentials model already exist in this codebase."
+  ],
+  "constraints": [
+    "Reuse the existing UserCredentials model and authentication infrastructure already built for Login instead of duplicating it."
+  ],
+  "risks": [],
+  "dependencies": [
+    "Login feature (UserCredentials model, JWT issuance)."
+  ],
+  "human_approval_note": "This Architecture Plan must be reviewed and approved before the UI/UX Agent or Coder Agent starts."
+}

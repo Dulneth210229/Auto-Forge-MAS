@@ -14,6 +14,11 @@ from pydantic import BaseModel
 class ArchitectureAgentInput(BaseModel):
     """
     Internal input passed to Architecture Agent.
+
+    previous_architecture_plans/project_manifest_json make generation
+    project-aware: each entry in previous_architecture_plans is
+    {"feature_id", "feature_name", "architecture_plan_json"} for another
+    feature of the same project whose plan a human already approved.
     """
 
     project: dict
@@ -22,6 +27,8 @@ class ArchitectureAgentInput(BaseModel):
     enhanced_srs_json: dict | None = None
     architecture_notes: str | None = None
     human_comment: str | None = None
+    previous_architecture_plans: list[dict] = []
+    project_manifest_json: dict = {}
 
 
 class ArchitectureAgentOutput(BaseModel):

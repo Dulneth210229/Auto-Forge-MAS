@@ -1,0 +1,29 @@
+{
+  "files": [
+    {
+      "path": "server/src/routes/auth.routes.js",
+      "action": "modify",
+      "description": "Add the signup endpoint to the existing auth routes file that already handles login and forgot-password.",
+      "maps_to": [
+        "/api/auth/signup",
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "server/src/models/UserCredentials.js",
+      "action": "modify",
+      "description": "Extend the existing UserCredentials model to include the fullName field required for signup, reusing the model as specified.",
+      "maps_to": [
+        "User Credentials",
+        "FR-001",
+        "FR-005"
+      ],
+      "actually_touched": true
+    }
+  ]
+}

@@ -1,0 +1,81 @@
+{
+  "files": [
+    {
+      "path": "server/src/models/Comment.js",
+      "action": "create",
+      "rationale": "Mongoose model for a task comment: text, author, task reference, created timestamp -- covers all four data entities the Architecture Plan split out separately (they are all fields of the same real-world Comment record).",
+      "maps_to": [
+        "Task CommentsDataEntity1",
+        "Task CommentsDataEntity2",
+        "Task CommentsDataEntity3",
+        "Task CommentsDataEntity4",
+        "FR-001",
+        "FR-004"
+      ]
+    },
+    {
+      "path": "server/src/routes/task-comments.routes.js",
+      "action": "create",
+      "rationale": "Real REST routes for task comments: POST to create, GET to list chronologically, DELETE to remove a comment the requester authored. The Architecture Plan's fallback only ever wrote a single duplicated GET endpoint string ('/api/task-comments') with no method differentiation -- this plans the SRS's actual api_expectations (POST/GET/DELETE) while still covering that literal endpoint string for traceability.",
+      "maps_to": [
+        "/api/task-comments",
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004"
+      ]
+    },
+    {
+      "path": "server/src/app.js",
+      "action": "modify",
+      "rationale": "Mount the new task-comments router at the FEATURE_ROUTES_END marker.",
+      "maps_to": []
+    },
+    {
+      "path": "client/src/components/CommentInput.jsx",
+      "action": "modify",
+      "rationale": "The approved UI/UX component's submit handler currently hardcodes a fake setTimeout-based 'mock submission' with a comment saying 'in real app this would be an API call' -- integrate it for real: accept an onSubmit(taskId, text) prop and call it instead of the mock, keeping the existing markup/styling intact.",
+      "maps_to": [
+        "FR-001"
+      ]
+    },
+    {
+      "path": "client/src/components/CommentList.jsx",
+      "action": "modify",
+      "rationale": "The approved UI/UX component's delete button has no onClick handler at all -- add an onDelete(commentId) prop and wire the existing delete button to call it, keeping the existing markup/styling intact.",
+      "maps_to": [
+        "FR-003"
+      ]
+    },
+    {
+      "path": "client/src/services/taskCommentsService.js",
+      "action": "create",
+      "rationale": "Real frontend API calls to the task-comments endpoints (list, add, delete) -- the functions TaskDetailPage/CommentInput/CommentList actually call.",
+      "maps_to": [
+        "FR-001",
+        "FR-002",
+        "FR-003"
+      ]
+    },
+    {
+      "path": "client/src/pages/TaskDetailPage.jsx",
+      "action": "create",
+      "rationale": "Host CommentList and CommentInput for a given task: fetch real comments on mount via taskCommentsService, pass real props (comments, currentUser, state) to CommentList, wire CommentInput's onSubmit and CommentList's onDelete to the real service calls and refresh state afterward.",
+      "maps_to": [
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004"
+      ]
+    },
+    {
+      "path": "client/src/App.jsx",
+      "action": "modify",
+      "rationale": "Add a /tasks/:taskId route to TaskDetailPage.",
+      "maps_to": []
+    }
+  ],
+  "new_dependencies": [],
+  "env_vars_needed": [],
+  "summary": "Full-stack Task Comments implementation: a Comment model, real REST routes (create/list/delete), and real wiring of the approved CommentInput/CommentList UI/UX components (replacing their placeholder fake/no-op logic with real service calls) via a new TaskDetailPage."
+}

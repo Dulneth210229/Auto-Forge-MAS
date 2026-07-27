@@ -37,6 +37,10 @@ class SequenceDiagramValidator:
         "the", "a", "an", "and", "or", "to", "via", "by", "for", "of", "in",
         "on", "with", "only", "is", "are", "be", "this", "that", "flow",
         "feature", "scope", "out", "from", "as", "at", "using",
+        # Generic requirement-phrasing filler nouns -- see the matching
+        # comment in usecase_validator.py's STOPWORDS for why these add no
+        # distinguishing signal to an out-of-scope phrase's stem set.
+        "functionality", "capability", "capabilities", "support",
     }
 
     def validate(self, srs_json: dict[str, Any], sequence_json: dict[str, Any]) -> None:
@@ -44,6 +48,7 @@ class SequenceDiagramValidator:
         errors.extend(self._validate_structure(sequence_json))
         errors.extend(self._validate_participants(sequence_json))
         errors.extend(self._validate_interactions(sequence_json))
+        errors.extend(self._validate_message_quality(sequence_json))
         errors.extend(self._validate_traceability(srs_json, sequence_json))
         errors.extend(self._validate_out_of_scope(srs_json, sequence_json))
 
@@ -116,7 +121,7 @@ class SequenceDiagramValidator:
 
             kind = str(interaction.get("kind", "message"))
 
-            if kind in ["alt_start", "opt_start"]:
+            if kind in ["alt_start", "opt_start", "loop_start"]:
                 fragment_stack.append(kind)
                 continue
 
@@ -158,6 +163,50 @@ class SequenceDiagramValidator:
 
         return errors
 
+    def _validate_message_quality(self, sequence_json: dict[str, Any]) -> list[str]:
+        """
+        Flags a message repeated verbatim (same from/to pair + normalized
+        text) outside a loop fragment -- inside a loop, repeating the same
+        message each iteration is the whole point, so duplicate-checking is
+        suspended for anything nested inside a loop_start/end block
+        (including nested alt/opt fragments), not just a bare loop body.
+        """
+        errors: list[str] = []
+        seen: set[tuple[str, str, str]] = set()
+        fragment_stack: list[str] = []
+
+        for interaction in sequence_json.get("interactions", []):
+            if not isinstance(interaction, dict):
+                continue
+
+            kind = str(interaction.get("kind", "message"))
+
+            if kind in ("alt_start", "opt_start", "loop_start"):
+                fragment_stack.append(kind)
+                continue
+
+            if kind == "end":
+                if fragment_stack:
+                    fragment_stack.pop()
+                continue
+
+            if kind != "message" or "loop_start" in fragment_stack:
+                continue
+
+            source = str(interaction.get("from", "")).strip()
+            target = str(interaction.get("to", "")).strip()
+            message_text = str(interaction.get("message", "")).strip()
+            key = (source, target, self._normalize(message_text))
+
+            if key in seen:
+                errors.append(
+                    f"Duplicate sequence message found outside a loop: '{message_text}' "
+                    f"from {source} to {target}."
+                )
+            seen.add(key)
+
+        return errors
+
     def _validate_traceability(self, srs_json: dict[str, Any], sequence_json: dict[str, Any]) -> list[str]:
         fr_ids = self._collect_ids(srs_json.get("functional_requirements", []))
         if not fr_ids:
@@ -195,7 +244,10 @@ class SequenceDiagramValidator:
                 text_stems = self._important_stems(text)
                 if self._matches_allowed(text_stems, allowed_sets):
                     continue
-                if len(forbidden_stems.intersection(text_stems)) >= (1 if len(forbidden_stems) == 1 else 2):
+                # Require ALL forbidden stems to be present, not just any 2 -- see the
+                # matching comment in usecase_validator.py's _validate_out_of_scope for why a
+                # flat 2-stem threshold false-positives on generic shared domain vocabulary.
+                if len(forbidden_stems.intersection(text_stems)) >= len(forbidden_stems):
                     errors.append(f"Sequence diagram appears to include out-of-scope item '{self._item_text(item)}' in message '{text}'.")
 
         return errors

@@ -122,74 +122,184 @@ class ArchitecturePlanMarkdownBuilder:
 
 ---
 
-## 7. API and Interface Plan
+## 7. End-to-End Implementation Plan (Coder Agent Blueprint)
+
+{self._implementation_plan(architecture_plan_json.get("implementation_plan", {}))}
+
+---
+
+## 8. API and Interface Plan
 
 {self._interface_view(design_views.get("interface_view", {}))}
 
 ---
 
-## 8. Data Model Plan
+## 9. Data Model Plan
 
 {self._data_view(design_views.get("data_view", {}))}
 
 ---
 
-## 9. Validation Plan
+## 10. Validation Plan
 
 {self._validation_plan(architecture_plan_json.get("validation_plan", {}), design_views)}
 
 ---
 
-## 10. Error Handling Plan
+## 11. Error Handling Plan
 
 {self._error_handling_view(design_views.get("error_handling_view", {}))}
 
 ---
 
-## 11. Security Plan
+## 12. Security Plan
 
 {self._security_view(design_views.get("security_authorization_view", {}))}
 
 ---
 
-## 12. Quality / NFR Plan
+## 13. Quality / NFR Plan
 
 {self._quality_view(design_views.get("quality_attributes_view", {}))}
 
 ---
 
-## 13. Coder Implementation Tasks
+## 14. Coder Implementation Tasks
 
 {self._implementation_tasks(architecture_plan_json.get("coder_implementation_tasks", []))}
 
 ---
 
-## 14. Requirement-to-Architecture Traceability
+## 15. Requirement-to-Architecture Traceability
 
 {self._traceability_matrix(architecture_plan_json.get("traceability_matrix", []))}
 
 ---
 
-## 15. Assumptions, Constraints, Risks, and Dependencies
+## 16. Assumptions, Constraints, Risks, and Dependencies
 
-### 15.1 Assumptions
+### 16.1 Assumptions
 {self._simple_list(architecture_plan_json.get("assumptions", []))}
 
-### 15.2 Constraints
+### 16.2 Constraints
 {self._simple_list(architecture_plan_json.get("constraints", []))}
 
-### 15.3 Risks
+### 16.3 Risks
 {self._records_list(architecture_plan_json.get("risks", []))}
 
-### 15.4 Dependencies
+### 16.4 Dependencies
 {self._simple_list(architecture_plan_json.get("dependencies", []))}
 
 ---
 
-## 16. Human Approval Note
+## 17. Human Approval Note
 
 {architecture_plan_json.get("human_approval_note", "This Architecture Plan must be reviewed and approved before the UI/UX Agent or Coder Agent starts.")}
 """
+
+    def _implementation_plan(self, data: dict[str, Any]) -> str:
+        if not isinstance(data, dict) or not data:
+            return "Not specified."
+
+        backend = data.get("backend", {}) or {}
+        frontend = data.get("frontend", {}) or {}
+
+        lines: list[str] = []
+
+        lines.append("### 7.1 Backend Files")
+        files = backend.get("files", []) or []
+        if files:
+            for item in files:
+                if isinstance(item, dict):
+                    lines.append(
+                        f"- `{item.get('path', '')}` ({item.get('action', '')}): "
+                        f"{item.get('purpose', '')}"
+                    )
+        else:
+            lines.append("- None planned.")
+
+        lines.append("")
+        lines.append("### 7.2 Endpoints")
+        endpoints = backend.get("endpoints", []) or []
+        if endpoints:
+            for item in endpoints:
+                if not isinstance(item, dict):
+                    continue
+                lines.append(f"- **{item.get('method', '')} {item.get('path', '')}**")
+                for field in item.get("request_body", []) or []:
+                    if isinstance(field, dict):
+                        required = "required" if field.get("required") else "optional"
+                        lines.append(
+                            f"  - request field `{field.get('field', '')}` "
+                            f"({field.get('type', '')}, {required}) {field.get('validation', '')}"
+                        )
+                if item.get("response"):
+                    lines.append(f"  - response: {item['response']}")
+                for error_case in item.get("error_cases", []) or []:
+                    lines.append(f"  - error: {error_case}")
+        else:
+            lines.append("- None planned.")
+
+        lines.append("")
+        lines.append("### 7.3 Data Models")
+        models = backend.get("models", []) or []
+        if models:
+            for item in models:
+                if not isinstance(item, dict):
+                    continue
+                lines.append(f"- **{item.get('name', '')}** (`{item.get('file', '')}`)")
+                for field in item.get("fields", []) or []:
+                    if isinstance(field, dict):
+                        lines.append(
+                            f"  - `{field.get('name', '')}`: {field.get('type', '')} "
+                            f"{field.get('constraints', '')}"
+                        )
+        else:
+            lines.append("- None planned.")
+
+        lines.append("")
+        lines.append("### 7.4 Frontend Pages / Components / Services")
+        for page in frontend.get("pages", []) or []:
+            if isinstance(page, dict):
+                lines.append(
+                    f"- page `{page.get('path', '')}` at route `{page.get('route', '')}`: "
+                    f"{page.get('purpose', '')}"
+                )
+        for component in frontend.get("components_to_reuse", []) or []:
+            lines.append(f"- reuse approved component: {self._inline(component)}")
+        for service in frontend.get("services", []) or []:
+            if isinstance(service, dict):
+                lines.append(f"- service `{service.get('path', '')}`")
+                for function in service.get("functions", []) or []:
+                    if isinstance(function, dict):
+                        lines.append(
+                            f"  - `{function.get('name', '')}` -> {function.get('calls_endpoint', '')}"
+                        )
+        routing = frontend.get("routing", {}) or {}
+        for route in routing.get("new_routes", []) or []:
+            lines.append(f"- route: {self._inline(route)}")
+        for link in routing.get("nav_links", []) or []:
+            lines.append(f"- nav link: {self._inline(link)}")
+
+        lines.append("")
+        lines.append("### 7.5 Implementation Order")
+        order = data.get("implementation_order", []) or []
+        if order:
+            for index, step in enumerate(order, start=1):
+                lines.append(f"{index}. {self._inline(step)}")
+        else:
+            lines.append("Not specified.")
+
+        lines.append("")
+        lines.append("### 7.6 Constraints")
+        constraints = data.get("constraints", []) or []
+        if constraints:
+            for constraint in constraints:
+                lines.append(f"- {self._inline(constraint)}")
+        else:
+            lines.append("Not specified.")
+
+        return "\n".join(lines)
 
     def _document_control(self, data: dict[str, Any]) -> str:
         rows = [

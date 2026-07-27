@@ -36,11 +36,26 @@ class ClassDiagramValidator:
         "association", "dependency", "aggregation", "composition", "inheritance", "generalization"
     }
 
+    # Standard UML multiplicity notation: 0, 1, *, a plain integer, or a
+    # range of any two of those (e.g. "0..1", "0..*", "1..*", "2..5").
+    MULTIPLICITY_PATTERN = re.compile(r"^(0|1|\*|\d+)(\.\.(0|1|\*|\d+))?$")
+
+    # Only these relationship kinds carry real cardinality between two
+    # classes in standard UML -- dependency/inheritance/generalization do not.
+    MULTIPLICITY_REQUIRED_TYPES = {"association", "aggregation", "composition"}
+
+    # A dto/entity class with ONLY these attribute names is indistinguishable
+    # from the deterministic fallback's placeholder "id: String" default --
+    # not a real, feature-specific structural element.
+    GENERIC_ATTRIBUTE_NAMES = {"id", "value", "field", "data"}
+
     def validate(self, srs_json: dict[str, Any], class_json: dict[str, Any]) -> None:
         errors: list[str] = []
         errors.extend(self._validate_structure(class_json))
         errors.extend(self._validate_classes(class_json))
+        errors.extend(self._validate_class_quality(class_json))
         errors.extend(self._validate_relationships(class_json))
+        errors.extend(self._validate_multiplicity(class_json))
         errors.extend(self._validate_traceability(srs_json, class_json))
 
         if errors:
@@ -119,6 +134,90 @@ class ClassDiagramValidator:
                 errors.append(f"Class relationship target is not a class: {target}")
             if relation_type not in self.ALLOWED_RELATIONSHIP_TYPES:
                 errors.append(f"Invalid class relationship type: {relation_type}")
+
+        return errors
+
+    def _validate_class_quality(self, class_json: dict[str, Any]) -> list[str]:
+        """
+        Flags anemic dto/entity classes (zero attributes) and dto/entity
+        classes whose attributes are ALL generic placeholders -- the
+        confirmed real failure mode of the old deterministic fallback,
+        which defaulted to a single "id: String" field whenever it couldn't
+        infer real fields from free text. A class with a genuine mix of
+        real and generic-named fields is not flagged.
+        """
+        errors: list[str] = []
+
+        for class_item in class_json.get("classes", []):
+            if not isinstance(class_item, dict):
+                continue
+
+            stereotype = str(class_item.get("stereotype", "")).strip().lower()
+            if stereotype not in ("dto", "entity"):
+                continue
+
+            name = str(class_item.get("name", "")).strip()
+            attributes = class_item.get("attributes", [])
+            if not isinstance(attributes, list):
+                continue
+
+            if not attributes:
+                errors.append(
+                    f"{stereotype.title()} class '{name}' has no attributes -- an anemic "
+                    f"DTO/entity is not a useful class diagram element."
+                )
+                continue
+
+            attribute_names = {
+                self._normalize(str(attribute.get("name", "")))
+                for attribute in attributes
+                if isinstance(attribute, dict)
+            }
+            attribute_names.discard("")
+
+            if attribute_names and attribute_names.issubset(self.GENERIC_ATTRIBUTE_NAMES):
+                errors.append(
+                    f"{stereotype.title()} class '{name}' only has placeholder attributes "
+                    f"({sorted(attribute_names)}) -- add real, feature-specific fields."
+                )
+
+        return errors
+
+    def _validate_multiplicity(self, class_json: dict[str, Any]) -> list[str]:
+        """
+        Every association/aggregation/composition relationship must carry
+        standard UML multiplicity notation on both ends -- the confirmed
+        real gap in the old builder/schema (no cardinality notation existed
+        at all). dependency/inheritance/generalization do not carry
+        cardinality in standard UML and are exempt.
+        """
+        errors: list[str] = []
+
+        for relationship in class_json.get("relationships", []):
+            if not isinstance(relationship, dict):
+                continue
+
+            relation_type = str(relationship.get("type", "")).strip().lower()
+            if relation_type not in self.MULTIPLICITY_REQUIRED_TYPES:
+                continue
+
+            source_multiplicity = str(relationship.get("source_multiplicity", "")).strip()
+            target_multiplicity = str(relationship.get("target_multiplicity", "")).strip()
+            label = f"{relationship.get('from')} -> {relationship.get('to')}"
+
+            if not source_multiplicity or not target_multiplicity:
+                errors.append(
+                    f"{relation_type.title()} relationship {label} is missing UML multiplicity "
+                    f"(source_multiplicity/target_multiplicity)."
+                )
+                continue
+
+            if not self.MULTIPLICITY_PATTERN.match(source_multiplicity) or not self.MULTIPLICITY_PATTERN.match(target_multiplicity):
+                errors.append(
+                    f"{relation_type.title()} relationship {label} has non-standard multiplicity "
+                    f"notation: '{source_multiplicity}'/'{target_multiplicity}' (expected forms "
+                    f"like 1, 0..1, 0..*, 1..*)."
+                )
 
         return errors
 

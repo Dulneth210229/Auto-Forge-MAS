@@ -1,0 +1,134 @@
+import { useMemo } from "react";
+import { STATUS, getLatestGatingArtifact } from "../../lib/deriveStageStatus";
+import { ARTIFACT_TYPE_LABELS } from "../../lib/artifactTypeMeta";
+import { artifactDownloadUrl } from "../../api/client";
+import { useArtifactContent } from "../../hooks/useArtifacts";
+import ApprovalPanel from "./ApprovalPanel";
+import LoadingSpinner from "../common/LoadingSpinner";
+
+const APPROVAL_WARNINGS = {
+  uiux: (
+    <>
+      Approving this metadata does <strong>not</strong> approve the individual components -- each
+      must be approved separately (see the "UI/UX components awaiting review" section), or Coder
+      Agent will regenerate it from scratch instead of reusing it.
+    </>
+  ),
+  coder: (
+    <>
+      Approving this runs a real <code>git merge --no-ff</code> into <code>main</code> and{" "}
+      <strong>permanently deletes</strong> the feature branch. Rejecting runs{" "}
+      <code>git branch -D</code>, <strong>discarding all commits</strong>. Neither is undoable.
+    </>
+  ),
+};
+
+function formatBytes(bytes) {
+  if (bytes == null) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function extractTraceLinks(contentJson) {
+  if (!contentJson) return [];
+
+  if (Array.isArray(contentJson.traceability)) {
+    return contentJson.traceability
+      .filter((t) => t.requirement_id)
+      .map((t) => ({
+        id: t.requirement_id,
+        related: t.related_acceptance_criteria || [],
+      }));
+  }
+
+  if (Array.isArray(contentJson.traceability_matrix)) {
+    return contentJson.traceability_matrix
+      .filter((t) => t.source_id)
+      .map((t) => ({
+        id: t.source_id,
+        related: t.coverage_status ? [t.coverage_status] : [],
+      }));
+  }
+
+  return [];
+}
+
+export default function GovernancePanel({ stage, featureId, allArtifacts, stageArtifacts }) {
+  const gatingArtifact = getLatestGatingArtifact(stage, allArtifacts);
+  const isAwaitingReview = gatingArtifact?.approval_status === "pending";
+
+  const { data: gatingContent } = useArtifactContent(
+    gatingArtifact?.artifact_format === "json" ? gatingArtifact.artifact_id : null
+  );
+  const traceLinks = useMemo(() => extractTraceLinks(gatingContent?.content_json), [gatingContent]);
+
+  const sortedArtifacts = useMemo(
+    () => [...stageArtifacts].sort((a, b) => b.version - a.version || a.artifact_type.localeCompare(b.artifact_type)),
+    [stageArtifacts]
+  );
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="pb-4 border-b border-gray-100">
+        <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-2">Stage Actions</h3>
+        {gatingArtifact ? (
+          isAwaitingReview ? (
+            <ApprovalPanel featureId={featureId} artifact={gatingArtifact} warning={APPROVAL_WARNINGS[stage]} />
+          ) : (
+            <p className="text-xs text-gray-400">
+              Latest version (v{gatingArtifact.version}) is {gatingArtifact.approval_status}. Nothing pending.
+            </p>
+          )
+        ) : (
+          <p className="text-xs text-gray-400">No output yet for this stage.</p>
+        )}
+      </div>
+
+      {traceLinks.length > 0 && (
+        <div className="pb-4 border-b border-gray-100">
+          <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-2">Trace Links</h3>
+          <div className="flex flex-col gap-1.5 max-h-48 overflow-y-auto">
+            {traceLinks.map((link) => (
+              <div key={link.id} className="flex items-center gap-1 flex-wrap text-xs">
+                <span className="bg-blue-50 text-blue-700 font-semibold px-1.5 py-0.5 rounded">{link.id}</span>
+                {link.related.map((r) => (
+                  <span key={r} className="text-gray-400">
+                    &rarr; <span className="bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">{r}</span>
+                  </span>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div>
+        <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-2">Stage Artifacts</h3>
+        {sortedArtifacts.length === 0 ? (
+          <p className="text-xs text-gray-400">No artifacts yet.</p>
+        ) : (
+          <div className="flex flex-col gap-1">
+            {sortedArtifacts.map((artifact) => (
+              <div key={artifact.artifact_id} className="flex items-center justify-between text-xs py-1">
+                <span className="text-gray-700 truncate" title={ARTIFACT_TYPE_LABELS[artifact.artifact_type]}>
+                  {ARTIFACT_TYPE_LABELS[artifact.artifact_type] || artifact.artifact_type}
+                  <span className="text-gray-400"> v{artifact.version}</span>
+                </span>
+                <span className="flex items-center gap-2 flex-shrink-0">
+                  <span className="text-gray-400">{formatBytes(artifact.size_bytes)}</span>
+                  <a
+                    href={artifactDownloadUrl(artifact.artifact_id)}
+                    className="text-accent-600 hover:text-accent-800 font-semibold"
+                  >
+                    Download
+                  </a>
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

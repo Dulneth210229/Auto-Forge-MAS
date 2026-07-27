@@ -71,6 +71,38 @@ class LLMSettingsUpdateRequest(BaseModel):
     timeout_seconds: int | None = Field(default=None, ge=1, example=120)
 
 
+class AgentLLMOverrideUpdateRequest(BaseModel):
+    """
+    Request body for setting a per-agent LLM override.
+
+    All fields optional -- an unset field means "use the global default for that field."
+    Setting every field to null (or DELETE-ing the override) clears the override entirely.
+    """
+
+    provider: str | None = Field(default=None, example="ollama")
+    model: str | None = Field(default=None, example="qwen3-coder:latest")
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    max_tokens: int | None = Field(default=None, ge=1)
+    timeout_seconds: int | None = Field(default=None, ge=1)
+
+
+class AgentLLMSettingsResponse(BaseModel):
+    """
+    One agent's effective LLM settings -- either the global default, or a global default with
+    one or more fields overridden specifically for this agent.
+    """
+
+    agent_name: str = Field(..., example="coder_agent")
+    provider: str
+    model: str
+    temperature: float
+    max_tokens: int
+    timeout_seconds: int
+    is_override: bool = Field(
+        ..., description="True if any field above differs from the global default."
+    )
+
+
 class LLMGenerateRequest(BaseModel):
     """
     Request body used to test the selected LLM provider.

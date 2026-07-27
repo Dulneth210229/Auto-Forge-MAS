@@ -1,0 +1,47 @@
+{
+  "pages": [
+    {
+      "page_id": "signup-page",
+      "route": "/signup",
+      "nav_entry": "Signup Page",
+      "components": [
+        {
+          "name": "SignupForm",
+          "reused_from_design_system": false,
+          "expected_props": [
+            "fullNameField",
+            "emailField",
+            "passwordField",
+            "confirmPasswordField",
+            "submitButton",
+            "loginLink"
+          ]
+        },
+        {
+          "name": "LoginForm",
+          "reused_from_design_system": true,
+          "expected_props": [
+            "emailField",
+            "passwordField",
+            "submitButton",
+            "forgotPasswordLink"
+          ]
+        }
+      ],
+      "actors": [
+        "Customer"
+      ],
+      "covers_requirements": [
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005",
+        "US-001",
+        "AC-001",
+        "AC-002",
+        "AC-003"
+      ]
+    }
+  ]
+}

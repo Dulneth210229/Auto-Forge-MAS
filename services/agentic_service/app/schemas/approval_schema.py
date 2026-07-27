@@ -30,6 +30,9 @@ class ApprovalResponse(BaseModel):
     """
     approval_id: str
     artifact_id: str
+    # Optional + defaulted: approval records created before this field was added won't have it
+    # in Mongo -- resolves to None for those rather than failing validation on an old record.
+    feature_id: str | None = None
     agent_name: AgentName
     status: ApprovalStatus
     reviewer_comment: str | None

@@ -1,0 +1,986 @@
+{
+  "document_control": {
+    "document_title": "Architecture Plan: Task Comments",
+    "document_type": "Feature Architecture Plan",
+    "project_id": "proj_53284a63",
+    "project_name": "TaskFlow",
+    "project_type": "SaaS",
+    "feature_id": "feature_5521adbd",
+    "feature_name": "Task Comments",
+    "target_stack": "MERN",
+    "architecture_style": "modular",
+    "version": "v1",
+    "generated_by": "Architecture Agent",
+    "input_artifacts": [
+      "Approved SRS JSON",
+      "Approved Enhanced SRS JSON if available"
+    ],
+    "approval_status": "pending"
+  },
+  "feature_overview": {
+    "business_goal": "Allow team members to discuss a task in context by adding comments, so work-related conversations stay attached to the task instead of scattered across email or chat.",
+    "scope": [
+      "Allow users to add text comments to tasks they have access to",
+      "Allow users to view all comments on a task in chronological order",
+      "Allow users to delete their own comments",
+      "Record and display comment author and timestamp"
+    ],
+    "out_of_scope": [
+      "Editing existing comments",
+      "Comment notifications or mentions",
+      "Comment threading or replies",
+      "Comment attachments or media"
+    ],
+    "user_roles": [
+      "Team Member",
+      "Admin"
+    ],
+    "feature_boundary": "This Architecture Plan covers only the Task Comments feature and excludes unrelated features."
+  },
+  "requirement_interpretation": {
+    "functional_requirements": [
+      {
+        "id": "FR-001",
+        "description": "A user can add a text comment to a task they have access to",
+        "priority": "Must Have"
+      },
+      {
+        "id": "FR-002",
+        "description": "A user can view all comments on a task in chronological order",
+        "priority": "Must Have"
+      },
+      {
+        "id": "FR-003",
+        "description": "A user can delete their own comment",
+        "priority": "Must Have"
+      },
+      {
+        "id": "FR-004",
+        "description": "The system must record who posted each comment and when",
+        "priority": "Must Have"
+      }
+    ],
+    "acceptance_criteria": [
+      {
+        "id": "AC-001",
+        "description": "Given a task the user can access, when they submit a non-empty comment, the comment appears in the task's comment list with the author's name and timestamp."
+      },
+      {
+        "id": "AC-002",
+        "description": "Given a comment the user authored, when they choose delete, the comment is removed from the list."
+      },
+      {
+        "id": "AC-003",
+        "description": "Given a comment authored by someone else, the user must not see a delete option for it."
+      }
+    ],
+    "validation_rules": [
+      {
+        "id": "VR-001",
+        "description": "Comment text must not be empty"
+      },
+      {
+        "id": "VR-002",
+        "description": "Only the author of a comment can delete it"
+      }
+    ],
+    "non_functional_requirements": [
+      {
+        "id": "NFR-001",
+        "description": "Comments should load quickly even when a task has many comments",
+        "category": "Performance"
+      },
+      {
+        "id": "NFR-002",
+        "description": "The comment list should update without a full page reload",
+        "category": "Usability"
+      }
+    ]
+  },
+  "architecture_approach": {
+    "architecture_style": "modular",
+    "architecture_rationale": "Use modular to keep the Task Comments feature separated into presentation, business logic, and data responsibilities where applicable.",
+    "frontend_overview": "Frontend design should provide the user-facing entry points, inputs, states, and feedback required by the approved SRS.",
+    "backend_overview": "Backend design should process feature requests, enforce business rules, validate inputs, and return structured responses.",
+    "data_overview": "Data design should support the data requirements defined in the approved SRS.",
+    "integration_overview": "Integration design should follow the API expectations and dependencies listed in the approved SRS.",
+    "design_tradeoffs": [
+      "Design is derived directly from the approved SRS to preserve traceability and feature scope.",
+      "Design is kept feature-scoped to preserve feature-by-feature SDLC development.",
+      "Internal generation or repair details are kept in backend logs and are not exposed in the approval-ready Architecture Plan."
+    ]
+  },
+  "design_views": {
+    "context_view": {
+      "actors": [
+        "Team Member",
+        "Admin"
+      ],
+      "external_systems": [
+        "User authentication system",
+        "Task detail view component",
+        "API gateway for task and comment endpoints"
+      ],
+      "feature_boundary": "Task Comments feature boundary.",
+      "main_interactions": [
+        "Team Member interacts with the Task Comments feature.",
+        "Admin interacts with the Task Comments feature.",
+        "A user can add a text comment to a task they have access to",
+        "A user can view all comments on a task in chronological order",
+        "A user can delete their own comment",
+        "The system must record who posted each comment and when"
+      ]
+    },
+    "logical_view": {
+      "frontend_modules": [
+        {
+          "name": "TaskCommentsFrontendModule",
+          "responsibility": "Handle frontend responsibilities for the Task Comments feature.",
+          "derived_from": [
+            "A comment input box at the bottom of the task detail view",
+            "A scrollable list of existing comments, newest last",
+            "A delete icon shown only on the current user's own comments",
+            "Comment text",
+            "Task ID",
+            "User ID (from session)"
+          ]
+        }
+      ],
+      "backend_modules": [
+        {
+          "name": "TaskCommentsBackendModule",
+          "responsibility": "Handle backend responsibilities for the Task Comments feature.",
+          "derived_from": [
+            "A user can add a text comment to a task they have access to",
+            "A user can view all comments on a task in chronological order",
+            "A user can delete their own comment",
+            "The system must record who posted each comment and when",
+            "Comment text must not be empty",
+            "Only the author of a comment can delete it"
+          ]
+        }
+      ],
+      "domain_services": [
+        {
+          "name": "TaskCommentsService",
+          "responsibility": "Apply business rules for the Task Comments feature.",
+          "related_requirements": [
+            "FR-001",
+            "FR-002",
+            "FR-003",
+            "FR-004"
+          ]
+        }
+      ],
+      "data_modules": [
+        {
+          "name": "TaskCommentsDataModule",
+          "responsibility": "Manage data access required by the feature.",
+          "derived_from": [
+            "Comment text",
+            "Author user id",
+            "Task id",
+            "Created timestamp"
+          ]
+        }
+      ],
+      "integration_points": [
+        {
+          "type": "API",
+          "description": "POST /api/tasks/:taskId/comments"
+        },
+        {
+          "type": "API",
+          "description": "GET /api/tasks/:taskId/comments"
+        },
+        {
+          "type": "API",
+          "description": "DELETE /api/comments/:commentId"
+        },
+        {
+          "type": "Dependency",
+          "description": "User authentication system"
+        },
+        {
+          "type": "Dependency",
+          "description": "Task detail view component"
+        },
+        {
+          "type": "Dependency",
+          "description": "API gateway for task and comment endpoints"
+        }
+      ]
+    },
+    "interface_view": {
+      "api_endpoints": [
+        {
+          "endpoint": "/api/task-comments",
+          "method": "GET",
+          "purpose": "Support the Task Comments feature.",
+          "request_model": "TaskCommentsRequest",
+          "success_response_model": "TaskCommentsSuccessResponse",
+          "error_response_model": "TaskCommentsErrorResponse",
+          "related_requirements": [
+            "FR-001",
+            "FR-002",
+            "FR-003",
+            "FR-004"
+          ]
+        },
+        {
+          "endpoint": "/api/task-comments",
+          "method": "GET",
+          "purpose": "Support the Task Comments feature.",
+          "request_model": "TaskCommentsRequest",
+          "success_response_model": "TaskCommentsSuccessResponse",
+          "error_response_model": "TaskCommentsErrorResponse",
+          "related_requirements": [
+            "FR-001",
+            "FR-002",
+            "FR-003",
+            "FR-004"
+          ]
+        },
+        {
+          "endpoint": "/api/task-comments",
+          "method": "GET",
+          "purpose": "Support the Task Comments feature.",
+          "request_model": "TaskCommentsRequest",
+          "success_response_model": "TaskCommentsSuccessResponse",
+          "error_response_model": "TaskCommentsErrorResponse",
+          "related_requirements": [
+            "FR-001",
+            "FR-002",
+            "FR-003",
+            "FR-004"
+          ]
+        }
+      ],
+      "request_models": [
+        {
+          "name": "TaskCommentsRequest",
+          "fields": [
+            {
+              "name": "field",
+              "type": "string",
+              "format": "Comment text",
+              "required": true
+            },
+            {
+              "name": "field",
+              "type": "string",
+              "format": "Task ID",
+              "required": true
+            },
+            {
+              "name": "field",
+              "type": "string",
+              "format": "User ID (from session)",
+              "required": true
+            }
+          ],
+          "related_requirements": [
+            "FR-001",
+            "FR-002",
+            "FR-003",
+            "FR-004"
+          ]
+        }
+      ],
+      "response_models": [
+        {
+          "name": "TaskCommentsSuccessResponse",
+          "type": "success",
+          "fields": [
+            {
+              "name": "field",
+              "type": "string",
+              "description": "List of comments with author name and timestamp"
+            },
+            {
+              "name": "field",
+              "type": "string",
+              "description": "Confirmation of successful comment creation or deletion"
+            }
+          ],
+          "related_requirements": [
+            "FR-001",
+            "FR-002",
+            "FR-003",
+            "FR-004"
+          ]
+        },
+        {
+          "name": "TaskCommentsErrorResponse",
+          "type": "error",
+          "fields": [],
+          "related_requirements": []
+        }
+      ]
+    },
+    "data_view": {
+      "data_entities": [
+        {
+          "name": "Task CommentsDataEntity1",
+          "purpose": "Comment text",
+          "fields": [
+            {
+              "name": "commentText",
+              "type": "String",
+              "required": false
+            }
+          ],
+          "relationships": [],
+          "indexes_or_constraints": [],
+          "related_requirements": [
+            "FR-001"
+          ]
+        },
+        {
+          "name": "Task CommentsDataEntity2",
+          "purpose": "Author user id",
+          "fields": [
+            {
+              "name": "authorUserId",
+              "type": "String",
+              "required": false
+            }
+          ],
+          "relationships": [],
+          "indexes_or_constraints": [],
+          "related_requirements": [
+            "FR-001",
+            "FR-002",
+            "FR-003",
+            "FR-004"
+          ]
+        },
+        {
+          "name": "Task CommentsDataEntity3",
+          "purpose": "Task id",
+          "fields": [
+            {
+              "name": "taskId",
+              "type": "String",
+              "required": false
+            }
+          ],
+          "relationships": [],
+          "indexes_or_constraints": [],
+          "related_requirements": [
+            "FR-001",
+            "FR-002",
+            "FR-003",
+            "FR-004"
+          ]
+        },
+        {
+          "name": "Task CommentsDataEntity4",
+          "purpose": "Created timestamp",
+          "fields": [
+            {
+              "name": "createdTimestamp",
+              "type": "String",
+              "required": false
+            }
+          ],
+          "relationships": [],
+          "indexes_or_constraints": [],
+          "related_requirements": [
+            "FR-001",
+            "FR-002",
+            "FR-003",
+            "FR-004"
+          ]
+        }
+      ],
+      "storage_rules": [
+        "Comment text",
+        "Author user id",
+        "Task id",
+        "Created timestamp"
+      ],
+      "data_validation_rules": [
+        {
+          "rule_id": "VR-001",
+          "rule": "Comment text must not be empty",
+          "related_requirements": [
+            "VR-001"
+          ]
+        },
+        {
+          "rule_id": "VR-002",
+          "rule": "Only the author of a comment can delete it",
+          "related_requirements": [
+            "VR-002"
+          ]
+        }
+      ]
+    },
+    "behavior_view": {
+      "main_success_flow": [
+        {
+          "id": "AC-001",
+          "description": "Given a task the user can access, when they submit a non-empty comment, the comment appears in the task's comment list with the author's name and timestamp.",
+          "related_requirements": [
+            "FR-001",
+            "FR-002",
+            "FR-003",
+            "FR-004"
+          ]
+        },
+        {
+          "id": "AC-002",
+          "description": "Given a comment the user authored, when they choose delete, the comment is removed from the list.",
+          "related_requirements": [
+            "FR-001",
+            "FR-002",
+            "FR-003",
+            "FR-004"
+          ]
+        },
+        {
+          "id": "AC-003",
+          "description": "Given a comment authored by someone else, the user must not see a delete option for it.",
+          "related_requirements": [
+            "FR-001",
+            "FR-002",
+            "FR-003",
+            "FR-004"
+          ]
+        }
+      ],
+      "alternative_flows": [],
+      "exception_flows": [],
+      "state_changes": [
+        {
+          "description": "A user can delete their own comment",
+          "related_requirements": [
+            "FR-003"
+          ]
+        },
+        {
+          "description": "Given a comment the user authored, when they choose delete, the comment is removed from the list.",
+          "related_requirements": [
+            "AC-002"
+          ]
+        },
+        {
+          "description": "Given a comment authored by someone else, the user must not see a delete option for it.",
+          "related_requirements": [
+            "AC-003"
+          ]
+        }
+      ]
+    },
+    "error_handling_view": {
+      "validation_errors": [
+        {
+          "source_id": "VR-001",
+          "condition": "Comment text must not be empty",
+          "handling": "Return a clear validation message and prevent invalid processing."
+        },
+        {
+          "source_id": "VR-002",
+          "condition": "Only the author of a comment can delete it",
+          "handling": "Return a clear validation message and prevent invalid processing."
+        }
+      ],
+      "business_errors": [],
+      "authorization_errors": [
+        {
+          "source_id": "AC-001",
+          "condition": "Given a task the user can access, when they submit a non-empty comment, the comment appears in the task's comment list with the author's name and timestamp.",
+          "handling": "Prevent unauthorized access and return an authorization-safe response."
+        }
+      ],
+      "system_errors": [
+        "Unexpected system errors should return safe generic messages without exposing internal details."
+      ],
+      "user_message_rules": [
+        "All user-facing errors must be clear, non-technical, and aligned with the approved SRS."
+      ]
+    },
+    "security_authorization_view": {
+      "authentication_design": [
+        "Apply authentication behaviour required by the SRS and selected architecture."
+      ],
+      "authorization_design": [
+        "Apply role/access rules required by the SRS."
+      ],
+      "sensitive_data_rules": [],
+      "risk_mitigations": [
+        {
+          "risk": "{'description': 'Performance degradation with a large number of comments'}",
+          "mitigation": "Apply suitable mitigation based on project security policy.",
+          "related_requirements": [
+            "FR-002"
+          ]
+        },
+        {
+          "risk": "{'description': 'Security risk if unauthorized users can delete comments'}",
+          "mitigation": "Apply suitable mitigation based on project security policy.",
+          "related_requirements": [
+            "FR-002",
+            "FR-003"
+          ]
+        }
+      ]
+    },
+    "quality_attributes_view": {
+      "performance": [
+        {
+          "nfr_id": "NFR-001",
+          "description": "Comments should load quickly even when a task has many comments",
+          "design_decision": "Optimize design to satisfy the stated performance expectation."
+        },
+        {
+          "nfr_id": "NFR-002",
+          "description": "The comment list should update without a full page reload",
+          "design_decision": "Optimize design to satisfy the stated performance expectation."
+        }
+      ],
+      "usability": [],
+      "reliability": [],
+      "scalability": [],
+      "maintainability": [],
+      "accessibility": []
+    }
+  },
+  "frontend_architecture_plan": {
+    "responsibilities": [
+      {
+        "name": "TaskCommentsFrontendModule",
+        "responsibility": "Handle frontend responsibilities for the Task Comments feature.",
+        "derived_from": [
+          "A comment input box at the bottom of the task detail view",
+          "A scrollable list of existing comments, newest last",
+          "A delete icon shown only on the current user's own comments",
+          "Comment text",
+          "Task ID",
+          "User ID (from session)"
+        ]
+      }
+    ],
+    "pages_or_components": [
+      {
+        "description": "A comment input box at the bottom of the task detail view"
+      },
+      {
+        "description": "A scrollable list of existing comments, newest last"
+      },
+      {
+        "description": "A delete icon shown only on the current user's own comments"
+      }
+    ],
+    "state_and_feedback": []
+  },
+  "backend_architecture_plan": {
+    "responsibilities": [
+      {
+        "name": "TaskCommentsBackendModule",
+        "responsibility": "Handle backend responsibilities for the Task Comments feature.",
+        "derived_from": [
+          "A user can add a text comment to a task they have access to",
+          "A user can view all comments on a task in chronological order",
+          "A user can delete their own comment",
+          "The system must record who posted each comment and when",
+          "Comment text must not be empty",
+          "Only the author of a comment can delete it"
+        ]
+      }
+    ],
+    "layers": [
+      {
+        "name": "TaskCommentsService",
+        "responsibility": "Apply business rules for the Task Comments feature.",
+        "related_requirements": [
+          "FR-001",
+          "FR-002",
+          "FR-003",
+          "FR-004"
+        ]
+      },
+      {
+        "name": "TaskCommentsDataModule",
+        "responsibility": "Manage data access required by the feature.",
+        "derived_from": [
+          "Comment text",
+          "Author user id",
+          "Task id",
+          "Created timestamp"
+        ]
+      }
+    ],
+    "integration_points": [
+      {
+        "type": "API",
+        "description": "POST /api/tasks/:taskId/comments"
+      },
+      {
+        "type": "API",
+        "description": "GET /api/tasks/:taskId/comments"
+      },
+      {
+        "type": "API",
+        "description": "DELETE /api/comments/:commentId"
+      },
+      {
+        "type": "Dependency",
+        "description": "User authentication system"
+      },
+      {
+        "type": "Dependency",
+        "description": "Task detail view component"
+      },
+      {
+        "type": "Dependency",
+        "description": "API gateway for task and comment endpoints"
+      }
+    ]
+  },
+  "validation_plan": {
+    "input_validation": [
+      {
+        "rule_id": "VR-001",
+        "rule": "Comment text must not be empty",
+        "related_requirements": [
+          "VR-001"
+        ]
+      },
+      {
+        "rule_id": "VR-002",
+        "rule": "Only the author of a comment can delete it",
+        "related_requirements": [
+          "VR-002"
+        ]
+      }
+    ],
+    "processing_validation": [
+      {
+        "source_id": "VR-001",
+        "condition": "Comment text must not be empty",
+        "handling": "Return a clear validation message and prevent invalid processing."
+      },
+      {
+        "source_id": "VR-002",
+        "condition": "Only the author of a comment can delete it",
+        "handling": "Return a clear validation message and prevent invalid processing."
+      }
+    ]
+  },
+  "coder_implementation_tasks": [
+    {
+      "task_id": "TASK-001",
+      "task": "Create or update frontend screen/components for the Task Comments feature.",
+      "layer": "frontend",
+      "suggested_files": [
+        "frontend/src/pages/TaskComments.jsx",
+        "frontend/src/components/TaskCommentsForm.jsx"
+      ],
+      "related_requirements": [
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "AC-001",
+        "AC-002",
+        "AC-003"
+      ]
+    },
+    {
+      "task_id": "TASK-002",
+      "task": "Implement backend route/controller/service flow for the Task Comments API expectations.",
+      "layer": "backend",
+      "suggested_files": [
+        "backend/routes/task_comments.routes.js",
+        "backend/controllers/task_comments.controller.js",
+        "backend/services/task_comments.service.js"
+      ],
+      "related_requirements": [
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "AC-001",
+        "AC-002",
+        "AC-003"
+      ]
+    },
+    {
+      "task_id": "TASK-003",
+      "task": "Create or update data model/repository required by the Task Comments feature.",
+      "layer": "data",
+      "suggested_files": [
+        "backend/models/task_comments.model.js",
+        "backend/repositories/task_comments.repository.js"
+      ],
+      "related_requirements": [
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004"
+      ]
+    },
+    {
+      "task_id": "TASK-004",
+      "task": "Implement validation rules before processing feature requests.",
+      "layer": "validation",
+      "suggested_files": [
+        "backend/validators/task_comments.validator.js"
+      ],
+      "related_requirements": [
+        "VR-001",
+        "VR-002"
+      ]
+    },
+    {
+      "task_id": "TASK-005",
+      "task": "Implement success, alternative, and exception handling according to acceptance criteria.",
+      "layer": "backend/frontend",
+      "suggested_files": [],
+      "related_requirements": [
+        "AC-001",
+        "AC-002",
+        "AC-003"
+      ]
+    },
+    {
+      "task_id": "TASK-006",
+      "task": "Implement security controls required by the feature, including authentication/authorization or sensitive data handling where applicable.",
+      "layer": "security",
+      "suggested_files": [],
+      "related_requirements": [
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "NFR-001",
+        "NFR-002"
+      ]
+    }
+  ],
+  "traceability_matrix": [
+    {
+      "source_id": "FR-001",
+      "source_type": "FR",
+      "architecture_plan_section": "Design Views / Detailed Design Decisions",
+      "design_element": "A user can add a text comment to a task they have access to",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "FR-002",
+      "source_type": "FR",
+      "architecture_plan_section": "Design Views / Detailed Design Decisions",
+      "design_element": "A user can view all comments on a task in chronological order",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "FR-003",
+      "source_type": "FR",
+      "architecture_plan_section": "Design Views / Detailed Design Decisions",
+      "design_element": "A user can delete their own comment",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "FR-004",
+      "source_type": "FR",
+      "architecture_plan_section": "Design Views / Detailed Design Decisions",
+      "design_element": "The system must record who posted each comment and when",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "AC-001",
+      "source_type": "AC",
+      "architecture_plan_section": "Behavior View / Error Handling View",
+      "design_element": "Given a task the user can access, when they submit a non-empty comment, the comment appears in the task's comment list with the author's name and timestamp.",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "AC-002",
+      "source_type": "AC",
+      "architecture_plan_section": "Behavior View / Error Handling View",
+      "design_element": "Given a comment the user authored, when they choose delete, the comment is removed from the list.",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "AC-003",
+      "source_type": "AC",
+      "architecture_plan_section": "Behavior View / Error Handling View",
+      "design_element": "Given a comment authored by someone else, the user must not see a delete option for it.",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "VR-001",
+      "source_type": "VR",
+      "architecture_plan_section": "Interface View / Data View / Error Handling View",
+      "design_element": "Comment text must not be empty",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "VR-002",
+      "source_type": "VR",
+      "architecture_plan_section": "Interface View / Data View / Error Handling View",
+      "design_element": "Only the author of a comment can delete it",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "NFR-001",
+      "source_type": "NFR",
+      "architecture_plan_section": "Quality Attributes View",
+      "design_element": "Comments should load quickly even when a task has many comments",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "NFR-002",
+      "source_type": "NFR",
+      "architecture_plan_section": "Quality Attributes View",
+      "design_element": "The comment list should update without a full page reload",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "CONSTRAINT-001",
+      "source_type": "Constraint",
+      "architecture_plan_section": "Design Considerations / Architecture Overview",
+      "design_element": "Use MERN stack",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "CONSTRAINT-002",
+      "source_type": "Constraint",
+      "architecture_plan_section": "Design Considerations / Architecture Overview",
+      "design_element": "Reuse the existing authenticated user/session for identifying the comment author",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "RISK-001",
+      "source_type": "Risk",
+      "architecture_plan_section": "Design Considerations / Security and Authorization View",
+      "design_element": "Performance degradation with a large number of comments",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "RISK-002",
+      "source_type": "Risk",
+      "architecture_plan_section": "Design Considerations / Security and Authorization View",
+      "design_element": "Security risk if unauthorized users can delete comments",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "DEPENDENCY-001",
+      "source_type": "Dependency",
+      "architecture_plan_section": "Design Context / Logical View",
+      "design_element": "User authentication system",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "DEPENDENCY-002",
+      "source_type": "Dependency",
+      "architecture_plan_section": "Design Context / Logical View",
+      "design_element": "Task detail view component",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "DEPENDENCY-003",
+      "source_type": "Dependency",
+      "architecture_plan_section": "Design Context / Logical View",
+      "design_element": "API gateway for task and comment endpoints",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "DATA-001",
+      "source_type": "Data",
+      "architecture_plan_section": "Data View",
+      "design_element": "Comment text",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "DATA-002",
+      "source_type": "Data",
+      "architecture_plan_section": "Data View",
+      "design_element": "Author user id",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "DATA-003",
+      "source_type": "Data",
+      "architecture_plan_section": "Data View",
+      "design_element": "Task id",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "DATA-004",
+      "source_type": "Data",
+      "architecture_plan_section": "Data View",
+      "design_element": "Created timestamp",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "API-001",
+      "source_type": "API",
+      "architecture_plan_section": "Interface View",
+      "design_element": "POST /api/tasks/:taskId/comments",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "API-002",
+      "source_type": "API",
+      "architecture_plan_section": "Interface View",
+      "design_element": "GET /api/tasks/:taskId/comments",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "API-003",
+      "source_type": "API",
+      "architecture_plan_section": "Interface View",
+      "design_element": "DELETE /api/comments/:commentId",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "UI-001",
+      "source_type": "UI",
+      "architecture_plan_section": "Context View / Logical View",
+      "design_element": "A comment input box at the bottom of the task detail view",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "UI-002",
+      "source_type": "UI",
+      "architecture_plan_section": "Context View / Logical View",
+      "design_element": "A scrollable list of existing comments, newest last",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "UI-003",
+      "source_type": "UI",
+      "architecture_plan_section": "Context View / Logical View",
+      "design_element": "A delete icon shown only on the current user's own comments",
+      "coverage_status": "covered"
+    }
+  ],
+  "assumptions": [
+    "Tasks and user accounts already exist in the system",
+    "Only authenticated team members with access to a task can view or post comments on it",
+    "The system supports real-time updates for comment lists",
+    "User sessions are securely managed and validated"
+  ],
+  "constraints": [
+    "Use MERN stack",
+    "Reuse the existing authenticated user/session for identifying the comment author"
+  ],
+  "risks": [
+    {
+      "description": "Performance degradation with a large number of comments"
+    },
+    {
+      "description": "Security risk if unauthorized users can delete comments"
+    }
+  ],
+  "dependencies": [
+    "User authentication system",
+    "Task detail view component",
+    "API gateway for task and comment endpoints"
+  ],
+  "revision_metadata": null,
+  "human_approval_note": "This Architecture Plan must be reviewed and approved before the UI/UX Agent or Coder Agent starts."
+}

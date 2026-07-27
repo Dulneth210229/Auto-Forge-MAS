@@ -32,7 +32,148 @@ class ArchitectureSequenceModeler:
     Builds sequence_diagram_json from SRS and SDS.
     """
 
-    def build(self, srs_json: dict[str, Any], sds_json: dict[str, Any]) -> dict[str, Any]:
+    def build(
+        self,
+        srs_json: dict[str, Any],
+        sds_json: dict[str, Any],
+        sequence_specification_json: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        specification = sequence_specification_json or {}
+        participants_spec = specification.get("participants")
+        interactions_spec = specification.get("interactions")
+
+        if (
+            isinstance(participants_spec, list) and participants_spec
+            and isinstance(interactions_spec, list) and interactions_spec
+        ):
+            # Primary path: the LLM supplied a real specification -- trust its
+            # participants/interactions directly rather than re-deriving a
+            # generic fixed-template flow (the confirmed source of every
+            # feature getting the same "submit -> validate -> respond" shape
+            # regardless of what it actually does).
+            participants, interactions = self._build_from_specification(specification, srs_json)
+        else:
+            # Last-resort fallback: no usable specification at all (every
+            # generation rung including repair failed).
+            participants, interactions = self._build_fallback(srs_json, sds_json)
+
+        feature_name = self._feature_name(srs_json, sds_json)
+        return self._finalize(feature_name, specification, participants, interactions)
+
+    def _finalize(
+        self,
+        feature_name: str,
+        specification: dict[str, Any],
+        participants: list[dict[str, Any]],
+        interactions: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return {
+            "diagram_title": specification.get("diagram_title") or f"{feature_name} Sequence Diagram",
+            "feature_name": feature_name,
+            "participants": participants,
+            "interactions": interactions,
+            "traceability": self._build_traceability(interactions),
+            "rules_applied": [
+                "Participants are lifelines representing real actor/boundary/control/entity/database/external roles.",
+                "Main success flow is represented before alternatives and exceptions.",
+                "Alternative, repeated, and exception scenarios use UML combined fragments (alt/opt/loop).",
+                "NFRs, constraints, risks, and architecture notes are not represented as messages.",
+                "Messages reference SRS IDs where possible.",
+            ],
+        }
+
+    def _build_from_specification(
+        self,
+        specification: dict[str, Any],
+        srs_json: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """
+        Build participants/interactions directly from the LLM's own
+        specification -- trusted as-is (only deterministic id assignment and
+        name-to-id resolution), no template/keyword derivation. This is the
+        primary path whenever the LLM supplied a real specification;
+        _build_fallback remains only as the last-resort path for a genuinely
+        empty specification.
+        """
+
+        allowed_types = {"actor", "boundary", "control", "entity", "database", "external"}
+        allowed_message_types = {"sync", "async", "return", "self"}
+        allowed_fragment_kinds = {"alt_start", "else", "opt_start", "loop_start", "end"}
+
+        participants: list[dict[str, Any]] = []
+        name_to_id: dict[str, str] = {}
+        type_counters: dict[str, int] = {}
+
+        for item in specification.get("participants", []):
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "")).strip()
+            if not name:
+                continue
+
+            ptype = str(item.get("type", "")).strip().lower()
+            if ptype not in allowed_types:
+                ptype = "control"
+
+            type_counters[ptype] = type_counters.get(ptype, 0) + 1
+            participant_id = f"{ptype.upper()}_{type_counters[ptype]:03d}"
+
+            participants.append({
+                "id": participant_id,
+                "name": name,
+                "type": ptype,
+                "description": str(item.get("description", "")).strip()
+                or f"{name} participates in this feature's interaction flow.",
+            })
+            name_to_id[self._normalize(name)] = participant_id
+
+        interactions: list[dict[str, Any]] = []
+
+        for item in specification.get("interactions", []):
+            if not isinstance(item, dict):
+                continue
+
+            kind = str(item.get("kind", "message")).strip().lower()
+
+            if kind == "message":
+                source_id = name_to_id.get(self._normalize(str(item.get("from", ""))))
+                target_id = name_to_id.get(self._normalize(str(item.get("to", ""))))
+                message = str(item.get("message", "")).strip()
+
+                # A message referencing an unresolvable participant name is
+                # skipped rather than crashing the whole diagram -- the
+                # validator catches real completeness/quality problems.
+                if not source_id or not target_id or not message:
+                    continue
+
+                message_type = str(item.get("message_type", "sync")).strip().lower()
+                if message_type not in allowed_message_types:
+                    message_type = "sync"
+
+                related = [str(value) for value in item.get("related_requirements", []) or [] if value]
+                interactions.append(self._message(source_id, target_id, message, message_type, related))
+                continue
+
+            if kind in allowed_fragment_kinds:
+                interactions.append(self._fragment(kind, str(item.get("condition", "")).strip()))
+
+        return participants, interactions
+
+    def _build_fallback(
+        self,
+        srs_json: dict[str, Any],
+        sds_json: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """
+        Build participants/interactions the old way (fallback path only --
+        see _build_from_specification for the primary, LLM-trusting path).
+
+        Every feature gets the same fixed message-template shape here --
+        this is exactly the "static/deterministic" limitation the LLM-driven
+        path exists to fix, kept only as a last resort for when the
+        specification is genuinely empty.
+        """
+
         feature_name = self._feature_name(srs_json, sds_json)
         design_views = sds_json.get("design_views", {}) if isinstance(sds_json, dict) else {}
         interface_view = design_views.get("interface_view", {}) if isinstance(design_views, dict) else {}
@@ -40,7 +181,14 @@ class ArchitectureSequenceModeler:
         behavior_view = design_views.get("behavior_view", {}) if isinstance(design_views, dict) else {}
 
         actors = self._actors(srs_json, sds_json)
-        endpoints = self._as_list(interface_view.get("api_endpoints"))
+        # A real run surfaced design_views.interface_view.api_endpoints
+        # containing the exact same endpoint as two separate dict entries
+        # (an upstream architecture-plan data-quality issue, out of scope
+        # for this modeler to fix at the source) -- deduplicating here stops
+        # the fallback from picking the "same" endpoint twice as both the
+        # main and alternative flow, which produced a genuine duplicate
+        # message the new quality validator correctly rejected.
+        endpoints = self._dedupe_endpoints(self._as_list(interface_view.get("api_endpoints")))
         request_models = self._as_list(interface_view.get("request_models"))
         response_models = self._as_list(interface_view.get("response_models"))
         data_entities = self._as_list(data_view.get("data_entities"))
@@ -231,20 +379,7 @@ class ArchitectureSequenceModeler:
             ))
             interactions.append(self._fragment("end", ""))
 
-        return {
-            "diagram_title": f"{feature_name} Sequence Diagram",
-            "feature_name": feature_name,
-            "participants": participants,
-            "interactions": interactions,
-            "traceability": self._build_traceability(interactions),
-            "rules_applied": [
-                "Participants are lifelines derived from SRS roles and SDS design views.",
-                "Main success flow is represented before alternatives and exceptions.",
-                "Alternative and exception scenarios use UML combined fragments.",
-                "NFRs, constraints, risks, and architecture notes are not represented as messages.",
-                "Messages reference SRS IDs where possible.",
-            ],
-        }
+        return participants, interactions
 
     # ------------------------------------------------------------------
     # Participants
@@ -485,6 +620,23 @@ class ArchitectureSequenceModeler:
         if value is None:
             return []
         return value if isinstance(value, list) else [value]
+
+    def _dedupe_endpoints(self, endpoints: list[Any]) -> list[Any]:
+        result: list[Any] = []
+        seen: set[tuple[str, str]] = set()
+        for endpoint in endpoints:
+            if isinstance(endpoint, dict):
+                key = (
+                    self._normalize(str(endpoint.get("method", ""))),
+                    self._normalize(str(endpoint.get("endpoint", ""))),
+                )
+            else:
+                key = ("", self._normalize(str(endpoint)))
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(endpoint)
+        return result
 
     def _extract_name(self, item: Any) -> str:
         if isinstance(item, dict):

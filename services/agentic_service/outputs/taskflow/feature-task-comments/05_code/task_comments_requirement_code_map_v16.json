@@ -1,0 +1,89 @@
+{
+  "files": [
+    {
+      "path": "client/package-lock.json",
+      "planned": false,
+      "maps_to": []
+    },
+    {
+      "path": "client/package.json",
+      "planned": false,
+      "maps_to": []
+    },
+    {
+      "path": "client/postcss.config.cjs",
+      "planned": false,
+      "maps_to": []
+    },
+    {
+      "path": "client/src/App.jsx",
+      "planned": true,
+      "maps_to": []
+    },
+    {
+      "path": "client/src/components/CommentInput.jsx",
+      "planned": false,
+      "maps_to": []
+    },
+    {
+      "path": "client/src/components/CommentList.jsx",
+      "planned": false,
+      "maps_to": []
+    },
+    {
+      "path": "client/src/components/TaskComments.jsx",
+      "planned": false,
+      "maps_to": []
+    },
+    {
+      "path": "client/src/index.css",
+      "planned": false,
+      "maps_to": []
+    },
+    {
+      "path": "client/src/pages/HomePage.jsx",
+      "planned": false,
+      "maps_to": []
+    },
+    {
+      "path": "client/src/pages/TaskDetailPage.jsx",
+      "planned": false,
+      "maps_to": []
+    },
+    {
+      "path": "client/src/pages/TaskflowHomePage.jsx",
+      "planned": false,
+      "maps_to": []
+    },
+    {
+      "path": "client/src/services/taskCommentsService.js",
+      "planned": false,
+      "maps_to": []
+    },
+    {
+      "path": "client/tailwind.config.js",
+      "planned": false,
+      "maps_to": []
+    },
+    {
+      "path": "server/package-lock.json",
+      "planned": false,
+      "maps_to": []
+    },
+    {
+      "path": "server/src/app.js",
+      "planned": false,
+      "maps_to": []
+    },
+    {
+      "path": "server/src/models/Comment.js",
+      "planned": false,
+      "maps_to": []
+    },
+    {
+      "path": "server/src/routes/task-comments.routes.js",
+      "planned": false,
+      "maps_to": []
+    }
+  ]
+}

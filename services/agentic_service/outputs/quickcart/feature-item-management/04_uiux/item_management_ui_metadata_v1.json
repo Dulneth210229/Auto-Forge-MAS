@@ -1,0 +1,56 @@
+{
+  "pages": [
+    {
+      "page_id": "item-management-page",
+      "name": "Item Management",
+      "route": "/item-management",
+      "actors": [
+        "Admin"
+      ],
+      "covers_requirements": [
+        "FR-001",
+        "US-001",
+        "AC-001",
+        "AC-003",
+        "US-002",
+        "US-003",
+        "US-004"
+      ],
+      "layout_regions": [
+        "header",
+        "main",
+        "footer"
+      ],
+      "components": [
+        {
+          "name": "item-list",
+          "reused_from_design_system": false,
+          "new_component_justification": "no existing component fits",
+          "covers_ui_expectations": [],
+          "props": {}
+        },
+        {
+          "name": "create-item-form",
+          "reused_from_design_system": false,
+          "new_component_justification": "no existing component fits",
+          "covers_ui_expectations": [],
+          "props": {}
+        },
+        {
+          "name": "update-item-form",
+          "reused_from_design_system": false,
+          "new_component_justification": "no existing component fits",
+          "covers_ui_expectations": [],
+          "props": {}
+        }
+      ],
+      "states": [
+        "idle",
+        "loading",
+        "error",
+        "success"
+      ]
+    }
+  ],
+  "notes": ""
+}
