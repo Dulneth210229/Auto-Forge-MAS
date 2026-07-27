@@ -19,38 +19,42 @@ function latestByFile(artifacts) {
   return [...byName.values()];
 }
 
-// Shown as a persistent panel right next to the UI/UX Output, not behind a tab click or below a
-// scroll -- these are the single most useful thing to glance at while reviewing this stage.
+// This is the UI/UX stage's MAIN output, not a side extra -- per direct user feedback, a human
+// reviewing this stage cares most about what the pages actually look like, not the raw
+// ui_metadata JSON. Rendered full-width with real-size screenshots; the metadata/components live
+// in the narrower side column instead (see StageOutputPanel).
 export default function UiuxPagePreviewsPanel({ allArtifacts }) {
   const screenshots = latestByFile(allArtifacts);
 
+  if (screenshots.length === 0) {
+    return <p className="text-sm text-gray-400 italic">No page previews were rendered for this stage.</p>;
+  }
+
   return (
-    <div className="w-72 flex-shrink-0 h-full overflow-y-auto border-l border-gray-100 pl-4">
-      <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-2">
-        Page Previews {screenshots.length > 0 && `(${screenshots.length})`}
+    <div>
+      <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wide mb-3">
+        Page Previews ({screenshots.length})
       </h3>
-      {screenshots.length === 0 ? (
-        <p className="text-xs text-gray-400 italic">No page previews were rendered.</p>
-      ) : (
-        <div className="flex flex-col gap-3">
-          {screenshots.map((artifact) => (
-            <div key={artifact.artifact_id} className="border border-gray-200 rounded-lg p-2">
-              <div className="flex items-center justify-between mb-1.5">
-                <p className="text-xs font-semibold text-gray-600 truncate" title={artifact.file_path}>
-                  {artifact.file_path.split(/[\\/]/).pop()}
-                </p>
-                <a
-                  href={artifactDownloadUrl(artifact.artifact_id)}
-                  className="text-xs text-accent-600 hover:text-accent-800 font-semibold flex-shrink-0"
-                >
-                  Download
-                </a>
-              </div>
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        {screenshots.map((artifact) => (
+          <div key={artifact.artifact_id} className="border border-gray-200 rounded-lg overflow-hidden">
+            <div className="flex items-center justify-between px-3 py-2 bg-gray-50 border-b border-gray-200">
+              <p className="text-xs font-semibold text-gray-700 truncate" title={artifact.file_path}>
+                {artifact.file_path.split(/[\\/]/).pop()}
+              </p>
+              <a
+                href={artifactDownloadUrl(artifact.artifact_id)}
+                className="text-xs text-accent-600 hover:text-accent-800 font-semibold flex-shrink-0"
+              >
+                Download
+              </a>
+            </div>
+            <div className="p-2">
               <ImageViewer artifactId={artifact.artifact_id} />
             </div>
-          ))}
-        </div>
-      )}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

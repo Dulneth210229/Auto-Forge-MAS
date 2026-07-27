@@ -10,6 +10,7 @@ import DiffViewer from "./DiffViewer";
 import SrsDocumentViewer from "../documents/SrsDocumentViewer";
 import ArchitecturePlanDocumentViewer from "../documents/ArchitecturePlanDocumentViewer";
 import DomainImprovementsViewer from "../documents/DomainImprovementsViewer";
+import UiMetadataViewer from "../documents/UiMetadataViewer";
 
 // The actual viewer-format dispatch, factored out of ArtifactViewerModal so it can be reused
 // both inside a popup (ArtifactViewerModal, for "View" links anywhere) and rendered directly
@@ -35,6 +36,7 @@ export default function ArtifactContentView({ artifact }) {
           {viewer === "srs-document" && <SrsDocumentViewer data={data?.content_json} artifactType={artifact.artifact_type} />}
           {viewer === "architecture-document" && <ArchitecturePlanDocumentViewer data={data?.content_json} />}
           {viewer === "domain-improvements-document" && <DomainImprovementsViewer data={data?.content_json} />}
+          {viewer === "ui-metadata-document" && <UiMetadataViewer data={data?.content_json} />}
           {viewer === "code" && <CodeViewer content={data?.content || ""} />}
           {viewer === "raw" && <pre className="text-xs whitespace-pre-wrap">{data?.content}</pre>}
         </>

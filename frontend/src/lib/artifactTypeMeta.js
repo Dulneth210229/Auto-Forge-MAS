@@ -75,6 +75,7 @@ const DOCUMENT_VIEWER_TYPES = {
   architecture_plan: "architecture-document",
   sds: "architecture-document",
   domain_improvements: "domain-improvements-document",
+  ui_metadata: "ui-metadata-document",
 };
 
 export function pickViewer(artifact) {

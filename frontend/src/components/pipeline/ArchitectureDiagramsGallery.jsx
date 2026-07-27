@@ -58,12 +58,12 @@ export default function ArchitectureDiagramsGallery({ allArtifacts }) {
           </a>
         </div>
         <button onClick={() => setLightbox(active)} className="block w-full cursor-zoom-in">
-          <ImageViewer artifactId={active.artifact.artifact_id} alt={active.label} />
+          <ImageViewer artifactId={active.artifact.artifact_id} alt={active.label} boxHeight="480px" />
         </button>
       </div>
 
       <Modal open={Boolean(lightbox)} onClose={() => setLightbox(null)} title={lightbox?.label || ""} size="xl">
-        {lightbox && <ImageViewer artifactId={lightbox.artifact.artifact_id} alt={lightbox.label} />}
+        {lightbox && <ImageViewer artifactId={lightbox.artifact.artifact_id} alt={lightbox.label} boxHeight="75vh" />}
       </Modal>
     </div>
   );
