@@ -52,6 +52,22 @@ def get_artifact(artifact_id: str):
     return artifact
 
 
+@router.delete("/artifacts/{artifact_id}", status_code=204)
+def delete_artifact(artifact_id: str):
+    """
+    Permanently delete one unapproved artifact version (e.g. a rejected/pending SRS revision a
+    human wants to clear out of the version list). Refuses (400) to delete an approved artifact.
+    """
+    if not artifact_service.get_artifact(artifact_id):
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    try:
+        artifact_service.delete_artifact(artifact_id)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    return Response(status_code=204)
+
+
 @router.get("/artifacts/{artifact_id}/content")
 def get_artifact_content(artifact_id: str):
     """

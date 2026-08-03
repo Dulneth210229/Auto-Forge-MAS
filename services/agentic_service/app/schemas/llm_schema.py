@@ -124,3 +124,52 @@ class LLMGenerateResponse(BaseModel):
     provider: str
     model: str
     output: str
+
+
+class OllamaModelsResponse(BaseModel):
+    """
+    Response for GET /settings/llm/models -- the model names currently available on the
+    Ollama server configured in LLMSettings.base_url (i.e. `ollama list`/`GET /api/tags`
+    against whatever server the user has live-configured, not a hardcoded default).
+    """
+
+    models: list[str] = Field(default_factory=list)
+
+
+class OllamaAvailableModel(BaseModel):
+    """One locally-pulled model, from `GET /api/tags` -- available to run, but not necessarily
+    currently loaded into memory."""
+
+    name: str
+    size_bytes: int = Field(..., example=4700000000)
+    modified_at: str | None = None
+
+
+class OllamaRunningModel(BaseModel):
+    """One model Ollama currently has loaded into memory, from `GET /api/ps` -- this is what's
+    actually resident right now, distinct from what's merely configured or available. `size_vram_bytes`
+    vs `size_bytes` is the direct signal for the GPU/VRAM-mismatch class of issue this project has
+    hit before (a model too big for the GPU gets mostly offloaded to CPU, silently making every
+    call take minutes instead of seconds) -- `vram_percent` makes that ratio explicit for the UI
+    without it needing to duplicate the math.
+    """
+
+    name: str
+    size_bytes: int
+    size_vram_bytes: int
+    vram_percent: float = Field(..., description="size_vram_bytes / size_bytes * 100, rounded.")
+    expires_at: str | None = Field(default=None, description="When Ollama will unload this model if idle.")
+
+
+class OllamaStatusResponse(BaseModel):
+    """
+    Live status of the Ollama server configured in LLMSettings.base_url -- distinct from the
+    LLMSettings/AgentLLMSettingsResponse endpoints, which only ever reflect what's *configured*,
+    never whether that server is actually reachable or what it's actually doing right now.
+    """
+
+    reachable: bool
+    base_url: str
+    error: str | None = Field(default=None, description="Set only when reachable is false.")
+    available_models: list[OllamaAvailableModel] = Field(default_factory=list)
+    running_models: list[OllamaRunningModel] = Field(default_factory=list)

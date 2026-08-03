@@ -1,7 +1,0 @@
-{
-  "summary": "No domain enrichment was applied to this SRS.",
-  "knowledge_sources_used": [],
-  "additions": [],
-  "modifications": [],
-  "no_changes_note": "Domain knowledge was retrieved but automatic enrichment failed: Expecting value: line 57 column 24 (char 3989)"
-}

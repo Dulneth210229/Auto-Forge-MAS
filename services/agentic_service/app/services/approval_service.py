@@ -59,6 +59,29 @@ class ApprovalService:
         # Update artifact status directly.
         artifact["approval_status"] = request.status
 
+        is_approved = request.status in [ApprovalStatus.APPROVED, ApprovalStatus.APPROVED.value]
+
+        # SRS: only one version may hold "approved" at a time. Approving a version supersedes
+        # whichever OTHER SRS version (if any) was previously approved for this feature, reverting
+        # it back to "pending" -- direct user report: seeing two SRS versions simultaneously
+        # "Approved" was confusing (which one does Domain Agent actually use?). Scoped narrowly to
+        # SRS, not every gating artifact_type: e.g. UI/UX's ui_component_code artifacts are
+        # legitimately, independently approved several at a time (distinct components, not
+        # versions of one document) -- SRS is a singleton document with versions, which is what
+        # this rule is actually about, and only SRS was asked for here.
+        is_srs = artifact["artifact_type"] in [ArtifactType.SRS, ArtifactType.SRS.value]
+
+        if is_approved and is_srs:
+            for other in store.artifacts.values():
+                if other["artifact_id"] == artifact_id:
+                    continue
+                if other.get("feature_id") != artifact["feature_id"]:
+                    continue
+                if other.get("artifact_type") not in [ArtifactType.SRS, ArtifactType.SRS.value]:
+                    continue
+                if other.get("approval_status") in [ApprovalStatus.APPROVED, ApprovalStatus.APPROVED.value]:
+                    other["approval_status"] = ApprovalStatus.PENDING
+
         # If this artifact belongs to a feature with an active graph run paused on
         # an approval gate, advance it. Most artifacts today are still approved
         # through the legacy manual flow (no graph run started via
@@ -81,7 +104,6 @@ class ApprovalService:
         # design_system.json, but only now that this exact version has been
         # approved -- a rejected run must never reach this line, so there is
         # no separate "rollback" path to maintain.
-        is_approved = request.status in [ApprovalStatus.APPROVED, ApprovalStatus.APPROVED.value]
         is_uiux_metadata = (
             artifact["agent_name"] in [AgentName.UIUX, AgentName.UIUX.value]
             and artifact["artifact_type"] in [ArtifactType.UI_METADATA, ArtifactType.UI_METADATA.value]

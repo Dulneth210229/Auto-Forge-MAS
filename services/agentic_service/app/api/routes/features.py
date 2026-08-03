@@ -18,7 +18,7 @@ from pydantic import ValidationError
 
 from app.core.enums import FeatureStatus, AgentName
 from app.schemas.approval_schema import ApprovalResponse
-from app.schemas.feature_schema import FeatureCreateRequest, FeatureResponse
+from app.schemas.feature_schema import FeatureCreateRequest, FeatureResponse, SetActiveArtifactSelectionRequest
 from app.schemas.stage_event_schema import StageEventResponse
 from app.services.approval_service import approval_service
 from app.services.artifact_service import artifact_service
@@ -111,6 +111,68 @@ def get_feature(feature_id: str):
         raise HTTPException(status_code=404, detail="Feature not found")
 
     return FeatureResponse(**feature)
+
+
+@router.put("/features/{feature_id}/artifacts/active-selection", response_model=FeatureResponse)
+def set_active_artifact_selection(feature_id: str, request: SetActiveArtifactSelectionRequest):
+    """
+    Pin which APPROVED version of one artifact_type should feed the next pipeline stage for this
+    feature -- e.g. which approved SRS version the Domain Agent reads, when more than one SRS
+    version has been approved and the latest one isn't the one a human wants to proceed with.
+    Only an approved artifact of the given type can be selected (400 otherwise).
+    """
+    feature = store.features.get(feature_id)
+
+    if not feature:
+        raise HTTPException(status_code=404, detail="Feature not found")
+
+    try:
+        artifact_service.set_active_artifact_selection(
+            feature_id=feature_id,
+            artifact_type=request.artifact_type,
+            artifact_id=request.artifact_id,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+    return FeatureResponse(**store.features.get(feature_id))
+
+
+@router.delete("/features/{feature_id}", status_code=204)
+def delete_feature(feature_id: str):
+    """
+    Permanently delete one feature: its artifacts, approvals, stage events, and requirement
+    conversation record. Scoped to this feature only -- unlike delete_project, never touches the
+    project's knowledge documents or the whole workspace repo (other features in the same project
+    may still need those). Best-effort discards this feature's own git branch, but ONLY if the
+    project's workspace repo already exists on disk with a real branch for this feature -- never
+    creates a workspace as a side effect of deleting a feature that never advanced far enough to
+    have one (ensure_project_repo, which discard_feature_branch calls internally, would otherwise
+    do exactly that).
+    """
+    feature = store.features.get(feature_id)
+
+    if not feature:
+        raise HTTPException(status_code=404, detail="Feature not found")
+
+    project_id = feature["project_id"]
+    artifact_ids = [a["artifact_id"] for a in store.artifacts.values() if a.get("feature_id") == feature_id]
+
+    store.artifacts.collection.delete_many({"feature_id": feature_id})
+    store.approvals.collection.delete_many(
+        {"$or": [{"feature_id": feature_id}, {"artifact_id": {"$in": artifact_ids}}]}
+    )
+    store.stage_events.collection.delete_many({"feature_id": feature_id})
+    store.requirement_conversations.collection.delete_one({"feature_id": feature_id})
+
+    repo_path = workspace_service.get_repo_path(project_id)
+    if (repo_path / ".git").exists():
+        try:
+            workspace_service.discard_feature_branch(project_id, feature_id)
+        except Exception as error:
+            logger.warning("Failed to discard git branch for deleted feature_id=%s: %s", feature_id, error)
+
+    store.features.collection.delete_one({"feature_id": feature_id})
 
 
 @router.post("/features/{feature_id}/start")

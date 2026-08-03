@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createFeature, getFeature, listFeatures } from "../api/features";
+import { createFeature, deleteFeature, getFeature, listFeatures, setActiveArtifactSelection } from "../api/features";
 
 export function useFeatures(projectId) {
   return useQuery({
@@ -24,6 +24,28 @@ export function useCreateFeature(projectId) {
     mutationFn: (payload) => createFeature(projectId, payload),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["features", projectId] });
+    },
+  });
+}
+
+export function useDeleteFeature(projectId) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (featureId) => deleteFeature(featureId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["features", projectId] });
+    },
+  });
+}
+
+export function useSetActiveArtifactSelection(featureId) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (payload) => setActiveArtifactSelection(featureId, payload),
+    onSuccess: (updatedFeature) => {
+      queryClient.setQueryData(["feature", featureId], updatedFeature);
     },
   });
 }

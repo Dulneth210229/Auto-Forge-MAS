@@ -44,30 +44,30 @@ export default function AgentLlmOverrideRow({ settings }) {
   }
 
   return (
-    <div className="border border-gray-200 rounded-lg">
+    <div className="border border-gray-200 dark:border-gray-700 rounded-lg">
       <div className="flex items-center justify-between p-3">
         <div>
-          <p className="text-sm font-semibold text-gray-900">{STAGE_LABELS[settings.agent_name] || settings.agent_name}</p>
-          <p className="text-xs text-gray-500">
+          <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">{STAGE_LABELS[settings.agent_name] || settings.agent_name}</p>
+          <p className="text-xs text-gray-500 dark:text-gray-400">
             {settings.provider} / {settings.model}
             {settings.is_override ? (
-              <span className="ml-2 bg-accent-100 text-accent-700 px-1.5 py-0.5 rounded text-xs font-semibold">
+              <span className="ml-2 bg-accent-100 dark:bg-accent-500/15 text-accent-700 dark:text-accent-300 px-1.5 py-0.5 rounded text-xs font-semibold">
                 Custom override
               </span>
             ) : (
-              <span className="ml-2 text-gray-400">using global default</span>
+              <span className="ml-2 text-gray-400 dark:text-gray-500">using global default</span>
             )}
           </p>
         </div>
         <div className="flex gap-2">
           {settings.is_override && (
-            <button onClick={handleReset} disabled={clear.isPending} className="text-xs text-gray-500 hover:text-gray-700 font-semibold">
+            <button onClick={handleReset} disabled={clear.isPending} className="text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 font-semibold">
               Reset to default
             </button>
           )}
           <button
             onClick={() => setExpanded((v) => !v)}
-            className="text-xs text-accent-600 hover:text-accent-800 font-semibold"
+            className="text-xs text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 font-semibold"
           >
             {expanded ? "Close" : "Configure"}
           </button>
@@ -75,17 +75,17 @@ export default function AgentLlmOverrideRow({ settings }) {
       </div>
 
       {expanded && (
-        <div className="border-t border-gray-100 p-3">
+        <div className="border-t border-gray-100 dark:border-gray-800 p-3">
           <form onSubmit={handleSave} className="flex flex-col gap-3">
             <ErrorBanner error={update.error} fallback="Failed to update." />
 
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs font-semibold mb-1">Provider</label>
+                <label className="block text-xs font-semibold mb-1 text-gray-900 dark:text-gray-200">Provider</label>
                 <select
                   value={form.provider}
                   onChange={(e) => set("provider", e.target.value)}
-                  className="w-full p-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-accent-500"
+                  className="w-full p-1.5 text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md focus:outline-none focus:border-accent-500"
                 >
                   <option value="ollama">ollama</option>
                   <option value="openai">openai</option>
@@ -93,15 +93,15 @@ export default function AgentLlmOverrideRow({ settings }) {
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-semibold mb-1">Model</label>
+                <label className="block text-xs font-semibold mb-1 text-gray-900 dark:text-gray-200">Model</label>
                 <input
                   value={form.model}
                   onChange={(e) => set("model", e.target.value)}
-                  className="w-full p-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-accent-500"
+                  className="w-full p-1.5 text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md focus:outline-none focus:border-accent-500"
                 />
               </div>
               <div>
-                <label className="block text-xs font-semibold mb-1">Temperature</label>
+                <label className="block text-xs font-semibold mb-1 text-gray-900 dark:text-gray-200">Temperature</label>
                 <input
                   type="number"
                   step="0.1"
@@ -109,17 +109,17 @@ export default function AgentLlmOverrideRow({ settings }) {
                   max="2"
                   value={form.temperature}
                   onChange={(e) => set("temperature", parseFloat(e.target.value))}
-                  className="w-full p-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-accent-500"
+                  className="w-full p-1.5 text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md focus:outline-none focus:border-accent-500"
                 />
               </div>
               <div>
-                <label className="block text-xs font-semibold mb-1">Max Tokens</label>
+                <label className="block text-xs font-semibold mb-1 text-gray-900 dark:text-gray-200">Max Tokens</label>
                 <input
                   type="number"
                   min="1"
                   value={form.max_tokens}
                   onChange={(e) => set("max_tokens", parseInt(e.target.value, 10))}
-                  className="w-full p-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-accent-500"
+                  className="w-full p-1.5 text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md focus:outline-none focus:border-accent-500"
                 />
               </div>
             </div>
@@ -133,24 +133,24 @@ export default function AgentLlmOverrideRow({ settings }) {
             </button>
           </form>
 
-          <div className="mt-3 pt-3 border-t border-gray-100">
+          <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800">
             <ErrorBanner error={test.error} fallback="Test call failed." />
             <div className="flex gap-2">
               <input
                 value={testPrompt}
                 onChange={(e) => setTestPrompt(e.target.value)}
-                className="flex-1 p-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-accent-500"
+                className="flex-1 p-1.5 text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md focus:outline-none focus:border-accent-500"
               />
               <button
                 onClick={() => test.mutate({ agentName: settings.agent_name, prompt: testPrompt })}
                 disabled={test.isPending}
-                className="bg-gray-700 hover:bg-gray-800 disabled:opacity-50 text-white text-xs font-semibold px-3 rounded"
+                className="bg-gray-700 hover:bg-gray-800 dark:bg-white/10 dark:hover:bg-white/20 disabled:opacity-50 text-white dark:text-gray-100 text-xs font-semibold px-3 rounded"
               >
                 {test.isPending ? "Testing..." : "Test"}
               </button>
             </div>
             {test.data && (
-              <p className="text-xs text-gray-600 mt-2 bg-gray-50 rounded p-2 whitespace-pre-wrap">{test.data.output}</p>
+              <p className="text-xs text-gray-600 dark:text-gray-300 mt-2 bg-gray-50 dark:bg-white/5 rounded p-2 whitespace-pre-wrap">{test.data.output}</p>
             )}
           </div>
         </div>

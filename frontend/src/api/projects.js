@@ -19,3 +19,16 @@ export async function createProject({ project_name, project_type, target_stack, 
   });
   return data;
 }
+
+export async function updateProject(projectId, { project_name, project_type, target_stack }) {
+  const { data } = await apiClient.put(`/projects/${projectId}`, {
+    project_name,
+    project_type,
+    target_stack,
+  });
+  return data;
+}
+
+export async function deleteProject(projectId) {
+  await apiClient.delete(`/projects/${projectId}`);
+}

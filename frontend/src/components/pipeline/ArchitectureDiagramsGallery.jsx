@@ -30,16 +30,18 @@ export default function ArchitectureDiagramsGallery({ allArtifacts }) {
   const active = available.find((d) => d.type === activeType) || available[0];
 
   return (
-    <div className="mt-6 pt-4 border-t border-gray-100">
+    <div className="mt-6 pt-4 border-t border-gray-100 dark:border-gray-800">
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Diagrams</h3>
+        <h3 className="text-sm font-bold text-gray-900 dark:text-gray-100 uppercase tracking-wide">Diagrams</h3>
         <div className="flex gap-1">
           {available.map((d) => (
             <button
               key={d.type}
               onClick={() => setActiveType(d.type)}
               className={`text-xs font-semibold px-3 py-1.5 rounded-md ${
-                active.type === d.type ? "bg-accent-100 text-accent-800" : "text-gray-500 hover:bg-gray-50"
+                active.type === d.type
+                  ? "bg-accent-100 dark:bg-accent-500/15 text-accent-800 dark:text-accent-300"
+                  : "text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-white/5"
               }`}
             >
               {d.label}
@@ -48,12 +50,12 @@ export default function ArchitectureDiagramsGallery({ allArtifacts }) {
         </div>
       </div>
 
-      <div className="border border-gray-200 rounded-lg p-3">
+      <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-3">
         <div className="flex items-center justify-between mb-2">
-          <p className="text-xs text-gray-500">
+          <p className="text-xs text-gray-500 dark:text-gray-400">
             v{active.artifact.version} &middot; click the diagram to view full-size
           </p>
-          <a href={artifactDownloadUrl(active.artifact.artifact_id)} className="text-xs text-accent-600 hover:text-accent-800 font-semibold">
+          <a href={artifactDownloadUrl(active.artifact.artifact_id)} className="text-xs text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 font-semibold">
             Download
           </a>
         </div>

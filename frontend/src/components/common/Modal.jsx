@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { createPortal } from "react-dom";
 
 const WIDTH_CLASSES = {
   default: "max-w-lg",
@@ -21,7 +22,13 @@ export default function Modal({ open, onClose, title, children, wide = false, si
     return null;
   }
 
-  return (
+  // Portaled to document.body -- rendering inline would let an ancestor's CSS `transform`
+  // (e.g. ProjectCard's `hover:-translate-y-1`) silently turn this `fixed inset-0` overlay into
+  // one scoped to that ancestor's box instead of the real viewport (a `transform` on any
+  // ancestor creates a new containing block for `position: fixed` descendants -- confirmed as a
+  // real bug this way, not just a hypothetical). A portal makes the overlay's positioning
+  // independent of wherever <Modal> happens to be mounted in the component tree.
+  return createPortal(
     <div
       className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4"
       onClick={(event) => {
@@ -29,20 +36,21 @@ export default function Modal({ open, onClose, title, children, wide = false, si
       }}
     >
       <div
-        className={`bg-white rounded-lg shadow-xl w-full ${WIDTH_CLASSES[size] || (wide ? WIDTH_CLASSES.wide : WIDTH_CLASSES.default)} max-h-[90vh] flex flex-col`}
+        className={`bg-white dark:bg-gray-900 rounded-lg shadow-xl w-full ${WIDTH_CLASSES[size] || (wide ? WIDTH_CLASSES.wide : WIDTH_CLASSES.default)} max-h-[90vh] flex flex-col`}
       >
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
-          <h2 className="text-lg font-semibold text-gray-900">{title}</h2>
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 dark:border-gray-800">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">{title}</h2>
           <button
             onClick={onClose}
-            className="text-gray-400 hover:text-gray-600 text-xl leading-none"
+            className="text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 text-xl leading-none"
             aria-label="Close"
           >
             &times;
           </button>
         </div>
-        <div className="px-6 py-4 overflow-y-auto">{children}</div>
+        <div className="px-6 py-4 overflow-y-auto text-gray-700 dark:text-gray-300">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

@@ -18,12 +18,12 @@ export default function ArchitectureRunForm({ featureId }) {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="flex flex-col gap-4 bg-white p-6 rounded-lg shadow-sm border border-gray-200">
-      <h3 className="text-lg font-bold">Run Architecture Agent</h3>
+    <form onSubmit={handleSubmit} className="flex flex-col gap-4 bg-white dark:bg-gray-900 p-6 rounded-lg shadow-sm border border-gray-200 dark:border-gray-800">
+      <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">Run Architecture Agent</h3>
 
       <ErrorBanner error={runArchitecture.error} fallback="Architecture Agent run failed." />
 
-      <label className="flex items-center gap-2 text-sm">
+      <label className="flex items-center gap-2 text-sm text-gray-900 dark:text-gray-200">
         <input
           type="checkbox"
           checked={useEnhancedSrs}
@@ -33,23 +33,23 @@ export default function ArchitectureRunForm({ featureId }) {
       </label>
 
       <div>
-        <label className="block text-sm font-semibold mb-1">Architecture Notes (optional)</label>
+        <label className="block text-sm font-semibold mb-1 text-gray-900 dark:text-gray-200">Architecture Notes (optional)</label>
         <textarea
           value={architectureNotes}
           onChange={(e) => setArchitectureNotes(e.target.value)}
           rows={2}
           placeholder="Keep it simple: a single Item resource with standard CRUD REST endpoints."
-          className="w-full p-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-accent-500"
+          className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md focus:outline-none focus:border-accent-500"
         />
       </div>
 
       <div>
-        <label className="block text-sm font-semibold mb-1">Human Comment (optional)</label>
+        <label className="block text-sm font-semibold mb-1 text-gray-900 dark:text-gray-200">Human Comment (optional)</label>
         <textarea
           value={humanComment}
           onChange={(e) => setHumanComment(e.target.value)}
           rows={2}
-          className="w-full p-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-accent-500"
+          className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md focus:outline-none focus:border-accent-500"
         />
       </div>
 

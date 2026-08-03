@@ -1,0 +1,274 @@
+import { useState } from "react";
+import LoadingSpinner from "../common/LoadingSpinner";
+
+export function PencilIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="currentColor" className="w-3 h-3">
+      <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
+    </svg>
+  );
+}
+
+// Presentational pieces of the Requirement Agent's conversational gap-filling flow -- ChatPanel
+// composes these around its own normal ChatComposerBox, so the actual input mechanism (single
+// free-text box + agent/model pills + send button) is identical to every other agent's chat
+// instead of a separate bespoke form. Bubble classes mirror ChatBubble's so a conversation turn
+// looks the same as any other chat message in this app.
+//
+// `onEdit`, when provided, enables ChatGPT/Claude-style "edit this message" -- hovering reveals a
+// pencil affordance; clicking it swaps the bubble for an editable textarea seeded with the
+// original text. Saving calls onEdit(newText), which the caller wires to
+// RequirementAgent.edit_turn_reply -- the backend discards this turn and everything after it, then
+// regenerates from the edited text, exactly like the reference products' edit flow. Omit `onEdit`
+// (e.g. while a stream is generating, or after confirm) to render a plain, non-editable bubble.
+export function HumanBubble({ text, onEdit, isEditPending }) {
+  const [isEditing, setIsEditing] = useState(false);
+  const [draft, setDraft] = useState(text);
+
+  if (isEditing) {
+    return (
+      <div className="flex justify-end">
+        <div className="max-w-[85%] w-full flex flex-col gap-1.5">
+          <textarea
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            autoFocus
+            rows={Math.min(8, Math.max(2, draft.split("\n").length))}
+            className="w-full text-sm bg-white dark:bg-gray-900 border border-accent-400 dark:border-accent-500 rounded-lg p-2.5 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-accent-500 resize-none"
+          />
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setDraft(text);
+                setIsEditing(false);
+              }}
+              disabled={isEditPending}
+              className="text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-50 font-semibold px-2 py-1"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const trimmed = draft.trim();
+                setIsEditing(false);
+                if (!trimmed || trimmed === text.trim()) return;
+                onEdit(trimmed);
+              }}
+              disabled={isEditPending || !draft.trim()}
+              className="text-xs bg-accent-600 hover:bg-accent-700 disabled:opacity-50 text-white font-semibold px-3 py-1 rounded-md"
+            >
+              Save &amp; Regenerate
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex justify-end group">
+      <div className="max-w-[85%] flex flex-col items-end gap-1">
+        <div className="bg-accent-600 dark:bg-accent-500 text-white rounded-lg rounded-tr-sm px-3 py-2 text-sm">
+          <p className="text-xs text-accent-200 dark:text-accent-100/80 mb-0.5">You</p>
+          <p className="whitespace-pre-wrap">{text}</p>
+        </div>
+        {onEdit && (
+          <button
+            type="button"
+            onClick={() => setIsEditing(true)}
+            disabled={isEditPending}
+            title="Edit this message"
+            className="opacity-0 group-hover:opacity-100 focus:opacity-100 disabled:opacity-30 transition-opacity text-xs text-gray-400 dark:text-gray-500 hover:text-accent-600 dark:hover:text-accent-400 flex items-center gap-1 px-1"
+          >
+            <PencilIcon />
+            Edit
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function AgentTurnBubble({ turn }) {
+  const hasQuestions = turn.questions_asked && turn.questions_asked.length > 0;
+  const hasAssumptions = turn.assumptions_flagged_this_turn && turn.assumptions_flagged_this_turn.length > 0;
+  const hasReaction = Boolean(turn.agent_reaction && turn.agent_reaction.trim());
+
+  if (!hasQuestions && !hasAssumptions && !hasReaction) return null;
+
+  return (
+    <div className="flex justify-start">
+      <div className="max-w-[85%] bg-gray-100 dark:bg-white/10 text-gray-800 dark:text-gray-200 rounded-lg rounded-tl-sm px-3 py-2 text-sm flex flex-col gap-2">
+        <p className="text-xs text-gray-500 dark:text-gray-400">Requirement Agent</p>
+
+        {/* The agent's own dynamically-generated reaction to the human's last reply -- e.g.
+            calling out that a reply was irrelevant or didn't answer the question, instead of the
+            questions below just appearing as if nothing was wrong with it. */}
+        {hasReaction && <p className="whitespace-pre-wrap">{turn.agent_reaction}</p>}
+
+        {hasQuestions && (
+          <ul className="space-y-2">
+            {turn.questions_asked.map((q, i) => (
+              <li key={i}>
+                <p>{q.question}</p>
+                {/* Per-question example answers used to live as separate input placeholders (one
+                    box per question) -- now that replies go through the single shared composer
+                    like every other agent, the example is shown as inline guidance instead so it
+                    isn't lost. */}
+                {q.placeholder_example && (
+                  <p className="text-xs text-gray-500 dark:text-gray-400 italic mt-0.5">
+                    e.g. {q.placeholder_example}
+                  </p>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {hasAssumptions && (
+          <div className="bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 rounded-md px-2.5 py-1.5">
+            <p className="text-[11px] font-bold text-amber-800 dark:text-amber-300 uppercase tracking-wide mb-1">
+              Assumed instead of asked
+            </p>
+            <ul className="list-disc list-inside text-xs text-amber-900 dark:text-amber-200 space-y-0.5">
+              {turn.assumptions_flagged_this_turn.map((a, i) => (
+                <li key={i}>{a}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function QualityGateBanner({ qualityGate, onConfirm, isConfirming, disabled }) {
+  const [showOverride, setShowOverride] = useState(false);
+  const [overrideReason, setOverrideReason] = useState("");
+
+  if (!qualityGate) return null;
+
+  if (qualityGate.ready) {
+    return (
+      <div className="flex items-center justify-between gap-3 bg-green-50 dark:bg-green-500/10 border border-green-200 dark:border-green-500/30 rounded-lg px-3 py-2.5">
+        <p className="text-sm text-green-800 dark:text-green-300 font-semibold">Ready to generate the final SRS.</p>
+        <button
+          onClick={() => onConfirm({})}
+          disabled={isConfirming || disabled}
+          className="bg-accent-600 hover:bg-accent-700 disabled:opacity-50 text-white text-sm font-semibold px-4 py-1.5 rounded-md flex-shrink-0"
+        >
+          Confirm & Generate Final SRS
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 rounded-lg px-3 py-2.5">
+      <p className="text-sm font-semibold text-red-800 dark:text-red-300 mb-1">Not ready to confirm yet:</p>
+      <ul className="list-disc list-inside text-xs text-red-700 dark:text-red-400 space-y-0.5 mb-2">
+        {qualityGate.reasons.map((reason, i) => (
+          <li key={i}>{reason}</li>
+        ))}
+      </ul>
+
+      {disabled && (
+        <p className="text-xs text-red-500 dark:text-red-400 italic mb-2">
+          Waiting for your last answer to finish processing before this can be confirmed...
+        </p>
+      )}
+
+      {!showOverride ? (
+        <button
+          onClick={() => setShowOverride(true)}
+          disabled={disabled}
+          className="text-xs text-red-700 dark:text-red-400 hover:text-red-900 dark:hover:text-red-300 disabled:opacity-50 font-semibold underline"
+        >
+          Confirm anyway
+        </button>
+      ) : (
+        <div className="flex flex-col gap-2 mt-1">
+          <input
+            value={overrideReason}
+            onChange={(e) => setOverrideReason(e.target.value)}
+            placeholder="Why is it okay to proceed despite these gaps?"
+            className="text-sm border border-red-300 dark:border-red-500/40 dark:bg-white/5 dark:text-gray-100 rounded-md p-1.5 focus:outline-none focus:border-red-500"
+          />
+          <button
+            onClick={() =>
+              onConfirm({ override_quality_gate: true, override_reason: overrideReason.trim() || null })
+            }
+            disabled={isConfirming || disabled || !overrideReason.trim()}
+            className="self-start bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-semibold px-4 py-1.5 rounded-md"
+          >
+            Confirm Anyway & Generate SRS
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// The live-updating "SRS is being generated" view -- shown from the moment Confirm is clicked
+// until the real artifact takes over. A spinner alone covers the network/model-startup latency
+// before the first token arrives; once tokens start streaming in, the text growing in place is
+// itself the strongest possible signal that generation is genuinely live, not a fixed wait
+// followed by a sudden reveal. Its only home is now the wide Result/Output panel (the chat column
+// shows a compact pointer instead of duplicating this) -- sized accordingly, not for a narrow
+// sidebar.
+//
+// `displayText` is whatever the caller wants shown -- NOT necessarily the raw streamed JSON.
+// Showing raw JSON (braces, quotes, "known_answers":) live reads as debug output, not a document
+// "generating directly" the way ChatGPT/Claude's responses do (a real, reported issue) -- callers
+// should run the raw stream through declutterJsonForDisplay (or an equivalent transform) first.
+// See RequirementSrsOutputPanel for the one remaining caller.
+export function LiveGenerationView({ displayText, hasStarted, connectingLabel, generatingLabel = "Generating..." }) {
+  return (
+    <div className="border border-accent-200 dark:border-accent-500/30 bg-accent-50 dark:bg-accent-500/10 rounded-lg p-4 flex flex-col gap-3">
+      <div className="flex items-center gap-2">
+        <span className="relative flex h-2.5 w-2.5">
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent-400 opacity-75" />
+          <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-accent-600" />
+        </span>
+        <p className="text-sm font-semibold text-accent-800 dark:text-accent-300">
+          {hasStarted ? generatingLabel : connectingLabel}
+        </p>
+      </div>
+
+      {!hasStarted && <LoadingSpinner variant="cube" label="Waiting for the model to start responding..." />}
+
+      {hasStarted && (
+        <pre className="text-sm text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-md p-4 max-h-[65vh] overflow-y-auto whitespace-pre-wrap font-sans">
+          {displayText}
+          <span className="inline-block w-2 h-4 bg-accent-600 align-text-bottom animate-pulse ml-0.5" />
+        </pre>
+      )}
+    </div>
+  );
+}
+
+// The live, in-chat counterpart for a normal reply's streaming response -- unlike SRS generation
+// (a document, shown in LiveGenerationView above), a reply's agent_reaction IS meant to read as a
+// single chat message, so this shows ONLY that field's text growing inside a normal
+// AgentTurnBubble-styled bubble -- no JSON, no surrounding known_answers/questions noise -- and
+// swaps seamlessly into a real AgentTurnBubble the instant the stream completes and the actual
+// turn (with its questions) lands.
+export function LiveReactionBubble({ reactionText, hasStarted }) {
+  return (
+    <div className="flex justify-start">
+      <div className="max-w-[85%] bg-gray-100 dark:bg-white/10 text-gray-800 dark:text-gray-200 rounded-lg rounded-tl-sm px-3 py-2 text-sm flex flex-col gap-2">
+        <p className="text-xs text-gray-500 dark:text-gray-400">Requirement Agent</p>
+        {!hasStarted || !reactionText ? (
+          <LoadingSpinner variant="cube" size={20} label="Thinking..." />
+        ) : (
+          <p className="whitespace-pre-wrap">
+            {reactionText}
+            <span className="inline-block w-1.5 h-3.5 bg-accent-600 align-text-bottom animate-pulse ml-0.5" />
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}

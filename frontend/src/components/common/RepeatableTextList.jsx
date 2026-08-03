@@ -29,20 +29,20 @@ export default function RepeatableTextList({ label, value, onChange, placeholder
 
   return (
     <div>
-      <label className="block text-sm font-semibold mb-1">{label}</label>
+      <label className="block text-sm font-semibold mb-1 text-gray-900 dark:text-gray-200">{label}</label>
 
       {value.length > 0 && (
         <ul className="mb-2 flex flex-col gap-1">
           {value.map((item, index) => (
             <li
               key={index}
-              className="flex items-center justify-between bg-gray-100 text-sm px-3 py-1.5 rounded"
+              className="flex items-center justify-between bg-gray-100 dark:bg-white/10 text-gray-900 dark:text-gray-200 text-sm px-3 py-1.5 rounded"
             >
               <span>{item}</span>
               <button
                 type="button"
                 onClick={() => removeItem(index)}
-                className="text-gray-400 hover:text-red-600 ml-2"
+                className="text-gray-400 hover:text-red-600 dark:text-gray-500 dark:hover:text-red-400 ml-2"
                 aria-label={`Remove ${item}`}
               >
                 &times;
@@ -58,12 +58,12 @@ export default function RepeatableTextList({ label, value, onChange, placeholder
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
-          className="flex-1 p-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-accent-500"
+          className="flex-1 p-2 text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md focus:outline-none focus:border-accent-500"
         />
         <button
           type="button"
           onClick={addItem}
-          className="bg-gray-200 hover:bg-gray-300 text-gray-700 text-sm font-semibold px-3 rounded"
+          className="bg-gray-200 hover:bg-gray-300 dark:bg-white/10 dark:hover:bg-white/20 text-gray-700 dark:text-gray-200 text-sm font-semibold px-3 rounded"
         >
           Add
         </button>

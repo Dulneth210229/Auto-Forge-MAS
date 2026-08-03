@@ -2,7 +2,15 @@ import { useState } from "react";
 import { useApprovalMutation } from "../../hooks/useApprovalMutation";
 import ErrorBanner from "../common/ErrorBanner";
 
-export default function ApprovalPanel({ featureId, artifact, warning }) {
+// `onApproveClick`, when provided (only the Requirement stage's SRS passes this), is called with
+// the trimmed comment instead of approving directly -- the caller (GovernancePanel) owns the
+// confirm-dialog + auto-run-Domain-Agent orchestration for that case. This component itself must
+// NOT own that orchestration: it gets unmounted the instant the artifact's approval_status stops
+// being "pending" (this component's own parent swaps it out for a plain status line), which
+// happens mid-flight the moment the approval call succeeds -- an async sequence started here
+// would be abandoned right after that first step, never reaching the "start Domain Agent" part.
+// Reject/Request Revision have no such multi-step follow-up, so they stay handled locally.
+export default function ApprovalPanel({ featureId, artifact, warning, onApproveClick }) {
   const [comment, setComment] = useState("");
   const approval = useApprovalMutation(featureId);
 
@@ -10,13 +18,25 @@ export default function ApprovalPanel({ featureId, artifact, warning }) {
     approval.mutate({ artifactId: artifact.artifact_id, status, reviewer_comment: comment.trim() || null });
   }
 
+  function handleApproveClick() {
+    if (onApproveClick) {
+      onApproveClick(comment.trim() || null);
+      return;
+    }
+    submit("approved");
+  }
+
   return (
-    <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mt-3">
-      <p className="text-sm font-semibold text-yellow-900 mb-2">
+    <div className="bg-yellow-50 dark:bg-yellow-500/10 border border-yellow-200 dark:border-yellow-500/30 rounded-lg p-4 mt-3">
+      <p className="text-sm font-semibold text-yellow-900 dark:text-yellow-200 mb-2">
         Awaiting your review (v{artifact.version})
       </p>
 
-      {warning && <div className="bg-white border border-yellow-300 rounded p-3 text-xs text-gray-700 mb-3">{warning}</div>}
+      {warning && (
+        <div className="bg-white dark:bg-gray-900 border border-yellow-300 dark:border-yellow-500/30 rounded p-3 text-xs text-gray-700 dark:text-gray-300 mb-3">
+          {warning}
+        </div>
+      )}
 
       <ErrorBanner error={approval.error} fallback="Failed to submit approval decision." />
 
@@ -25,12 +45,12 @@ export default function ApprovalPanel({ featureId, artifact, warning }) {
         onChange={(e) => setComment(e.target.value)}
         placeholder="Optional comment..."
         rows={2}
-        className="w-full p-2 text-sm border border-gray-300 rounded-md mb-2 focus:outline-none focus:border-accent-500"
+        className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md mb-2 focus:outline-none focus:border-accent-500"
       />
 
       <div className="flex gap-2">
         <button
-          onClick={() => submit("approved")}
+          onClick={handleApproveClick}
           disabled={approval.isPending}
           className="bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-sm font-semibold py-1.5 px-3 rounded"
         >

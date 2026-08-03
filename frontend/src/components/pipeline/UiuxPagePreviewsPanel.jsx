@@ -27,24 +27,24 @@ export default function UiuxPagePreviewsPanel({ allArtifacts }) {
   const screenshots = latestByFile(allArtifacts);
 
   if (screenshots.length === 0) {
-    return <p className="text-sm text-gray-400 italic">No page previews were rendered for this stage.</p>;
+    return <p className="text-sm text-gray-400 dark:text-gray-500 italic">No page previews were rendered for this stage.</p>;
   }
 
   return (
     <div>
-      <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wide mb-3">
+      <h3 className="text-sm font-bold text-gray-900 dark:text-gray-100 uppercase tracking-wide mb-3">
         Page Previews ({screenshots.length})
       </h3>
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
         {screenshots.map((artifact) => (
-          <div key={artifact.artifact_id} className="border border-gray-200 rounded-lg overflow-hidden">
-            <div className="flex items-center justify-between px-3 py-2 bg-gray-50 border-b border-gray-200">
-              <p className="text-xs font-semibold text-gray-700 truncate" title={artifact.file_path}>
+          <div key={artifact.artifact_id} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+            <div className="flex items-center justify-between px-3 py-2 bg-gray-50 dark:bg-white/5 border-b border-gray-200 dark:border-gray-700">
+              <p className="text-xs font-semibold text-gray-700 dark:text-gray-300 truncate" title={artifact.file_path}>
                 {artifact.file_path.split(/[\\/]/).pop()}
               </p>
               <a
                 href={artifactDownloadUrl(artifact.artifact_id)}
-                className="text-xs text-accent-600 hover:text-accent-800 font-semibold flex-shrink-0"
+                className="text-xs text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 font-semibold flex-shrink-0"
               >
                 Download
               </a>

@@ -107,3 +107,22 @@ export function loadSavedTheme() {
 export function saveTheme(themeKey) {
   localStorage.setItem(STORAGE_KEY, themeKey);
 }
+
+// Light/dark color scheme -- independent of the accent color preset above. Uses a `.dark` class
+// on <html> (see index.css's `@custom-variant dark`) rather than only `prefers-color-scheme`, so
+// the user's explicit choice is what persists, not just whatever their OS happens to report.
+const COLOR_SCHEME_KEY = "autoforge_color_scheme";
+
+export function loadSavedColorScheme() {
+  const saved = localStorage.getItem(COLOR_SCHEME_KEY);
+  if (saved === "light" || saved === "dark") return saved;
+  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+export function applyColorScheme(mode) {
+  document.documentElement.classList.toggle("dark", mode === "dark");
+}
+
+export function saveColorScheme(mode) {
+  localStorage.setItem(COLOR_SCHEME_KEY, mode);
+}

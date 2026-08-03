@@ -78,6 +78,35 @@ const DOCUMENT_VIEWER_TYPES = {
   ui_metadata: "ui-metadata-document",
 };
 
+// Every gating artifact_type saves a JSON+Markdown pair sharing one version (see
+// STAGE_GATING_ARTIFACT's own docstring) -- both are real, valid artifact records, but showing
+// both as separate rows in a version list reads as the same version being duplicated. Keeps only
+// the format each type's stage actually gates off of (falling back to whichever one shows up
+// first if a type has no gating format registered, or only ever has one format to begin with --
+// e.g. ui_component_code, diagram PNGs).
+export function dedupeArtifactVersions(artifacts) {
+  const kept = new Map();
+
+  for (const artifact of artifacts) {
+    const key = `${artifact.artifact_type}::${artifact.version}`;
+    const existing = kept.get(key);
+
+    if (!existing) {
+      kept.set(key, artifact);
+      continue;
+    }
+
+    const stage = ARTIFACT_TYPE_STAGE[artifact.artifact_type];
+    const preferredFormat = STAGE_GATING_ARTIFACT[stage]?.format;
+
+    if (preferredFormat && artifact.artifact_format === preferredFormat && existing.artifact_format !== preferredFormat) {
+      kept.set(key, artifact);
+    }
+  }
+
+  return Array.from(kept.values());
+}
+
 export function pickViewer(artifact) {
   if (artifact.artifact_format === "png") return "image";
   // code_diff exists in BOTH formats: the markdown one is the real merge report DiffViewer

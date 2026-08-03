@@ -5,14 +5,15 @@ export async function listFeatureArtifacts(featureId) {
   return data;
 }
 
-export async function getArtifact(artifactId) {
-  const { data } = await apiClient.get(`/artifacts/${artifactId}`);
-  return data;
-}
-
 export async function getArtifactContent(artifactId) {
   const { data } = await apiClient.get(`/artifacts/${artifactId}/content`);
   return data;
+}
+
+// Only unapproved (pending/rejected/revision_requested) artifacts can be deleted -- the backend
+// rejects (400) an attempt to delete an approved one.
+export async function deleteArtifact(artifactId) {
+  await apiClient.delete(`/artifacts/${artifactId}`);
 }
 
 export { artifactContentUrl, artifactDownloadUrl };

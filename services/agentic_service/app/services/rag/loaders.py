@@ -12,6 +12,7 @@ Why this exists:
   domain_knowledge_service.py never need to know about file formats.
 """
 
+import tempfile
 from pathlib import Path
 
 from pypdf import PdfReader
@@ -41,6 +42,27 @@ def load_text_from_file(path: Path) -> str:
         return path.read_text(encoding="utf-8")
 
     raise ValueError(f"Unsupported domain knowledge file type: {suffix}")
+
+
+def load_text_from_bytes(file_bytes: bytes, filename: str) -> str:
+    """
+    Same extraction as load_text_from_file, but for bytes that were never written to a permanent
+    location -- e.g. a document attached directly to a Requirement Agent chat message, scraped
+    once for its text and then discarded, rather than a Domain Agent knowledge upload that's
+    stored and re-queried later. pypdf/python-docx both require a real file path, so this writes
+    to a throwaway temp file and always cleans it up (success or failure) via `finally`.
+    """
+
+    suffix = Path(filename).suffix.lower()
+
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as handle:
+        handle.write(file_bytes)
+        temp_path = Path(handle.name)
+
+    try:
+        return load_text_from_file(temp_path)
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 def _load_pdf(path: Path) -> str:

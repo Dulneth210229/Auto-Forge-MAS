@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { getLlmSettings, testLlmSettings, updateLlmSettings } from "../api/llmSettings";
+import { getLlmSettings, getOllamaStatus, listOllamaModels, testLlmSettings, updateLlmSettings } from "../api/llmSettings";
 import {
   clearAgentLlmSettings,
   listAgentLlmSettings,
@@ -24,6 +24,32 @@ export function useUpdateLlmSettings() {
 
 export function useTestLlmSettings() {
   return useMutation({ mutationFn: testLlmSettings });
+}
+
+// Ollama's model list rarely changes mid-session -- a generous staleTime avoids re-hitting the
+// Ollama server on every chat-panel mount, and a soft failure (empty array) lets the model
+// picker degrade gracefully instead of blocking the whole chat UI when Ollama isn't reachable.
+export function useOllamaModels() {
+  return useQuery({
+    queryKey: ["ollamaModels"],
+    queryFn: listOllamaModels,
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+}
+
+// Polled while mounted -- unlike the model list, what's actually loaded into memory/VRAM
+// changes as agents run (Ollama loads/unloads/evicts models on its own), so a one-shot fetch
+// would go stale the moment the user watches it for more than a few seconds. `retry: false`
+// matches useOllamaModels: an unreachable server is a normal, renderable state here (the backend
+// reports it as `reachable: false` in a 200), not a query error to retry through.
+export function useOllamaStatus() {
+  return useQuery({
+    queryKey: ["ollamaStatus"],
+    queryFn: getOllamaStatus,
+    refetchInterval: 10_000,
+    retry: false,
+  });
 }
 
 export function useAgentLlmSettings() {

@@ -2140,6 +2140,719 @@ milestone — that file is scratch, **this file is the durable one**.
       detail pages, 5 features at different real pipeline stages, LLM Settings) -- zero page
       errors, zero console errors.
 
+32. **Requirement Agent turned conversational: gap-filling BA instead of a single-shot form-filler.**
+    Previously `RequirementAgent.run()` required a fully-formed `RequirementBAInput` in one
+    request, silently defaulted anything missing (`_complete_ba_input`), and the human never saw
+    the SRS take shape or got asked a clarifying question. Full plan:
+    `C:\Users\ASUS\.claude\plans\soft-petting-star.md` (overwritten since, per this file's
+    convention). Design considered representing each conversational turn as a versioned
+    `SRS_DRAFT` artifact (reusing `artifact_service`'s versioning) -- rejected via an independent
+    Plan-agent design review: `get_next_version()` has no locking (a real two-tab race once
+    called every turn), it repurposes "version" to mean "turn number" for files no one reviews
+    individually, and it would need the frontend's generic artifact list to explicitly hide a new
+    pseudo-type. Chosen instead: one new Mongo collection, `requirement_conversations`, one
+    document per `feature_id`, upserted in place each turn (same idiom as the pre-existing
+    single-document `store.llm_settings`) -- the only shared-service touch this milestone makes.
+    - New `app/agents/requirement_agent/conversation_engine.py`: `project_ba_input_to_srs_shape`
+      (the core "turn known_answers into full SRS shape" logic, extracted from the existing
+      `_build_fallback_srs_json` -- which becomes a thin wrapper appending its own
+      failure-reason line, unchanged behavior; the extraction also fixed a real, previously-silent
+      gap: `output_requirements`/`validation_rules` being defaulted with **zero** assumption flag,
+      and a hardcoded single-FR traceability row that was only ever correct by coincidence when
+      exactly one FR existed -- now one row per FR); `run_gap_analysis` (one small LLM call per
+      turn -- extract answers, ask at most 3 prioritized questions, same JSON-parse/repair ladder
+      as the rest of this agent, falling back to a deterministic rule-based checklist on total
+      failure, never a second LLM call). New `app/agents/requirement_agent/conversation_quality_gate.py`
+      (mirrors `domain_validator.py`'s idiom): deterministic, no-LLM checks -- functional
+      requirements non-empty/concrete, `api_expectations` entries regex-plausible as
+      `METHOD /path`, `data_requirements` entries not vague sentences, and (the hard blocker) any
+      Tier-1 field auto-assumed rather than answered. Tier system baked into the prompt and code
+      (`TIER_1_FIELDS`/`TIER_2`/`TIER_3`): Tier 1 (`functional_requirements`, `api_expectations`,
+      `data_requirements`) always asked about if missing, because these are exactly the fields a
+      real, confirmed prior failure (item 29's QuickCart Architecture Plan -- duplicate GET-only
+      endpoints and single-field pseudo-entities instead of real CRUD/one entity) traced back to.
+    - New `RequirementAgent` methods (`run`/`revise` and every existing helper untouched):
+      `start_conversation`/`reply_to_conversation`/`get_conversation`/`reset_conversation`/
+      `confirm_conversation`. `confirm_conversation` re-validates `known_answers` through
+      `RequirementBAInput` and calls the **unmodified** `_complete_ba_input`/
+      `_generate_requirement_output`, saving via a new `_save_generated_srs_artifacts` helper
+      factored out of `run()`'s existing inline save block (now shared by both) -- this is what
+      makes the result compose with the existing `approval_service`/`graph_orchestrator_service`
+      gate with zero changes to either: they only ever see a normal `ArtifactType.SRS` artifact.
+      The quality gate is re-checked **server-side** inside `confirm_conversation` itself (400 if
+      not ready and `override_quality_gate` isn't explicitly set) -- a direct API call cannot
+      bypass it just by skipping what the frontend shows; an override's reason is stamped into the
+      real SRS's own `assumptions` array so it stays visible to Domain/Architecture Agent and any
+      future human reviewer, not just the frontend session that made the call.
+    - New routes (fully additive; `/requirement/run` and `/requirement/revise` untouched --
+      confirmed via grep these are the only two callers of `requirement_agent.run()`/`.revise()`
+      anywhere): `POST/GET .../requirement/conversation/{start,reply,confirm,reset}` +
+      `GET .../requirement/conversation`.
+    - Frontend: new `RequirementConversationPanel.jsx` replaces `RequirementRunForm` as the
+      default view for the `requirement` stage's `ACTION_REQUIRED` state (the old form stays
+      reachable via a "Prefer to fill a form manually instead?" link, unchanged). Chat bubbles
+      reuse `StageInteractionPanel.jsx`'s existing `TimelineItem` Tailwind classes for visual
+      consistency; the live SRS preview reuses `SrsDocumentViewer` directly (no artifact fetch
+      needed -- the conversation response already carries the full preview) behind a
+      collapsed-by-default "View current SRS draft" toggle. Fixed `TimelineItem`'s ask-bubble
+      label ternary (`eventType === "run" ? "Started" : "Revision requested"`, which silently
+      mislabeled any third event type) into a label map covering the new
+      `clarify_start`/`clarify`/`confirm` event types.
+    - **A real, non-obvious layout bug found only by driving this through the actual browser, not
+      by reading the code**: the panel was first built with a side-by-side chat+SRS-preview
+      two-column layout, copying the pattern that worked for UI/UX's Page Previews earlier this
+      session -- but that pattern lived in the wide center Output panel, while this component
+      renders inside the narrow (`w-96`) per-stage **Interaction sidebar**. A real screenshot
+      showed the quality-gate reasons list collapsed to one character per line -- the inner
+      `w-96` SRS-preview column was by itself as wide as the entire available sidebar, squeezing
+      the chat column to near-zero width. Fixed by switching to a single-column layout (chat
+      stacked above the reply box and quality-gate banner) with the SRS preview behind a
+      collapsed-by-default toggle instead of an always-open side pane. Confirmed fixed with a
+      fresh screenshot after the rebuild -- clean, fully-readable layout.
+    - **A real, separate bug found only by driving a genuine multi-turn conversation against a
+      real local LLM, not by unit tests**: the gap-analysis prompt shows the model an empty-string/
+      empty-list JSON shape as an example of the `known_answers` structure (e.g.
+      `"architectural_style": ""`) -- the same "model anchors on the shown JSON shape" gotcha this
+      project has hit before with other agents. A real run had the model echo
+      `"architectural_style": ""` back verbatim despite having no real answer for it, which then
+      failed `RequirementBAInput`'s validator at confirm time (an empty string is not `None`, so
+      it skips the field's normal `MODULAR` default and hits the allowed-values check instead,
+      raising). Worse, on a later turn the same clobbering silently overwrote an already-correct
+      `target_stack: "MERN"` down to `""`. Fixed by filtering the model's `known_answers` update to
+      only non-falsy values before merging (`{k: v for k, v in new_known_answers.items() if v}`) --
+      any accidentally-echoed empty placeholder can no longer overwrite or introduce a bad value.
+    - Tests: `tests/test_requirement_conversation.py` (new, 12 -- honest default-flagging with no
+      false failure-reason text, `_build_fallback_srs_json`'s existing behavior preserved after
+      the extraction, per-FR traceability, every individual quality-gate check, and
+      `run_gap_analysis`'s question-truncation/known-answer-merge behavior plus its deterministic
+      fallback on total parse failure, mocked LLM matching this suite's established
+      `patch(".../conversation_engine.llm_provider_service")` idiom). Full suite: **275 passed**
+      (up from 263), zero regressions.
+    - **Real end-to-end verification, a genuinely new feature, driven through the real HTTP API
+      and then the real browser**: created `feature_df7639a2` ("Inventory Reports") on the live
+      QuickCart project with a deliberately rough description ("let admins manage inventory
+      somehow") -- the real gap-analysis call correctly asked exactly the Tier-1 questions
+      (concrete actions, API endpoints, data fields) with zero prompting toward them; after two
+      real replies providing concrete CRUD/endpoint/field detail, the quality gate correctly
+      turned ready (`auto_assumed_tier1_count: 0`); confirming produced a real SRS v1 (pending
+      approval) -- the underlying single-shot SRS-generation LLM call itself failed schema
+      validation on this run (a **pre-existing**, already-documented model-quality gotcha,
+      unrelated to this milestone) and correctly fell through to the now-shared
+      `project_ba_input_to_srs_shape`-based fallback, proving the extraction preserved the
+      existing reliability ladder end-to-end under a real failure, not just in fixtures. Also
+      created `feature_f9af7982` ("Order Export") specifically to drive the chat UI itself through
+      a real browser (not just the API) -- this is the run that surfaced both real bugs above.
+      Both features are left in place as real, inspectable verification output, matching this
+      project's established convention (not cleaned up as test debris).
+
+33. **Requirement Agent conversation UX pass: chat as the main window, per-question answering
+    with placeholders, and live-streamed SRS generation.** Direct follow-up user feedback on
+    item 32: the chat needed to be the primary/main window (not squeezed into the narrow
+    Interaction sidebar) until an SRS exists, answering 3 questions at once in one combined box
+    was frustrating, questions needed example placeholders, and the final SRS generation should
+    be visibly live (streaming) rather than a blocking wait then a sudden reveal, with clear
+    loaders throughout.
+    - **Main window**: `StageOutputPanel.jsx` now renders `RequirementConversationPanel` directly
+      as the main Output content for `stage === "requirement"` whenever no SRS artifact exists yet
+      (`versions.length === 0`) -- the instant a real SRS is generated, this stage reverts to the
+      normal document-view behavior every other stage already has, automatically (no special-case
+      code needed for the transition -- it falls out of the existing `versions.length` check).
+      Removed from `StageInteractionPanel.jsx`'s narrow sidebar entirely (replaced with a one-line
+      pointer to the main panel).
+    - **Per-question answering with placeholders**: `GAP_ANALYSIS_SYSTEM_PROMPT` now asks for
+      `questions: [{"question", "placeholder_example"}]` instead of plain strings -- the model
+      writes a concrete, feature-specific example answer for each question (confirmed real:
+      "POST /api/return_requests, GET /api/return_requests" for an API-endpoints question on a
+      genuinely new "Return Requests" feature), shown as that question's input placeholder.
+      `conversation_engine.py`'s deterministic fallback checklist got matching canned examples.
+      `requirement_conversation_schema.py` gained `QuestionWithPlaceholder` +
+      `_coerce_questions` (a `field_validator(mode="before")` that wraps a legacy plain string in
+      `{"question": s, "placeholder_example": ""}`) so conversation documents saved before this
+      change keep working with no migration. Frontend: `QuestionAnswerForm` renders one labeled
+      input per open question (not one shared textarea); submitting combines the
+      individually-answered questions into a clearly-attributed `Q: ...\nA: ...` block per
+      question -- both easier for a human to answer and a cleaner signal for the next
+      gap-analysis turn than one run-on paragraph.
+    - **Live-streamed SRS generation**: new `RequirementAgent.confirm_conversation_stream`
+      (async generator, mirrors `confirm_conversation`'s validation/quality-gate/save logic
+      exactly) calls `provider.stream(...)` (already existed on every `BaseLLMProvider`, just
+      never wired to an endpoint before) instead of `invoke_agent`, yielding
+      `{"type": "token", "text": ...}` events as raw output arrives; only the JSON-repair retry
+      and deterministic fallback (rare reliability-ladder paths) stay non-streamed, since there's
+      no meaningful "live" content to show while repairing already-malformed output. New route
+      `POST .../requirement/conversation/confirm/stream` returns a `StreamingResponse` of
+      newline-delimited JSON (deliberately not SSE/EventSource, which can't POST a body) --
+      `frontend/src/api/agents.js`'s `confirmRequirementConversationStream` reads it via a plain
+      `fetch()` `ReadableStream` reader, calling `onEvent` per parsed line. `LiveGenerationView`
+      shows a pulsing "Connecting to Requirement Agent..." spinner before the first token, then
+      the raw JSON growing live in a monospace box with a blinking cursor -- confirmed for real
+      with a genuine local LLM: the exact SRS JSON text visibly typing in, not a fixed wait
+      followed by a sudden reveal. The existing "Start Conversation"/"Send Answers" loaders were
+      also made more prominent (an explicit `LoadingSpinner`, not just disabled-button text).
+    - **A real, non-obvious race found only by driving this through a genuine local LLM at real
+      latency, not by unit tests**: clicking "Confirm anyway" while a reply's own gap-analysis
+      call was still in flight read `known_answers` from the database *before* that reply had
+      finished saving, silently confirming against stale/empty answers (the generated SRS's
+      FR-001 came back as the raw feature description, `_complete_ba_input`'s own fallback,
+      because `functional_requirements` genuinely wasn't in `known_answers` yet at the moment
+      confirm read it) -- a real, user-reachable defect, not just a test-timing artifact (a real,
+      fast-clicking human could trigger the identical race, since the override "Confirm anyway"
+      path was never disabled by a pending reply). Fixed by disabling both the ready-path and
+      override-path confirm buttons whenever `respond.isPending`, with an explicit
+      "Waiting for your last answer to finish processing..." message -- confirmed fixed with a
+      clean re-run showing the real per-question answer ("Customer can create a return request
+      for a delivered item") correctly reflected in the generated SRS's FR-001.
+    - Tests: `tests/test_requirement_conversation.py` gained 2 new tests (`confirm_conversation_
+      stream` yields tokens-then-done and saves a real artifact via a real project/feature/
+      requirement_conversations fixture with proper Mongo+disk teardown, matching the established
+      `feature_with_prior_run`-style pattern in `test_coder_agent_revise.py`; blocks cleanly with
+      a single error event when the quality gate isn't ready, never calling `provider.stream` at
+      all) plus updated assertions for the existing gap-analysis tests' now-structured question
+      shape. Full suite: **277 passed** (up from 275), zero regressions.
+    - **Real state**: four more QuickCart features created purely to verify this pass end-to-end
+      through a real browser against a real local LLM (`feature_8f5f184f`/`feature_dc1172af`/
+      `feature_d6715d99`/`feature_d7c8c638`, all "Return Requests" variants) -- left in place per
+      this project's established convention, each showing a different real stage of the flow
+      (fresh per-question start, mid-generation live stream, and a fully confirmed SRS with the
+      race-condition fix correctly reflected in its FR-001).
+
+34. **Frontend UX pass: edit-and-resubmit for every agent's past comments, a genuinely auto-growing
+    chat composer, and the ability to delete an unapproved artifact version.** Direct user request
+    (three sub-asks in one message): "User must be able to edit and resubmit the message to each
+    agent like chat gpt and claude," the composer "must be dyanmic when user enters a huge message,"
+    and "if the user wants to remove some un approved verion of SRS user must be able to do this."
+    - **Edit-and-resubmit**: deliberately implemented as "reload the original comment text back
+      into the composer, let the human resend it as a new message" rather than a true in-place
+      history rewrite, for every agent EXCEPT Requirement's pre-SRS conversation (which already has
+      real rewindable state via `known_answers_before` snapshots and keeps its own dedicated
+      inline-edit-with-rewind system, untouched). Every other run/revise call is stateless with
+      respect to prior comments -- an already-produced artifact really was generated from the
+      original text and can't be honestly "un-produced," so rewriting its history would be
+      dishonest. `RequirementConversationParts.jsx`'s `PencilIcon` exported; `ChatBubble.jsx` gained
+      a hover-reveal Edit button on "ask" bubbles (`group`/`group-hover:opacity-100`) calling a new
+      `onEdit(comment)` prop; wired through `ChatPanel.jsx` and `RequirementRevisionChat.jsx` as
+      `onEdit={setComment}`.
+    - **Auto-growing composer**: the previous heuristic (`rows={Math.min(6, value.split("\n").length)}`)
+      only grew on explicit Shift+Enter presses, not on a long soft-wrapped single line.
+      `ChatComposerBox.jsx` now measures real `scrollHeight` via a `textareaRef` + `useEffect`
+      (`style.height = "auto"` then `scrollHeight`, capped at `MAX_TEXTAREA_HEIGHT_PX = 240` with
+      `overflow-y-auto` beyond that) -- confirmed live: a long unbroken sentence grew the box from
+      20px to 100px tall with zero manual line breaks.
+    - **Delete an unapproved artifact version**: `artifact_service.delete_artifact(artifact_id)` +
+      `DELETE /artifacts/{artifact_id}` (204; 400 if approved) + frontend `deleteArtifact`/
+      `useDeleteArtifact`/`ArtifactRow.jsx`'s inline Delete -> "Confirm?"/"Cancel" two-step button.
+      **A real bug found only by live verification, not by code review**: this codebase's own
+      documented convention is that every gating artifact_type saves a JSON+Markdown pair sharing
+      ONE version, and the frontend's version list (`dedupeArtifactVersions`) collapses that pair
+      into a single displayed row, showing only the stage's preferred format (e.g. `json` for
+      `srs`). The first implementation deleted only the ONE artifact_id behind that row -- so
+      deleting "SRS v1" only ever deleted the JSON half; the Markdown half silently remained in the
+      database and (worse) then became the row's new representative on the next list refresh,
+      making the version appear to un-delete itself. Fixed by making `delete_artifact` operate on
+      the whole VERSION: it now finds every sibling sharing `(feature_id, artifact_type, version)`
+      and deletes all of them together -- confirmed live, deleting one row now removes both
+      artifact_ids from the database in one action. **A second, related bug found in the same live
+      pass**: the initial fix's approval guard only checked the ONE artifact_id being deleted, not
+      its siblings -- calling delete directly on the still-pending Markdown half of an
+      already-JSON-approved pair succeeded, orphaning the approved JSON without its Markdown
+      sibling (unreachable through the actual UI, since `dedupeArtifactVersions` always shows the
+      approved JSON as that row's representative and `ArtifactRow`'s `canDelete` correctly hides
+      Delete for it -- but directly reachable via the raw API). Fixed by checking every artifact in
+      the whole version group for `APPROVED` status before allowing any of them to be deleted, not
+      just the one requested. **Any future logic operating on "one artifact" for a gating
+      artifact_type must remember it's really a two-row version-pair** -- this is the second time
+      this exact JSON+Markdown pairing convention has caused a real bug from code that only
+      considered one half (see item 30's `pickViewer`/`code_diff` gotcha for the first).
+    - Also caught, mid-verification, an operational gotcha worth remembering: after editing
+      `artifact_service.py`, the already-running `uvicorn` process (started without `--reload`)
+      kept serving the OLD code -- the first live delete test "worked" but silently used
+      pre-fix behavior, because the backend was never restarted after the edit. **Any backend
+      code change made while a test instance is already running needs an explicit restart before
+      the next live verification pass**, or the verification is testing stale code.
+    - Full backend suite: **277 passed** both before and after the fix (no new unit tests were
+      added specifically for `delete_artifact`'s cascade/guard logic -- this was verified live,
+      end-to-end, via a real isolated backend/frontend instance and a real browser, not synthetic
+      fixtures; a future session adding `tests/test_artifact_delete.py` would be a reasonable
+      follow-up to lock this in). `npm run build` clean (only the pre-existing chunk-size
+      advisory). Real, live verification: created a throwaway project (`proj_6e968a81`, "RF Verify
+      Test") and feature (`feature_00f51c11`, "Verify Feature") on fresh isolated ports (8060/5185),
+      drove a real conversation through a real local LLM to a confirmed SRS, requested a real
+      revision (confirming both the edit-and-resubmit UI AND the auto-grow textarea in the same
+      pass), then exercised delete on both an unapproved version (succeeded, cascaded correctly)
+      and an approved one (correctly refused, 400) -- fully cleaned up afterward (project deleted
+      via the existing `DELETE /projects/{id}` endpoint, both test processes killed).
+
+35. **Delete confirmation upgraded from inline text to a real popup, and Requirement Agent
+    revisions redesigned so a requested edit actually happens.** Two direct user reports: (1) the
+    delete-artifact confirm from item 34 should be "through a popup message," not inline
+    Confirm/Cancel text; (2) asked the Requirement Agent to remove one specific NFR
+    ("Listing page must load within 2 seconds for up to 10,000 items") from an already-generated
+    SRS, and the item was still present in the newly generated SRS after revision -- "the agent
+    must dynamically address those user needs and performed those requirements/instruction."
+    - **Popup**: new `frontend/src/components/common/ConfirmDialog.jsx` (wraps the existing
+      `Modal`) -- `ArtifactRow.jsx`'s inline "Delete" -> "Confirm?"/"Cancel" text toggle replaced
+      with a real modal (`ConfirmDialog`) naming the exact artifact type + version being deleted.
+    - **Root cause of the ignored-removal bug, confirmed by reading the code (same defect class as
+      item 29's Domain Agent fix)**: `revise()`/`revise_stream()` asked the LLM to retype the
+      ENTIRE SRS JSON verbatim on every revision, changing only what the comment asked for. On
+      this local model, that's unreliable -- and critically, the reliability ladder's fallback for
+      a totally failed/unparseable LLM call (`_fallback_revise_srs_json`) just **cloned the
+      existing SRS unchanged**, silently discarding the human's requested edit with no visible
+      error anywhere. Given this project's own extensively-documented local-model JSON reliability
+      issues, this fallback path is the prime suspect for what the user hit.
+    - **Fix, mirroring item 29's Domain Agent redesign exactly**: the LLM is no longer asked to
+      retype the SRS. `REQUIREMENT_REVISION_SYSTEM_PROMPT` (`prompt.py`) now asks for a small
+      `{"revision_summary", "operations": [{"action": "remove"|"add"|"modify"|"set", "field",
+      "target", "value", ...}]}` plan -- one operation per distinct change, "target" must quote an
+      existing id/exact text so it can be matched precisely, and an irrelevant/unmatchable request
+      must return an EMPTY operations list plus an honest revision_summary explaining why, never a
+      guessed change. New `app/agents/requirement_agent/revision_patcher.py`
+      (`apply_revision_operations`) deterministically applies that small plan to the real SRS:
+      handles plain-string-list fields (scope, constraints, etc.), `{id, description}`-object-list
+      fields (functional_requirements/non_functional_requirements/acceptance_criteria/
+      validation_rules, matching by exact text, id, OR substring containment so the LLM can quote
+      just the distinctive part of a long requirement), `user_stories`'s own shape, and top-level
+      scalar fields -- rebuilding `traceability` afterward if functional_requirements changed.
+      Every operation the patcher couldn't confidently match, and the zero-operations case, are
+      appended directly to the revised SRS's own `assumptions` array (plus a new
+      `revision_metadata.applied_changes`/`unmatched_operations` pair) -- so "the agent silently
+      didn't do what I asked" is no longer possible; it either happens or is explicitly said not
+      to have happened, visible in the document itself. `agent.py`'s `_revise_srs_json` (used by
+      `revise()`) gained the same LLM-call -> JSON-repair-retry -> deterministic-fallback ladder
+      shape `revise_stream()` already had (it previously had no repair step at all). The streamed
+      raw output during a revision is now the small plan, not the whole document -- updated the
+      Result panel's live-view label ("Reviewing your requested change..." instead of
+      "Regenerating SRS...") and the revision chat's banner copy to match what's actually
+      happening; `revision_summary` stays the first JSON key so the existing chat-bubble streaming
+      extraction is unaffected.
+    - **Real, live verification, not just synthetic tests**: created a fresh test feature with an
+      SRS containing the user's exact NFR text, requested the user's exact revision comment through
+      the real streaming endpoint against a real local LLM -- the model produced a correct,
+      one-operation plan on the FIRST attempt (no repair, no fallback), and the resulting SRS v2
+      genuinely no longer contains that NFR, with `revision_metadata.applied_changes` recording
+      exactly what happened. A second real test with a deliberately nonsensical removal request
+      ("remove the requirement about time travel and quantum encryption") correctly returned zero
+      operations, with both `revision_summary` and a new `assumptions` entry honestly stating
+      nothing was changed. Also verified the delete popup live: clicking Delete now opens a real
+      modal naming the exact version, Cancel closes it with no request sent, and confirming deletes
+      the version (cascading both JSON+Markdown, per item 34's fix) and closes the dialog.
+    - New `tests/test_requirement_revision_patcher.py` (10 tests, no LLM -- exact/id/substring
+      removal matching, unmatched-removal-is-reported not silently dropped, add/modify for both
+      list shapes, user_stories add, traceability rebuild after FR removal, malformed operations
+      skipped not raised). Full suite: **287 passed** (up from 277). `npm run build` clean.
+
+36. **Pin which approved SRS version feeds the Domain Agent, instead of always the latest.**
+    Direct user request, prompted by seeing two approved SRS versions (v2/v3) in "All Artifacts"
+    with no way to control which one the next agent actually uses: "the lastly approved version
+    will continue to next agent and mentioned the name of using SRS for the next phase on the
+    right side of the result section, top right corner after the preview tab. And add a radio
+    button in the approved SRS for the user to select which [version is] going to be use[d]."
+    - **Backend**: `FeatureResponse` gained `active_artifact_selection: dict[str, str]` (maps
+      `artifact_type -> artifact_id`, e.g. `{"srs": "artifact_..."}`), stored on the feature
+      document, defaulting to `{}` for every pre-existing feature (an absent entry means "use the
+      default," never an error). New `artifact_service.get_selected_or_latest_approved_artifact
+      (feature_id, artifact_type, artifact_format=None)`: returns the pinned artifact if one is
+      set AND still valid (belongs to this feature, still that type/format, still APPROVED) --
+      otherwise the latest approved version by version number, i.e. **exactly** the same default
+      every stage's own private `_find_latest_approved_*` duplicate (Architecture/Domain/UI-UX/
+      Coder Agent each have one, confirmed by reading them) already used. A stale/deleted
+      selection silently falls through to that default rather than raising -- pinning is a soft
+      override, never a way to brick the pipeline if the pinned version later disappears. New
+      `artifact_service.set_active_artifact_selection(feature_id, artifact_type, artifact_id)`
+      (raises ValueError -> 400 for: unknown feature/artifact, wrong feature, wrong type, or not
+      APPROVED -- only an approved version is ever a meaningful choice). New route `PUT
+      /features/{feature_id}/artifacts/active-selection`. **Only `DomainAgent.
+      _find_latest_approved_srs_artifact` was wired to this** (delegates to the new shared method
+      instead of its own private duplicate) -- per the user's explicit scope ("specially to the
+      next agent" = Domain Agent reading the SRS). The other three agents' private
+      "latest-approved" duplicates are untouched; wiring any of them the same way later is a
+      trivial one-line change to `get_selected_or_latest_approved_artifact`, not a new mechanism.
+    - **Frontend**: new `frontend/src/lib/activeArtifactSelection.js`'s
+      `getEffectiveActiveArtifact(artifacts, activeSelection, artifactType, artifactFormat="json")`
+      mirrors the backend's exact default/override logic client-side (no extra round trip) --
+      used by both the indicator and the radio button so they can never disagree.
+      `OutputPanel.jsx`'s tab bar (previously just the Result/Files/Preview buttons) gained a
+      `justify-between` layout and a right-aligned pill per entry in a new
+      `NEXT_AGENT_BY_ARTIFACT_TYPE` map (`{srs: "Domain Agent"}` today) reading
+      `"Using SRS vN for Domain Agent"` -- exactly the "top right corner after the preview tab"
+      placement asked for. `ArtifactRow.jsx` gained a real `<input type="radio">` (grouped by
+      `name={"active-" + artifact_type}`) shown only on rows where `showActiveSelector` is true
+      AND `approval_status === "approved"` (mirrors the backend's own 400 guard -- the radio
+      simply never appears somewhere it would be rejected), plus an "In use" pill on whichever row
+      is currently effective. `ResultTab.jsx` computes `effectiveActiveArtifact` via the shared
+      helper and passes `activeArtifactType`/`activeArtifactId`/`onSetActive`/`settingActive`
+      through `ArtifactList.jsx` to each row; a new `useSetActiveArtifactSelection(featureId)`
+      mutation (`useFeatures.js`) writes straight into the `["feature", featureId]` query-cache
+      entry on success (same "direct cache write, no refetch" idiom already used elsewhere in
+      this codebase for a small, single-document response) so the indicator and every row's
+      radio state update immediately, in the same render, with no extra fetch.
+    - New `tests/test_artifact_active_selection.py` (5 tests, no LLM/HTTP -- defaults to latest
+      when unset, explicit selection overrides the latest-version default, selecting a
+      non-approved artifact is refused, selecting an artifact belonging to a different feature is
+      refused, a stale/deleted selection falls back to the latest-approved default rather than
+      erroring). Full suite: **292 passed** (up from 287).
+    - **Real, live verification**: created a fresh test feature, generated and approved SRS v1,
+      requested a revision and approved the resulting v2 too (so two real approved versions
+      coexisted, reproducing the screenshot that prompted this request) -- confirmed the indicator
+      defaulted to "Using SRS v2 for Domain Agent" (the latest, matching prior behavior with zero
+      selection made) and v2's row showed the radio checked with an "In use" pill; clicked v1's
+      radio button and confirmed, in the same screenshot pass, the indicator updated live to
+      "Using SRS v1 for Domain Agent", the checked radio moved to v1's row, and
+      `GET /features/{id}` genuinely returned `active_artifact_selection: {"srs":
+      "<v1's real artifact_id>"}` -- the persisted backend state matches exactly what the UI
+      showed, not just a client-side-only toggle. `npm run build` clean throughout.
+
+37. **SRS approval exclusivity, an approve-confirmation popup that auto-starts Domain Agent and
+    auto-switches the chat, and a real (not testing-artifact) fix making edited chat messages
+    stream live instead of sitting behind a static spinner.** Two direct user reports in one
+    message: (1) "user can only approved only one SRS user can not select multiple SRS verions" --
+    reacting to the real state from item 36's verification where v1 AND v2 were BOTH left
+    "Approved" simultaneously; (2) "Once the user clicks on the approved button A popup message
+    appear confirming to user and starting the domain agent... user clicks okay the domain agent
+    chat will start automatically"; and, separately, "When User edit the user message it will not
+    appear on the chat box section."
+    - **SRS exclusivity** (`approval_service.py`'s `submit_approval`): approving an SRS artifact
+      now finds every OTHER `srs`-type artifact for the same feature currently `APPROVED` and
+      reverts it to `PENDING`. Scoped narrowly to `ArtifactType.SRS` specifically, not every
+      gating type -- UI/UX's `ui_component_code` artifacts are legitimately, independently
+      approved several at a time (distinct components, not versions of one document); SRS is a
+      singleton document with versions, which is what this rule is actually about.
+    - **Approve confirmation + auto-run Domain Agent + auto-switch chat**: new
+      `ConfirmDialog.jsx` gained a `tone` prop (`"danger"` red / `"primary"` accent) and a
+      `confirmingLabel` prop (previously hardcoded "Deleting...") so the same component now
+      serves both delete confirmations and this positive-action one.
+      `GovernancePanel.jsx` (not `ApprovalPanel.jsx` -- see the real bug below) owns a
+      `confirmingApprove`/`phase` state machine and its own `useApprovalMutation`/`useRunDomain`
+      instances: confirming -> approve (supersedes any other approved SRS per the fix above) ->
+      `runDomain.mutateAsync({})` (the existing manual-trigger path already wired for the
+      composer, per item 30 -- no LangGraph run needs to have been started) -> `selectAgent
+      ("domain")`. `OutputPanel.jsx`'s "Using SRS vN for Domain Agent" indicator (item 36) and
+      this popup now compose correctly since both read the same exclusivity-respecting state.
+    - **A real bug found and fixed mid-verification, not by static reading**: the confirm+run+
+      switch sequence was originally written as an async function living INSIDE `ApprovalPanel`
+      -- which is unmounted by its own parent the instant the artifact's `approval_status` stops
+      being `"pending"` (exactly what happens right after the approval call succeeds, mid-
+      sequence). Confirmed directly: a live run's debug logging showed `"approval.mutateAsync
+      resolved"` and then NOTHING -- no `runDomain` log, no thrown/caught error, no `selectAgent`
+      call -- the async function was silently abandoned the moment its owning component
+      unmounted. Fixed by moving the entire confirm-dialog + orchestration up to
+      `GovernancePanel.jsx`, which never unmounts across that transition (it only swaps which
+      child it renders); `ApprovalPanel.jsx` was simplified back to a dumb component taking an
+      optional `onApproveClick(comment)` callback instead of owning any multi-step flow itself.
+      **Any future multi-step async sequence triggered from a button inside a conditionally-
+      rendered child must live in the nearest ancestor that stays mounted across every state
+      transition the sequence itself causes** -- this is the second time this exact class of bug
+      has been found in this codebase (see item 34's cascade-delete note for the first, different
+      shape of "one artifact_id isn't the whole logical unit" mistake) but a new failure mode
+      (component lifetime, not data modeling).
+    - **A second real, related bug found in the same verification pass**: `ResultTab.jsx`'s
+      `selectedVersion` state didn't reset when `stage` itself changed -- after the auto-switch to
+      Domain Agent, if a version NUMBER happened to coincidentally exist for both `srs` and
+      `enhanced_srs` (e.g. both have a "v4"), the panel kept showing the OLD stage's document
+      under the NEW stage's header, since the existing "does this version still exist" check
+      found a coincidental match and never re-picked the new stage's actual latest version. Fixed
+      with a new, separate `useEffect` keyed only on `[stage]` that unconditionally resets to
+      `versions[0]?.version` on every stage change, leaving the existing "new version arrived for
+      the same stage" effect untouched.
+    - **A third bug, pre-existing and unrelated to this session's new code, found and fixed along
+      the way**: `ResultTab.jsx` always passed `gatingArtifactType={null}` to `ArtifactList`,
+      which (per `ArtifactRow.jsx`'s OWN docstring -- "the gating artifact itself already gets the
+      bigger ApprovalPanel below it, so callers should omit featureId there") was supposed to hide
+      the redundant inline Approve/Reject on the ONE row that already has the bigger
+      Governance-panel controls. Since it was always `null`, EVERY row (including the gating one)
+      showed BOTH controls -- meaning the SRS's Approve button had two live copies, only one of
+      which (Governance's) went through the new confirmation flow; the other (the inline one)
+      still approved immediately with no popup, no exclusivity awareness at the UI level (the
+      backend-level exclusivity fix still applied either way, but the human-facing confirmation
+      could be silently bypassed). Fixed by passing the stage's real gating type
+      (`STAGE_GATING_ARTIFACT[stage]?.type`) instead of a hardcoded `null`.
+    - **The "edit message doesn't appear" report: extensively investigated, and NOT a bug in the
+      edit-and-resubmit or edit-and-regenerate mechanisms themselves** -- both were verified live,
+      multiple times, to work correctly: `RequirementRevisionChat`'s hover-edit-reload-into-
+      composer-resubmit flow (item 34's pattern) and `RequirementConversationChat`'s true inline
+      edit-with-rewind flow (`HumanBubble`, pre-existing, kept unchanged per item 34's own
+      design note) both correctly save the edit and refresh the display -- confirmed via direct
+      backend inspection after each. **The real, confirmed gap**: unlike every other reply-shaped
+      action in this conversation (normal replies, revisions, confirms), editing a turn used a
+      plain, non-streaming call -- the edited message sat behind only a spinner for however long
+      the real LLM call took (which, on this local model, is routinely 30s-several minutes,
+      already extensively documented elsewhere in this file). A human watching a static spinner
+      for that long, with zero visible progress, would very reasonably conclude "this isn't
+      working" -- exactly the perceived-breakage this session has repeatedly fixed for OTHER
+      flows by making them stream (see items 32/33). Fixed by adding the same treatment here:
+      new `RequirementAgent.edit_turn_reply_stream` (mirrors `reply_to_conversation_stream`
+      exactly -- same token/error/done event shape, same repair-then-deterministic-checklist
+      ladder, same rewind-via-`known_answers_before`/`existing_turns_override` logic as the
+      existing non-streaming `edit_turn_reply`), new route `POST .../conversation/turns/
+      {turn_index}/edit/stream`. Frontend: `RequirementConversationChat.jsx` gained an
+      `editingContext` state (`{turnIndex, pendingReply}`) so the turn being edited shows its new
+      text immediately plus a live `LiveReactionBubble` (reusing the exact component normal
+      replies already use), while every turn AFTER it is hidden outright during the stream
+      (they're about to be discarded by the rewind anyway, so showing them only to yank them away
+      once the stream lands would be its own small "did that just disappear?" moment). The
+      now-fully-superseded non-streaming frontend path (`useEditRequirementConversationTurn`,
+      `editRequirementConversationTurn` API function) was removed outright, matching this
+      session's established precedent for a mutation once nothing calls it anymore -- the backend's
+      plain route is untouched for direct API callers.
+    - **A real, separate infra gotcha re-confirmed hard during this verification (already
+      documented for a different endpoint earlier in this file, but worth restating since it cost
+      real time here too)**: the isolated test backend process was started BEFORE the new
+      `/edit/stream` route was added to the source, and since it runs without `--reload`, every
+      request to that route 404'd -- confirmed directly via a raw `curl` bypassing the frontend
+      entirely, which is what made this diagnosable in under a minute once tried. **Any backend
+      route added mid-session to an already-running test instance needs an explicit process
+      restart before it can be exercised** -- this has now caused real, multi-minute confusion at
+      least twice in this file's history.
+    - **A second real testing-methodology lesson, specific to Playwright + streaming fetch
+      responses**: `browser.close()` immediately after taking a screenshot silently aborts any
+      still-in-flight `fetch()` request the page had open -- including this exact streaming edit
+      call, which on `qwen3-coder:latest` can genuinely take minutes. Several verification
+      attempts appeared to "fail" (backend never saved the edit) purely because the test script
+      closed the browser before the real, slow LLM call had actually finished -- not a product
+      bug. The only way to get a trustworthy verdict was `page.expect_response(...)` wrapped
+      around the triggering click, with a long timeout, keeping the browser open until the real
+      HTTP response object itself resolved -- confirmed a genuine 200 with the full NDJSON body,
+      and confirmed the backend's saved turn matched the edited text afterward. **Any future
+      verification of a slow, real-LLM-backed streaming call must wait on the actual response
+      object (or an equivalent hard signal), never a fixed timeout or a DOM-text heuristic that
+      can match an optimistic bubble before the real work finishes.**
+    - New backend tests: `tests/test_approval_srs_exclusivity.py` (3 -- approving a new version
+      supersedes the old one, reject/revision-request never touches siblings, exclusivity never
+      bleeds into unrelated artifact_types like `ui_component_code`);
+      `tests/test_requirement_conversation.py` gained 2 (`edit_turn_reply_stream` yields
+      tokens-then-done with the new reply correctly saved and the old turn's stale data replaced;
+      errors cleanly on an unknown turn index). Full suite: **297 passed** (up from 292).
+      `npm run build` clean throughout.
+    - **Real, live verification for every piece**: created a fresh feature, generated and
+      approved SRS v1 through the real popup, then revised+approved v2 through v6 in sequence,
+      confirming at each step that only the just-approved version stayed "Approved" and every
+      other version reverted to "Pending" (real, persisted `GET /features/{id}/artifacts` checks,
+      not just UI screenshots) -- and that the "Using SRS vN for Domain Agent" indicator, the
+      per-row radio, and the actual `enhanced_srs` content Domain Agent produced (verified by
+      reading its `revision_metadata.revision_comment` directly) all agreed on which version was
+      current, every time. Separately verified the streaming edit fix with a genuine multi-minute
+      real LLM call, confirmed complete via the real HTTP response object, with the backend's
+      saved turn matching exactly what was typed. All test projects/processes cleaned up
+      afterward.
+
+38. **Added a delete-feature capability (previously didn't exist at all -- only whole-project
+    delete did) and used it to remove a real feature per direct user request**: "Remove Item
+    listing page feature in the Retail store project." Confirmed via the real, running main
+    backend (port 8000, `--reload`) that no delete-feature route/service/UI existed anywhere --
+    `delete_project` (`app/api/routes/projects.py`) was the only precedent. New
+    `DELETE /features/{feature_id}` (`app/api/routes/features.py`, same file/route-body style as
+    `delete_project`, not a separate service layer) cascades this ONE feature's artifacts,
+    approvals (joined by both `feature_id` and `artifact_id` since older approval records predate
+    the `feature_id` field, matching `list_feature_approvals`'s own established join logic),
+    stage_events, and requirement_conversations record -- deliberately narrower than
+    `delete_project`: never touches the project's knowledge documents or the whole workspace repo,
+    since sibling features in the same project may still need those. Best-effort discards this
+    feature's own git branch via the pre-existing `workspace_service.discard_feature_branch`, but
+    ONLY when `(repo_path / ".git").exists()` first -- `discard_feature_branch` internally calls
+    `ensure_project_repo`, which CREATES a workspace as a side effect if none exists yet; without
+    this guard, deleting a feature that never advanced past Requirement (never had a workspace to
+    begin with) would spuriously create one just to find nothing to discard in it.
+    - Frontend: `deleteFeature`/`useDeleteFeature(projectId)` (mirrors `useDeleteProject`'s exact
+      shape). `FeatureListItem.jsx`'s outer element changed from a single `<button>` to a `<div>`
+      wrapping the existing select-button plus a new hover-reveal `&times;` delete button
+      (can't nest a `<button>` inside another `<button>` -- invalid HTML, hence the wrapper div).
+      `FeatureListPanel.jsx` owns a `deletingFeature` state + a `ConfirmDialog` (item 37's
+      component); confirming deletes, then navigates to the bare `/projects/{projectId}` route
+      (clearing the URL's `featureId`) if the deleted feature was the currently-selected one, so
+      `ProjectWorkspacePage` recomputes `effectiveFeatureId` from whatever features remain instead
+      of pointing at a feature that no longer exists.
+    - New `tests/test_feature_deletion.py` (3 -- deleting one feature removes everything scoped to
+      it; a sibling feature and ITS artifacts are completely untouched; deleting an unknown
+      feature_id 404s). Full suite: **300 passed** (up from 297). `npm run build` clean.
+    - **Real state change, not test debris**: confirmed the target via the real, live main backend
+      (`GET /projects` -> `proj_61b14680` "Retails store" -> its one feature,
+      `feature_06e647d2` "Item listing page", `in_progress`, 6 SRS artifacts across v2-v4 with two
+      simultaneously "approved" -- itself a live example of item 36's since-fixed exclusivity gap,
+      predating that fix reaching this long-running `--reload` process's already-loaded state).
+      Confirmed the new route was live on this exact process without a manual restart (uvicorn's
+      `--reload` picked up the new route from the file edit automatically) before calling
+      `DELETE /features/feature_06e647d2` for real. Verified fully gone afterward: the project's
+      feature list is now empty, and both `GET /features/feature_06e647d2` and its `/artifacts`
+      sub-resource return 404. The "Retails store" project itself, and every other real project in
+      this same database, were not touched.
+
+39. **Fixed a real, reported gating-artifact-resolution bug: rejecting the newest SRS version made
+    the whole feature show "Rejected" even though an OLDER version was still genuinely pending,
+    and there was NO way through the UI to approve that older version at all.** Direct user
+    report with a screenshot: rejected SRS v2 while v1 sat at `approval_status: "pending"`; the
+    feature list showed "Item listing page ... Requirement [Rejected]", and nothing in the UI let
+    them approve v1. Explicit ask: rejecting/deleting one version must never make the whole
+    feature show rejected/deleted as long as another version is still pending a decision, and the
+    human must be able to select and approve WHICHEVER version they want, not just be stuck with
+    "the latest."
+    - **Root cause** (`frontend/src/lib/deriveStageStatus.js`): `latestArtifactOfType` picked the
+      gating artifact strictly by highest `version` number, with zero regard for
+      `approval_status`. Both `deriveStageStatus` (feeds the sidebar's status badge) and
+      `getLatestGatingArtifact` (fed `GovernancePanel`'s single `ApprovalPanel`, i.e. the ONLY
+      place with Approve/Reject/Request-Revision buttons for the gating type) used this same
+      strictly-latest pick -- for `[v1: pending, v2: rejected]`, both always resolved to v2,
+      regardless of v1's genuinely-actionable state.
+    - **Fix**: replaced `latestArtifactOfType` with `resolveGatingArtifact(artifacts, type,
+      format)` -- APPROVED wins if any version is (highest-versioned one, defensively, since the
+      exclusivity rule from item 37 means there should only ever be one) -- else the
+      highest-versioned still-PENDING/REVISION_REQUESTED version (a real decision still waiting,
+      regardless of whether some OTHER, newer version was rejected) -- else the highest-versioned
+      version overall (every version decided on and rejected -- correctly reported as rejected)
+      -- else `null`. `deriveStageStatus` and the renamed `getOperativeGatingArtifact` (renamed
+      from `getLatestGatingArtifact` since it deliberately no longer always returns the latest)
+      both use this. Deleting a version needs no special-casing at all -- it just disappears from
+      the `artifacts` array the resolver already operates over, so the precedence naturally
+      re-resolves to whatever's left (exactly satisfying the "deleted" half of the report with
+      zero extra code).
+    - **The second half of the fix -- letting the human pick ANY pending version, not just the
+      resolved "operative" one**: `ArtifactRow.jsx`'s existing per-row inline Approve/Reject/
+      Request-Revision (already built for non-gating artifacts like individual UI/UX components)
+      was being suppressed on EVERY row of a gating type, because `ArtifactList.jsx`'s `isGating`
+      check compared by `artifact_type` alone -- with the type-only comparison, ALL versions of
+      `srs` counted as "the gating one," hiding inline controls everywhere and leaving anything
+      other than whatever `GovernancePanel` happened to show with literally no approval path.
+      Fixed by adding a new `gatingArtifactId` prop (the exact operative artifact_id, not just
+      the type) -- inline controls are now suppressed ONLY on that one specific row (avoiding a
+      redundant duplicate with `GovernancePanel`'s bigger panel), while every OTHER pending
+      version of the same type gets its own fully-functional inline Approve/Reject/Request-
+      Revision, confirmed live with a genuine two-simultaneously-pending-versions scenario.
+    - **Kept the item-37 SRS confirm-and-auto-run-Domain-Agent UX consistent across both entry
+      points**: the confirm-dialog + approve + `runDomain` + `selectAgent("domain")` orchestration
+      (previously living in `GovernancePanel.jsx`, per item 37's own unmount-safety fix) was
+      lifted one level further up, to `ResultTab.jsx` -- the actual shared ancestor of BOTH
+      `GovernancePanel` (the operative row's approval) AND `ArtifactList`/`ArtifactRow` (every
+      other pending row's inline approval). Both now call the same
+      `requestSrsApproveConfirmation(artifactId)` callback via a new `onApproveClick` prop
+      threaded through `GovernancePanel`->`ApprovalPanel` and `ArtifactList`->`ArtifactRow`
+      respectively, so clicking Approve on ANY pending SRS row -- the operative one or not --
+      shows the identical confirmation dialog (correctly naming whichever version was actually
+      clicked) and triggers the identical approve-exclusivity + auto-Domain-Agent-run + auto-
+      chat-switch sequence. `GovernancePanel.jsx` and `ArtifactRow.jsx` themselves no longer own
+      any multi-step async state -- both are back to being plain components that either call
+      their own immediate mutation or defer to a parent-supplied callback.
+    - No backend changes were needed at all -- confirmed by re-reading `submit_approval` that
+      rejection already has zero effect on sibling versions (only approval's exclusivity rule,
+      from item 37, touches siblings), so this was purely a frontend derivation bug.
+    - **Real, live verification, reproducing the exact reported screenshot scenario**: created a
+      fresh feature, generated SRS v1, revised to v2, and rejected v2's JSON artifact directly
+      (matching the user's exact repro) -- confirmed the sidebar now shows "Awaiting review" (not
+      "Rejected"), `GovernancePanel` now shows "Awaiting your review (v1)" (not v2), and clicking
+      Approve there shows a dialog correctly reading "Approving v1..." Completed the full flow for
+      real (real approval, real Domain Agent run, real auto-switch) and confirmed the top-right
+      indicator read "Using SRS v1 for Domain Agent" afterward -- the whole pipeline genuinely used
+      the human-approved v1, not the rejected v2. Separately verified the "multiple simultaneously
+      pending versions" case on a second feature (v1 pending, v2 pending, neither rejected): v2 (the
+      resolved "operative" one) correctly has no inline controls (GovernancePanel already covers
+      it), while v1 correctly has its own live Approve/Reject/Request-Revision, and clicking its
+      Approve button opens a dialog correctly reading "Approving v1..." -- confirming a human can
+      genuinely choose either version, not just whichever one the resolver happens to prefer.
+      `npm run build` clean throughout; no frontend test framework exists in this repo (no
+      vitest/jest configured), so this was verified live rather than with unit tests, matching
+      this session's established practice for pure frontend-logic changes. Test project and
+      processes cleaned up afterward.
+
+40. **Follow-up to item 39 (same session, same reported flow): item 39's fix only made the
+    STATUS badge version-aware -- it did NOT make every pending version individually approvable.
+    A second screenshot ([v1: pending, v2: rejected, v3: pending]) showed v1 alone had inline
+    Approve/Reject/Request-Revision, v3 had none at all** -- direct quote: "currently system
+    allow user to choose only one user can not selecte one among multiple versions... if user
+    approved other versions should be automatically disabled." Root cause: item 39's own fix
+    still suppressed inline controls on whichever ONE row `getOperativeGatingArtifact` resolved
+    to (to avoid a literal duplicate with `GovernancePanel`'s panel) -- so exactly one pending
+    version (not necessarily the one the human wants) kept its buttons, and every OTHER pending
+    version of the same type still had none. Two-part fix:
+    - **Removed the per-row suppression entirely** (`ArtifactList.jsx`): every pending/rejected
+      version of every artifact_type now gets its own inline Approve/Reject/Request-Revision,
+      full stop -- no row is ever hidden in favor of a "operative" one anymore. Accepted a small,
+      deliberate redundancy as the trade-off: the one row `GovernancePanel`'s dedicated
+      `ApprovalPanel` also shows now displays approval controls in two places (inline in "All
+      Artifacts" AND in the "Governance" section below) -- harmless duplication, not a
+      functional bug, and simpler/safer than the alternative of removing `GovernancePanel`'s
+      panel entirely (which would also need to relocate its `APPROVAL_WARNINGS` -- the uiux/coder
+      merge-risk warnings -- somewhere else, out of scope for this fix).
+    - **New `approveLocked` behavior**, directly per the user's explicit "automatically disabled"
+      wording: `ArtifactList.jsx` computes, per row, whether a SIBLING of the same artifact_type
+      is already `approved`; if so, that row's Approve button (only Approve -- Reject/Request
+      Revision stay active, e.g. to formally clear out an old unused version) is disabled with a
+      title explaining why. Switching which version is approved still works -- it just requires
+      explicitly rejecting the current approval first (a deliberate, safer two-step flow instead
+      of letting a stray click on a different row silently re-trigger the whole approve + auto-
+      run-Domain-Agent + auto-switch-chat sequence from item 37/39).
+    - `ResultTab.jsx`/`ArtifactRow.jsx` updated accordingly (dropped the now-unused
+      `gatingArtifactId` prop and its suppression logic entirely; `ArtifactRow` gained the
+      `approveLocked` prop). No backend changes.
+    - **Real, live verification, reproducing the EXACT second screenshot**: recreated
+      `[v1: pending, v2: rejected, v3: pending]` on a fresh feature -- confirmed both v1 AND v3
+      now show independent, fully-functional Approve/Reject/Request-Revision (v2, rejected,
+      correctly shows none). Approved v1 specifically (not v3, the "operative" one) through the
+      confirm dialog -- confirmed it read "Approving v1..." and, after completion, the top-right
+      indicator correctly read "Using SRS v1 for Domain Agent" and the chat auto-switched to
+      Domain Agent, proving genuinely free selection. Reloaded fresh and confirmed v3's Approve
+      button is now `disabled` with the exact expected tooltip ("Another version is already
+      approved -- reject it first to approve a different one"), while v1 shows "Approved"/"In
+      use" with its own radio button. `npm run build` clean; verified live only (no frontend
+      test framework in this repo, matching item 39's own note). Test project/processes cleaned
+      up afterward.
+
+41. **Domain Agent ran blind immediately on SRS approval, before the human ever got a chance to
+    guide it** -- direct user report: "Once the user approved SRS... domain will carry a new chat
+    that is specific only for domain agent... Once user directed/went to the domain agent chat
+    domain agent must ask from user to improve the SRS by existing domain knowledge or user have
+    somthing explicitly added to the SRS like Data base schema... If user have something user can
+    prompt to the domain agent and get the result." Root cause: `ResultTab.jsx`'s SRS-approve
+    orchestration (from item 37/39) called `useRunDomain(featureId).mutateAsync({})` -- an empty
+    `human_comment` -- immediately after approval, before switching the chat to Domain Agent, so
+    by the time the human arrived at Domain's chat the run had already happened; their only
+    remaining option was to *revise* already-generated output instead of guiding the *original*
+    generation. Confirmed via investigation that `human_comment` (advisory prompt context) and
+    `referenced_document_ids` (guaranteed-inclusion pinned knowledge-document chunks) are both
+    genuinely wired into Domain Agent's real behavior already (`agent.py`'s
+    `_retrieve_domain_knowledge`/`_retrieve_domain_knowledge_for_revision`, capped at
+    `MAX_CHUNKS_PER_PINNED_DOCUMENT`/`MAX_TOTAL_PINNED_CHUNKS`/`MAX_TOTAL_RETRIEVED_CHUNKS`) --
+    this was a pure frontend sequencing bug, not a missing backend capability. Fix, frontend-only:
+    - **`ResultTab.jsx`**: removed the automatic `runDomain.mutateAsync({})` call and its
+      `approvalPhase` state machine entirely. `handleConfirmedSrsApprove` now only approves the
+      SRS and calls `selectAgent("domain")` -- it no longer runs Domain Agent itself.
+    - **`ChatPanel.jsx`**: replaced the old static "Domain Agent runs automatically..." helper
+      text (shown when `!hasOutput && selectedAgent === "domain"`) with an actual proactive
+      prompt: asks the human whether Domain Agent should enrich the SRS using existing domain
+      knowledge alone or whether they have something specific to add (schema, compliance rule,
+      business constraint), plus a "Just use domain knowledge" button that calls
+      `runDomain.mutate({})` directly (the same empty-comment call that used to run
+      automatically, now only on explicit request) for humans with nothing to add. The composer's
+      placeholder for domain (when no output yet) now reads "e.g. Here's our database schema:
+      ... (or leave blank and use the button above)" instead of a generic prompt. Pre-existing
+      `SUGGESTION_CHIPS["domain"]` and the pre-existing `/`-mention document picker (see the
+      Domain Knowledge upload feature, if landed) render alongside unchanged -- both were already
+      gated on `canCompose`, which is unaffected by this fix.
+    - No backend changes -- `/domain/run`'s `human_comment`/`referenced_document_ids` handling
+      was already correct; this only fixed *when* and *with what* the frontend calls it.
+    - **Real, live verification** across three fresh features (isolated backend/frontend
+      instances, real LLM calls, no mocks): approved an SRS on each and confirmed Domain Agent did
+      **not** auto-run (sidebar showed "Domain -- Not started", Result panel showed "No output yet
+      for this stage") and the new proactive prompt rendered with the exact expected copy. Path 1
+      (typed comment): submitted "Here is our database schema: items table has fields id, name,
+      price, stock, quantity" as the human's first message to Domain Agent (confirmed, via a
+      fully-instrumented Playwright session kept open across the approve -> type -> submit
+      sequence, that the composer placeholder and the eventual request both correctly targeted
+      `/domain/run`, not a misrouted `/requirement/revise/stream`) -- the run completed with a
+      real domain-cited requirement in the resulting Enhanced SRS (`FR-DOM-001`, citing
+      `product_catalog_and_inventory.txt`), confirming the human's turn-taking genuinely happens
+      before generation, not after. Path 2 ("Just use domain knowledge" button): clicked the
+      button on a separate fresh feature (via the composer's `PillDropdown`-based agent pill, not
+      a native `<select>` -- see `AgentSelect.jsx`/`PillDropdown.jsx`), confirmed it fired
+      `POST /agents/domain/run` with an empty comment and, polling until completion, produced real
+      Enhanced SRS / Domain Improvements artifacts identical in shape to the pre-fix auto-run
+      behavior -- so humans with nothing to add lose zero functionality, they just now have to
+      make one click instead of it happening for them. `npm run build` clean; backend pytest
+      suite 338 passed (11 failed + 3 errored, all pre-existing Docker-sandbox-dependent
+      `test_coder_tools.py`/`test_coder_verify.py`/`test_render_checker.py` tests failing because
+      no Docker daemon is reachable in this environment -- confirmed via the exact failure message
+      "Sandbox unavailable: could not reach Docker daemon," unrelated to this fix, which touched
+      no coder/sandbox code). No frontend test framework exists in this repo, matching every prior
+      item's own note. Test project (`proj_217ffa15`, three features) and isolated
+      backend/frontend processes cleaned up afterward.
+
 ## Where to look
 
 - Full build spec (read this first, in order, before any new milestone): `instructions .md`

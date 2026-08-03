@@ -3,6 +3,7 @@ import PageHeader from "../components/layout/PageHeader";
 import LoadingSpinner from "../components/common/LoadingSpinner";
 import ErrorBanner from "../components/common/ErrorBanner";
 import AgentLlmOverrideRow from "../components/settings/AgentLlmOverrideRow";
+import OllamaStatusCard from "../components/settings/OllamaStatusCard";
 import { useAgentLlmSettings, useLlmSettings, useTestLlmSettings, useUpdateLlmSettings } from "../hooks/useLlmSettings";
 
 export default function LlmSettingsPage() {
@@ -53,25 +54,29 @@ export default function LlmSettingsPage() {
 
       <ErrorBanner error={error} fallback="Failed to load LLM settings." />
 
-      <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-5 text-sm text-blue-900">
+      <div className="bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/30 rounded-lg p-3 mb-5 text-sm text-blue-900 dark:text-blue-200">
         The settings on the left are the <strong>global default</strong> -- every agent uses it unless it
         has its own override configured below. Coder Agent in particular usually needs a model that
         supports tool-calling, which may not be the best choice for the simpler one-shot agents --
         that's what per-agent overrides are for.
       </div>
 
+      <div className="mb-6">
+        <OllamaStatusCard />
+      </div>
+
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-5 mb-6 items-start">
-        <form onSubmit={handleSave} className="flex flex-col gap-4 bg-white p-5 rounded-lg shadow-sm border border-gray-200">
-          <h3 className="text-sm font-bold text-gray-500 uppercase tracking-wide">Global Default</h3>
+        <form onSubmit={handleSave} className="flex flex-col gap-4 bg-white dark:bg-gray-900 p-5 rounded-lg shadow-sm border border-gray-200 dark:border-gray-800">
+          <h3 className="text-sm font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide">Global Default</h3>
           <ErrorBanner error={updateSettings.error} fallback="Failed to update LLM settings." />
 
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-semibold mb-1">Provider</label>
+              <label className="block text-sm font-semibold mb-1 text-gray-900 dark:text-gray-200">Provider</label>
               <select
                 value={form.provider}
                 onChange={(e) => set("provider", e.target.value)}
-                className="w-full p-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-accent-500"
+                className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md focus:outline-none focus:border-accent-500"
               >
                 <option value="ollama">ollama</option>
                 <option value="openai">openai</option>
@@ -79,17 +84,17 @@ export default function LlmSettingsPage() {
               </select>
             </div>
             <div>
-              <label className="block text-sm font-semibold mb-1">Model</label>
+              <label className="block text-sm font-semibold mb-1 text-gray-900 dark:text-gray-200">Model</label>
               <input
                 value={form.model}
                 onChange={(e) => set("model", e.target.value)}
                 placeholder="e.g. llama3:latest"
-                className="w-full p-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-accent-500"
+                className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md focus:outline-none focus:border-accent-500"
               />
             </div>
           </div>
           {form.provider === "ollama" && (
-            <p className="text-xs text-gray-500 -mt-2">
+            <p className="text-xs text-gray-500 dark:text-gray-400 -mt-2">
               Must be a model already pulled locally (<code>ollama list</code>) and small enough to fit
               in this machine's GPU/VRAM, or generation can stall for many minutes.
             </p>
@@ -97,15 +102,15 @@ export default function LlmSettingsPage() {
 
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-semibold mb-1">Base URL</label>
+              <label className="block text-sm font-semibold mb-1 text-gray-900 dark:text-gray-200">Base URL</label>
               <input
                 value={form.base_url}
                 onChange={(e) => set("base_url", e.target.value)}
-                className="w-full p-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-accent-500"
+                className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md focus:outline-none focus:border-accent-500"
               />
             </div>
             <div>
-              <label className="block text-sm font-semibold mb-1">
+              <label className="block text-sm font-semibold mb-1 text-gray-900 dark:text-gray-200">
                 API Key {form.provider !== "ollama" && <span className="text-red-500">*</span>}
               </label>
               <input
@@ -113,14 +118,14 @@ export default function LlmSettingsPage() {
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
                 placeholder={settings.api_key_reference ? `Current: ${settings.api_key_reference}` : "Not configured"}
-                className="w-full p-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-accent-500"
+                className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md focus:outline-none focus:border-accent-500"
               />
             </div>
           </div>
 
           <div className="grid grid-cols-3 gap-4">
             <div>
-              <label className="block text-sm font-semibold mb-1">Temperature</label>
+              <label className="block text-sm font-semibold mb-1 text-gray-900 dark:text-gray-200">Temperature</label>
               <input
                 type="number"
                 step="0.1"
@@ -128,27 +133,27 @@ export default function LlmSettingsPage() {
                 max="2"
                 value={form.temperature}
                 onChange={(e) => set("temperature", parseFloat(e.target.value))}
-                className="w-full p-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-accent-500"
+                className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md focus:outline-none focus:border-accent-500"
               />
             </div>
             <div>
-              <label className="block text-sm font-semibold mb-1">Max Tokens</label>
+              <label className="block text-sm font-semibold mb-1 text-gray-900 dark:text-gray-200">Max Tokens</label>
               <input
                 type="number"
                 min="1"
                 value={form.max_tokens}
                 onChange={(e) => set("max_tokens", parseInt(e.target.value, 10))}
-                className="w-full p-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-accent-500"
+                className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md focus:outline-none focus:border-accent-500"
               />
             </div>
             <div>
-              <label className="block text-sm font-semibold mb-1">Timeout (s)</label>
+              <label className="block text-sm font-semibold mb-1 text-gray-900 dark:text-gray-200">Timeout (s)</label>
               <input
                 type="number"
                 min="1"
                 value={form.timeout_seconds}
                 onChange={(e) => set("timeout_seconds", parseInt(e.target.value, 10))}
-                className="w-full p-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-accent-500"
+                className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md focus:outline-none focus:border-accent-500"
               />
             </div>
           </div>
@@ -170,31 +175,31 @@ export default function LlmSettingsPage() {
             >
               {updateSettings.isPending ? "Saving..." : "Save Settings"}
             </button>
-            {updateSettings.isSuccess && <p className="text-sm text-green-700">Saved.</p>}
+            {updateSettings.isSuccess && <p className="text-sm text-green-700 dark:text-green-400">Saved.</p>}
           </div>
         </form>
 
-        <div className="bg-white p-5 rounded-lg shadow-sm border border-gray-200 flex flex-col gap-3">
-          <h3 className="text-sm font-bold text-gray-500 uppercase tracking-wide">Test Current Settings</h3>
+        <div className="bg-white dark:bg-gray-900 p-5 rounded-lg shadow-sm border border-gray-200 dark:border-gray-800 flex flex-col gap-3">
+          <h3 className="text-sm font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide">Test Current Settings</h3>
           <ErrorBanner error={testSettings.error} fallback="Test call failed." />
 
           <textarea
             value={testPrompt}
             onChange={(e) => setTestPrompt(e.target.value)}
             rows={2}
-            className="w-full p-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-accent-500"
+            className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md focus:outline-none focus:border-accent-500"
           />
           <button
             onClick={() => testSettings.mutate({ prompt: testPrompt })}
             disabled={testSettings.isPending}
-            className="self-start bg-gray-700 hover:bg-gray-800 disabled:opacity-50 text-white text-sm font-semibold py-1.5 px-3 rounded"
+            className="self-start bg-gray-700 hover:bg-gray-800 dark:bg-white/10 dark:hover:bg-white/20 disabled:opacity-50 text-white dark:text-gray-100 text-sm font-semibold py-1.5 px-3 rounded"
           >
             {testSettings.isPending ? "Calling model..." : "Send Test Prompt"}
           </button>
 
           {testSettings.data && (
-            <div className="bg-gray-50 border border-gray-200 rounded p-3 text-sm">
-              <p className="text-xs text-gray-500 mb-1">
+            <div className="bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-gray-700 rounded p-3 text-sm text-gray-900 dark:text-gray-100">
+              <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">
                 {testSettings.data.provider} / {testSettings.data.model}
               </p>
               <p className="whitespace-pre-wrap">{testSettings.data.output}</p>
@@ -203,9 +208,9 @@ export default function LlmSettingsPage() {
         </div>
       </div>
 
-      <div className="bg-white p-5 rounded-lg shadow-sm border border-gray-200">
-        <h3 className="text-sm font-bold text-gray-500 uppercase tracking-wide mb-1">Per-Agent Overrides</h3>
-        <p className="text-sm text-gray-500 mb-4">
+      <div className="bg-white dark:bg-gray-900 p-5 rounded-lg shadow-sm border border-gray-200 dark:border-gray-800">
+        <h3 className="text-sm font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Per-Agent Overrides</h3>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
           Give a specific agent its own provider/model/parameters, independent of the global default.
         </p>
 

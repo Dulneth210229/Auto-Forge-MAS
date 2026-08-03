@@ -27,7 +27,7 @@ export default function ArtifactContentView({ artifact }) {
     <>
       <ErrorBanner error={error} fallback="Failed to load artifact content." />
       {isLoading ? (
-        <LoadingSpinner label="Loading content..." />
+        <LoadingSpinner variant="cube" label="Loading content..." />
       ) : (
         <>
           {viewer === "diff" && <DiffViewer content={data?.content || ""} />}
@@ -38,7 +38,7 @@ export default function ArtifactContentView({ artifact }) {
           {viewer === "domain-improvements-document" && <DomainImprovementsViewer data={data?.content_json} />}
           {viewer === "ui-metadata-document" && <UiMetadataViewer data={data?.content_json} />}
           {viewer === "code" && <CodeViewer content={data?.content || ""} />}
-          {viewer === "raw" && <pre className="text-xs whitespace-pre-wrap">{data?.content}</pre>}
+          {viewer === "raw" && <pre className="text-xs whitespace-pre-wrap text-gray-800 dark:text-gray-200">{data?.content}</pre>}
         </>
       )}
     </>

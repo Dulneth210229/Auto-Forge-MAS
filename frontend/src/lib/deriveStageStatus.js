@@ -17,12 +17,22 @@ export const STATUS = {
   REJECTED: "rejected",
 };
 
-// Every agent saves a JSON+Markdown pair sharing one version -- exactly one format is what the
-// pipeline actually keys approval/gating off of for each stage (see STAGE_GATING_ARTIFACT).
-// Without a format filter, an approved-JSON/still-pending-Markdown pair at the same version is
-// ambiguous to pick between -- this caused a real bug where the pending twin could win
-// depending on array order, showing a stage as "awaiting review" when it was really approved.
-export function latestArtifactOfType(artifacts, artifactType, artifactFormat = null) {
+// Resolves the single version of a gating artifact_type that best represents "what a human
+// should act on / what's currently true for this stage" -- considering EVERY version's
+// approval_status, not just the highest version number. A rejected/superseded newest version
+// must never mask an older version that's still genuinely pending a decision: a real reported
+// bug had rejecting the latest SRS revision show the whole feature as "Rejected" (and hid its
+// Approve/Reject controls entirely) even though an earlier version was still sitting there,
+// pending, fully approvable.
+//
+// Precedence: an APPROVED version always wins (the highest-versioned one, if more than one
+// somehow exists) -- else the highest-versioned still-PENDING/REVISION_REQUESTED version (a real
+// decision still waiting, regardless of whether some OTHER, newer version was rejected) -- else
+// the highest-versioned version overall (every version has been decided on and rejected --
+// nothing pending, correctly reported as rejected) -- else null (no artifact of this type exists
+// yet). Deleting a rejected version (leaving only a pending one behind) naturally resolves
+// correctly through this same precedence with no special-casing needed.
+export function resolveGatingArtifact(artifacts, artifactType, artifactFormat = null) {
   const matches = artifacts.filter(
     (artifact) =>
       artifact.artifact_type === artifactType && (artifactFormat == null || artifact.artifact_format === artifactFormat)
@@ -32,7 +42,15 @@ export function latestArtifactOfType(artifacts, artifactType, artifactFormat = n
     return null;
   }
 
-  return matches.reduce((latest, artifact) => (artifact.version > latest.version ? artifact : latest), matches[0]);
+  const byVersionDesc = [...matches].sort((a, b) => b.version - a.version);
+
+  const approved = byVersionDesc.find((a) => a.approval_status === "approved");
+  if (approved) return approved;
+
+  const pending = byVersionDesc.find((a) => a.approval_status === "pending" || a.approval_status === "revision_requested");
+  if (pending) return pending;
+
+  return byVersionDesc[0];
 }
 
 /**
@@ -46,7 +64,7 @@ export function latestArtifactOfType(artifacts, artifactType, artifactFormat = n
  */
 export function deriveStageStatus({ stage, graphStatus, artifacts, processingSince = null, now = Date.now() }) {
   const gating = STAGE_GATING_ARTIFACT[stage];
-  const latest = gating ? latestArtifactOfType(artifacts, gating.type, gating.format) : null;
+  const latest = gating ? resolveGatingArtifact(artifacts, gating.type, gating.format) : null;
   const nextNodes = graphStatus?.next || [];
   const isGraphProcessingThisStage = nextNodes.includes(`${stage}_node`);
 
@@ -80,13 +98,17 @@ export function deriveStageStatus({ stage, graphStatus, artifacts, processingSin
   return STATUS.AWAITING_REVIEW;
 }
 
-export function getLatestGatingArtifact(stage, artifacts) {
+// The version of a stage's gating artifact a human should act on right now -- see
+// resolveGatingArtifact's own docstring for the exact precedence. Named "operative", not
+// "latest", because it deliberately is NOT always the highest version number.
+export function getOperativeGatingArtifact(stage, artifacts) {
   const gating = STAGE_GATING_ARTIFACT[stage];
-  return gating ? latestArtifactOfType(artifacts, gating.type, gating.format) : null;
+  return gating ? resolveGatingArtifact(artifacts, gating.type, gating.format) : null;
 }
 
 // Every version of a stage's gating artifact, newest first -- powers the Output tab's version
-// picker (distinct from getLatestGatingArtifact, which only ever returns the newest one).
+// picker (distinct from getOperativeGatingArtifact, which returns the one version that's
+// currently actionable, not necessarily the newest one).
 export function listGatingArtifactVersions(stage, artifacts) {
   const gating = STAGE_GATING_ARTIFACT[stage];
   if (!gating) return [];

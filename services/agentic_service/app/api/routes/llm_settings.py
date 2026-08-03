@@ -12,6 +12,8 @@ will call the same LLM provider service.
 
 from fastapi import APIRouter, HTTPException
 
+import httpx
+
 from app.schemas.llm_schema import (
     AgentLLMOverrideUpdateRequest,
     AgentLLMSettingsResponse,
@@ -19,6 +21,8 @@ from app.schemas.llm_schema import (
     LLMSettingsUpdateRequest,
     LLMGenerateRequest,
     LLMGenerateResponse,
+    OllamaModelsResponse,
+    OllamaStatusResponse,
 )
 from app.services.llm_provider_service import llm_provider_service
 
@@ -61,6 +65,37 @@ def update_llm_settings(request: LLMSettingsUpdateRequest):
         return llm_provider_service.update_settings(request)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
+
+
+@router.get("/models", response_model=OllamaModelsResponse)
+async def list_ollama_models():
+    """
+    List the models currently available on the configured Ollama server (proxies its
+    GET /api/tags) -- powers the chat model-picker so it can offer a real, current list instead
+    of a free-text field. Only meaningful when provider is "ollama"; a non-Ollama base_url will
+    simply fail to connect, surfaced as a 502 below rather than a raw 500.
+    """
+    try:
+        models = await llm_provider_service.list_ollama_models()
+        return OllamaModelsResponse(models=models)
+    except httpx.HTTPError as error:
+        base_url = llm_provider_service.get_settings().base_url
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not reach Ollama server at {base_url}: {str(error)}",
+        )
+
+
+@router.get("/ollama/status", response_model=OllamaStatusResponse)
+async def get_ollama_status():
+    """
+    Live status of the configured Ollama server -- reachability, locally available models, and
+    which models are actually loaded into memory right now (with their VRAM residency), as
+    opposed to /settings/llm and /settings/llm/agents which only ever reflect what's configured.
+    Never 500s on an unreachable server: `reachable: false` with the error text instead, so the
+    UI can render a clear disconnected state.
+    """
+    return await llm_provider_service.get_ollama_status()
 
 
 @router.get("/agents", response_model=list[AgentLLMSettingsResponse])

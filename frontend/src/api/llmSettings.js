@@ -14,3 +14,19 @@ export async function testLlmSettings({ prompt, system_prompt }) {
   const { data } = await apiClient.post("/settings/llm/test", { prompt, system_prompt });
   return data;
 }
+
+// Model names currently available on the configured Ollama server -- powers the chat
+// model-picker. Only meaningful when the global/agent provider is "ollama".
+export async function listOllamaModels() {
+  const { data } = await apiClient.get("/settings/llm/models");
+  return data.models;
+}
+
+// Live server status (reachability + which models are actually loaded into memory and their
+// VRAM residency) -- distinct from getLlmSettings, which only reflects what's configured.
+// Never throws for an unreachable server; the backend reports `reachable: false` in a normal
+// 200 response instead of a 502, so this is a plain GET with no special error handling here.
+export async function getOllamaStatus() {
+  const { data } = await apiClient.get("/settings/llm/ollama/status");
+  return data;
+}

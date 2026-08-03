@@ -3,9 +3,11 @@ import {
   reviseArchitecture,
   reviseCoder,
   reviseDomain,
-  reviseRequirement,
   runArchitecture,
+  runCoder,
+  runDomain,
   runRequirement,
+  runUiux,
 } from "../api/agents";
 
 function useAgentMutation(featureId, mutationFn) {
@@ -26,8 +28,8 @@ export function useRunRequirement(featureId) {
   return useAgentMutation(featureId, (payload) => runRequirement(featureId, payload));
 }
 
-export function useReviseRequirement(featureId) {
-  return useAgentMutation(featureId, (payload) => reviseRequirement(featureId, payload));
+export function useRunDomain(featureId) {
+  return useAgentMutation(featureId, (payload) => runDomain(featureId, payload));
 }
 
 export function useReviseDomain(featureId) {
@@ -40,6 +42,14 @@ export function useRunArchitecture(featureId) {
 
 export function useReviseArchitecture(featureId) {
   return useAgentMutation(featureId, (payload) => reviseArchitecture(featureId, payload));
+}
+
+export function useRunUiux(featureId) {
+  return useAgentMutation(featureId, (payload) => runUiux(featureId, payload));
+}
+
+export function useRunCoder(featureId) {
+  return useAgentMutation(featureId, (payload) => runCoder(featureId, payload));
 }
 
 export function useReviseCoder(featureId) {

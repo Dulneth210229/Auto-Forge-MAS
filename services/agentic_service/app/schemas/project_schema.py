@@ -24,6 +24,17 @@ class ProjectCreateRequest(BaseModel):
     created_by: str = Field(default="human_user", example="ba_user")
 
 
+class ProjectUpdateRequest(BaseModel):
+    """
+    Request body for editing an existing project's details.
+
+    All fields optional -- only the ones the user actually changed need to be sent.
+    """
+    project_name: str | None = Field(default=None, example="E-commerce Platform")
+    project_type: str | None = Field(default=None, example="E-commerce")
+    target_stack: str | None = Field(default=None, example="MERN")
+
+
 class ProjectResponse(BaseModel):
     """
     API response returned after creating or reading a project.

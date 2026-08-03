@@ -64,6 +64,16 @@ logger = get_logger(__name__)
 # query focused on dense, domain-relevant text rather than the entire SRS JSON dump.
 RETRIEVAL_QUERY_MAX_CHARS = 3000
 
+# Caps for "/"-pinned document chunks, sized defensively against a real gap: Domain Agent's
+# one-shot provider path (llm_provider_service.get_provider -> provider.invoke_agent) sets no
+# explicit num_ctx anywhere (only the Coder/Architecture tool-calling path does), so it runs at
+# Ollama's server-side default context window. A pinned document larger than
+# MAX_CHUNKS_PER_PINNED_DOCUMENT is re-ranked by relevance to the query (not truncated
+# front-to-back) so the most useful excerpts survive the cap.
+MAX_CHUNKS_PER_PINNED_DOCUMENT = 6
+MAX_TOTAL_PINNED_CHUNKS = 12
+MAX_TOTAL_RETRIEVED_CHUNKS = 16
+
 # Section -> new-ID prefix, for deterministic "-DOM-" ID assignment (never left to the LLM).
 SECTION_PREFIX_MAP = {
     "functional_requirements": "FR",
@@ -125,7 +135,11 @@ class DomainAgent:
         feature["feature_status"] = FeatureStatus.IN_PROGRESS
         feature["current_agent"] = AgentName.DOMAIN
 
-        retrieved_chunks = self._retrieve_domain_knowledge(srs_json)
+        retrieved_chunks = self._retrieve_domain_knowledge(
+            srs_json,
+            project_id=project["project_id"],
+            referenced_document_ids=request.referenced_document_ids,
+        )
 
         output = await self._generate_domain_output(
             project=project,
@@ -156,16 +170,63 @@ class DomainAgent:
             artifact_ids=artifact_ids,
         )
 
-    def _retrieve_domain_knowledge(self, srs_json: dict) -> list[dict]:
+    def _retrieve_domain_knowledge(
+        self,
+        srs_json: dict,
+        project_id: str | None = None,
+        referenced_document_ids: list[str] | None = None,
+    ) -> list[dict]:
         """
         Retrieve domain knowledge chunks relevant to this feature's SRS.
 
-        Delegates to domain_knowledge_service.retrieve(), which never raises --
-        an empty knowledge base or embedding failure just means no chunks.
+        Combines two sources: chunks explicitly "/"-pinned by document_id (guaranteed inclusion,
+        see _collect_pinned_chunks) and chunks found via similarity search, scoped to this
+        project's own uploads plus the legacy global corpus
+        (domain_knowledge_service.retrieve(..., project_id=...) never leaks another project's
+        uploaded chunks in). Never raises -- an empty knowledge base or embedding failure just
+        means fewer/no chunks.
         """
 
         query = self._build_retrieval_query(srs_json)
-        return domain_knowledge_service.retrieve(query)
+        pinned_chunks = self._collect_pinned_chunks(referenced_document_ids or [], query)
+        similarity_chunks = domain_knowledge_service.retrieve(query, project_id=project_id)
+        return self._merge_chunks(pinned_chunks, similarity_chunks)
+
+    def _collect_pinned_chunks(self, referenced_document_ids: list[str], query_text: str) -> list[dict]:
+        """
+        Fetch every chunk of each explicitly-referenced document, capping an oversized document
+        (or an oversized combined set) to its most query-relevant excerpts rather than an
+        arbitrary front-of-document slice.
+        """
+
+        all_pinned: list[dict] = []
+
+        for document_id in referenced_document_ids:
+            doc_chunks = domain_knowledge_service.get_document_chunks(document_id)
+
+            if len(doc_chunks) > MAX_CHUNKS_PER_PINNED_DOCUMENT:
+                doc_chunks = domain_knowledge_service.rank_chunks_by_relevance(doc_chunks, query_text)
+                doc_chunks = doc_chunks[:MAX_CHUNKS_PER_PINNED_DOCUMENT]
+
+            all_pinned.extend(doc_chunks)
+
+        if len(all_pinned) > MAX_TOTAL_PINNED_CHUNKS:
+            all_pinned = domain_knowledge_service.rank_chunks_by_relevance(all_pinned, query_text)
+            all_pinned = all_pinned[:MAX_TOTAL_PINNED_CHUNKS]
+
+        return all_pinned
+
+    def _merge_chunks(self, pinned_chunks: list[dict], similarity_chunks: list[dict]) -> list[dict]:
+        """
+        Pinned chunks always win: they're kept in full (up to the caps above), and similarity
+        chunks fill whatever budget remains under MAX_TOTAL_RETRIEVED_CHUNKS, skipping any
+        chunk_id already present among the pinned ones.
+        """
+
+        pinned_ids = {chunk["chunk_id"] for chunk in pinned_chunks}
+        filtered_similarity = [chunk for chunk in similarity_chunks if chunk["chunk_id"] not in pinned_ids]
+        remaining_budget = max(0, MAX_TOTAL_RETRIEVED_CHUNKS - len(pinned_chunks))
+        return pinned_chunks + filtered_similarity[:remaining_budget]
 
     def _build_retrieval_query(self, srs_json: dict, extra_text: str | None = None) -> str:
         """
@@ -580,7 +641,10 @@ class DomainAgent:
             raise ValueError("No approved SRS JSON artifact found for this feature.")
 
         retrieved_chunks = self._retrieve_domain_knowledge_for_revision(
-            existing_enhanced_srs_json, request.revision_comment
+            existing_enhanced_srs_json,
+            request.revision_comment,
+            project_id=project["project_id"],
+            referenced_document_ids=request.referenced_document_ids,
         )
 
         output = await self._revise_domain_output(
@@ -614,10 +678,16 @@ class DomainAgent:
         )
 
     def _retrieve_domain_knowledge_for_revision(
-        self, existing_enhanced_srs_json: dict, revision_comment: str
+        self,
+        existing_enhanced_srs_json: dict,
+        revision_comment: str,
+        project_id: str | None = None,
+        referenced_document_ids: list[str] | None = None,
     ) -> list[dict]:
         query = self._build_retrieval_query(existing_enhanced_srs_json, extra_text=revision_comment)
-        return domain_knowledge_service.retrieve(query)
+        pinned_chunks = self._collect_pinned_chunks(referenced_document_ids or [], query)
+        similarity_chunks = domain_knowledge_service.retrieve(query, project_id=project_id)
+        return self._merge_chunks(pinned_chunks, similarity_chunks)
 
     async def _revise_domain_output(
         self,
@@ -712,37 +782,20 @@ class DomainAgent:
 
     def _find_latest_approved_srs_artifact(self, feature_id: str) -> dict | None:
         """
-        Find the latest APPROVED SRS JSON artifact for this feature.
+        Find the SRS JSON artifact that should feed this run -- a human-pinned APPROVED version
+        if one was explicitly selected (see artifact_service.set_active_artifact_selection /
+        the frontend's per-version radio button on approved SRS rows), otherwise the latest
+        APPROVED version by version number (this method's original, still-default behavior).
 
-        Private, enum-and-.value tolerant, matching Architecture/UI-UX/Coder Agent's existing
-        private duplicates -- not artifact_service.get_latest_approved_artifact, which compares
-        with bare == and does not tolerate the enum/.value mismatch some code paths produce.
+        Delegates to artifact_service.get_selected_or_latest_approved_artifact -- previously this
+        was a private, enum-and-.value tolerant duplicate of the same "latest approved" lookup
+        Architecture/UI-UX/Coder Agent each have their own copy of; the selection-aware behavior
+        now lives once, centrally, so this is the only one of those duplicates that's pin-aware.
         """
 
-        matching_artifacts = []
-
-        for artifact in store.artifacts.values():
-            if artifact.get("feature_id") != feature_id:
-                continue
-
-            if artifact.get("agent_name") not in [AgentName.REQUIREMENT, AgentName.REQUIREMENT.value]:
-                continue
-
-            if artifact.get("artifact_type") not in [ArtifactType.SRS, ArtifactType.SRS.value]:
-                continue
-
-            if artifact.get("artifact_format") not in [ArtifactFormat.JSON, ArtifactFormat.JSON.value]:
-                continue
-
-            if artifact.get("approval_status") not in [ApprovalStatus.APPROVED, ApprovalStatus.APPROVED.value]:
-                continue
-
-            matching_artifacts.append(artifact)
-
-        if not matching_artifacts:
-            return None
-
-        return max(matching_artifacts, key=lambda item: item.get("version", 1))
+        return artifact_service.get_selected_or_latest_approved_artifact(
+            feature_id, ArtifactType.SRS.value, ArtifactFormat.JSON.value
+        )
 
     def _find_latest_domain_json_artifact(self, feature_id: str, artifact_type: ArtifactType) -> dict | None:
         """

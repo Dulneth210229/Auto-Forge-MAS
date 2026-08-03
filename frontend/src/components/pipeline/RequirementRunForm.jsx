@@ -39,9 +39,9 @@ export default function RequirementRunForm({ featureId, feature }) {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="flex flex-col gap-4 bg-white p-6 rounded-lg shadow-sm border border-gray-200">
-      <h3 className="text-lg font-bold">Run Requirement Agent</h3>
-      <p className="text-sm text-gray-500 -mt-2">
+    <form onSubmit={handleSubmit} className="flex flex-col gap-4 bg-white dark:bg-gray-900 p-6 rounded-lg shadow-sm border border-gray-200 dark:border-gray-800">
+      <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">Run Requirement Agent</h3>
+      <p className="text-sm text-gray-500 dark:text-gray-400 -mt-2">
         Fill in what you know -- the agent fills reasonable gaps and records its assumptions.
       </p>
 
@@ -49,36 +49,36 @@ export default function RequirementRunForm({ featureId, feature }) {
 
       <div className="grid grid-cols-2 gap-4">
         <div>
-          <label className="block text-sm font-semibold mb-1">Project Type</label>
+          <label className="block text-sm font-semibold mb-1 text-gray-900 dark:text-gray-200">Project Type</label>
           <input
             value={baInput.project_type}
             onChange={(e) => set("project_type", e.target.value)}
             placeholder="E-commerce"
-            className="w-full p-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-accent-500"
+            className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md focus:outline-none focus:border-accent-500"
           />
         </div>
         <div>
-          <label className="block text-sm font-semibold mb-1">Feature Name</label>
+          <label className="block text-sm font-semibold mb-1 text-gray-900 dark:text-gray-200">Feature Name</label>
           <input
             value={baInput.feature_name}
             onChange={(e) => set("feature_name", e.target.value)}
-            className="w-full p-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-accent-500"
+            className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md focus:outline-none focus:border-accent-500"
           />
         </div>
         <div>
-          <label className="block text-sm font-semibold mb-1">Target Stack</label>
+          <label className="block text-sm font-semibold mb-1 text-gray-900 dark:text-gray-200">Target Stack</label>
           <input
             value={baInput.target_stack}
             onChange={(e) => set("target_stack", e.target.value)}
-            className="w-full p-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-accent-500"
+            className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md focus:outline-none focus:border-accent-500"
           />
         </div>
         <div>
-          <label className="block text-sm font-semibold mb-1">Architectural Style</label>
+          <label className="block text-sm font-semibold mb-1 text-gray-900 dark:text-gray-200">Architectural Style</label>
           <select
             value={baInput.architectural_style}
             onChange={(e) => set("architectural_style", e.target.value)}
-            className="w-full p-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-accent-500"
+            className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md focus:outline-none focus:border-accent-500"
           >
             {ARCHITECTURAL_STYLES.map((style) => (
               <option key={style} value={style}>
@@ -97,12 +97,12 @@ export default function RequirementRunForm({ featureId, feature }) {
       />
 
       <div>
-        <label className="block text-sm font-semibold mb-1">Business Goal</label>
+        <label className="block text-sm font-semibold mb-1 text-gray-900 dark:text-gray-200">Business Goal</label>
         <textarea
           value={baInput.business_goal}
           onChange={(e) => set("business_goal", e.target.value)}
           rows={2}
-          className="w-full p-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-accent-500"
+          className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md focus:outline-none focus:border-accent-500"
         />
       </div>
 
@@ -156,13 +156,13 @@ export default function RequirementRunForm({ featureId, feature }) {
       />
 
       <div>
-        <label className="block text-sm font-semibold mb-1">Human Comment (optional)</label>
+        <label className="block text-sm font-semibold mb-1 text-gray-900 dark:text-gray-200">Human Comment (optional)</label>
         <textarea
           value={humanComment}
           onChange={(e) => setHumanComment(e.target.value)}
           rows={2}
           placeholder="Add forgot password requirement."
-          className="w-full p-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-accent-500"
+          className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md focus:outline-none focus:border-accent-500"
         />
       </div>
 

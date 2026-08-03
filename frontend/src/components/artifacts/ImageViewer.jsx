@@ -8,7 +8,7 @@ export default function ImageViewer({ artifactId, alt, boxHeight }) {
   if (boxHeight) {
     return (
       <div
-        className="w-full bg-gray-50 rounded border border-gray-200 flex items-center justify-center overflow-hidden"
+        className="w-full bg-gray-50 rounded border border-gray-200 dark:border-gray-700 flex items-center justify-center overflow-hidden"
         style={{ height: boxHeight }}
       >
         <img

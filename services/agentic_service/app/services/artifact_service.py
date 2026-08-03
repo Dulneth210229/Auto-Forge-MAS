@@ -302,6 +302,151 @@ class ArtifactService:
             return None
 
         return self._hydrate_artifact_response(artifact)
+
+    @staticmethod
+    def _artifact_matches(artifact: dict, feature_id: str, artifact_type: str, artifact_format: str | None) -> bool:
+        if artifact.get("feature_id") != feature_id:
+            return False
+        stored_type = artifact.get("artifact_type")
+        if stored_type != artifact_type and getattr(stored_type, "value", stored_type) != artifact_type:
+            return False
+        if artifact_format is not None:
+            stored_format = artifact.get("artifact_format")
+            if stored_format != artifact_format and getattr(stored_format, "value", stored_format) != artifact_format:
+                return False
+        return True
+
+    def get_selected_or_latest_approved_artifact(
+        self, feature_id: str, artifact_type: str, artifact_format: str | None = None
+    ) -> dict | None:
+        """
+        Return the artifact a human has explicitly pinned (via set_active_artifact_selection) for
+        this (feature_id, artifact_type), if one is set and still valid -- otherwise the latest
+        APPROVED version by version number, which is the default every stage's own private
+        "_find_latest_approved_*" duplicate (Architecture/Domain/UI-UX/Coder Agent) already used
+        before this existed. A stale selection (e.g. pointing at a since-deleted artifact) falls
+        through to that same default rather than raising -- pinning a version is meant to be a
+        soft override, never a way to permanently break the pipeline if that version goes away.
+        """
+
+        feature = store.features.get(feature_id)
+        selection_id = (feature.get("active_artifact_selection") or {}).get(artifact_type) if feature else None
+
+        if selection_id:
+            selected = store.artifacts.get(selection_id)
+            if (
+                selected
+                and self._artifact_matches(selected, feature_id, artifact_type, artifact_format)
+                and selected.get("approval_status") in (ApprovalStatus.APPROVED, ApprovalStatus.APPROVED.value)
+            ):
+                return selected
+
+        candidates = [
+            artifact
+            for artifact in store.artifacts.values()
+            if self._artifact_matches(artifact, feature_id, artifact_type, artifact_format)
+            and artifact.get("approval_status") in (ApprovalStatus.APPROVED, ApprovalStatus.APPROVED.value)
+        ]
+
+        if not candidates:
+            return None
+
+        return max(candidates, key=lambda item: item.get("version", 1))
+
+    def set_active_artifact_selection(self, feature_id: str, artifact_type: str, artifact_id: str) -> None:
+        """
+        Pin one APPROVED artifact as the version that feeds the next pipeline stage for this
+        (feature, artifact_type) -- e.g. which of several approved SRS versions the Domain Agent
+        should read, when a human wants an earlier approved version rather than always the latest.
+
+        Raises ValueError (route layer maps this to 400) if the artifact doesn't exist, doesn't
+        belong to this feature, isn't of the given type, or isn't APPROVED -- only approved
+        versions are meaningful choices here; a pending/rejected one was never going to feed the
+        next stage anyway.
+        """
+
+        feature = store.features.get(feature_id)
+        if not feature:
+            raise ValueError(f"Feature not found: {feature_id}")
+
+        artifact = store.artifacts.get(artifact_id)
+        if not artifact:
+            raise ValueError(f"Artifact not found: {artifact_id}")
+
+        if not self._artifact_matches(artifact, feature_id, artifact_type, artifact_format=None):
+            raise ValueError(
+                f"Artifact {artifact_id} does not belong to this feature or is not of type '{artifact_type}'."
+            )
+
+        if artifact.get("approval_status") not in (ApprovalStatus.APPROVED, ApprovalStatus.APPROVED.value):
+            raise ValueError("Only an approved artifact version can be selected for the pipeline.")
+
+        selection = dict(feature.get("active_artifact_selection") or {})
+        selection[artifact_type] = artifact_id
+
+        updated_feature = dict(feature)
+        updated_feature["active_artifact_selection"] = selection
+        store.features[feature_id] = updated_feature
+
+    def delete_artifact(self, artifact_id: str) -> None:
+        """
+        Permanently remove one artifact VERSION -- e.g. an unapproved SRS/architecture-plan/etc.
+        version a human decides they don't want cluttering the version history.
+
+        Raises ValueError (the route layer maps this to 400) for: unknown artifact, OR an
+        artifact whose VERSION has any sibling (same feature_id/artifact_type/version) already
+        APPROVED -- approved artifacts are load-bearing history (what a human actually signed off
+        on, what downstream agents/graph state may already reference) and must never be
+        deletable, only superseded by a new version. Checking the whole version (not just this
+        one artifact_id) matters because every gating artifact_type saves a JSON+Markdown pair at
+        one shared version, and the two halves can be approved independently -- calling this
+        directly on the still-pending half of an already-approved pair must be refused too, or it
+        would silently orphan the approved half's sibling out from under it.
+
+        Cascades to every OTHER sibling in the same version once the check above clears (i.e.
+        every sibling in the pair is confirmed non-approved) -- the frontend's version list dedupes
+        a JSON+Markdown pair into a single row (see frontend/src/lib/artifactTypeMeta.js's
+        dedupeArtifactVersions), so deleting only the one artifact_id behind that row would leave
+        its sibling format still in the database, which would then simply reappear as the same
+        "version" the human just deleted on the next list refresh.
+
+        Deleting each file on disk is best-effort: a missing/already-gone file just gets logged,
+        never raised, since the Mongo record is the part that actually matters for "is this still
+        in the version list."
+        """
+
+        artifact = store.artifacts.get(artifact_id)
+
+        if not artifact:
+            raise ValueError(f"Artifact not found: {artifact_id}")
+
+        siblings = [
+            sibling
+            for sibling in store.artifacts.values()
+            if sibling["artifact_id"] != artifact_id
+            and sibling.get("feature_id") == artifact.get("feature_id")
+            and sibling.get("artifact_type") == artifact.get("artifact_type")
+            and sibling.get("version") == artifact.get("version")
+        ]
+
+        version_group = [artifact, *siblings]
+        if any(
+            record.get("approval_status") in (ApprovalStatus.APPROVED, ApprovalStatus.APPROVED.value)
+            for record in version_group
+        ):
+            raise ValueError(
+                "Cannot delete an approved artifact -- it's part of this feature's approved "
+                "history. Only pending, rejected, or revision-requested versions can be deleted."
+            )
+
+        for record in version_group:
+            try:
+                Path(record["file_path"]).unlink(missing_ok=True)
+            except OSError as error:
+                logger.warning("Failed to delete artifact file for %s: %s", record["artifact_id"], error)
+
+            store.artifacts.collection.delete_one({"artifact_id": record["artifact_id"]})
+
     def save_binary_artifact(
         self,
         project: dict[str, Any],

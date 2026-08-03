@@ -26,6 +26,16 @@ class DomainAgentRunRequest(BaseModel):
         example="Focus on payment and inventory domain rules.",
     )
 
+    referenced_document_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Uploaded knowledge document IDs explicitly referenced (e.g. via a '/' mention in "
+            "chat) -- every chunk of each referenced document is guaranteed to be included as "
+            "retrieval context, not left to similarity search alone."
+        ),
+        example=["doc_ab12cd34"],
+    )
+
 
 class DomainAgentReviseRequest(BaseModel):
     """
@@ -38,3 +48,13 @@ class DomainAgentReviseRequest(BaseModel):
     )
 
     revised_by: str = Field(default="human_user", example="human_user")
+
+    referenced_document_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Uploaded knowledge document IDs explicitly referenced (e.g. via a '/' mention in "
+            "chat) -- every chunk of each referenced document is guaranteed to be included as "
+            "retrieval context, not left to similarity search alone."
+        ),
+        example=["doc_ab12cd34"],
+    )

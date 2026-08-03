@@ -25,15 +25,15 @@ export default function DocumentValue({ value }) {
   if (value === null || value === undefined || value === "") return null;
 
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    return <p className="text-sm text-gray-700 whitespace-pre-wrap">{String(value)}</p>;
+    return <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">{String(value)}</p>;
   }
 
   if (Array.isArray(value)) {
-    if (value.length === 0) return <p className="text-sm text-gray-400 italic">None</p>;
+    if (value.length === 0) return <p className="text-sm text-gray-400 dark:text-gray-500 italic">None</p>;
 
     if (value.every((v) => typeof v === "string" || typeof v === "number")) {
       return (
-        <ul className="list-disc list-inside text-sm text-gray-700 space-y-0.5">
+        <ul className="list-disc list-inside text-sm text-gray-700 dark:text-gray-300 space-y-0.5">
           {value.map((v, i) => (
             <li key={i}>{v}</li>
           ))}
@@ -47,9 +47,9 @@ export default function DocumentValue({ value }) {
         <div className="overflow-x-auto">
           <table className="w-full text-sm border-collapse">
             <thead>
-              <tr className="border-b border-gray-200">
+              <tr className="border-b border-gray-200 dark:border-gray-700">
                 {columns.map((col) => (
-                  <th key={col} className="text-left font-semibold text-gray-500 py-1 pr-3 whitespace-nowrap">
+                  <th key={col} className="text-left font-semibold text-gray-500 dark:text-gray-400 py-1 pr-3 whitespace-nowrap">
                     {humanizeKey(col)}
                   </th>
                 ))}
@@ -57,11 +57,11 @@ export default function DocumentValue({ value }) {
             </thead>
             <tbody>
               {value.map((row, i) => (
-                <tr key={i} className="border-b border-gray-100 last:border-0">
+                <tr key={i} className="border-b border-gray-100 dark:border-gray-800 last:border-0">
                   {columns.map((col) => (
-                    <td key={col} className="py-1.5 pr-3 text-gray-700 align-top">
+                    <td key={col} className="py-1.5 pr-3 text-gray-700 dark:text-gray-300 align-top">
                       {row[col] === undefined || row[col] === null || row[col] === "" ? (
-                        <span className="text-gray-300">--</span>
+                        <span className="text-gray-300 dark:text-gray-600">--</span>
                       ) : Array.isArray(row[col]) ? (
                         row[col].join(", ")
                       ) : (
@@ -80,7 +80,7 @@ export default function DocumentValue({ value }) {
     return (
       <div className="flex flex-col gap-2">
         {value.map((v, i) => (
-          <div key={i} className="border-l-2 border-gray-200 pl-2">
+          <div key={i} className="border-l-2 border-gray-200 dark:border-gray-700 pl-2">
             <DocumentValue value={v} />
           </div>
         ))}
@@ -96,7 +96,7 @@ export default function DocumentValue({ value }) {
       <div className="flex flex-col gap-2">
         {entries.map(([k, v]) => (
           <div key={k}>
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">{humanizeKey(k)}</p>
+            <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">{humanizeKey(k)}</p>
             <DocumentValue value={v} />
           </div>
         ))}

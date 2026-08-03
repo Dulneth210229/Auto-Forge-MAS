@@ -484,6 +484,7 @@ class MongoStore:
         approvals
         llm_settings
         stage_events
+        requirement_conversations
     """
 
     def __init__(self):
@@ -528,6 +529,23 @@ class MongoStore:
         self.stage_events = MongoCollectionProxy(
             collection=self.database["stage_events"],
             id_field="event_id",
+        )
+
+        # One document per feature_id, upserted in place each conversational turn -- NOT
+        # versioned like artifacts, since a single in-progress turn is not a reviewable output
+        # on its own (unlike every other artifact type). Requirement Agent's conversational
+        # gap-filling loop reads/writes this directly; see conversation_engine.py.
+        self.requirement_conversations = MongoCollectionProxy(
+            collection=self.database["requirement_conversations"],
+            id_field="feature_id",
+        )
+
+        # One record per uploaded per-project domain knowledge document (see
+        # knowledge_document_service.py) -- the raw file lives on disk and its chunks live in
+        # Chroma; this is just the metadata (filename, status, chunk_count) the UI lists/manages.
+        self.knowledge_documents = MongoCollectionProxy(
+            collection=self.database["knowledge_documents"],
+            id_field="document_id",
         )
 
         self._create_indexes()
@@ -596,6 +614,20 @@ class MongoStore:
             [("feature_id", ASCENDING)]
         )
 
+        self.database["requirement_conversations"].create_index(
+            [("feature_id", ASCENDING)],
+            unique=True,
+        )
+
+        self.database["knowledge_documents"].create_index(
+            [("document_id", ASCENDING)],
+            unique=True,
+        )
+
+        self.database["knowledge_documents"].create_index(
+            [("project_id", ASCENDING)]
+        )
+
     def reset(self) -> None:
         """
         Clear project-related data from MongoDB.
@@ -610,6 +642,8 @@ class MongoStore:
         self.artifacts.clear()
         self.approvals.clear()
         self.stage_events.clear()
+        self.requirement_conversations.clear()
+        self.knowledge_documents.clear()
 
     def close(self) -> None:
         """

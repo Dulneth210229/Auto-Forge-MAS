@@ -46,7 +46,7 @@ function Section({ sectionKey, title, value }) {
 
   return (
     <section className="mb-5">
-      <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wide mb-1.5 pb-1 border-b border-gray-100">
+      <h3 className="text-sm font-bold text-gray-900 dark:text-gray-100 uppercase tracking-wide mb-1.5 pb-1 border-b border-gray-100 dark:border-gray-800">
         {title}
       </h3>
       {ENRICHABLE_SECTIONS.has(sectionKey) ? <EnrichedItemList items={value} /> : <DocumentValue value={value} />}
@@ -57,6 +57,7 @@ function Section({ sectionKey, title, value }) {
 const DOCUMENT_TYPE_LABELS = {
   srs: "Software Requirements Specification (SRS)",
   enhanced_srs: "Enhanced Software Requirements Specification (Enhanced SRS)",
+  srs_preview: "SRS Preview (In Progress)",
 };
 
 export default function SrsDocumentViewer({ data, artifactType }) {
@@ -67,12 +68,12 @@ export default function SrsDocumentViewer({ data, artifactType }) {
 
   return (
     <div className="max-w-3xl">
-      <div className="mb-5 pb-3 border-b border-gray-200">
-        <p className="text-xs font-bold text-accent-600 uppercase tracking-wide mb-1">
+      <div className="mb-5 pb-3 border-b border-gray-200 dark:border-gray-800">
+        <p className="text-xs font-bold text-accent-600 dark:text-accent-400 uppercase tracking-wide mb-1">
           {DOCUMENT_TYPE_LABELS[artifactType] || "Software Requirements Specification (SRS)"}
         </p>
-        <h2 className="text-lg font-bold text-gray-900">{data.feature_name || "Untitled Feature"}</h2>
-        <p className="text-xs text-gray-500 mt-1">
+        <h2 className="text-lg font-bold text-gray-900 dark:text-gray-100">{data.feature_name || "Untitled Feature"}</h2>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
           {[data.project_name, data.project_type, data.target_stack, data.architectural_style].filter(Boolean).join(" · ")}
         </p>
       </div>

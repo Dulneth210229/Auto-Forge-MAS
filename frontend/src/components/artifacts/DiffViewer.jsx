@@ -43,16 +43,18 @@ export default function DiffViewer({ content }) {
       <MarkdownViewer content={prose} />
 
       {isTruncated && (
-        <p className="bg-yellow-50 text-yellow-800 text-xs p-2 rounded mt-2 mb-2">
+        <p className="bg-yellow-50 dark:bg-yellow-500/10 text-yellow-800 dark:text-yellow-300 text-xs p-2 rounded mt-2 mb-2">
           This diff was truncated by the backend at {MAX_DIFF_TEXT_CHARS.toLocaleString()} characters
           -- the full diff is not available via this view.
         </p>
       )}
 
       {diffHtml ? (
-        <div className="mt-4 text-xs" dangerouslySetInnerHTML={{ __html: diffHtml }} />
+        // diff2html's own bundled CSS renders a light-themed table regardless of app theme --
+        // wrapped in a light card so it stays legible rather than half-blending into a dark page.
+        <div className="mt-4 text-xs bg-white rounded-lg p-2 overflow-x-auto" dangerouslySetInnerHTML={{ __html: diffHtml }} />
       ) : (
-        <p className="text-gray-500 text-sm mt-4">No diff content found in this artifact.</p>
+        <p className="text-gray-500 dark:text-gray-400 text-sm mt-4">No diff content found in this artifact.</p>
       )}
     </div>
   );

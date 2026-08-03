@@ -11,10 +11,10 @@ export default function AppShell() {
   const location = useLocation();
 
   return (
-    <div className="h-screen flex flex-col bg-gray-100">
-      <header className="bg-white border-b border-gray-200 flex-shrink-0">
+    <div className="h-screen flex flex-col bg-gray-100 dark:bg-gray-950">
+      <header className="bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 flex-shrink-0">
         <div className="w-full px-6 py-3 flex items-center justify-between">
-          <Link to="/" className="text-lg font-bold text-gray-900">
+          <Link to="/" className="text-lg font-bold text-gray-900 dark:text-gray-100">
             AutoForge
           </Link>
           <div className="flex items-center gap-4">
@@ -26,8 +26,8 @@ export default function AppShell() {
                   className={clsx(
                     "text-sm font-medium px-3 py-1.5 rounded",
                     location.pathname === item.to
-                      ? "bg-gray-900 text-white"
-                      : "text-gray-600 hover:bg-gray-100"
+                      ? "bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900"
+                      : "text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
                   )}
                 >
                   {item.label}

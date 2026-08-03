@@ -16,12 +16,26 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from app.core.config import settings
 
 
-def chunk_text(text: str, source_document: str) -> list[dict]:
+def chunk_text(
+    text: str,
+    source_document: str,
+    document_id: str | None = None,
+    project_id: str | None = None,
+) -> list[dict]:
     """
     Split text into chunks.
 
     Returns a list of:
-        {"chunk_id": "<source_document>#<index>", "source_document": ..., "text": ...}
+        {"chunk_id": ..., "source_document": ..., "text": ..., "document_id"?, "project_id"?}
+
+    document_id/project_id are additive: omitted from each chunk dict entirely when not
+    provided, so the existing CLI ingestion call site (chunk_text(text,
+    source_document=file_path.name)) is completely unaffected.
+
+    When document_id IS provided (a per-project uploaded file), chunk_id is namespaced by
+    document_id instead of source_document -- source_document is just the human-readable
+    filename, which could collide across projects (or across two uploads of the same filename)
+    if used directly as the vector ID prefix in the one shared Chroma collection.
     """
 
     splitter = RecursiveCharacterTextSplitter(
@@ -30,13 +44,24 @@ def chunk_text(text: str, source_document: str) -> list[dict]:
     )
 
     pieces = splitter.split_text(text)
+    id_prefix = document_id or source_document
 
-    return [
-        {
-            "chunk_id": f"{source_document}#{index}",
+    chunks = []
+    for index, piece in enumerate(pieces):
+        if not piece.strip():
+            continue
+
+        chunk = {
+            "chunk_id": f"{id_prefix}#{index}",
             "source_document": source_document,
             "text": piece,
         }
-        for index, piece in enumerate(pieces)
-        if piece.strip()
-    ]
+
+        if document_id:
+            chunk["document_id"] = document_id
+        if project_id:
+            chunk["project_id"] = project_id
+
+        chunks.append(chunk)
+
+    return chunks

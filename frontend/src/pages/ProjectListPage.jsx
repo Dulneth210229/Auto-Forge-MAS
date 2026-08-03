@@ -10,9 +10,9 @@ import ErrorBanner from "../components/common/ErrorBanner";
 
 function StatChip({ value, label }) {
   return (
-    <div className="flex-1 min-w-[120px] bg-white rounded-xl border border-gray-200 px-4 py-3">
-      <p className="text-2xl font-bold text-gray-900">{value}</p>
-      <p className="text-xs text-gray-500 font-medium">{label}</p>
+    <div className="flex-1 min-w-[120px] bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 px-4 py-3">
+      <p className="text-2xl font-bold text-gray-900 dark:text-gray-100">{value}</p>
+      <p className="text-xs text-gray-500 dark:text-gray-400 font-medium">{label}</p>
     </div>
   );
 }
@@ -65,10 +65,10 @@ export default function ProjectListPage() {
       {isLoading ? (
         <LoadingSpinner label="Loading projects..." />
       ) : projects.length === 0 ? (
-        <div className="bg-white rounded-xl border border-dashed border-gray-300 p-12 text-center">
+        <div className="bg-white dark:bg-gray-900 rounded-xl border border-dashed border-gray-300 dark:border-gray-700 p-12 text-center">
           <p className="text-4xl mb-3">🚀</p>
-          <p className="text-gray-700 font-semibold">No projects yet</p>
-          <p className="text-gray-500 text-sm mt-1">Create your first project to start the pipeline.</p>
+          <p className="text-gray-700 dark:text-gray-200 font-semibold">No projects yet</p>
+          <p className="text-gray-500 dark:text-gray-400 text-sm mt-1">Create your first project to start the pipeline.</p>
           <button
             onClick={() => setShowCreate(true)}
             className="mt-4 bg-accent-600 hover:bg-accent-700 text-white font-semibold py-2 px-4 rounded"
@@ -92,12 +92,12 @@ export default function ProjectListPage() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search projects by name, type, or stack..."
-              className="w-full max-w-md text-sm border border-gray-300 rounded-lg px-4 py-2.5 focus:outline-none focus:border-accent-500 focus:ring-1 focus:ring-accent-500 bg-white"
+              className="w-full max-w-md text-sm border border-gray-300 dark:border-gray-600 rounded-lg px-4 py-2.5 focus:outline-none focus:border-accent-500 focus:ring-1 focus:ring-accent-500 bg-white dark:bg-white/5 dark:text-gray-100"
             />
           </div>
 
           {filtered.length === 0 ? (
-            <p className="text-sm text-gray-400 italic">No projects match "{search}".</p>
+            <p className="text-sm text-gray-400 dark:text-gray-500 italic">No projects match "{search}".</p>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {filtered.map((project, index) => (

@@ -23,24 +23,24 @@ export default function CreateFeatureForm({ projectId, onCreated, onCancel }) {
       <ErrorBanner error={createFeature.error} fallback="Failed to create feature." />
 
       <div>
-        <label className="block text-sm font-semibold mb-1">Feature Name</label>
+        <label className="block text-sm font-semibold mb-1 text-gray-900 dark:text-gray-200">Feature Name</label>
         <input
           required
           value={featureName}
           onChange={(event) => setFeatureName(event.target.value)}
           placeholder="Login"
-          className="w-full p-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-accent-500"
+          className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md focus:outline-none focus:border-accent-500"
         />
       </div>
 
       <div>
-        <label className="block text-sm font-semibold mb-1">Description</label>
+        <label className="block text-sm font-semibold mb-1 text-gray-900 dark:text-gray-200">Description</label>
         <textarea
           required
           value={featureDescription}
           onChange={(event) => setFeatureDescription(event.target.value)}
           placeholder="Allow users to log in using email and password."
-          className="w-full p-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-accent-500"
+          className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md focus:outline-none focus:border-accent-500"
           rows={3}
         />
       </div>
@@ -49,7 +49,7 @@ export default function CreateFeatureForm({ projectId, onCreated, onCancel }) {
         <button
           type="button"
           onClick={onCancel}
-          className="bg-gray-200 hover:bg-gray-300 text-gray-800 font-semibold py-2 px-4 rounded"
+          className="bg-gray-200 hover:bg-gray-300 dark:bg-white/10 dark:hover:bg-white/20 text-gray-800 dark:text-gray-200 font-semibold py-2 px-4 rounded"
         >
           Cancel
         </button>

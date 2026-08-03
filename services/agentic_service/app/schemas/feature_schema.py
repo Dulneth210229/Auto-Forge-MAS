@@ -41,3 +41,18 @@ class FeatureResponse(BaseModel):
     current_agent: AgentName | None
     created_at: datetime
     updated_at: datetime
+    # Maps artifact_type -> artifact_id, e.g. {"srs": "artifact_xyz"} -- lets a human explicitly
+    # pin which APPROVED version of a given artifact_type feeds the next stage (e.g. which SRS
+    # version the Domain Agent reads), instead of always defaulting to the latest approved version
+    # by version number. Missing/empty for every feature created before this existed -- callers
+    # must treat an absent entry as "use the default (latest approved)", never as an error.
+    active_artifact_selection: dict[str, str] = Field(default_factory=dict)
+
+
+class SetActiveArtifactSelectionRequest(BaseModel):
+    """
+    Request body for pinning which approved artifact version of one artifact_type should feed
+    the next pipeline stage for this feature.
+    """
+    artifact_type: str = Field(..., example="srs")
+    artifact_id: str = Field(..., example="artifact_5615cbda")

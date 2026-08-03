@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { STATUS, getLatestGatingArtifact } from "../../lib/deriveStageStatus";
+import { getOperativeGatingArtifact } from "../../lib/deriveStageStatus";
 import { ARTIFACT_TYPE_LABELS } from "../../lib/artifactTypeMeta";
 import { artifactDownloadUrl } from "../../api/client";
 import { useArtifactContent } from "../../hooks/useArtifacts";
@@ -54,8 +54,13 @@ function extractTraceLinks(contentJson) {
   return [];
 }
 
-export default function GovernancePanel({ stage, featureId, allArtifacts, stageArtifacts }) {
-  const gatingArtifact = getLatestGatingArtifact(stage, allArtifacts);
+// `onApproveClick`, when provided (only the Requirement stage's SRS passes this, from ResultTab
+// -- see its own docstring for why the confirm-dialog + auto-run-Domain-Agent orchestration lives
+// there and not here or in ApprovalPanel), is called with (artifactId, comment) instead of
+// approving directly. Reject/Request Revision have no such multi-step follow-up and stay
+// immediate, handled inside ApprovalPanel itself.
+export default function GovernancePanel({ stage, featureId, allArtifacts, stageArtifacts, onApproveClick }) {
+  const gatingArtifact = getOperativeGatingArtifact(stage, allArtifacts);
   const isAwaitingReview = gatingArtifact?.approval_status === "pending";
 
   const { data: gatingContent } = useArtifactContent(
@@ -70,31 +75,36 @@ export default function GovernancePanel({ stage, featureId, allArtifacts, stageA
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="pb-4 border-b border-gray-100">
-        <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-2">Stage Actions</h3>
+      <div className="pb-4 border-b border-gray-100 dark:border-gray-800">
+        <h3 className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wide mb-2">Stage Actions</h3>
         {gatingArtifact ? (
           isAwaitingReview ? (
-            <ApprovalPanel featureId={featureId} artifact={gatingArtifact} warning={APPROVAL_WARNINGS[stage]} />
+            <ApprovalPanel
+              featureId={featureId}
+              artifact={gatingArtifact}
+              warning={APPROVAL_WARNINGS[stage]}
+              onApproveClick={onApproveClick ? (comment) => onApproveClick(gatingArtifact.artifact_id, comment) : undefined}
+            />
           ) : (
-            <p className="text-xs text-gray-400">
+            <p className="text-xs text-gray-400 dark:text-gray-500">
               Latest version (v{gatingArtifact.version}) is {gatingArtifact.approval_status}. Nothing pending.
             </p>
           )
         ) : (
-          <p className="text-xs text-gray-400">No output yet for this stage.</p>
+          <p className="text-xs text-gray-400 dark:text-gray-500">No output yet for this stage.</p>
         )}
       </div>
 
       {traceLinks.length > 0 && (
-        <div className="pb-4 border-b border-gray-100">
-          <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-2">Trace Links</h3>
+        <div className="pb-4 border-b border-gray-100 dark:border-gray-800">
+          <h3 className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wide mb-2">Trace Links</h3>
           <div className="flex flex-col gap-1.5 max-h-48 overflow-y-auto">
             {traceLinks.map((link) => (
               <div key={link.id} className="flex items-center gap-1 flex-wrap text-xs">
-                <span className="bg-blue-50 text-blue-700 font-semibold px-1.5 py-0.5 rounded">{link.id}</span>
+                <span className="bg-blue-50 dark:bg-blue-500/15 text-blue-700 dark:text-blue-300 font-semibold px-1.5 py-0.5 rounded">{link.id}</span>
                 {link.related.map((r) => (
-                  <span key={r} className="text-gray-400">
-                    &rarr; <span className="bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">{r}</span>
+                  <span key={r} className="text-gray-400 dark:text-gray-500">
+                    &rarr; <span className="bg-gray-100 dark:bg-white/10 text-gray-600 dark:text-gray-300 px-1.5 py-0.5 rounded">{r}</span>
                   </span>
                 ))}
               </div>
@@ -104,22 +114,22 @@ export default function GovernancePanel({ stage, featureId, allArtifacts, stageA
       )}
 
       <div>
-        <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-2">Stage Artifacts</h3>
+        <h3 className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wide mb-2">Stage Artifacts</h3>
         {sortedArtifacts.length === 0 ? (
-          <p className="text-xs text-gray-400">No artifacts yet.</p>
+          <p className="text-xs text-gray-400 dark:text-gray-500">No artifacts yet.</p>
         ) : (
           <div className="flex flex-col gap-1">
             {sortedArtifacts.map((artifact) => (
               <div key={artifact.artifact_id} className="flex items-center justify-between text-xs py-1">
-                <span className="text-gray-700 truncate" title={ARTIFACT_TYPE_LABELS[artifact.artifact_type]}>
+                <span className="text-gray-700 dark:text-gray-300 truncate" title={ARTIFACT_TYPE_LABELS[artifact.artifact_type]}>
                   {ARTIFACT_TYPE_LABELS[artifact.artifact_type] || artifact.artifact_type}
-                  <span className="text-gray-400"> v{artifact.version}</span>
+                  <span className="text-gray-400 dark:text-gray-500"> v{artifact.version}</span>
                 </span>
                 <span className="flex items-center gap-2 flex-shrink-0">
-                  <span className="text-gray-400">{formatBytes(artifact.size_bytes)}</span>
+                  <span className="text-gray-400 dark:text-gray-500">{formatBytes(artifact.size_bytes)}</span>
                   <a
                     href={artifactDownloadUrl(artifact.artifact_id)}
-                    className="text-accent-600 hover:text-accent-800 font-semibold"
+                    className="text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 font-semibold"
                   >
                     Download
                   </a>

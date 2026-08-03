@@ -26,33 +26,33 @@ export default function CreateProjectForm({ onCreated, onCancel }) {
       <ErrorBanner error={createProject.error} fallback="Failed to create project." />
 
       <div>
-        <label className="block text-sm font-semibold mb-1">Project Name</label>
+        <label className="block text-sm font-semibold mb-1 text-gray-900 dark:text-gray-200">Project Name</label>
         <input
           required
           value={projectName}
           onChange={(event) => setProjectName(event.target.value)}
           placeholder="E-commerce Platform"
-          className="w-full p-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-accent-500"
+          className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md focus:outline-none focus:border-accent-500"
         />
       </div>
 
       <div>
-        <label className="block text-sm font-semibold mb-1">Project Type</label>
+        <label className="block text-sm font-semibold mb-1 text-gray-900 dark:text-gray-200">Project Type</label>
         <input
           required
           value={projectType}
           onChange={(event) => setProjectType(event.target.value)}
           placeholder="E-commerce"
-          className="w-full p-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-accent-500"
+          className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md focus:outline-none focus:border-accent-500"
         />
       </div>
 
       <div>
-        <label className="block text-sm font-semibold mb-1">Target Stack</label>
+        <label className="block text-sm font-semibold mb-1 text-gray-900 dark:text-gray-200">Target Stack</label>
         <input
           value={targetStack}
           onChange={(event) => setTargetStack(event.target.value)}
-          className="w-full p-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-accent-500"
+          className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md focus:outline-none focus:border-accent-500"
         />
       </div>
 
@@ -60,7 +60,7 @@ export default function CreateProjectForm({ onCreated, onCancel }) {
         <button
           type="button"
           onClick={onCancel}
-          className="bg-gray-200 hover:bg-gray-300 text-gray-800 font-semibold py-2 px-4 rounded"
+          className="bg-gray-200 hover:bg-gray-300 dark:bg-white/10 dark:hover:bg-white/20 text-gray-800 dark:text-gray-200 font-semibold py-2 px-4 rounded"
         >
           Cancel
         </button>

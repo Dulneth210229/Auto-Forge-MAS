@@ -9,7 +9,7 @@
 function Citation({ citation }) {
   if (!citation) return null;
   return (
-    <p className="text-[11px] text-gray-500 mt-1.5 italic">
+    <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1.5 italic">
       Source: {citation.source_document}
       {citation.chunk_id ? ` (${citation.chunk_id})` : ""}
     </p>
@@ -21,10 +21,10 @@ function ItemCard({ item }) {
   const isModified = Boolean(item.modified_by_domain_agent);
 
   const colorClasses = isNew
-    ? "border-green-200 bg-green-50"
+    ? "border-green-200 dark:border-green-500/30 bg-green-50 dark:bg-green-500/10"
     : isModified
-      ? "border-blue-200 bg-blue-50"
-      : "border-gray-200 bg-white";
+      ? "border-blue-200 dark:border-blue-500/30 bg-blue-50 dark:bg-blue-500/10"
+      : "border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900";
 
   const tags = [item.priority, item.category].filter(Boolean);
 
@@ -32,9 +32,9 @@ function ItemCard({ item }) {
     <div className={`rounded-lg border p-3 ${colorClasses}`}>
       <div className="flex items-center justify-between gap-2 mb-1">
         <div className="flex items-center gap-2">
-          {item.id && <span className="text-xs font-bold text-gray-500">{item.id}</span>}
+          {item.id && <span className="text-xs font-bold text-gray-500 dark:text-gray-400">{item.id}</span>}
           {tags.map((tag) => (
-            <span key={tag} className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">
+            <span key={tag} className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-gray-100 dark:bg-white/10 text-gray-600 dark:text-gray-300">
               {tag}
             </span>
           ))}
@@ -52,9 +52,9 @@ function ItemCard({ item }) {
       </div>
 
       {isModified && item.original_description && (
-        <p className="text-xs text-gray-400 line-through mb-0.5">{item.original_description}</p>
+        <p className="text-xs text-gray-400 dark:text-gray-500 line-through mb-0.5">{item.original_description}</p>
       )}
-      <p className="text-sm text-gray-800">{item.description}</p>
+      <p className="text-sm text-gray-800 dark:text-gray-200">{item.description}</p>
 
       <Citation citation={item.domain_citation} />
     </div>
