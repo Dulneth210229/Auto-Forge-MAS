@@ -16,14 +16,40 @@ import RequirementSrsOutputPanel from "./RequirementSrsOutputPanel";
 import { useWorkspaceSelection } from "../workspace/WorkspaceSelectionContext";
 import { useRequirementConversationFlowContext } from "../workspace/RequirementConversationFlowContext";
 import { useDomainAgentFlowContext } from "../workspace/DomainAgentFlowContext";
+import { useArchitectureAgentFlowContext } from "../workspace/ArchitectureAgentFlowContext";
 import { useFeature, useSetActiveArtifactSelection } from "../../hooks/useFeatures";
 import { useApprovalMutation } from "../../hooks/useApprovalMutation";
 
-// Only the Requirement Agent's SRS -> Domain Agent handoff supports pinning a specific approved
-// version today (direct user request) -- extend this map (mirrors OutputPanel's own) if another
-// stage's handoff gets the same treatment.
+// Both Requirement->Domain and Domain->Architecture support pinning a specific approved version
+// (direct user request for the latter, mirroring the former) -- extend this map (mirrors
+// OutputPanel's own) if another stage's handoff gets the same treatment.
 const ACTIVE_SELECTION_ARTIFACT_TYPE_BY_STAGE = {
   requirement: "srs",
+  domain: "enhanced_srs",
+};
+
+// Drives the "Approve and continue" popup + orchestration for the two stage transitions that need
+// it -- one config, one confirmingArtifactId state, one ConfirmDialog, instead of a second
+// parallel isEnhancedSrsApproval block duplicating requirement's own. `autoRun: true` (Domain ->
+// Architecture only) means confirming doesn't just switch the chat -- it also starts the next
+// agent's stream immediately, no separate manual click needed (a deliberate, different UX from
+// Requirement -> Domain, where a human explicitly guides the very first run instead -- see
+// ChatPanel's own proactive Domain Agent prompt).
+const APPROVE_CONTINUATION_BY_STAGE = {
+  requirement: {
+    nextAgent: "domain",
+    autoRun: false,
+    title: "Approve this SRS and continue to Domain Agent?",
+    message: (version) =>
+      `Approving v${version} makes it the SRS this feature uses going forward (any other approved SRS version is superseded back to pending). Your chat will switch to Domain Agent, where you can tell it how to enrich this SRS -- using existing domain knowledge, something specific you provide, or both.`,
+  },
+  domain: {
+    nextAgent: "architecture",
+    autoRun: true,
+    title: "Approve this Enhanced SRS and start Architecture Agent?",
+    message: (version) =>
+      `Approving v${version} makes it the Enhanced SRS this feature uses going forward (any other approved Enhanced SRS version is superseded back to pending). Architecture Agent will start automatically and generate the Architecture Plan plus Use Case, Sequence, and Class diagrams -- watch it live in the Result panel.`,
+  },
 };
 
 // domain_improvements is Domain Agent's own "what changed and why" side-record for the SAME
@@ -103,6 +129,33 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
   const domainStreamedText = isDomainRevising ? domainRevisionStreamedText : domainRunStreamedText;
   const domainStreamStarted = isDomainRevising ? domainRevisionStreamStarted : domainRunStreamStarted;
 
+  // Same idea, Architecture Agent -- the plan text streams live, then a "phase" tail (use case
+  // model, diagram generation, PlantUML rendering) that isn't itself streamable prose, shown via
+  // LiveGenerationView's isFinalizing mode instead of a bare spinner (see that component's own
+  // docstring for why). Read unconditionally regardless of stage -- cheap, and this is also what
+  // handleConfirmedApprove below needs to auto-start a run from the requirement/domain branch.
+  const {
+    handleRunStream: handleRunArchitectureStream,
+    runStream: architectureRunStream,
+    runStreamedText: architectureRunStreamedText,
+    runStreamStarted: architectureRunStreamStarted,
+    runPhase: architectureRunPhase,
+    runPhaseStartedAt: architectureRunPhaseStartedAt,
+    reviseStream: architectureReviseStream,
+    revisionStreamedText: architectureRevisionStreamedText,
+    revisionStreamStarted: architectureRevisionStreamStarted,
+    revisionPhase: architectureRevisionPhase,
+    revisionPhaseStartedAt: architectureRevisionPhaseStartedAt,
+  } = useArchitectureAgentFlowContext();
+  const isArchitectureStage = stage === "architecture";
+  const isArchitectureRevising = isArchitectureStage && architectureReviseStream.isPending;
+  const isArchitectureRunning = isArchitectureStage && architectureRunStream.isPending;
+  const isArchitectureGenerating = isArchitectureRevising || isArchitectureRunning;
+  const architectureStreamedText = isArchitectureRevising ? architectureRevisionStreamedText : architectureRunStreamedText;
+  const architectureStreamStarted = isArchitectureRevising ? architectureRevisionStreamStarted : architectureRunStreamStarted;
+  const architecturePhase = isArchitectureRevising ? architectureRevisionPhase : architectureRunPhase;
+  const architecturePhaseStartedAt = isArchitectureRevising ? architectureRevisionPhaseStartedAt : architectureRunPhaseStartedAt;
+
   // Deduped for display: every gating artifact_type saves a JSON+Markdown pair sharing one
   // version, and listing both as separate rows read as the same version being duplicated (a real
   // reported issue) -- see dedupeArtifactVersions's own docstring.
@@ -122,31 +175,35 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
     ? getEffectiveActiveArtifact(allArtifacts, feature?.active_artifact_selection, activeArtifactType)
     : null;
 
-  // Approving the Requirement Agent's SRS is the one stage where approving genuinely switches the
-  // human's chat over to a different agent -- worth an explicit confirmation, not just an
-  // immediate click. Owned HERE (not inside GovernancePanel or ArtifactRow) because BOTH of those
-  // can offer an Approve button for a pending SRS version now (a real reported bug: only the
-  // single "operative"/highest-version artifact ever had approval controls at all) -- this is
-  // their shared ancestor, and it never unmounts across the approve -> switch-chat transition the
-  // way either child can (see this component's own git history for the exact unmount bug this
-  // already caused once).
+  // Approving the Requirement Agent's SRS (or Domain Agent's Enhanced SRS) is where approving
+  // genuinely switches the human's chat over to a different agent -- worth an explicit
+  // confirmation, not just an immediate click. Owned HERE (not inside GovernancePanel or
+  // ArtifactRow) because BOTH of those can offer an Approve button for a pending version now (a
+  // real reported bug: only the single "operative"/highest-version artifact ever had approval
+  // controls at all) -- this is their shared ancestor, and it never unmounts across the
+  // approve -> switch-chat (-> auto-run) transition the way either child can (see this
+  // component's own git history for the exact unmount bug this already caused once).
   //
-  // Deliberately does NOT auto-run Domain Agent anymore (it used to, immediately, with an empty
-  // human_comment) -- a real, direct user report: Domain Agent already running blind, before the
-  // human ever got a chance to say "use existing domain knowledge" vs. "here's a database schema
-  // I want incorporated," meant their only option once they arrived at its chat was to REVISE
-  // already-generated output instead of guiding the ORIGINAL generation. Approving now only
-  // switches the chat to Domain Agent; ChatPanel's own empty-state prompt (see its own comment)
-  // is what invites the human to guide the actual first run.
-  const isSrsApproval = stage === "requirement";
+  // Requirement -> Domain deliberately does NOT auto-run Domain Agent (it used to, immediately,
+  // with an empty human_comment) -- a real, direct user report: Domain Agent already running
+  // blind, before the human ever got a chance to say "use existing domain knowledge" vs. "here's
+  // a database schema I want incorporated," meant their only option once they arrived at its chat
+  // was to REVISE already-generated output instead of guiding the ORIGINAL generation. Approving
+  // only switches the chat to Domain Agent; ChatPanel's own empty-state prompt is what invites the
+  // human to guide the actual first run.
+  //
+  // Domain -> Architecture is the opposite, deliberately: Architecture Agent needs no comparable
+  // human-guidance step (there's nothing analogous to "here's a database schema" to wait for), so
+  // approving auto-starts it immediately -- see APPROVE_CONTINUATION_BY_STAGE's own `autoRun`.
+  const approveContinuation = APPROVE_CONTINUATION_BY_STAGE[stage];
   const [confirmingArtifactId, setConfirmingArtifactId] = useState(null);
   const srsApproval = useApprovalMutation(featureId);
 
-  function requestSrsApproveConfirmation(artifactId) {
+  function requestApproveConfirmation(artifactId) {
     setConfirmingArtifactId(artifactId);
   }
 
-  async function handleConfirmedSrsApprove() {
+  async function handleConfirmedApprove() {
     try {
       await srsApproval.mutateAsync({ artifactId: confirmingArtifactId, status: "approved" });
     } catch {
@@ -156,7 +213,17 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
     }
 
     setConfirmingArtifactId(null);
-    selectAgent("domain");
+    selectAgent(approveContinuation.nextAgent);
+
+    if (approveContinuation.autoRun) {
+      // Not awaited: the multi-minute run's own state already lives in the always-mounted
+      // ArchitectureAgentFlowProvider, so nothing is lost by not waiting here -- awaiting would
+      // instead hold this dialog's "Approving..." spinner up for the entire run. No pin/selection
+      // call is needed first either -- the approval above just reverted every other Enhanced SRS
+      // version back to pending (exclusivity), so the pin-aware lookup on the backend resolves to
+      // exactly the version just approved.
+      handleRunArchitectureStream({ use_enhanced_srs_if_available: true, architecture_notes: null, human_comment: null });
+    }
   }
 
   const confirmingArtifact = confirmingArtifactId
@@ -177,7 +244,7 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
           // no longer suppressed for any row of the gating type (see ArtifactList's docstring).
           gatingArtifactType={STAGE_GATING_ARTIFACT[stage]?.type ?? null}
           featureId={featureId}
-          onApproveClick={isSrsApproval ? requestSrsApproveConfirmation : undefined}
+          onApproveClick={approveContinuation ? requestApproveConfirmation : undefined}
           activeArtifactType={activeArtifactType}
           activeArtifactId={effectiveActiveArtifact?.artifact_id}
           settingActive={setActiveSelection.isPending}
@@ -200,6 +267,16 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
           hasStarted={domainStreamStarted}
           connectingLabel="Connecting to Domain Agent..."
           generatingLabel={isDomainRevising ? "Applying your requested change..." : "Enriching the SRS with domain knowledge..."}
+        />
+      ) : isArchitectureGenerating ? (
+        <LiveGenerationView
+          displayText={declutterJsonForDisplay(architectureStreamedText)}
+          hasStarted={architectureStreamStarted}
+          connectingLabel="Connecting to Architecture Agent..."
+          generatingLabel={isArchitectureRevising ? "Applying your requested change..." : "Drafting the architecture plan..."}
+          isFinalizing={Boolean(architecturePhase)}
+          finalizingLabel={architecturePhase?.label}
+          phaseStartedAt={architecturePhaseStartedAt}
         />
       ) : versions.length === 0 && isRequirementStage ? (
         <RequirementSrsOutputPanel />
@@ -279,19 +356,19 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
           featureId={featureId}
           allArtifacts={allArtifacts}
           stageArtifacts={stageArtifacts}
-          onApproveClick={isSrsApproval ? requestSrsApproveConfirmation : undefined}
+          onApproveClick={approveContinuation ? requestApproveConfirmation : undefined}
         />
       </div>
 
-      {isSrsApproval && (
+      {approveContinuation && (
         <ConfirmDialog
           open={Boolean(confirmingArtifactId)}
           onClose={() => {
             if (!srsApproval.isPending) setConfirmingArtifactId(null);
           }}
-          onConfirm={handleConfirmedSrsApprove}
-          title="Approve this SRS and continue to Domain Agent?"
-          message={`Approving v${confirmingArtifact?.version} makes it the SRS this feature uses going forward (any other approved SRS version is superseded back to pending). Your chat will switch to Domain Agent, where you can tell it how to enrich this SRS -- using existing domain knowledge, something specific you provide, or both.`}
+          onConfirm={handleConfirmedApprove}
+          title={approveContinuation.title}
+          message={approveContinuation.message(confirmingArtifact?.version)}
           confirmLabel="Approve & Continue"
           confirmingLabel="Approving..."
           tone="primary"

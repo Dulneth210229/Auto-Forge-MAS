@@ -1,6 +1,30 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import LoadingSpinner from "../common/LoadingSpinner";
 import CopyButton from "../common/CopyButton";
+
+// Ticks once a second while `startedAt` is set -- used by LiveGenerationView's finalizing phase
+// to show "2m 14s" instead of a static label, the cheapest possible signal that a long,
+// non-streamable step (diagram generation, PlantUML rendering) is still actually progressing and
+// not stuck. Returns null (render nothing) until at least 1s has elapsed, matching this file's
+// existing "don't show a counter at 0" convention.
+function useElapsedLabel(startedAt) {
+  const [, forceTick] = useState(0);
+
+  useEffect(() => {
+    if (!startedAt) return undefined;
+    const interval = setInterval(() => forceTick((n) => n + 1), 1000);
+    return () => clearInterval(interval);
+  }, [startedAt]);
+
+  if (!startedAt) return null;
+
+  const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+  if (elapsedSeconds < 1) return null;
+
+  const minutes = Math.floor(elapsedSeconds / 60);
+  const seconds = elapsedSeconds % 60;
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
 
 export function PencilIcon() {
   return (
@@ -233,25 +257,51 @@ export function QualityGateBanner({ qualityGate, onConfirm, isConfirming, disabl
 // "generating directly" the way ChatGPT/Claude's responses do (a real, reported issue) -- callers
 // should run the raw stream through declutterJsonForDisplay (or an equivalent transform) first.
 // See RequirementSrsOutputPanel for the one remaining caller.
-export function LiveGenerationView({ displayText, hasStarted, connectingLabel, generatingLabel = "Generating..." }) {
+//
+// `isFinalizing`/`finalizingLabel`/`phaseStartedAt` (all optional, every existing call site
+// unaffected): for a generation whose token stream finishes but real work continues behind the
+// scenes (Architecture Agent's use-case model + diagram generation + PlantUML rendering, which
+// can be several sequential LLM calls plus subprocess renders -- see ArchitectureAgentChat.jsx).
+// When set, the already-streamed text stays frozen on screen (still the most useful thing to
+// show -- it's real, finished content) instead of being replaced by a bare spinner, and the
+// header swaps the pulsing "connecting" dot for a cube spinner + the current phase label + an
+// elapsed-time counter, so a multi-minute tail doesn't read as stuck.
+export function LiveGenerationView({
+  displayText,
+  hasStarted,
+  connectingLabel,
+  generatingLabel = "Generating...",
+  isFinalizing = false,
+  finalizingLabel,
+  phaseStartedAt = null,
+}) {
+  const elapsedLabel = useElapsedLabel(isFinalizing ? phaseStartedAt : null);
+
   return (
     <div className="border border-accent-200 dark:border-accent-500/30 bg-accent-50 dark:bg-accent-500/10 rounded-lg p-4 flex flex-col gap-3">
       <div className="flex items-center gap-2">
-        <span className="relative flex h-2.5 w-2.5">
-          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent-400 opacity-75" />
-          <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-accent-600" />
-        </span>
+        {isFinalizing ? (
+          <LoadingSpinner variant="cube" size={18} />
+        ) : (
+          <span className="relative flex h-2.5 w-2.5">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent-400 opacity-75" />
+            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-accent-600" />
+          </span>
+        )}
         <p className="text-sm font-semibold text-accent-800 dark:text-accent-300">
-          {hasStarted ? generatingLabel : connectingLabel}
+          {isFinalizing ? finalizingLabel : hasStarted ? generatingLabel : connectingLabel}
+          {isFinalizing && elapsedLabel && <span className="font-normal text-accent-600 dark:text-accent-400"> &middot; {elapsedLabel}</span>}
         </p>
       </div>
 
-      {!hasStarted && <LoadingSpinner variant="cube" label="Waiting for the model to start responding..." />}
+      {!hasStarted && !isFinalizing && <LoadingSpinner variant="cube" label="Waiting for the model to start responding..." />}
 
       {hasStarted && (
         <pre className="text-sm text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-md p-4 max-h-[65vh] overflow-y-auto whitespace-pre-wrap font-sans">
           {displayText}
-          <span className="inline-block w-2 h-4 bg-accent-600 align-text-bottom animate-pulse ml-0.5" />
+          {!isFinalizing && (
+            <span className="inline-block w-2 h-4 bg-accent-600 align-text-bottom animate-pulse ml-0.5" />
+          )}
         </pre>
       )}
     </div>

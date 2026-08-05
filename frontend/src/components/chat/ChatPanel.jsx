@@ -7,19 +7,13 @@ import { GATED_STAGES, STAGE_LABELS } from "../../lib/pipelineStages";
 import { buildAgentTimeline } from "../../lib/buildAgentTimeline";
 import { SUGGESTION_CHIPS } from "../../lib/suggestionChips";
 import { useWorkspaceSelection } from "../workspace/WorkspaceSelectionContext";
-import {
-  useReviseArchitecture,
-  useReviseCoder,
-  useRunArchitecture,
-  useRunCoder,
-  useRunUiux,
-} from "../../hooks/useAgentMutations";
-import ArchitectureRunForm from "../pipeline/ArchitectureRunForm";
+import { useReviseCoder, useRunCoder, useRunUiux } from "../../hooks/useAgentMutations";
 import ChatBubble from "./ChatBubble";
 import ChatComposerBox from "./ChatComposerBox";
 import RequirementConversationChat from "./RequirementConversationChat";
 import RequirementRevisionChat from "./RequirementRevisionChat";
 import DomainAgentChat from "./DomainAgentChat";
+import ArchitectureAgentChat from "./ArchitectureAgentChat";
 import LoadingSpinner from "../common/LoadingSpinner";
 import ErrorBanner from "../common/ErrorBanner";
 
@@ -105,16 +99,13 @@ export default function ChatPanel({ featureId }) {
   const timeline = buildAgentTimeline(selectedAgent, allArtifacts, allApprovals, allEvents);
 
   const [comment, setComment] = useState("");
-  const [showArchitectureForm, setShowArchitectureForm] = useState(false);
 
-  const runArchitecture = useRunArchitecture(featureId);
   const runUiux = useRunUiux(featureId);
   const runCoder = useRunCoder(featureId);
-  const reviseArchitecture = useReviseArchitecture(featureId);
   const reviseCoder = useReviseCoder(featureId);
 
-  const runMutationsByStage = { architecture: runArchitecture, uiux: runUiux, coder: runCoder };
-  const reviseMutationsByStage = { architecture: reviseArchitecture, coder: reviseCoder };
+  const runMutationsByStage = { uiux: runUiux, coder: runCoder };
+  const reviseMutationsByStage = { coder: reviseCoder };
 
   const versions = listGatingArtifactVersions(selectedAgent, allArtifacts);
   const hasOutput = versions.length > 0;
@@ -174,6 +165,25 @@ export default function ChatPanel({ featureId }) {
     );
   }
 
+  // Architecture Agent: its own dedicated chat (live plan-token streaming + a phase/elapsed-time
+  // banner for the non-streamable diagram-generation tail, plus the "deep exploration mode"
+  // escape hatch) -- see ArchitectureAgentChat.jsx's own docstring.
+  if (selectedAgent === "architecture") {
+    return (
+      <ArchitectureAgentChat
+        featureId={featureId}
+        feature={feature}
+        runningStage={runningStage}
+        selectedAgent={selectedAgent}
+        selectAgent={selectAgent}
+        timeline={timeline}
+        allArtifacts={allArtifacts}
+        onViewArtifact={viewArtifact}
+        isLoadingTimeline={graphLoading || artifactsLoading || eventsLoading}
+      />
+    );
+  }
+
   const runMutation = runMutationsByStage[selectedAgent];
   const reviseMutation = reviseMutationsByStage[selectedAgent];
   const activeMutation = hasOutput ? reviseMutation : runMutation;
@@ -189,8 +199,6 @@ export default function ChatPanel({ featureId }) {
 
     if (hasOutput) {
       await activeMutation.mutateAsync({ revision_comment: trimmed, revised_by: "human_user" });
-    } else if (selectedAgent === "architecture") {
-      await activeMutation.mutateAsync({ human_comment: trimmed, architecture_notes: null });
     } else {
       await activeMutation.mutateAsync({ human_comment: trimmed });
     }
@@ -253,61 +261,42 @@ export default function ChatPanel({ featureId }) {
           </p>
         )}
 
-        {!hasOutput && selectedAgent === "architecture" && (
-          <div className="mb-2">
-            <button
-              type="button"
-              onClick={() => setShowArchitectureForm((v) => !v)}
-              className="text-xs text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 font-semibold underline"
-            >
-              {showArchitectureForm ? "Use the quick chat box instead" : "Prefer a detailed form instead?"}
-            </button>
-            {showArchitectureForm && (
-              <div className="mt-2">
-                <ArchitectureRunForm featureId={featureId} />
-              </div>
-            )}
-          </div>
-        )}
+        <form onSubmit={handleSubmit} className="flex flex-col gap-2">
+          <ErrorBanner error={activeMutation?.error} fallback="Request failed." />
 
-        {!(selectedAgent === "architecture" && !hasOutput && showArchitectureForm) && (
-          <form onSubmit={handleSubmit} className="flex flex-col gap-2">
-            <ErrorBanner error={activeMutation?.error} fallback="Request failed." />
+          {canCompose && SUGGESTION_CHIPS[selectedAgent] && (
+            <div className="flex flex-wrap gap-1.5">
+              {SUGGESTION_CHIPS[selectedAgent].map((chip) => (
+                <button
+                  key={chip}
+                  type="button"
+                  onClick={() => setComment(chip)}
+                  className="text-xs bg-gray-100 dark:bg-white/10 hover:bg-gray-200 dark:hover:bg-white/20 text-gray-700 dark:text-gray-300 rounded-full px-2.5 py-1"
+                >
+                  {chip}
+                </button>
+              ))}
+            </div>
+          )}
 
-            {canCompose && SUGGESTION_CHIPS[selectedAgent] && (
-              <div className="flex flex-wrap gap-1.5">
-                {SUGGESTION_CHIPS[selectedAgent].map((chip) => (
-                  <button
-                    key={chip}
-                    type="button"
-                    onClick={() => setComment(chip)}
-                    className="text-xs bg-gray-100 dark:bg-white/10 hover:bg-gray-200 dark:hover:bg-white/20 text-gray-700 dark:text-gray-300 rounded-full px-2.5 py-1"
-                  >
-                    {chip}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            <ChatComposerBox
-              value={comment}
-              onChange={(event) => setComment(event.target.value)}
-              disabled={!canCompose}
-              pending={activeMutation?.isPending}
-              onStop={() => activeMutation?.stop?.()}
-              selectedAgent={selectedAgent}
-              onSelectAgent={selectAgent}
-              isAgentRunning={isAgentRunning}
-              placeholder={
-                !canCompose
-                  ? `${STAGE_LABELS[selectedAgent]} Agent can't be messaged directly right now`
-                  : hasOutput
-                  ? `Ask ${STAGE_LABELS[selectedAgent]} Agent for a change...`
-                  : `Tell ${STAGE_LABELS[selectedAgent]} Agent what to build...`
-              }
-            />
-          </form>
-        )}
+          <ChatComposerBox
+            value={comment}
+            onChange={(event) => setComment(event.target.value)}
+            disabled={!canCompose}
+            pending={activeMutation?.isPending}
+            onStop={() => activeMutation?.stop?.()}
+            selectedAgent={selectedAgent}
+            onSelectAgent={selectAgent}
+            isAgentRunning={isAgentRunning}
+            placeholder={
+              !canCompose
+                ? `${STAGE_LABELS[selectedAgent]} Agent can't be messaged directly right now`
+                : hasOutput
+                ? `Ask ${STAGE_LABELS[selectedAgent]} Agent for a change...`
+                : `Tell ${STAGE_LABELS[selectedAgent]} Agent what to build...`
+            }
+          />
+        </form>
       </div>
     </div>
   );

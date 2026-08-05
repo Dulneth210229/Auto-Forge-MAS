@@ -3,6 +3,7 @@ import { useFeatureArtifacts } from "../../hooks/useArtifacts";
 import { useFeature } from "../../hooks/useFeatures";
 import { useWorkspaceSelection } from "../workspace/WorkspaceSelectionContext";
 import { getEffectiveActiveArtifact } from "../../lib/activeArtifactSelection";
+import { ARTIFACT_TYPE_LABELS, ARTIFACT_TYPE_STAGE } from "../../lib/artifactTypeMeta";
 import ResultTab from "./ResultTab";
 import LoadingSpinner from "../common/LoadingSpinner";
 import ErrorBanner from "../common/ErrorBanner";
@@ -14,10 +15,12 @@ const TABS = [
 ];
 
 // artifact_type -> which downstream agent actually consumes it, for the "Using SRS vN for..."
-// indicator. Only SRS is wired today (the Requirement -> Domain Agent handoff, per direct user
-// request) -- extend this map if another stage's handoff gets the same pin-a-version treatment.
+// indicator. Requirement -> Domain and Domain -> Architecture are both wired (direct user
+// request for the latter, mirroring the former) -- extend this map if another stage's handoff
+// gets the same pin-a-version treatment.
 const NEXT_AGENT_BY_ARTIFACT_TYPE = {
   srs: "Domain Agent",
+  enhanced_srs: "Architecture Agent",
 };
 
 // The right panel -- deliberately the largest of the three (see ResizableWorkspace's default
@@ -58,19 +61,30 @@ export default function OutputPanel({ featureId }) {
           })}
         </div>
 
-        {Object.entries(NEXT_AGENT_BY_ARTIFACT_TYPE).map(([artifactType, nextAgentLabel]) => {
+        {(() => {
+          // Only the pill for whichever stage is currently selected -- rendering every configured
+          // entry in NEXT_AGENT_BY_ARTIFACT_TYPE simultaneously (the original behavior) would
+          // overflow the tab bar now that a second entry (Enhanced SRS) exists alongside SRS.
+          const artifactType = Object.keys(NEXT_AGENT_BY_ARTIFACT_TYPE).find(
+            (type) => ARTIFACT_TYPE_STAGE[type] === selectedAgent
+          );
+          if (!artifactType) return null;
+
+          const nextAgentLabel = NEXT_AGENT_BY_ARTIFACT_TYPE[artifactType];
           const effective = getEffectiveActiveArtifact(artifacts || [], feature?.active_artifact_selection, artifactType);
           if (!effective) return null;
+
+          const label = ARTIFACT_TYPE_LABELS[artifactType] || artifactType;
+
           return (
             <span
-              key={artifactType}
-              title={`${nextAgentLabel} will use ${artifactType.toUpperCase()} v${effective.version} -- pin a different approved version from its row's radio button below.`}
-              className="text-xs font-semibold text-accent-700 dark:text-accent-400 bg-accent-50 dark:bg-accent-500/10 rounded-full px-3 py-1 whitespace-nowrap"
+              title={`${nextAgentLabel} will use ${label} v${effective.version} -- pin a different approved version from its row's radio button below.`}
+              className="text-xs font-semibold text-accent-700 dark:text-accent-400 bg-accent-50 dark:bg-accent-500/10 rounded-full px-3 py-1 whitespace-nowrap truncate"
             >
-              Using {artifactType.toUpperCase()} v{effective.version} for {nextAgentLabel}
+              Using {label} v{effective.version} for {nextAgentLabel}
             </span>
           );
-        })}
+        })()}
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto p-4">

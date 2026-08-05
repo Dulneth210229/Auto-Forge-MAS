@@ -23,6 +23,23 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Artifact types that are singleton documents-with-versions, where only one version may hold
+# "approved" at a time -- approving a new version supersedes whichever OTHER version (if any) was
+# previously approved for this feature, reverting it back to "pending". Direct user report: seeing
+# two SRS versions simultaneously "Approved" was confusing (which one does Domain Agent actually
+# use?) -- ENHANCED_SRS joins this set for the exact same reason, now that approving it can
+# auto-start Architecture Agent against "the" approved version. Deliberately narrow, not every
+# gating artifact_type: e.g. UI/UX's ui_component_code artifacts are legitimately, independently
+# approved several at a time (distinct components, not versions of one document).
+EXCLUSIVE_VERSIONED_ARTIFACT_TYPES = {ArtifactType.SRS, ArtifactType.ENHANCED_SRS}
+
+
+def _is_exclusive_versioned_type(artifact_type) -> bool:
+    return any(
+        artifact_type in (exclusive_type, exclusive_type.value)
+        for exclusive_type in EXCLUSIVE_VERSIONED_ARTIFACT_TYPES
+    )
+
 
 class ApprovalService:
     """
@@ -61,23 +78,24 @@ class ApprovalService:
 
         is_approved = request.status in [ApprovalStatus.APPROVED, ApprovalStatus.APPROVED.value]
 
-        # SRS: only one version may hold "approved" at a time. Approving a version supersedes
-        # whichever OTHER SRS version (if any) was previously approved for this feature, reverting
-        # it back to "pending" -- direct user report: seeing two SRS versions simultaneously
-        # "Approved" was confusing (which one does Domain Agent actually use?). Scoped narrowly to
-        # SRS, not every gating artifact_type: e.g. UI/UX's ui_component_code artifacts are
-        # legitimately, independently approved several at a time (distinct components, not
-        # versions of one document) -- SRS is a singleton document with versions, which is what
-        # this rule is actually about, and only SRS was asked for here.
-        is_srs = artifact["artifact_type"] in [ArtifactType.SRS, ArtifactType.SRS.value]
+        # See EXCLUSIVE_VERSIONED_ARTIFACT_TYPES's own docstring for why SRS/Enhanced SRS get this
+        # rule. Reverts only a sibling of the SAME artifact_type (never cross-type -- approving an
+        # Enhanced SRS must never revert the plain SRS the pipeline still needs approved) AND the
+        # SAME artifact_format (a real, previously-reported gap: without this, approving the JSON
+        # half of one version could silently revert the Markdown half of a DIFFERENT already-
+        # approved version's sibling row, or vice versa, since every gating type saves a JSON+
+        # Markdown pair sharing one version number -- see CLAUDE.md's own note on this).
+        should_check_exclusivity = is_approved and _is_exclusive_versioned_type(artifact["artifact_type"])
 
-        if is_approved and is_srs:
+        if should_check_exclusivity:
             for other in store.artifacts.values():
                 if other["artifact_id"] == artifact_id:
                     continue
                 if other.get("feature_id") != artifact["feature_id"]:
                     continue
-                if other.get("artifact_type") not in [ArtifactType.SRS, ArtifactType.SRS.value]:
+                if other.get("artifact_type") != artifact["artifact_type"]:
+                    continue
+                if other.get("artifact_format") != artifact.get("artifact_format"):
                     continue
                 if other.get("approval_status") in [ApprovalStatus.APPROVED, ApprovalStatus.APPROVED.value]:
                     other["approval_status"] = ApprovalStatus.PENDING

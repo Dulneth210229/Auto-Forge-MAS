@@ -3570,6 +3570,157 @@ milestone — that file is scratch, **this file is the durable one**.
       pass unmodified. No frontend test framework exists in this repo, matching every prior item's
       own note.
 
+51. **Architecture Agent live streaming + Enhanced-SRS approve-and-auto-continue**, per user
+    request: "once the user accept enhaced SRS verions in the domain agent the sysytem will
+    asked from the user start the next agent which is architect agent with the selected
+    enehaced SRS... Once user approved the enhaced version SRS the architect agent will start
+    automatically... Use loader while architect agent generates the architet plan and
+    diagrams... response streaming must be availble for architect agent architect plan as well."
+    Full plan (Plan-agent-validated before implementation, catching 4 real pre-existing issues
+    along the way): `C:\Users\ASUS\.claude\plans\soft-petting-star.md` at time of writing.
+    - **Backend, step 1 (pin-awareness + a real, found-during-planning bug)**:
+      `ArchitectureAgent._find_latest_approved_artifact` was a private, non-pin-aware duplicate of
+      the same "latest approved" lookup Domain Agent already delegates to `artifact_service.
+      get_selected_or_latest_approved_artifact` (item 36) -- now it does too, so a human-pinned
+      SRS/Enhanced SRS version steers Architecture Agent as well, not just Domain. **Real bug
+      found while validating the plan, confirmed by reading the code directly**: `revise()`
+      hardcoded `enhanced_srs_json=None` unconditionally (`agent.py`, `_revise_architecture_plan_
+      output`) -- every revision silently regenerated diagrams against the plain SRS, discarding
+      whatever domain enrichment the original plan was built from. Fixed: `revise()`/
+      `revise_stream()` now load the approved Enhanced SRS the same pin-aware way `run()` does,
+      and `srs_for_generation = enhanced_srs_json or srs_json` feeds both the revision prompt and
+      `_ensure_implementation_plan`, matching this agent's own established convention everywhere
+      else. New tests: `tests/test_artifact_active_selection.py` (+2).
+    - **Backend, step 2 (Enhanced SRS approval exclusivity)**: `approval_service.py`'s SRS-only
+      exclusivity rule (item 37) generalized to `EXCLUSIVE_VERSIONED_ARTIFACT_TYPES = {SRS,
+      ENHANCED_SRS}`, reverting only a same-`artifact_type` **and** same-`artifact_format`
+      sibling (never cross-type -- approving an Enhanced SRS must never revert the plain SRS the
+      pipeline still needs approved). The format-scoping half also closes item 49's own
+      previously-flagged, left-open gap (approving one format could revert an unrelated sibling's
+      other format) -- done now specifically because widening the rule to a second artifact type
+      doubles that bug's blast radius if left unfixed. New tests: `tests/test_approval_srs_
+      exclusivity.py` (+3).
+    - **Backend, step 3 (the actual streaming methods) -- the key design decision**: Architecture's
+      existing ladder's rung 0 (`_generate_raw_output_via_exploration`) is an agentic, LangGraph
+      tool-calling loop -- the plan text only ever exists as arguments to a final tool call, never
+      as incremental tokens, so **there is no stream to forward from it**. New `run_stream`/
+      `revise_stream` are therefore deliberately narrower siblings of `_generate_architecture_
+      output`/`_revise_architecture_plan_output`, not thin wrappers around them: they start
+      directly at the single-shot rung (`provider.stream(...)` instead of `invoke_agent`) and use
+      `attempt_agentic=False` for diagram generation too (matching `revise()`'s own pre-existing
+      "a human is synchronously waiting" rationale, now applied to `run_stream` as well) -- a
+      real, acknowledged trade-off (the agentic exploration tier goes dormant in the default live
+      flow) rather than a hidden one; the full agentic-first ladder remains completely unchanged
+      and reachable via the existing non-streaming `run()`/`POST /architecture/run`, kept
+      reachable in the UI as an explicit "deep exploration mode" toggle (see below). New `{"type":
+      "phase", "phase": "...", "label": "..."}` events (`validating`/`usecase`/`diagrams`/
+      `rendering`) cover the non-streamable tail -- confirmed by reading the code that this tail
+      can be up to ~7 sequential LLM calls (`_complete_usecase_model`'s repair loop,
+      `_complete_diagram_models`' focused tier, `_complete_sequence_model`/`_complete_class_
+      model`'s own reactive repair loops) plus 3 blocking `subprocess.run` PlantUML/JVM renders in
+      `_save_architecture_artifacts` -- wrapped in `asyncio.to_thread(...)` on the streaming path
+      specifically so those seconds don't stall the still-open NDJSON response. New routes `POST
+      /architecture/run/stream`/`/architecture/revise/stream`, structurally identical to Domain
+      Agent's own streaming routes.
+    - **Frontend**: `useArchitectureAgentFlow.js`/`ArchitectureAgentFlowContext.jsx` mirror
+      Domain's exact item-45 shape (including item 49's awaited-`invalidateAfterCompletion` fix,
+      copied verbatim -- this is the single most likely place to reintroduce the "reply disappears
+      instantly" bug, so the fix travels with the pattern every time it's copied), plus new
+      `runPhase`/`revisionPhase`/phase-start-timestamp state. `ArchitectureAgentFlowProvider`
+      mounted in `ProjectWorkspacePage.jsx` **above** `DomainAgentFlowProvider`'s sibling level
+      (nested inside it, still wrapping the whole `ResizableWorkspace`) -- load-bearing, not
+      cosmetic: the auto-run starts while `stage === "domain"` and the stage then flips to
+      `"architecture"`, so only a provider mounted above that switch keeps the in-flight stream
+      alive across it. `LiveGenerationView` (`RequirementConversationParts.jsx`) gained optional
+      `isFinalizing`/`finalizingLabel`/`phaseStartedAt` props (every existing call site
+      unaffected) -- when set, the already-streamed plan text stays frozen on screen (still the
+      most useful thing to show) instead of being replaced by a spinner, with a live elapsed-time
+      counter (`useElapsedLabel`, ticks every second) so a multi-minute diagram-generation tail
+      doesn't read as stuck -- directly targeting the same "static spinner reads as broken" lesson
+      item 37 already documented for a much shorter wait. New `ArchitectureAgentChat.jsx` mirrors
+      `DomainAgentChat.jsx` (optimistic bubble, instant composer clear, Stop button, phase+elapsed
+      banner) with two deliberate differences: no "/" document-mention (Domain-specific), and it
+      carries the "deep exploration mode" escape hatch (`ArchitectureRunForm`, moved here from
+      `ChatPanel.jsx`, relabeled to name the actual trade-off plainly instead of the old generic
+      "prefer a detailed form?") plus a "Start Architecture Agent now" quick-action (since the
+      composer otherwise requires non-empty text, and the primary way this stage actually starts
+      -- the auto-continue flow -- never touches this chat's composer at all). `ChatPanel.jsx`
+      dispatches to it for `selectedAgent === "architecture"`; the architecture-specific dead code
+      in `ChatPanel`'s generic path (`useRunArchitecture`/`useReviseArchitecture` instances,
+      `showArchitectureForm` state/JSX, the architecture special-case in `submitAgentMessage`) was
+      removed -- the hooks themselves stay unused in `useAgentMutations.js`, matching the item-45
+      precedent for a superseded mutation.
+    - **Frontend, approve-and-auto-continue**: `ResultTab.jsx`'s previously SRS-only
+      `isSrsApproval`/`handleConfirmedSrsApprove` generalized into one stage-keyed
+      `APPROVE_CONTINUATION_BY_STAGE` config (`requirement -> domain, autoRun: false` /
+      `domain -> architecture, autoRun: true`) instead of a second parallel block -- keeps one
+      `confirmingArtifactId` state and one `ConfirmDialog` for both transitions.
+      `handleConfirmedApprove`: approve -> `selectAgent(nextAgent)` **first** (so the Result panel
+      is already showing the live view before the first token lands) -> if `autoRun`, fire
+      `handleRunStream(...)` **without awaiting it** (awaiting would hold the dialog's spinner up
+      for the entire multi-minute run; the stream's own state already lives in the always-mounted
+      provider). No extra pin/selection call needed first -- the approval that just happened
+      already reverted every other Enhanced SRS version to pending (step 2's exclusivity), so the
+      pin-aware lookup on the backend resolves to exactly the version just approved. Deliberately
+      asymmetric with Requirement -> Domain by design, not oversight: Domain Agent gets a
+      proactive "do you have something to add?" prompt before its first run (item 41, since human
+      guidance there is genuinely useful); Architecture Agent has no comparable need for a human
+      pause, so it starts immediately, exactly as this user request asked.
+    - **Frontend, version-pinning UI**: `ACTIVE_SELECTION_ARTIFACT_TYPE_BY_STAGE` gained `domain:
+      "enhanced_srs"`; `OutputPanel.jsx`'s `NEXT_AGENT_BY_ARTIFACT_TYPE` gained `enhanced_srs:
+      "Architecture Agent"`. Two real, small presentation bugs fixed in the same edit: the pill
+      previously rendered `artifactType.toUpperCase()` (would have read "Using ENHANCED_SRS
+      v2...") -- now uses `ARTIFACT_TYPE_LABELS` ("Enhanced SRS"); and the pill loop previously
+      rendered every configured map entry simultaneously, which would overflow the tab bar now
+      that a second entry exists -- now filtered to only the entry matching the currently-selected
+      stage. Honest note carried into the code comment (not silently shipped as if it were a full
+      feature): once Enhanced SRS exclusivity is on, at most one version can ever be `approved`,
+      so its radio button always has exactly one candidate -- it's really an "in use" indicator,
+      not a live choice, same as the pre-existing `srs` radio already effectively is; the pill is
+      the part that actually carries the value here.
+    - **Real, live verification, no mocks, through the actual API and a real browser** (isolated
+      backend/frontend, `architecture_agent`'s live per-agent LLM override was already
+      `llama3:latest`; `domain_agent`'s was temporarily switched from `qwen3-coder:latest` to
+      `llama3:latest` for this pass only and restored exactly afterward, same precedent as items
+      49/50): raw NDJSON confirmed via a real streamed request first (`curl`-equivalent via
+      Playwright's `response.text()`) -- token lines, then all four phase events in the correct
+      order (`validating -> usecase -> diagrams -> rendering`), then one `done` with 8 real
+      artifact_ids (Architecture Plan JSON+MD, Use Case/Sequence/Class diagram PUML+PNG each).
+      Screenshots taken seconds apart during the live run show the decluttered plan text visibly,
+      strictly growing (not a before/after diff) -- the actual proof of live streaming ask #3.
+      **The real premise check, not just plumbing**: seeded Domain Agent's Enhanced SRS with a
+      distinctive marker (a `data_requirements` entry, `ZZQARCH_MARKER_55219`, that the plain SRS
+      never had), approved it through the real popup (confirmed the dialog named the right version
+      and mentioned Architecture Agent starting automatically), confirmed the chat switched to
+      Architecture Agent with the live view already showing (not "No output yet") in the same
+      frame, let it run to genuine completion, and grepped the real `architecture_plan_json` for
+      the marker -- **present**, direct proof the Enhanced SRS (not the plain SRS) was actually
+      used as input. A follow-up real revision request produced a new `architecture_plan_json`
+      (v2) that still carried the marker forward and regenerated real v2 diagrams -- the direct
+      regression check for the `revise()` Enhanced SRS fix (pre-fix, this would have silently
+      reverted to the plain SRS with no marker). Stop button verified cleanly on a second attempt
+      (the first attempt's test script had a self-inflicted selector collision -- a test feature
+      literally named "Stop Test Feature" made a generic `has_text="Stop"` locator match the
+      feature-list button instead of the composer's real Stop control, worth noting as a lesson
+      for future live verification naming, not a product bug): clicking the composer's Stop button
+      mid-token-stream correctly reverted the UI to idle and left zero new architecture artifacts
+      in the backend, confirming the abort genuinely cancels the server-side generation, not just
+      the frontend's view of it.
+    - **One real, honestly-recorded methodology mistake mid-verification, not a product bug**:
+      the first attempt to observe a long-running stream used a *second*, independent Playwright
+      browser instance to check on progress -- but a stream's state lives entirely client-side (in
+      that specific tab's React state via the flow context), so a fresh page load in a different
+      browser session has no visibility into another tab's in-flight fetch. Worse, the FIRST
+      script's `browser.close()` after only ~24s of observation aborted the real backend generation
+      mid-flight (the same documented "closing the browser cancels an in-flight fetch" gotcha item
+      37 already recorded for a different endpoint) -- the run never actually completed on that
+      attempt. Corrected by keeping one continuous browser session open and waiting on the real
+      HTTP response object (`page.expect_response(...)`, no fixed sleep) until the stream
+      genuinely finished, which is what produced the clean, complete verification above.
+    - Full backend suite: **305 passed** (up from 300 -- the two pin tests + three exclusivity
+      tests from steps 1-2 above). `npm run build` clean throughout. No frontend test framework
+      exists in this repo, matching every prior item's own note.
+
 ## Where to look
 
 - Full build spec (read this first, in order, before any new milestone): `instructions .md`

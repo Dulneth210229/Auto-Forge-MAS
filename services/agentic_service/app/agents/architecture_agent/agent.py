@@ -39,6 +39,7 @@ Outputs:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from datetime import datetime, timezone
@@ -279,7 +280,6 @@ class ArchitectureAgent:
 
         srs_artifact = self._find_latest_approved_artifact(
             feature_id=feature_id,
-            agent_name=AgentName.REQUIREMENT,
             artifact_type=ArtifactType.SRS,
             artifact_format=ArtifactFormat.JSON
         )
@@ -297,7 +297,6 @@ class ArchitectureAgent:
         if request.use_enhanced_srs_if_available:
             enhanced_srs_artifact = self._find_latest_approved_artifact(
                 feature_id=feature_id,
-                agent_name=AgentName.DOMAIN,
                 artifact_type=ArtifactType.ENHANCED_SRS,
                 artifact_format=ArtifactFormat.JSON
             )
@@ -350,6 +349,197 @@ class ArchitectureAgent:
             ),
             artifact_ids=artifact_ids
         )
+
+    async def run_stream(self, feature_id: str, request: ArchitectureAgentRunRequest):
+        """
+        Streaming variant of run() -- same NDJSON event shape as DomainAgent.run_stream/
+        RequirementAgent.revise_stream (see those methods' own docstrings): the architecture
+        plan JSON "types" in live instead of a blocking wait.
+
+        Deliberately NOT a thin wrapper around _generate_architecture_output's existing ladder:
+        that ladder's FIRST rung (_generate_raw_output_via_exploration) is an agentic,
+        tool-calling loop -- the plan text only ever exists as arguments to a final tool call, not
+        as incremental tokens, so there is no stream to forward from it. This method instead
+        starts directly at the single-shot rung (the one _generate_architecture_output falls back
+        to on any exploration failure) and streams THAT LLM call; diagram generation also skips
+        its own agentic tier (attempt_agentic=False) for the same reason revise() already does
+        ("a human is synchronously waiting", see _complete_diagram_models' own docstring) -- this
+        is the live, responsive path. The full agentic-exploration-first ladder remains completely
+        unchanged and reachable via the non-streaming run() (still used by POST /architecture/run,
+        kept reachable in the UI as an explicit "deep exploration mode" -- see
+        ArchitectureAgentChat.jsx) for whoever wants the more thorough but much slower and
+        non-live path.
+
+        Events:
+            {"type": "token", "text": "..."}
+            {"type": "phase", "phase": "...", "label": "..."}
+            {"type": "error", "message": "..."}
+            {"type": "done", "artifact_ids": [...], "message": "..."}
+        """
+
+        logger.info("Architecture Agent (streamed) started for feature_id=%s", feature_id)
+
+        feature = store.features.get(feature_id)
+        if not feature:
+            yield {"type": "error", "message": "Feature not found."}
+            return
+
+        project = store.projects.get(feature["project_id"])
+        if not project:
+            yield {"type": "error", "message": "Project not found for this feature."}
+            return
+
+        srs_artifact = self._find_latest_approved_artifact(
+            feature_id=feature_id, artifact_type=ArtifactType.SRS, artifact_format=ArtifactFormat.JSON
+        )
+        if not srs_artifact:
+            yield {
+                "type": "error",
+                "message": (
+                    "No approved SRS JSON artifact found. "
+                    "Approve Requirement Agent SRS JSON before running Architecture Agent."
+                ),
+            }
+            return
+
+        srs_json = read_json_file(srs_artifact["file_path"])
+
+        enhanced_srs_json = None
+        if request.use_enhanced_srs_if_available:
+            enhanced_srs_artifact = self._find_latest_approved_artifact(
+                feature_id=feature_id, artifact_type=ArtifactType.ENHANCED_SRS, artifact_format=ArtifactFormat.JSON
+            )
+            if enhanced_srs_artifact:
+                enhanced_srs_json = read_json_file(enhanced_srs_artifact["file_path"])
+
+        feature["feature_status"] = FeatureStatus.IN_PROGRESS
+        feature["current_agent"] = AgentName.ARCHITECTURE
+
+        previous_architecture_plans = self._load_previous_architecture_plans(
+            project_id=feature["project_id"],
+            exclude_feature_id=feature_id,
+        )
+        project_manifest_json = project_memory_service.load_project_manifest(feature["project_id"])
+
+        agent_input = ArchitectureAgentInput(
+            project=dict(project),
+            feature=dict(feature),
+            srs_json=srs_json,
+            enhanced_srs_json=enhanced_srs_json,
+            architecture_notes=request.architecture_notes,
+            human_comment=request.human_comment,
+            previous_architecture_plans=previous_architecture_plans,
+            project_manifest_json=project_manifest_json,
+        )
+
+        provider = llm_provider_service.get_provider(agent_name=AgentName.ARCHITECTURE.value)
+        srs_for_generation = agent_input.enhanced_srs_json or agent_input.srs_json
+        feature_name = agent_input.feature.get("feature_name", "Feature")
+
+        prompt = build_architecture_user_prompt(
+            project=agent_input.project,
+            feature=agent_input.feature,
+            srs_json=agent_input.srs_json,
+            enhanced_srs_json=agent_input.enhanced_srs_json,
+            architecture_notes=agent_input.architecture_notes,
+            human_comment=agent_input.human_comment,
+            previous_architecture_plans=agent_input.previous_architecture_plans,
+            project_manifest_json=agent_input.project_manifest_json,
+        )
+
+        raw_chunks: list[str] = []
+        try:
+            async for chunk in provider.stream(prompt=prompt, system_prompt=ARCHITECTURE_AGENT_SYSTEM_PROMPT):
+                raw_chunks.append(chunk)
+                yield {"type": "token", "text": chunk}
+        except Exception as stream_error:
+            logger.warning(
+                "Streamed Architecture Plan generation failed mid-stream for feature_id=%s: %s",
+                feature_id,
+                stream_error,
+            )
+
+        raw_output = "".join(raw_chunks)
+
+        yield {"type": "phase", "phase": "validating", "label": "Validating the architecture plan..."}
+
+        try:
+            parsed = self._parse_and_validate_output(raw_output, srs_for_generation, feature_name)
+
+        except Exception as first_error:
+            logger.warning("Streamed Architecture output validation failed: %s", first_error)
+
+            repair_prompt = build_json_repair_prompt(raw_output)
+            repaired_output = await provider.invoke_agent([
+                {"role": "system", "content": JSON_REPAIR_PROMPT},
+                {"role": "user", "content": repair_prompt},
+            ])
+
+            try:
+                parsed = self._parse_and_validate_output(repaired_output, srs_for_generation, feature_name)
+                raw_output = repaired_output
+
+            except Exception as second_error:
+                logger.warning("Streamed Architecture JSON repair failed: %s", second_error)
+
+                parsed = self._build_fallback_architecture_output(
+                    agent_input=agent_input, reason=str(second_error)
+                )
+                raw_output = json.dumps(parsed, indent=2, default=str)
+
+        yield {"type": "phase", "phase": "usecase", "label": "Building the use case model..."}
+        parsed = await self._complete_usecase_model(agent_input, parsed)
+
+        yield {"type": "phase", "phase": "diagrams", "label": "Generating sequence and class diagrams..."}
+        # attempt_agentic=False, no diagram_generation_state -- same rationale
+        # _complete_diagram_models' own docstring already gives for revise():
+        # a human is synchronously watching this stream, so skip the
+        # expensive agentic tool-using tier and go straight to the focused,
+        # feature-grounded single-shot tier.
+        parsed = await self._complete_diagram_models(agent_input, parsed, None, attempt_agentic=False)
+
+        try:
+            self._validate_full_output(agent_input, parsed)
+        except Exception as validation_error:
+            logger.warning(
+                "Streamed Architecture output failed final validation for feature_id=%s "
+                "-- proceeding anyway for human review: %s",
+                feature_id,
+                validation_error,
+            )
+            parsed["architecture_plan_json"]["human_approval_note"] = (
+                f"{parsed['architecture_plan_json'].get('human_approval_note', '')} "
+                f"AUTOMATIC VALIDATION FAILED -- review carefully before approving: {validation_error}"
+            ).strip()
+
+        output = self._build_output_from_parsed(parsed, raw_output=raw_output)
+
+        yield {"type": "phase", "phase": "rendering", "label": "Rendering diagram images and saving artifacts..."}
+
+        # _save_architecture_artifacts makes blocking subprocess.run PlantUML/JVM calls -- run it
+        # off the event loop so those seconds don't stall this still-open NDJSON stream.
+        artifact_ids = await asyncio.to_thread(
+            self._save_architecture_artifacts,
+            project=dict(project),
+            feature=dict(feature),
+            output=output,
+        )
+
+        logger.info(
+            "Architecture Agent (streamed) completed for feature_id=%s artifacts=%s",
+            feature_id,
+            artifact_ids,
+        )
+
+        yield {
+            "type": "done",
+            "artifact_ids": artifact_ids,
+            "message": (
+                "Architecture Agent completed successfully. "
+                "Architecture Plan, Use Case Diagram, Sequence Diagram, and Class Diagram artifacts were generated. "
+                "Human approval is required before UI/UX Agent or Coder Agent can run."
+            ),
+        }
 
     async def _generate_architecture_output(self, agent_input: ArchitectureAgentInput) -> ArchitectureAgentOutput:
         """
@@ -1395,7 +1585,6 @@ class ArchitectureAgent:
 
         srs_artifact = self._find_latest_approved_artifact(
             feature_id=feature_id,
-            agent_name=AgentName.REQUIREMENT,
             artifact_type=ArtifactType.SRS,
             artifact_format=ArtifactFormat.JSON
         )
@@ -1408,10 +1597,22 @@ class ArchitectureAgent:
         existing_architecture_plan_json = read_json_file(latest_plan_artifact["file_path"])
         srs_json = read_json_file(srs_artifact["file_path"])
 
+        # Real, reported gap: a revision previously ignored the Enhanced SRS entirely (always
+        # regenerated diagrams against the plain SRS, silently discarding domain enrichment) --
+        # loaded the same pin-aware way run() does, so a revision built on the same enriched
+        # content the original plan was.
+        enhanced_srs_artifact = self._find_latest_approved_artifact(
+            feature_id=feature_id,
+            artifact_type=ArtifactType.ENHANCED_SRS,
+            artifact_format=ArtifactFormat.JSON
+        )
+        enhanced_srs_json = read_json_file(enhanced_srs_artifact["file_path"]) if enhanced_srs_artifact else None
+
         output = await self._revise_architecture_plan_output(
             project=dict(project),
             feature=dict(feature),
             srs_json=srs_json,
+            enhanced_srs_json=enhanced_srs_json,
             existing_architecture_plan_json=existing_architecture_plan_json,
             revision_comment=request.revision_comment,
             revised_by=request.revised_by,
@@ -1441,6 +1642,192 @@ class ArchitectureAgent:
             artifact_ids=artifact_ids
         )
 
+    async def revise_stream(self, feature_id: str, request: ArchitectureAgentReviseRequest):
+        """
+        Streaming variant of revise() -- same event shape as run_stream (see its own docstring),
+        built from _revise_architecture_plan_output's already-cheap shape (no agentic exploration
+        at all, one single-shot LLM call): that one provider.invoke_agent call becomes
+        provider.stream(...) with token yields; everything after (fallback, implementation-plan
+        synthesis, usecase model, attempt_agentic=False diagram regeneration, the tolerant
+        _validate_full_output block) is the existing logic with phase events interleaved.
+
+        Events:
+            {"type": "token", "text": "..."}
+            {"type": "phase", "phase": "...", "label": "..."}
+            {"type": "error", "message": "..."}
+            {"type": "done", "artifact_ids": [...], "message": "..."}
+        """
+
+        logger.info("Architecture Agent revision (streamed) started for feature_id=%s", feature_id)
+
+        feature = store.features.get(feature_id)
+        if not feature:
+            yield {"type": "error", "message": "Feature not found."}
+            return
+
+        project = store.projects.get(feature["project_id"])
+        if not project:
+            yield {"type": "error", "message": "Project not found for this feature."}
+            return
+
+        latest_plan_artifact = self._find_latest_architecture_plan_json_artifact(feature_id)
+        if not latest_plan_artifact:
+            yield {
+                "type": "error",
+                "message": (
+                    "No existing Architecture Plan JSON artifact found. "
+                    "Run Architecture Agent before requesting revision."
+                ),
+            }
+            return
+
+        srs_artifact = self._find_latest_approved_artifact(
+            feature_id=feature_id, artifact_type=ArtifactType.SRS, artifact_format=ArtifactFormat.JSON
+        )
+        if not srs_artifact:
+            yield {
+                "type": "error",
+                "message": (
+                    "No approved SRS JSON artifact found. "
+                    "Approve Requirement Agent SRS JSON before revising Architecture Agent output."
+                ),
+            }
+            return
+
+        existing_architecture_plan_json = read_json_file(latest_plan_artifact["file_path"])
+        srs_json = read_json_file(srs_artifact["file_path"])
+
+        enhanced_srs_artifact = self._find_latest_approved_artifact(
+            feature_id=feature_id, artifact_type=ArtifactType.ENHANCED_SRS, artifact_format=ArtifactFormat.JSON
+        )
+        enhanced_srs_json = read_json_file(enhanced_srs_artifact["file_path"]) if enhanced_srs_artifact else None
+        srs_for_generation = enhanced_srs_json or srs_json
+
+        provider = llm_provider_service.get_provider(agent_name=AgentName.ARCHITECTURE.value)
+
+        prompt = build_architecture_plan_revision_prompt(
+            project=dict(project),
+            feature=dict(feature),
+            srs_json=srs_for_generation,
+            existing_architecture_plan_json=existing_architecture_plan_json,
+            revision_comment=request.revision_comment,
+            revised_by=request.revised_by,
+        )
+
+        raw_chunks: list[str] = []
+        try:
+            async for chunk in provider.stream(prompt=prompt, system_prompt=ARCHITECTURE_REVISION_SYSTEM_PROMPT):
+                raw_chunks.append(chunk)
+                yield {"type": "token", "text": chunk}
+        except Exception as stream_error:
+            logger.warning(
+                "Streamed Architecture Plan revision failed mid-stream for feature_id=%s: %s",
+                feature_id,
+                stream_error,
+            )
+
+        raw_output = "".join(raw_chunks)
+
+        try:
+            revised_architecture_plan_json = self._parse_and_validate_architecture_plan_json(raw_output)
+
+        except Exception as error:
+            logger.warning(
+                "Streamed LLM Architecture Plan revision failed. Using fallback revision. Error=%s", error
+            )
+
+            revised_architecture_plan_json = self._fallback_revise_architecture_plan_json(
+                existing_architecture_plan_json=existing_architecture_plan_json,
+                revision_comment=request.revision_comment,
+                revised_by=request.revised_by,
+                reason=str(error),
+            )
+            raw_output = json.dumps(revised_architecture_plan_json, indent=2, default=str)
+
+        self._ensure_implementation_plan(
+            revised_architecture_plan_json,
+            srs_json=srs_for_generation,
+            feature_name=feature.get("feature_name", "Feature"),
+        )
+
+        agent_input = ArchitectureAgentInput(
+            project=dict(project),
+            feature=dict(feature),
+            srs_json=srs_json,
+            enhanced_srs_json=enhanced_srs_json,
+            architecture_notes=None,
+            human_comment=request.revision_comment,
+        )
+
+        parsed = {
+            "architecture_plan_json": revised_architecture_plan_json,
+            "usecase_specification_json": {},
+        }
+
+        yield {"type": "phase", "phase": "usecase", "label": "Updating the use case model..."}
+        parsed = await self._complete_usecase_model(agent_input, parsed)
+
+        yield {"type": "phase", "phase": "diagrams", "label": "Regenerating sequence and class diagrams..."}
+        parsed = await self._complete_diagram_models(agent_input, parsed, attempt_agentic=False)
+
+        try:
+            self._validate_full_output(agent_input, parsed)
+        except Exception as validation_error:
+            logger.warning(
+                "Streamed Architecture Plan revision diagram validation failed for feature_id=%s "
+                "-- proceeding anyway for human review: %s",
+                feature_id,
+                validation_error,
+            )
+            parsed["architecture_plan_json"]["human_approval_note"] = (
+                f"{parsed['architecture_plan_json'].get('human_approval_note', '')} "
+                f"AUTOMATIC VALIDATION FAILED on the revised diagrams -- review carefully "
+                f"before approving: {validation_error}"
+            ).strip()
+
+        architecture_plan_markdown = self.markdown_builder.build(revised_architecture_plan_json)
+        usecase_puml = self.usecase_builder.build(parsed["usecase_json"])
+        sequence_puml = self.sequence_builder.build(parsed["sequence_diagram_json"])
+        class_puml = self.class_builder.build(parsed["class_diagram_json"])
+
+        output = ArchitectureAgentOutput(
+            architecture_plan_json=revised_architecture_plan_json,
+            architecture_plan_markdown=architecture_plan_markdown,
+            usecase_analysis_json=parsed["usecase_analysis_json"],
+            usecase_json=parsed["usecase_json"],
+            usecase_puml=usecase_puml,
+            sequence_diagram_json=parsed["sequence_diagram_json"],
+            sequence_puml=sequence_puml,
+            class_diagram_json=parsed["class_diagram_json"],
+            class_puml=class_puml,
+            raw_llm_output=raw_output,
+        )
+
+        yield {"type": "phase", "phase": "rendering", "label": "Rendering diagram images and saving artifacts..."}
+
+        artifact_ids = await asyncio.to_thread(
+            self._save_architecture_artifacts,
+            project=dict(project),
+            feature=dict(feature),
+            output=output,
+        )
+
+        logger.info(
+            "Architecture Agent revision (streamed) completed for feature_id=%s artifacts=%s",
+            feature_id,
+            artifact_ids,
+        )
+
+        yield {
+            "type": "done",
+            "artifact_ids": artifact_ids,
+            "message": (
+                "Architecture Plan revised successfully. "
+                "Use Case, Sequence, and Class diagrams were regenerated from the revised plan. "
+                "A new Architecture Agent version was created and requires human approval."
+            ),
+        }
+
     async def _revise_architecture_plan_output(
         self,
         project: dict,
@@ -1449,17 +1836,27 @@ class ArchitectureAgent:
         existing_architecture_plan_json: dict,
         revision_comment: str,
         revised_by: str,
+        enhanced_srs_json: dict | None = None,
     ) -> ArchitectureAgentOutput:
         """
         Use the LLM to revise the Architecture Plan, then regenerate diagrams.
+
+        enhanced_srs_json (when available) supersedes the plain srs_json entirely for both the
+        LLM prompt and diagram regeneration -- srs_for_generation = enhanced_srs_json or
+        srs_json, same convention used throughout the rest of this agent (see the module's own
+        _generate_architecture_output). Previously this method hardcoded enhanced_srs_json=None,
+        so every revision silently regenerated diagrams against the plain SRS even when the
+        original plan (and this feature's real Enhanced SRS) had real domain enrichment -- a real,
+        reported gap.
         """
 
         provider = llm_provider_service.get_provider(agent_name=AgentName.ARCHITECTURE.value)
+        srs_for_generation = enhanced_srs_json or srs_json
 
         prompt = build_architecture_plan_revision_prompt(
             project=project,
             feature=feature,
-            srs_json=srs_json,
+            srs_json=srs_for_generation,
             existing_architecture_plan_json=existing_architecture_plan_json,
             revision_comment=revision_comment,
             revised_by=revised_by,
@@ -1495,7 +1892,7 @@ class ArchitectureAgent:
         # synthesize mechanically, same guarantee as the run() path.
         self._ensure_implementation_plan(
             revised_architecture_plan_json,
-            srs_json=srs_json,
+            srs_json=srs_for_generation,
             feature_name=feature.get("feature_name", "Feature"),
         )
 
@@ -1503,7 +1900,7 @@ class ArchitectureAgent:
             project=project,
             feature=feature,
             srs_json=srs_json,
-            enhanced_srs_json=None,
+            enhanced_srs_json=enhanced_srs_json,
             architecture_notes=None,
             human_comment=revision_comment,
         )
@@ -1749,41 +2146,26 @@ class ArchitectureAgent:
     def _find_latest_approved_artifact(
         self,
         feature_id: str,
-        agent_name: AgentName,
         artifact_type: ArtifactType,
         artifact_format: ArtifactFormat
     ) -> dict | None:
         """
-        Find latest approved artifact.
+        Find the artifact that should feed this run -- a human-pinned APPROVED version if one was
+        explicitly selected (see artifact_service.set_active_artifact_selection / the frontend's
+        per-version radio button on approved rows), otherwise the latest APPROVED version by
+        version number.
+
+        Delegates to artifact_service.get_selected_or_latest_approved_artifact -- previously this
+        was a private, enum-and-.value-tolerant duplicate of the same "latest approved" lookup
+        (like the one every other agent still has its own copy of), with no awareness of a pinned
+        selection at all. Dropped the agent_name filter in the process: the shared helper doesn't
+        filter on it, and artifact_type (srs vs enhanced_srs) already disambiguates which agent
+        produced it for every call site in this class.
         """
 
-        matching_artifacts = []
-
-        for artifact in store.artifacts.values():
-            if artifact.get("feature_id") != feature_id:
-                continue
-
-            if artifact.get("agent_name") not in [agent_name, agent_name.value]:
-                continue
-
-            if artifact.get("artifact_type") not in [artifact_type, artifact_type.value]:
-                continue
-
-            if artifact.get("artifact_format") not in [artifact_format, artifact_format.value]:
-                continue
-
-            if artifact.get("approval_status") not in [
-                ApprovalStatus.APPROVED,
-                ApprovalStatus.APPROVED.value
-            ]:
-                continue
-
-            matching_artifacts.append(artifact)
-
-        if not matching_artifacts:
-            return None
-
-        return max(matching_artifacts, key=lambda item: item.get("version", 1))
+        return artifact_service.get_selected_or_latest_approved_artifact(
+            feature_id, artifact_type.value, artifact_format.value
+        )
 
     def _save_architecture_artifacts(
         self,

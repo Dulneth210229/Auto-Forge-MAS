@@ -258,6 +258,34 @@ export async function reviseArchitecture(featureId, { revision_comment, revised_
   return postCancelable(`${base(featureId)}/architecture/revise`, { revision_comment, revised_by }, signal);
 }
 
+// Live, token-by-token variants (ChatGPT/Claude-style), same mechanism as Domain Agent's
+// runDomainStream/reviseDomainStream above -- what ArchitectureAgentChat/useArchitectureAgentFlow
+// use instead of the plain runArchitecture/reviseArchitecture. Events additionally include a
+// "phase" type (see the backend routes' own docstrings) for the non-streamable tail (use case
+// model, diagram generation, PlantUML rendering) once the plan text itself finishes streaming.
+export async function runArchitectureStream(
+  featureId,
+  { use_enhanced_srs_if_available = true, architecture_notes, human_comment } = {},
+  onEvent,
+  signal
+) {
+  return streamNdjsonPost(
+    `${API_BASE_URL}${base(featureId)}/architecture/run/stream`,
+    { use_enhanced_srs_if_available, architecture_notes, human_comment },
+    onEvent,
+    signal
+  );
+}
+
+export async function reviseArchitectureStream(featureId, { revision_comment, revised_by }, onEvent, signal) {
+  return streamNdjsonPost(
+    `${API_BASE_URL}${base(featureId)}/architecture/revise/stream`,
+    { revision_comment, revised_by },
+    onEvent,
+    signal
+  );
+}
+
 // UI/UX Agent
 export async function runUiux(
   featureId,

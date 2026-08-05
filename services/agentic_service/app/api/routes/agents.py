@@ -616,6 +616,62 @@ async def revise_architecture_agent(
         )
 
 
+@router.post("/architecture/run/stream")
+async def run_architecture_agent_stream(feature_id: str, request: ArchitectureAgentRunRequest):
+    """
+    Streaming variant of /architecture/run -- same newline-delimited JSON event shape as Domain
+    Agent's streaming endpoints, plus a "phase" event during the non-streamable tail (use case
+    model, diagram generation, PlantUML rendering) so the frontend can show real progress instead
+    of a bare loader once the plan text itself has finished streaming:
+        {"type": "token", "text": "..."}
+        {"type": "phase", "phase": "...", "label": "..."}
+        {"type": "error", "message": "..."}
+        {"type": "done", "artifact_ids": [...], "message": "..."}
+    """
+    _validate_feature(feature_id)
+    stage_event_service.record(feature_id, AgentName.ARCHITECTURE, "run", request.human_comment)
+
+    async def event_stream():
+        try:
+            async for event in architecture_agent.run_stream(feature_id=feature_id, request=request):
+                yield json.dumps(event) + "\n"
+        except ValueError as error:
+            yield json.dumps({"type": "error", "message": str(error)}) + "\n"
+        except Exception as error:
+            yield json.dumps({"type": "error", "message": f"Architecture Agent failed: {str(error)}"}) + "\n"
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
+
+
+@router.post("/architecture/revise/stream")
+async def revise_architecture_agent_stream(feature_id: str, request: ArchitectureAgentReviseRequest):
+    """
+    Streaming variant of /architecture/revise -- same newline-delimited JSON event shape as
+    /architecture/run/stream.
+        {"type": "token", "text": "..."}
+        {"type": "phase", "phase": "...", "label": "..."}
+        {"type": "error", "message": "..."}
+        {"type": "done", "artifact_ids": [...], "message": "..."}
+    """
+    _validate_feature(feature_id)
+    stage_event_service.record(
+        feature_id, AgentName.ARCHITECTURE, "revise", request.revision_comment, request.revised_by
+    )
+
+    async def event_stream():
+        try:
+            async for event in architecture_agent.revise_stream(feature_id=feature_id, request=request):
+                yield json.dumps(event) + "\n"
+        except ValueError as error:
+            yield json.dumps({"type": "error", "message": str(error)}) + "\n"
+        except Exception as error:
+            yield json.dumps(
+                {"type": "error", "message": f"Architecture Agent revision failed: {str(error)}"}
+            ) + "\n"
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
+
+
     # ----------------------------------------------------
     # Ui/UX  Agent
     # ----------------------------------------------------
