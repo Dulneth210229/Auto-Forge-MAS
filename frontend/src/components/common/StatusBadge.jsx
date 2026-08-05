@@ -33,9 +33,9 @@ const LABELS = {
   failed: "Failed",
 };
 
-export default function StatusBadge({ status }) {
+export default function StatusBadge({ status, label: labelOverride }) {
   const style = STYLES[status] || "bg-gray-100 text-gray-600 dark:bg-white/10 dark:text-gray-300";
-  const label = LABELS[status] || status;
+  const label = labelOverride || LABELS[status] || status;
 
   return (
     <span className={`inline-block px-2 py-1 text-xs font-semibold rounded-full ${style}`}>{label}</span>

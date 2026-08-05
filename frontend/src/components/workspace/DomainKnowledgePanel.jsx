@@ -12,7 +12,11 @@ function formatBytes(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+// Reuses StatusBadge's approved/rejected color styling (green/red) for ready/failed, but with
+// document-appropriate label text -- a knowledge document was never "approved," it was just
+// processed successfully.
 const STATUS_MAP = { processing: "processing", ready: "approved", failed: "rejected" };
+const STATUS_LABEL = { processing: "Processing...", ready: "Ready", failed: "Failed" };
 
 // Per-project domain knowledge management: upload PDF/DOCX/TXT/MD files here, then reference one
 // by typing "/" in the chat composer while talking to the Domain Agent -- every chunk of a
@@ -82,7 +86,10 @@ export default function DomainKnowledgePanel({ projectId }) {
                 </p>
               </div>
               <div className="flex items-center gap-3 flex-shrink-0">
-                <StatusBadge status={STATUS_MAP[doc.status] || doc.status} />
+                <StatusBadge
+                  status={STATUS_MAP[doc.status] || doc.status}
+                  label={STATUS_LABEL[doc.status]}
+                />
                 <a
                   href={knowledgeDocumentDownloadUrl(projectId, doc.document_id)}
                   className="text-sm text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 font-semibold"

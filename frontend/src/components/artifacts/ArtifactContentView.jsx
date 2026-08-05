@@ -15,9 +15,17 @@ import UiMetadataViewer from "../documents/UiMetadataViewer";
 // The actual viewer-format dispatch, factored out of ArtifactViewerModal so it can be reused
 // both inside a popup (ArtifactViewerModal, for "View" links anywhere) and rendered directly
 // inline (the per-stage Output tab) -- same content, two different containers.
-export default function ArtifactContentView({ artifact }) {
+//
+// domainImprovementsArtifact (optional): the sibling Domain Improvements artifact for an
+// Enhanced SRS, same version -- passed by ResultTab (which already looks it up to render it as
+// its own attachment below) so SrsDocumentViewer can cross-reference it to highlight which
+// specific SRS entries Domain Agent actually added, inline, not just listed separately. Omitted
+// by ArtifactViewerModal's popup path (it doesn't have sibling-lookup context) -- the document
+// still renders correctly there, just without the inline highlighting.
+export default function ArtifactContentView({ artifact, domainImprovementsArtifact }) {
   const viewer = artifact ? pickViewer(artifact) : null;
   const { data, isLoading, error } = useArtifactContent(viewer && viewer !== "image" ? artifact?.artifact_id : null);
+  const { data: domainImprovementsData } = useArtifactContent(domainImprovementsArtifact?.artifact_id ?? null);
 
   if (!artifact) return null;
 
@@ -33,7 +41,13 @@ export default function ArtifactContentView({ artifact }) {
           {viewer === "diff" && <DiffViewer content={data?.content || ""} />}
           {viewer === "markdown" && <MarkdownViewer content={data?.content || ""} />}
           {viewer === "json" && <JsonViewer data={data?.content_json} />}
-          {viewer === "srs-document" && <SrsDocumentViewer data={data?.content_json} artifactType={artifact.artifact_type} />}
+          {viewer === "srs-document" && (
+            <SrsDocumentViewer
+              data={data?.content_json}
+              artifactType={artifact.artifact_type}
+              domainImprovements={domainImprovementsData?.content_json}
+            />
+          )}
           {viewer === "architecture-document" && <ArchitecturePlanDocumentViewer data={data?.content_json} />}
           {viewer === "domain-improvements-document" && <DomainImprovementsViewer data={data?.content_json} />}
           {viewer === "ui-metadata-document" && <UiMetadataViewer data={data?.content_json} />}

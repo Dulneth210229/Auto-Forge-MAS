@@ -40,6 +40,7 @@ export default function ChatComposerBox({
   placeholder,
   disabled,
   pending,
+  onStop,
   selectedAgent,
   onSelectAgent,
   isAgentRunning,
@@ -145,7 +146,11 @@ export default function ChatComposerBox({
             <ModelSelect agentStage={selectedAgent} />
           </div>
         </div>
-        <SendButton disabled={disabled || pending || (!value.trim() && !attachedFile)} pending={pending} />
+        <SendButton
+          disabled={disabled || (!value.trim() && !attachedFile)}
+          pending={pending}
+          onStop={onStop}
+        />
       </div>
     </div>
   );

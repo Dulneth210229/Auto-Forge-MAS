@@ -47,23 +47,31 @@ export default function RequirementRevisionChat({
   onViewArtifact,
   isLoadingTimeline,
 }) {
-  const { reviseStream, handleReviseStream, revisionStreamedText, revisionStreamStarted } =
+  const { reviseStream, handleReviseStream, stopReviseStream, revisionStreamedText, revisionStreamStarted } =
     useRequirementConversationFlowContext();
 
   const [comment, setComment] = useState("");
   const [pendingHumanReply, setPendingHumanReply] = useState(null);
 
-  function handleSubmit(event) {
-    event.preventDefault();
+  // Shared by the composer's Send and a chat bubble's inline "Save & Send" (see ChatBubble's own
+  // docstring for why editing an old ask bubble resubmits rather than rewriting history).
+  function submitRevision(text) {
     if (reviseStream.isPending) return;
-    const trimmed = comment.trim();
+    const trimmed = text.trim();
     if (!trimmed) return;
 
-    setComment("");
     setPendingHumanReply(trimmed);
     handleReviseStream({ revision_comment: trimmed, revised_by: "human_user" }).finally(() =>
       setPendingHumanReply(null)
     );
+  }
+
+  function handleSubmit(event) {
+    event.preventDefault();
+    const trimmed = comment.trim();
+    if (!trimmed) return;
+    setComment("");
+    submitRevision(trimmed);
   }
 
   const reactionText = extractStreamingJsonStringField(revisionStreamedText, "revision_summary");
@@ -79,7 +87,14 @@ export default function RequirementRevisionChat({
           <p className="text-sm text-gray-400 dark:text-gray-500 italic">No activity yet. Say something below to get started.</p>
         ) : (
           timeline.map((item, i) => (
-            <ChatBubble key={i} item={item} allArtifacts={allArtifacts} onViewArtifact={onViewArtifact} onEdit={setComment} />
+            <ChatBubble
+              key={i}
+              item={item}
+              allArtifacts={allArtifacts}
+              onViewArtifact={onViewArtifact}
+              onEditSubmit={submitRevision}
+              isEditPending={reviseStream.isPending}
+            />
           ))
         )}
 
@@ -96,14 +111,23 @@ export default function RequirementRevisionChat({
           <>
             <LiveReactionBubble reactionText={reactionText} hasStarted={revisionStreamStarted} />
             {revisionStreamStarted && (
-              <div className="flex items-center gap-2 bg-accent-50 dark:bg-accent-500/10 border border-accent-200 dark:border-accent-500/30 rounded-lg px-3 py-2.5">
-                <span className="relative flex h-2 w-2 flex-shrink-0">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent-400 opacity-75" />
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-accent-600" />
-                </span>
-                <p className="text-sm text-accent-800 dark:text-accent-300 font-semibold">
-                  Applying your requested change -- watch progress live in the Result panel &rarr;
-                </p>
+              <div className="flex items-center justify-between gap-2 bg-accent-50 dark:bg-accent-500/10 border border-accent-200 dark:border-accent-500/30 rounded-lg px-3 py-2.5">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="relative flex h-2 w-2 flex-shrink-0">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-accent-600" />
+                  </span>
+                  <p className="text-sm text-accent-800 dark:text-accent-300 font-semibold truncate">
+                    Applying your requested change -- watch progress live in the Result panel &rarr;
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={stopReviseStream}
+                  className="text-xs font-semibold text-accent-700 dark:text-accent-300 hover:text-accent-900 dark:hover:text-accent-100 underline flex-shrink-0"
+                >
+                  Stop
+                </button>
               </div>
             )}
           </>
@@ -119,6 +143,7 @@ export default function RequirementRevisionChat({
             onChange={(event) => setComment(event.target.value)}
             disabled={reviseStream.isPending}
             pending={reviseStream.isPending}
+            onStop={stopReviseStream}
             selectedAgent={selectedAgent}
             onSelectAgent={selectAgent}
             isAgentRunning={runningStage === "requirement" || reviseStream.isPending}

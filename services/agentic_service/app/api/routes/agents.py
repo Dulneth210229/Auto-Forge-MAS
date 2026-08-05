@@ -444,6 +444,31 @@ async def run_domain_agent(
         )
 
 
+@router.post("/domain/run/stream")
+async def run_domain_agent_stream(feature_id: str, request: DomainAgentRunRequest):
+    """
+    Streaming variant of /domain/run -- same newline-delimited JSON event shape as the
+    Requirement Agent's streaming endpoints, so the frontend can show the enrichment plan
+    "typing" live instead of a blocking wait followed by a sudden reveal:
+        {"type": "token", "text": "..."}
+        {"type": "error", "message": "..."}
+        {"type": "done", "artifact_ids": [...], "message": "..."}
+    """
+    _validate_feature(feature_id)
+    stage_event_service.record(feature_id, AgentName.DOMAIN, "run", request.human_comment)
+
+    async def event_stream():
+        try:
+            async for event in domain_agent.run_stream(feature_id=feature_id, request=request):
+                yield json.dumps(event) + "\n"
+        except ValueError as error:
+            yield json.dumps({"type": "error", "message": str(error)}) + "\n"
+        except Exception as error:
+            yield json.dumps({"type": "error", "message": f"Domain Agent failed: {str(error)}"}) + "\n"
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
+
+
 @router.post("/domain/revise", response_model=AgentRunResponse)
 async def revise_domain_agent(
     feature_id: str,
@@ -482,6 +507,32 @@ async def revise_domain_agent(
             status_code=500,
             detail=f"Domain Agent revision failed: {str(error)}"
         )
+
+
+@router.post("/domain/revise/stream")
+async def revise_domain_agent_stream(feature_id: str, request: DomainAgentReviseRequest):
+    """
+    Streaming variant of /domain/revise -- same newline-delimited JSON event shape as
+    /domain/run/stream.
+        {"type": "token", "text": "..."}
+        {"type": "error", "message": "..."}
+        {"type": "done", "artifact_ids": [...], "message": "..."}
+    """
+    _validate_feature(feature_id)
+    stage_event_service.record(
+        feature_id, AgentName.DOMAIN, "revise", request.revision_comment, request.revised_by
+    )
+
+    async def event_stream():
+        try:
+            async for event in domain_agent.revise_stream(feature_id=feature_id, request=request):
+                yield json.dumps(event) + "\n"
+        except ValueError as error:
+            yield json.dumps({"type": "error", "message": str(error)}) + "\n"
+        except Exception as error:
+            yield json.dumps({"type": "error", "message": f"Domain Agent revision failed: {str(error)}"}) + "\n"
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
 
 @router.post("/architecture/run", response_model=AgentRunResponse)

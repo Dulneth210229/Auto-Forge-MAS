@@ -15,6 +15,7 @@ import ConfirmDialog from "../common/ConfirmDialog";
 import RequirementSrsOutputPanel from "./RequirementSrsOutputPanel";
 import { useWorkspaceSelection } from "../workspace/WorkspaceSelectionContext";
 import { useRequirementConversationFlowContext } from "../workspace/RequirementConversationFlowContext";
+import { useDomainAgentFlowContext } from "../workspace/DomainAgentFlowContext";
 import { useFeature, useSetActiveArtifactSelection } from "../../hooks/useFeatures";
 import { useApprovalMutation } from "../../hooks/useApprovalMutation";
 
@@ -24,6 +25,18 @@ import { useApprovalMutation } from "../../hooks/useApprovalMutation";
 const ACTIVE_SELECTION_ARTIFACT_TYPE_BY_STAGE = {
   requirement: "srs",
 };
+
+// domain_improvements is Domain Agent's own "what changed and why" side-record for the SAME
+// version as its Enhanced SRS -- never independently meaningful and never what the pipeline gates
+// on (STAGE_GATING_ARTIFACT only ever points at enhanced_srs for the domain stage; nothing in the
+// backend ever reads domain_improvements' approval_status). It still gets saved with
+// approval_status "pending" like every other artifact (artifact_service's generic default), which
+// meant it showed up as its own row in "All Artifacts" with its own Approve/Reject/Request-
+// Revision controls -- a real reported issue: the human was being asked to approve a document
+// that was never a real decision point, on top of the Enhanced SRS itself. Excluded from the
+// listed/approvable artifacts entirely; rendered instead as a read-only attachment directly under
+// the Enhanced SRS document for the same version (see the domain-stage branch below).
+const UNLISTED_ARTIFACT_TYPES = ["domain_improvements"];
 
 // The Result tab: whichever agent is selected in the chat, this shows what it produced (version
 // picker + document/diagram/screenshot view), plus governance (approve/reject, trace links) and
@@ -68,11 +81,35 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
   const { reviseStream, revisionStreamedText, revisionStreamStarted } = useRequirementConversationFlowContext();
   const isRevising = isRequirementStage && reviseStream.isPending;
 
+  // Same idea for Domain Agent -- direct user report: Domain Agent had no live output at all
+  // (blocking spinner, then a sudden reveal), the one agent left behind after every other
+  // streamed flow already got this treatment. Domain's stream is the small enrichment PLAN (not
+  // the final Enhanced SRS), decluttered for display -- same pragmatic choice
+  // RequirementRevisionChat's own live view already makes (see LiveGenerationView's docstring):
+  // shows something real and readable "typing" live, even though the actual merge into the
+  // Enhanced SRS happens deterministically once the plan finishes, not token-by-token.
+  const isDomainStage = stage === "domain";
+  const {
+    runStream: domainRunStream,
+    runStreamedText: domainRunStreamedText,
+    runStreamStarted: domainRunStreamStarted,
+    reviseStream: domainReviseStream,
+    revisionStreamedText: domainRevisionStreamedText,
+    revisionStreamStarted: domainRevisionStreamStarted,
+  } = useDomainAgentFlowContext();
+  const isDomainRevising = isDomainStage && domainReviseStream.isPending;
+  const isDomainRunning = isDomainStage && domainRunStream.isPending;
+  const isDomainGenerating = isDomainRevising || isDomainRunning;
+  const domainStreamedText = isDomainRevising ? domainRevisionStreamedText : domainRunStreamedText;
+  const domainStreamStarted = isDomainRevising ? domainRevisionStreamStarted : domainRunStreamStarted;
+
   // Deduped for display: every gating artifact_type saves a JSON+Markdown pair sharing one
   // version, and listing both as separate rows read as the same version being duplicated (a real
   // reported issue) -- see dedupeArtifactVersions's own docstring.
   const stageArtifacts = dedupeArtifactVersions(
-    allArtifacts.filter((a) => ARTIFACT_TYPE_STAGE[a.artifact_type] === stage)
+    allArtifacts.filter(
+      (a) => ARTIFACT_TYPE_STAGE[a.artifact_type] === stage && !UNLISTED_ARTIFACT_TYPES.includes(a.artifact_type)
+    )
   );
 
   // Lets a human pin which APPROVED version feeds the next agent (e.g. which SRS version Domain
@@ -157,6 +194,13 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
           connectingLabel="Connecting to Requirement Agent..."
           generatingLabel="Reviewing your requested change..."
         />
+      ) : isDomainGenerating ? (
+        <LiveGenerationView
+          displayText={declutterJsonForDisplay(domainStreamedText)}
+          hasStarted={domainStreamStarted}
+          connectingLabel="Connecting to Domain Agent..."
+          generatingLabel={isDomainRevising ? "Applying your requested change..." : "Enriching the SRS with domain knowledge..."}
+        />
       ) : versions.length === 0 && isRequirementStage ? (
         <RequirementSrsOutputPanel />
       ) : versions.length === 0 ? (
@@ -203,10 +247,24 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
           ) : (
             (() => {
               const artifact = versions.find((v) => v.version === selectedVersion) || versions[0];
+              // Domain Improvements attaches to whichever Enhanced SRS version is being viewed --
+              // same version number (both saved together, see domain_agent's _save_domain_artifacts),
+              // never its own listed/approvable row (see UNLISTED_ARTIFACT_TYPES above).
+              const domainImprovements =
+                stage === "domain"
+                  ? allArtifacts.find(
+                      (a) => a.artifact_type === "domain_improvements" && a.version === artifact.version
+                    )
+                  : null;
               return (
                 <div>
-                  <ArtifactContentView artifact={artifact} />
+                  <ArtifactContentView artifact={artifact} domainImprovementsArtifact={domainImprovements} />
                   {stage === "architecture" && <ArchitectureDiagramsGallery allArtifacts={allArtifacts} />}
+                  {domainImprovements && (
+                    <div className="mt-5 pt-5 border-t border-gray-100 dark:border-gray-800">
+                      <ArtifactContentView artifact={domainImprovements} />
+                    </div>
+                  )}
                 </div>
               );
             })()

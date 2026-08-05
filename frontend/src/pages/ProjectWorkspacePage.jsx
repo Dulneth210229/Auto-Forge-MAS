@@ -9,6 +9,7 @@ import FeatureListPanel from "../components/workspace/FeatureListPanel";
 import EmptyChatPanel from "../components/workspace/EmptyChatPanel";
 import EmptyOutputPanel from "../components/workspace/EmptyOutputPanel";
 import { RequirementConversationFlowProvider } from "../components/workspace/RequirementConversationFlowContext";
+import { DomainAgentFlowProvider } from "../components/workspace/DomainAgentFlowContext";
 import ChatPanel from "../components/chat/ChatPanel";
 import OutputPanel from "../components/output/OutputPanel";
 import ArtifactViewerModal from "../components/artifacts/ArtifactViewerModal";
@@ -23,20 +24,22 @@ function WorkspaceBody({ projectId }) {
     // RequirementConversationFlowContext for why this can't just be two separate hook calls.
     // Cheap when irrelevant: the underlying query is a single disabled-when-no-feature GET.
     <RequirementConversationFlowProvider featureId={selectedFeatureId}>
-      <div className="h-full">
-        <ResizableWorkspace
-          left={<FeatureListPanel projectId={projectId} />}
-          middle={
-            selectedFeatureId ? (
-              <ChatPanel featureId={selectedFeatureId} />
-            ) : (
-              <EmptyChatPanel projectId={projectId} />
-            )
-          }
-          right={selectedFeatureId ? <OutputPanel featureId={selectedFeatureId} /> : <EmptyOutputPanel />}
-        />
-        <ArtifactViewerModal artifact={viewingArtifact} onClose={() => viewArtifact(null)} />
-      </div>
+      <DomainAgentFlowProvider featureId={selectedFeatureId}>
+        <div className="h-full">
+          <ResizableWorkspace
+            left={<FeatureListPanel projectId={projectId} />}
+            middle={
+              selectedFeatureId ? (
+                <ChatPanel featureId={selectedFeatureId} />
+              ) : (
+                <EmptyChatPanel projectId={projectId} />
+              )
+            }
+            right={selectedFeatureId ? <OutputPanel featureId={selectedFeatureId} /> : <EmptyOutputPanel />}
+          />
+          <ArtifactViewerModal artifact={viewingArtifact} onClose={() => viewArtifact(null)} />
+        </div>
+      </DomainAgentFlowProvider>
     </RequirementConversationFlowProvider>
   );
 }

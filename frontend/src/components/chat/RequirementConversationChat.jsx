@@ -39,16 +39,19 @@ export default function RequirementConversationChat({ featureId, feature, runnin
     start,
     respondStream,
     handleReplyStream,
+    stopReplyStream,
     replyStreamedText,
     replyStreamStarted,
     respondWithDocument,
     editTurnStream,
     handleEditTurnStream,
+    stopEditTurnStream,
     editStreamedText,
     editStreamStarted,
     reset,
     confirmStream,
     handleConfirm,
+    stopConfirmStream,
     isGenerating,
     isConfirmed,
   } = useRequirementConversationFlowContext();
@@ -94,7 +97,16 @@ export default function RequirementConversationChat({ featureId, feature, runnin
     // Live, token-by-token reply (ChatGPT/Claude-style) -- the agent's reaction+questions "type"
     // in as they're generated instead of appearing all at once after a blocking wait.
     setPendingHumanReply(trimmed);
-    handleReplyStream({ reply: trimmed }).finally(() => setPendingHumanReply(null));
+    handleReplyStream({ reply: trimmed })
+      .then((result) => {
+        // The whole turn (human_reply + the agent's reaction/questions) is only ever persisted
+        // atomically by the stream's "done" event -- stopping partway through means NOTHING was
+        // saved server-side, unlike ChatGPT/Claude where the human's own message is durable the
+        // instant it's sent. Give the typed text back to the composer instead of silently losing
+        // it, so stopping never costs the human their own words.
+        if (result?.aborted) setReplyText(trimmed);
+      })
+      .finally(() => setPendingHumanReply(null));
   }
 
   const isAgentRunning = runningStage === "requirement" || isReplying || editTurnStream.isPending;
@@ -148,6 +160,13 @@ export default function RequirementConversationChat({ featureId, feature, runnin
                         reactionText={extractStreamingJsonStringField(editStreamedText, "reaction")}
                         hasStarted={editStreamStarted}
                       />
+                      <button
+                        type="button"
+                        onClick={stopEditTurnStream}
+                        className="self-start text-xs font-semibold text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 underline"
+                      >
+                        Stop
+                      </button>
                     </>
                   ) : (
                     <>
@@ -182,14 +201,25 @@ export default function RequirementConversationChat({ featureId, feature, runnin
                 </p>
               </div>
             ) : isGenerating ? (
-              <div className="flex items-center gap-2 bg-accent-50 dark:bg-accent-500/10 border border-accent-200 dark:border-accent-500/30 rounded-lg px-3 py-2.5">
-                <span className="relative flex h-2 w-2 flex-shrink-0">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent-400 opacity-75" />
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-accent-600" />
-                </span>
-                <p className="text-sm text-accent-800 dark:text-accent-300 font-semibold">
-                  Generating the final SRS -- watch it stream live in the Result panel &rarr;
-                </p>
+              <div className="flex items-center justify-between gap-2 bg-accent-50 dark:bg-accent-500/10 border border-accent-200 dark:border-accent-500/30 rounded-lg px-3 py-2.5">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="relative flex h-2 w-2 flex-shrink-0">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-accent-600" />
+                  </span>
+                  <p className="text-sm text-accent-800 dark:text-accent-300 font-semibold truncate">
+                    Generating the final SRS -- watch it stream live in the Result panel &rarr;
+                  </p>
+                </div>
+                {confirmStream.isPending && (
+                  <button
+                    type="button"
+                    onClick={stopConfirmStream}
+                    className="text-xs font-semibold text-accent-700 dark:text-accent-300 hover:text-accent-900 dark:hover:text-accent-100 underline flex-shrink-0"
+                  >
+                    Stop
+                  </button>
+                )}
               </div>
             ) : (
               <>
@@ -234,6 +264,7 @@ export default function RequirementConversationChat({ featureId, feature, runnin
             placeholder="Answer the question(s) above, attach a document, or add anything else..."
             disabled={isReplying || editTurnStream.isPending}
             pending={isReplying}
+            onStop={respondStream.isPending ? stopReplyStream : undefined}
             selectedAgent={selectedAgent}
             onSelectAgent={selectAgent}
             isAgentRunning={isAgentRunning}

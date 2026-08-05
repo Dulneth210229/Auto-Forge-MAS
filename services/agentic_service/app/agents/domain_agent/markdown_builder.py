@@ -25,6 +25,24 @@ class DomainEnhancedSRSMarkdownBuilder:
     """
 
     def build(self, enhanced_srs_json: dict[str, Any], domain_improvements_json: dict[str, Any]) -> str:
+        # Plain list[str] sections (scope, constraints, risks, etc.) have no per-item dict to hang
+        # an origin flag on, unlike the FR/NFR/AC/VR/US items _requirement_list already tags --
+        # so domain-added entries in those sections are matched by exact text against
+        # domain_improvements_json's own recorded additions (grouped by target_section) instead.
+        # Real, reported gap this closes alongside the schema expansion itself: Domain Agent could
+        # already add to only 6 sections; even data_requirements (the one plain-list section it
+        # always had) never visually distinguished a domain-added entry from an original one in
+        # this Markdown, unlike every ID-tagged section.
+        plain_list_additions_by_section: dict[str, set[str]] = {}
+        for addition in domain_improvements_json.get("additions", []):
+            section = addition.get("target_section")
+            description = addition.get("description")
+            if section and description:
+                plain_list_additions_by_section.setdefault(section, set()).add(description)
+
+        def highlighted(section_key: str, items: list[str]) -> str:
+            return self._simple_list(items, plain_list_additions_by_section.get(section_key))
+
         return f"""# Enhanced Software Requirements Specification: {enhanced_srs_json.get("feature_name", "Untitled Feature")}
 
 This document is the Domain Agent's enrichment of the approved SRS. Items tagged
@@ -52,19 +70,19 @@ alongside the enhanced wording.
 
 ## 3. Scope
 
-{self._simple_list(enhanced_srs_json.get("scope", []))}
+{highlighted("scope", enhanced_srs_json.get("scope", []))}
 
 ---
 
 ## 4. Out of Scope
 
-{self._simple_list(enhanced_srs_json.get("out_of_scope", []))}
+{highlighted("out_of_scope", enhanced_srs_json.get("out_of_scope", []))}
 
 ---
 
 ## 5. User Roles
 
-{self._simple_list(enhanced_srs_json.get("user_roles", []))}
+{highlighted("user_roles", enhanced_srs_json.get("user_roles", []))}
 
 ---
 
@@ -94,31 +112,31 @@ alongside the enhanced wording.
 
 ## 10. Input Requirements
 
-{self._simple_list(enhanced_srs_json.get("input_requirements", []))}
+{highlighted("input_requirements", enhanced_srs_json.get("input_requirements", []))}
 
 ---
 
 ## 11. Output Requirements
 
-{self._simple_list(enhanced_srs_json.get("output_requirements", []))}
+{highlighted("output_requirements", enhanced_srs_json.get("output_requirements", []))}
 
 ---
 
 ## 12. UI Expectations
 
-{self._simple_list(enhanced_srs_json.get("ui_expectations", []))}
+{highlighted("ui_expectations", enhanced_srs_json.get("ui_expectations", []))}
 
 ---
 
 ## 13. API Expectations
 
-{self._simple_list(enhanced_srs_json.get("api_expectations", []))}
+{highlighted("api_expectations", enhanced_srs_json.get("api_expectations", []))}
 
 ---
 
 ## 14. Data Requirements
 
-{self._simple_list(enhanced_srs_json.get("data_requirements", []))}
+{highlighted("data_requirements", enhanced_srs_json.get("data_requirements", []))}
 
 ---
 
@@ -130,25 +148,25 @@ alongside the enhanced wording.
 
 ## 16. Constraints
 
-{self._simple_list(enhanced_srs_json.get("constraints", []))}
+{highlighted("constraints", enhanced_srs_json.get("constraints", []))}
 
 ---
 
 ## 17. Assumptions
 
-{self._simple_list(enhanced_srs_json.get("assumptions", []))}
+{highlighted("assumptions", enhanced_srs_json.get("assumptions", []))}
 
 ---
 
 ## 18. Risks
 
-{self._simple_list(enhanced_srs_json.get("risks", []))}
+{highlighted("risks", enhanced_srs_json.get("risks", []))}
 
 ---
 
 ## 19. Dependencies
 
-{self._simple_list(enhanced_srs_json.get("dependencies", []))}
+{highlighted("dependencies", enhanced_srs_json.get("dependencies", []))}
 
 ---
 
@@ -172,11 +190,14 @@ over the project's domain knowledge base.
 A human reviewer must approve this artifact before it is passed to the Architecture Agent.
 """
 
-    def _simple_list(self, items: list[Any]) -> str:
+    def _simple_list(self, items: list[Any], highlighted_texts: set[str] | None = None) -> str:
         if not items:
             return "- Not specified."
 
-        return "\n".join(f"- {item}" for item in items)
+        highlighted_texts = highlighted_texts or set()
+        return "\n".join(
+            f"- {'**[DOMAIN ADDED]** ' if item in highlighted_texts else ''}{item}" for item in items
+        )
 
     def _requirement_list(self, items: list[dict[str, Any]]) -> str:
         """

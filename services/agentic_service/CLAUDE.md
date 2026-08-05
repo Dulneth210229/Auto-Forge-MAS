@@ -2853,6 +2853,723 @@ milestone — that file is scratch, **this file is the durable one**.
       item's own note. Test project (`proj_217ffa15`, three features) and isolated
       backend/frontend processes cleaned up afterward.
 
+42. **Every agent's chat showed every OTHER agent's activity too, not just its own -- and
+    Domain Improvements was asked to be approved as its own artifact even though it was never a
+    real decision point.** Direct user report, two parts in one message: "Each agent must keep
+    it's own chat as an example when moving from requirement agent to domain agent, requirement
+    agent chat can not be carried to the domain agent... this mechanism should be applied for
+    every agent. And do not ask from user to approve Domain improvements artifact. user can only
+    see this document attached with enhanced SRS version."
+    - **Part 1 root cause**: `buildAgentTimeline.js`'s own docstring said the quiet part out loud
+      -- it deliberately built "ONE continuous chronological feed across every agent for the
+      whole feature" and `ChatPanel.jsx` rendered that entire feed unfiltered
+      (`timeline.map(...)`) regardless of `selectedAgent`. So switching the chat to Domain Agent
+      didn't just switch which messages were highlighted -- it kept showing Requirement's (and
+      every other stage's) asks/responses/decisions mixed into the same feed. `RequirementRevisionChat`
+      (Requirement's post-SRS chat) received the identical unfiltered `timeline` prop and had the
+      same bug in the other direction.
+    - **Fix**: `buildAgentTimeline(stage, allArtifacts, allApprovals, allEvents)` now takes the
+      stage as its first argument and filters all three sources (events, artifact-version groups,
+      approvals) down to that one stage from the start, not after the fact -- matching what its
+      name always implied. `ChatPanel.jsx`'s one call site now passes `selectedAgent`. Since
+      `RequirementRevisionChat` only ever renders when `selectedAgent === "requirement"`, and it
+      receives the same now-scoped `timeline` variable, it's fixed for free. Generic across every
+      stage (requirement/domain/architecture/uiux/coder) by construction -- one function, one call
+      site, parameterized by stage, not a Domain-specific patch -- satisfying "this mechanism
+      should be applied for every agent" without needing separate code paths per agent.
+    - **Part 2 root cause**: `domain_improvements` is Domain Agent's own "what changed and why"
+      side-record, saved at the same version as its Enhanced SRS
+      (`domain_agent.py`'s `_save_domain_artifacts`) but never the type any stage actually gates
+      on (`STAGE_GATING_ARTIFACT` only ever points at `enhanced_srs` for the domain stage;
+      confirmed via grep that no backend service reads `domain_improvements`' approval_status at
+      all). It still got saved with `approval_status: "pending"` like every artifact
+      (`artifact_service`'s generic default) and, after item 40's fix removed per-row approval
+      suppression for every artifact_type, started showing up as its OWN row in "All Artifacts"
+      with its own real Approve/Reject/Request-Revision controls -- asking the human to approve a
+      document that was never a real decision point, on top of the Enhanced SRS itself.
+    - **Fix, `ResultTab.jsx`**: new `UNLISTED_ARTIFACT_TYPES = ["domain_improvements"]` excludes it
+      from `stageArtifacts` entirely (no row, no approval controls, ever). Its content is instead
+      rendered as a read-only attachment directly under the Enhanced SRS document view for the
+      SAME version (found via `allArtifacts.find(a => a.artifact_type === "domain_improvements"
+      && a.version === artifact.version)`, reusing the existing `ArtifactContentView` +
+      `DomainImprovementsViewer` pair unchanged) -- exactly "attached with enhanced SRS version,"
+      per the user's own wording. No backend changes -- this was purely a frontend listing/gating
+      bug, the backend never treated it as a gate to begin with.
+    - **Real, live verification** on a fresh feature (isolated backend/frontend instances, real
+      requirement run -> approve -> domain run with a distinctive marker comment
+      "DOMAIN_ONLY_MARKER: ..."): confirmed Requirement Agent's chat shows only its own
+      Started/Produced SRS/Approved bubbles with zero trace of the marker; confirmed Domain
+      Agent's chat shows only its own Started (with the marker)/Produced Enhanced SRS bubbles with
+      zero trace of "Produced SRS" (Requirement's own response bubble). Confirmed "All Artifacts"
+      for the domain stage lists exactly one row ("Enhanced SRS v1 -- Pending" with its own
+      Approve/Request Revision/Reject) and no "Domain Improvements" row at all. Confirmed, by
+      scrolling the Enhanced SRS document view, that a "Domain Improvements" section (heading,
+      summary, additions/modifications) renders directly beneath the Enhanced SRS content with no
+      approval controls anywhere near it, while the single "Awaiting your review" governance panel
+      below still correctly gates only the Enhanced SRS. `npm run build` clean; no backend changes
+      so the pytest suite is unaffected by this item. No frontend test framework exists in this
+      repo, matching every prior item's own note. Test project/feature and isolated
+      backend/frontend processes cleaned up afterward.
+
+43. **Editing a chat message loaded it into the composer instead of editing it in place, and no
+    message (user or agent) had a copy-to-clipboard affordance.** Direct user report: "When user
+    editing the message, once the user clicks on the message edit button the message appear on
+    the chat input field, It should not happen. When user wants do edit the message user must be
+    able to edit the message/prompt on the massage and not on the input field, same as chat gpt
+    or claude message edit system. And user must be able to copy the user message and the agent
+    message as well. add copy icon to user prompt/messssage and evry agent prompt/messages."
+    - **Edit root cause**: `ChatBubble.jsx` (used by `ChatPanel.jsx`'s generic per-agent chat for
+      every stage except Requirement pre-SRS, and by `RequirementRevisionChat.jsx` for
+      Requirement's post-SRS revise chat) implemented its "Edit" affordance as `onEdit={setComment}`
+      -- clicking it copied the old message's text into the BOTTOM composer box, requiring the
+      human to leave the message, notice the composer now had text in it, and hit Send again. This
+      is not what "edit the message" means in ChatGPT/Claude -- confirmed by contrast with
+      `RequirementConversationParts.jsx`'s `HumanBubble` (Requirement's pre-SRS chat only), which
+      already did TRUE inline editing correctly (hover reveals a pencil, clicking it swaps the
+      bubble in place for a textarea with Cancel/Save controls) -- that component was already
+      correct and needed no changes.
+    - **Fix**: `ChatBubble.jsx` rewritten to use the exact same in-place-swap pattern as
+      `HumanBubble` for its "ask" bubbles -- clicking Edit swaps that one bubble for an inline
+      textarea (seeded with the original text) with Cancel / "Save & Send" buttons directly
+      beneath it; the composer at the bottom is never touched. New prop `onEditSubmit(text)`
+      replaces `onEdit` -- since this app has no backend "rewind and regenerate" for run/revise
+      artifacts (they're immutable once produced, unlike Requirement's pre-SRS conversation, which
+      really does discard-and-regenerate via `edit_turn_reply`), Save still resubmits the edited
+      text as the next message (same mutation the composer's Send already uses) -- just triggered
+      from the message itself instead of a round-trip through the composer. `ChatPanel.jsx` and
+      `RequirementRevisionChat.jsx` both factored their submit logic into a shared
+      `submitAgentMessage`/`submitRevision` function used by both the composer's Send and the new
+      `onEditSubmit`.
+    - **Copy root cause**: no chat message anywhere had a copy-to-clipboard control at all.
+    - **Fix**: new shared `frontend/src/components/common/CopyButton.jsx` (hover-reveal, matching
+      the existing Edit affordance's convention, `navigator.clipboard.writeText` with a checkmark
+      + "Copied" swap for ~1.5s on success). Wired onto every user AND agent message bubble across
+      every chat: `ChatBubble.jsx`'s "ask" (user) and "response" (agent, copies the "Produced X
+      (vN)" text) bubbles; `RequirementConversationParts.jsx`'s `HumanBubble` (user) and
+      `AgentTurnBubble` (agent, copies the reaction text + any questions asked). Decision bubbles
+      (the small centered "Approved"/"Rejected" pills) deliberately excluded -- they're status
+      indicators, not prompts/messages, per the user's own two named categories. `AgentTurnBubble`
+      and `ChatBubble`'s response bubble needed a `group` class added to their wrapper (previously
+      absent -- only ask/HumanBubble had one, for the pre-existing Edit affordance) so the
+      hover-reveal mechanism has something to key off of.
+    - **Real, live verification** (isolated backend/frontend, real LLM calls, clipboard
+      permissions explicitly granted in the Playwright context to actually confirm the copied
+      bytes, not just that a button exists): on the pre-SRS conversation, clicked Edit on a real
+      `HumanBubble` and confirmed the bottom composer's value was unchanged (empty) throughout;
+      clicked Copy on both a `HumanBubble` and an `AgentTurnBubble` and read the clipboard back via
+      `navigator.clipboard.readText()`, confirming it exactly matched the visible message text in
+      both cases. On Domain Agent's chat (a real `ChatBubble` ask/response pair, produced via a
+      real requirement-run -> approve -> domain-run with a distinctive comment), clicked Edit on
+      the ask bubble and confirmed: an inline textarea appeared seeded with the exact original
+      comment, the bottom composer's value stayed empty the whole time, and Cancel discarded the
+      edit without sending anything. Clicked Copy on both the ask and response bubbles and
+      confirmed the clipboard held the exact comment text and the exact "Produced Enhanced SRS,
+      Domain Improvements (v1)" text respectively. `npm run build` clean; no backend changes so
+      the pytest suite is unaffected. No frontend test framework exists in this repo, matching
+      every prior item's own note. Test project/feature and isolated backend/frontend processes
+      cleaned up afterward.
+
+44. **Refreshing the browser reset the visible chat back to Requirement Agent -- read as "the
+    other agent's chat history disappeared" -- and no agent's chat could be stopped mid-generation.**
+    Direct user report: "Currently the chat histroy od each agent will dissepear when the user
+    refreseh the browser it can not happen like that. The chat history of each agent must remain
+    same. And each agent chat can be paused by the user like chat gpt or claude."
+    - **Refresh root cause**: every agent's chat data was always durably persisted server-side
+      (`stage_events`/`artifacts`/`approvals` for Domain/Architecture/UIUX/Coder and Requirement's
+      post-SRS revise; the `requirement_conversations` record for Requirement's pre-SRS
+      conversation) -- nothing was ever actually lost. `WorkspaceSelectionContext.jsx`'s
+      `selectedAgent` was a plain `useState("requirement")` with zero persistence, though -- a full
+      page reload always remounts this provider fresh, so it always snapped back to Requirement
+      regardless of which agent's chat was on screen a moment ago. Purely a "what's currently
+      displayed" bug, not a data-loss bug, but indistinguishable from one to the user.
+    - **Fix**: `selectedAgent` is now seeded from (and kept in sync with) an `agent` URL query
+      param via `useSearchParams`, the same mechanism `ProjectWorkspacePage` already uses for
+      `featureId`. `selectAgent(stage)` writes `?agent=stage` (`replace: true`, no extra history
+      entries); `selectFeature(id)` clears it back to Requirement's default, matching the existing
+      "switching features resets to Requirement" behavior. A fresh load of the exact same URL now
+      reopens the exact same agent's chat instead of silently jumping back.
+    - **Pause root cause**: no chat had any way to stop an in-flight generation. Requirement
+      Agent's pre-SRS reply/edit/confirm and post-SRS revise are real token-by-token streams
+      (`fetch` + `ReadableStream`, `streamNdjsonPost` in `api/agents.js`); Domain/Architecture/
+      UIUX/Coder run/revise are plain awaited axios POSTs with no streaming at all -- neither path
+      had any cancellation wired in anywhere.
+    - **Fix**: `streamNdjsonPost` and `postCancelable` (new shared helper for the plain axios
+      calls) both accept an optional `signal`; aborting either mid-flight resolves with
+      `{aborted: true}` instead of rejecting, so a deliberate stop never surfaces as a "Request
+      failed" error banner. Every streaming mutation in `useRequirementConversationFlow.js`
+      (`respondStream`, `editTurnStream`, `confirmStream`, `reviseStream`) and every mutation in
+      `useAgentMutations.js` now creates a fresh `AbortController` per call and exposes a
+      `stop()`/`stopXStream()` function that calls `.abort()`. `SendButton.jsx` renders a black
+      square "Stop generating" button (ChatGPT/Claude's exact affordance) in place of the old
+      disabled spinner whenever `pending` is true, wired through `ChatComposerBox`'s new `onStop`
+      prop to whichever mutation/stream is currently active in `ChatPanel.jsx`,
+      `RequirementConversationChat.jsx`, and `RequirementRevisionChat.jsx`; the confirm-generating
+      and edit-generating indicators (which don't use the bottom composer) got their own inline
+      "Stop" links.
+    - **Two real, honestly-documented asymmetries between the two kinds of agents**, confirmed by
+      reading the actual backend routes rather than assumed:
+      1. For Requirement's 4 streaming endpoints, the whole turn (human_reply + agent's
+         reaction/questions) is only ever persisted atomically by the stream's final "done" event
+         -- stopping mid-stream means NOTHING was saved server-side (unlike ChatGPT/Claude, where
+         the human's own message is durable the instant it's sent). Fixed the "silently lose what
+         you typed" side-effect this would otherwise cause: `RequirementConversationChat.jsx`'s
+         reply handler now checks the resolved `{aborted}` result and puts the exact typed text
+         back in the composer if the stream was stopped before finishing, instead of discarding
+         it. A parallel `isGenerating` bug this abort-resolves-not-rejects design would have
+         caused (`confirmStream.isSuccess` alone stays true forever after ANY resolution,
+         aborted or not, which would have wedged the UI in "Generating..." forever after a
+         stopped confirm) is fixed by also checking `!confirmStream.data?.aborted`.
+      2. For Domain/Architecture/UIUX/Coder's run/revise routes, by contrast, confirmed by reading
+         `agents.py`: `stage_event_service.record(...)` runs SYNCHRONOUSLY before the agent call
+         even starts, so the human's comment is durably saved as a real stage_event almost
+         immediately regardless of whether the request later gets aborted -- these four agents
+         needed no "restore the composer" recovery logic, and `useAgentMutations.js` always
+         invalidates the `events` query on resolution (aborted or not) specifically so that
+         already-saved "ask" bubble reliably shows up either way.
+      Also honestly documented in code comments (not glossed over): stopping a real
+      **streaming** generation genuinely halts the backend too (FastAPI/Starlette cancels a
+      `StreamingResponse`'s underlying async generator when the client disconnects), but stopping
+      one of the four **non-streaming** agents is honestly "stop waiting on it" from the human's
+      side -- whether the backend's one plain `await agent.run(...)` call itself gets interrupted
+      depends on how that particular call is structured, which this fix doesn't change.
+    - **Real, live verification** (isolated backend/frontend, real LLM calls): switched to Domain
+      Agent's chat, confirmed the URL became `...?agent=domain`, did a genuine full `page.reload()`
+      (not a SPA navigation), and confirmed the agent pill still read "Domain" and the same
+      proactive-prompt chat state was still showing afterward. Sent a real Domain Agent message
+      with a distinctive marker comment, clicked Stop ~0.5s in, and confirmed: the button correctly
+      reverted to a normal Send arrow, no error banner appeared, `GET .../events` showed the
+      stage_event WAS recorded with the exact marker text despite the stop, and -- most tellingly
+      -- the feature's Domain stage genuinely stayed "Not started" with zero Enhanced SRS artifacts
+      produced, confirming the abort really did stop the backend agent, not just the frontend's
+      view of it. Separately, on Requirement Agent's real pre-SRS streaming reply: clicked Stop
+      ~2s into a visibly in-progress token stream, confirmed the black square Stop button rendered
+      correctly mid-stream, the composer's text was restored to the exact original typed message
+      after stopping, the conversation's `turn_history` length was provably unchanged (nothing
+      persisted, as documented above), and the Send button correctly reverted afterward. `npm run
+      build` clean; no backend changes so the pytest suite is unaffected. No frontend test
+      framework exists in this repo, matching every prior item's own note. Test
+      projects/features and isolated backend/frontend processes cleaned up afterward.
+
+45. **Domain Agent silently discarded explicit human-provided content (e.g. "add this database
+    schema"), the composer stayed frozen with the typed text in it until the whole enrichment
+    finished, there was no live output, and no way to stop it -- Domain Agent was the one agent
+    chat left behind after every one of these was already fixed for Requirement Agent.** Direct
+    user report, five parts: (1) "When I tell domain agent to add database schema for the
+    enhaced SRS the agent did not add what I asked" (2) the typed prompt stayed in the input
+    field until generation finished, instead of moving to the chat immediately (3) "Domain agent
+    output also apear live" (4) Domain Agent should "dynamically addopt with user prompt" (5)
+    "Token streaming... must be availble for the domain agent as well, just like the requirement
+    agent" plus a loader "just like the requirement agent."
+    - **Root cause, part 1 (the actual correctness bug, found by reading domain_validator.py/
+      agent.py/prompt.py, not guessed)**: Domain Agent was built as a strict RAG system -- its
+      system prompt told the LLM "every addition must cite one of the [KB-N] knowledge chunks,"
+      and `domain_validator.py`'s `_validate_citation_integrity`/`_validate_honesty_with_empty_
+      retrieval` mechanically enforced it: any addition/modification whose `domain_citation`
+      didn't match a real RETRIEVED chunk's source_document was rejected, and if retrieval
+      returned nothing at all, ANY proposed addition/modification failed the whole plan. A
+      human explicitly typing "here's our database schema: ..." is not a RAG retrieval result --
+      it has no [KB-N] chunk to cite -- so the validator rejected it every time, no matter what
+      the LLM tried, silently falling back to "No domain enrichment was applied to this SRS."
+      This is the exact opposite of what the chat's own proactive prompt (item 41) promises
+      ("do you have something specific to add -- like a database schema?").
+    - **Fix, part 1**: added a second legitimate citation source, `domain_citation.source_document
+      == "human_provided"`, accepted only when the call actually had a non-empty human comment
+      (`human_comment_provided` threaded through `validate_plan`/the new `filter_valid_plan` --
+      the LLM cannot fabricate this source when there was no real comment to ground it in). Added
+      `data_requirements` as a new addition-only target_section (it already existed as a plain
+      `list[str]` field on the SRS -- see `markdown_builder.py`'s own rendering of it -- with no
+      per-item id, so it's the natural home for schema-shaped content that never fit any of the
+      five existing FR/NFR/AC/VR/US item shapes). Both system prompts and the human-comment/
+      revision-comment injection text were rewritten to explicitly instruct the LLM to incorporate
+      concrete human-provided content faithfully (not paraphrase or drop it), and to write ONE
+      complete addition for a single cohesive structure (a whole table's fields) rather than
+      fragmenting it -- the first version of this fix got the citation/section right but the LLM
+      still only added one field from a five-field schema until this instruction was added.
+    - **Root cause, part 1b (found live, AFTER the citation fix, via real end-to-end testing)**:
+      `domain_validator.validate_plan`'s existing all-or-nothing design meant ONE hallucinated,
+      unrelated item (e.g. a modification referencing a made-up acceptance-criteria id) discarded
+      the ENTIRE plan via a single raised exception -- including a separate, genuinely correct,
+      human-requested schema addition sitting right next to it in the same LLM response. Observed
+      directly: a real test run produced `{"additions": [database schema, ...], "modifications":
+      [bad AC-003 reference]}` and the bad modification alone caused the whole thing to be thrown
+      away, reproducing the user's exact complaint even after the citation logic was already
+      fixed.
+    - **Fix, part 1b**: new `DomainEnhancementValidator.filter_valid_plan` -- a lenient
+      counterpart to the existing `validate_plan` (kept unchanged, still covered by its own
+      dedicated unit tests) that checks each addition/modification INDEPENDENTLY, keeping every
+      one that passes and dropping (with a logged, human-readable reason) only the ones that
+      don't, instead of raising for the whole plan. `agent.py`'s `_parse_and_validate_plan`/
+      `_resolve_enrichment_plan` now use this instead -- the JSON-repair retry step is now only
+      reached for genuine structural failures (unparseable JSON, missing top-level keys), not
+      "one item out of five had a bad reference," since that case is now handled by keeping the
+      other four.
+    - **Root cause, parts 2-5 (the chat UX)**: Domain Agent's chat went through `ChatPanel.jsx`'s
+      GENERIC composer path -- a plain, non-streaming axios `mutateAsync` awaited to completion
+      before the composer cleared (`setComment("")` ran only AFTER `await submitAgentMessage(...)`
+      resolved), no live token output at all (Domain's `/domain/run`/`/domain/revise` were
+      one-shot JSON endpoints, unlike Requirement Agent's real `provider.stream(...)`-backed
+      endpoints), and no stop affordance wired to it.
+    - **Fix, parts 2-5**: gave Domain Agent the exact same real infrastructure Requirement Agent
+      already has, not a look-alike:
+      - Backend: new `DomainAgent.run_stream`/`revise_stream` async generators (mirroring
+        `RequirementAgent.revise_stream` exactly) using `provider.stream(...)` for the first LLM
+        call, yielding `{"type": "token", "text": ...}` events for the small enrichment plan as it
+        generates, then running the SAME deterministic filter/merge/save tail as `run()`/
+        `revise()` (factored into the shared `_resolve_enrichment_plan` helper both streaming and
+        non-streaming paths now call). New routes `POST /domain/run/stream` and
+        `POST /domain/revise/stream`, identical NDJSON shape to Requirement's streaming routes.
+        The old non-streaming `/domain/run`/`/domain/revise` routes are untouched for any direct
+        API caller, same as Requirement's own precedent.
+      - Frontend: new `useDomainAgentFlow.js` hook (mirrors `useRequirementConversationFlow.js`
+        exactly -- per-call `AbortController`, `stop*Stream()` functions) shared via new
+        `DomainAgentFlowContext.jsx` (mirrors `RequirementConversationFlowContext.jsx`) so
+        the chat feed and the Result panel's live document view observe the same in-flight
+        stream. New `DomainAgentChat.jsx` (mirrors `RequirementRevisionChat.jsx`) is now
+        Domain's own dedicated chat component, replacing the generic `ChatPanel.jsx` path for
+        `selectedAgent === "domain"` -- carries over the proactive prompt, "/" document mention,
+        and suggestion chips that used to live inline in `ChatPanel.jsx`. The human's message
+        now appears in the chat feed and the composer clears IMMEDIATELY on submit (optimistic
+        `pendingHumanReply` bubble, same pattern `RequirementRevisionChat` already uses), not
+        after the agent finishes. `ResultTab.jsx` gained an `isDomainGenerating` branch reusing
+        the exact same `LiveGenerationView` (built-in "Connecting..." spinner, then live
+        decluttered-JSON "typing" -- the loader the user asked for "just like the requirement
+        agent" comes free from reusing this exact component) Requirement's own revise flow uses.
+        The composer's Send button already becomes a Stop button while any stream is pending
+        (item 44's mechanism), now wired to Domain's new streams too.
+      - `useRunDomain`/`useReviseDomain` (the old non-streaming mutation hooks) are no longer
+        imported by `ChatPanel.jsx` but were left in `useAgentMutations.js` unused rather than
+        deleted, matching this repo's own established precedent (Requirement Agent's own
+        non-streaming `/requirement/revise` route and hook are kept the same way).
+    - **Real, live verification** (isolated backend/frontend, real LLM calls, llama3:latest):
+      typed "Here's our database schema: items table has fields id, name, price, stock, quantity"
+      into Domain Agent's chat and confirmed, within ~150ms of clicking Send, the composer was
+      already empty and the human's message was already visible in the chat feed -- both well
+      before the agent finished. Confirmed a real Stop button appeared mid-stream and, separately,
+      confirmed stopping actually halts the backend (zero artifacts produced when stopped early,
+      same evidence style as item 44). Let a run complete fully and inspected the resulting
+      Enhanced SRS JSON directly: `data_requirements` contained the exact complete string "items
+      table with fields id, name, price, stock, quantity" -- the full schema, faithfully
+      incorporated, not dropped and not fragmented -- with `domain_improvements` correctly
+      showing `knowledge_sources_used: [{"source_document": "human_provided", "chunks_used": 1}]`.
+      Separately verified the "Just use domain knowledge" quick-action button (for a human with
+      nothing specific to add) still completes a full run end-to-end and produces real artifacts.
+      Backend pytest suite: 300 passed (all pre-existing `test_domain_validator.py` tests for the
+      unchanged strict `validate_plan` still pass unmodified). `npm run build` clean. No frontend
+      test framework exists in this repo, matching every prior item's own note. Test
+      projects/features and isolated backend/frontend processes cleaned up afterward.
+
+46. **Asking Domain Agent to remove or edit something already in the Enhanced SRS did nothing --
+    a new version was generated with the requested change silently missing.** Direct user report:
+    "When I prompt to remove or edit something on the enhanced SRS in the domain agent the domain
+    agent did nothing and generated a new enhaced SRS verion without the edit I told to do. When
+    user need to endit, remove or update on something on the enhanced SRS the user must be able
+    to do it by the domain agent, just like the architect agent."
+    - **Root cause**: Domain Agent's entire revision vocabulary was an "enrichment plan" --
+      `additions` (new items) and `modifications` (ENRICH an existing item's description with a
+      missing domain detail, per its own system prompt wording). There was no way to express
+      "remove this" or "replace this outright" at all -- a fundamentally different, and
+      fundamentally missing, capability. By contrast, Requirement Agent's own revise flow
+      (`revision_patcher.py`, confirmed by reading it) already has exactly this: a small
+      `add`/`remove`/`modify`/`set` operations list, applied deterministically by field name
+      against the document. Domain Agent never had an equivalent.
+    - **Fix**: reused `apply_revision_operations` directly (imported from
+      `app.agents.requirement_agent.revision_patcher` -- a deliberate, documented exception to
+      this file's own "other agents stay untouched" claim, since the function is generic and
+      feature-independent, matches by field name against any SRS-shaped document, and has no
+      Requirement-Agent-specific dependencies; reusing it avoided re-implementing ~300 lines of
+      already-working, already-tested matching logic). New `DomainAgent._apply_operations_and_merge`
+      applies any `operations` (remove/modify) to the current Enhanced SRS FIRST, then merges the
+      enrichment plan's `additions` on top of the operation-patched result -- called from both
+      `revise()` and `revise_stream()` only (not `run()`/`run_stream()`, which have no existing
+      document yet to edit). Applied/unmatched edits are recorded in `domain_improvements_json`
+      (`applied_edits`/`unmatched_edits`) and unmatched ones are also appended to the Enhanced
+      SRS's own `assumptions` array, mirroring Requirement Agent's own "report, don't guess"
+      convention exactly -- a human reviewer sees explicitly when a requested edit did NOT happen,
+      instead of it silently not happening with no trace.
+    - **Prompt iteration, done for real via live testing, not guessed**: the first version (three
+      mechanisms -- additions/modifications/operations -- coexisting) let the model correctly
+      express a `remove` on the first try, but consistently mis-routed `modify` requests through
+      the OLD `modifications` shape instead of `operations`, omitting the required `value` field
+      three times in a row with three different malformed shapes. Diagnosis: three overlapping
+      mechanisms was too much decision surface for this size of local model
+      (`llama3:latest`, temperature 0.3). Fix: collapsed the revision schema to exactly TWO
+      mechanisms -- `additions` (brand-new content only) and `operations` (anything touching
+      something that already exists, including "enrich this item's description," which is now
+      just `action: "modify"` with the complete new text) -- with `modifications` kept in the
+      returned JSON shape only as an always-empty placeholder so older parsing code never breaks.
+      This single simplification fixed `modify` reliably across every retest afterward. Separately
+      hardened `domain_validator.py`'s lenient per-item path (`_check_one_citation`/
+      `_check_one_modification`) to auto-attribute a missing `domain_citation` to
+      `"human_provided"` when a real human comment exists (rather than reject the item), and to
+      accept the `operations` vocabulary's key names (`field`/`target`/`value`) as aliases for
+      `modifications`' own (`target_section`/`id`/`enhanced_description`) if the model still
+      confuses them -- defensive robustness, not required for the fix to work, but cheap and
+      strictly safety-net.
+    - **Real, live verification** (isolated backend/frontend, real LLM calls, `llama3:latest`,
+      inspecting actual resulting artifacts each time, not just HTTP status codes): "Remove the
+      requirement about merging guest carts (FR-DOM-001)" -> confirmed FR-DOM-001 genuinely gone
+      from the next version's `functional_requirements`, with `domain_improvements.applied_edits`
+      correctly recording it. "Change FR-002 to say: ..." -> confirmed FR-002's description was
+      replaced with the exact new text, twice in a row. "Update NFR-001 to say response time must
+      be under 1 second" -> confirmed the exact replacement, and a same-session "Remove NFR-002"
+      right after that also correctly removed it. Re-verified additions (the prior item's own
+      schema-incorporation fix) still work correctly after this schema simplification -- one
+      retry needed out of two attempts on a fresh feature (the other failed attempt was an honest,
+      correctly-reported "nothing changed" rather than a silent no-op, confirming the reliability
+      ladder's own honesty guarantee held even when the underlying small local model itself
+      stumbled). Finally drove a real removal request through the ACTUAL browser chat UI (not just
+      curl): composer cleared immediately, the message appeared in the chat feed, a new Enhanced
+      SRS version was produced, and the targeted functional requirement was genuinely gone from
+      it. Backend pytest suite: 300 passed, including every pre-existing `test_domain_validator.py`
+      test for the untouched strict `validate_plan` (only the new lenient per-item path changed).
+      `npm run build` clean; no frontend code changes were needed for this item (the existing
+      DomainAgentChat/streaming infrastructure from item 45 required zero changes -- this was a
+      pure backend capability gap). No frontend test framework exists in this repo, matching every
+      prior item's own note. Test projects/features and isolated backend/frontend processes
+      cleaned up afterward.
+
+47. **Follow-up to items 45/46 (same overall request, restated): "the domain agent must
+    dynamically interact with the user... satisfy all user prompts/needs... just like the
+    requirement agent... e.g. add a database schema."** Investigation found items 45 and 46
+    together already fully deliver this -- real token-by-token streaming, immediate composer
+    clear, a live loader, and working add/remove/modify via `DomainAgentChat.jsx` +
+    `useDomainAgentFlow.js` + the operations-based revise backend -- so this item is a fresh,
+    skeptical, full end-to-end re-verification of that combined state (not a re-implementation),
+    plus one real bug it caught:
+    - **Bug found**: `LiveReactionBubble` (in `RequirementConversationParts.jsx`) hardcoded the
+      label `"Requirement Agent"` on its "thinking..."/streaming bubble. `DomainAgentChat.jsx`
+      (item 45) reuses this exact component for its own streaming summary, so Domain Agent's
+      live "thinking" bubble incorrectly read "Requirement Agent" the whole time -- confirmed via
+      screenshot before the fix. Fixed by adding an `agentLabel` prop (default
+      `"Requirement Agent"`, so both existing Requirement Agent call sites -- `RequirementRevisionChat.jsx`
+      and `RequirementConversationChat.jsx` -- need no changes) and passing
+      `agentLabel="Domain Agent"` from `DomainAgentChat.jsx`'s own call site.
+    - **Real, live re-verification of the combined items 45+46+47 state**, fresh isolated
+      backend/frontend, real LLM calls (`llama3:latest`), through the ACTUAL browser chat UI, one
+      continuous session per flow (avoiding the documented `browser.close()`-races-an-in-flight-
+      stream gotcha): typed a database schema into a fresh feature's Domain Agent chat (its first
+      message, so this exercises `run_stream`) -- confirmed the composer cleared and the message
+      appeared in the chat feed within ~150ms, confirmed the "thinking" bubble correctly read
+      "Domain Agent" (not "Requirement Agent"), waited for real completion (polling the backend
+      artifacts endpoint, not a fixed sleep), and confirmed the resulting Enhanced SRS's
+      `data_requirements` contained the exact schema string
+      `"cart_items table: id, cart_id, product_id, quantity, price."` -- faithfully incorporated.
+      Then, on the SAME feature (now exercising `revise_stream`), typed "Remove the functional
+      requirement about removing items from cart" and confirmed a new Enhanced SRS version was
+      produced with that exact functional requirement genuinely gone from
+      `functional_requirements`, composer again clearing immediately and the label again reading
+      "Domain Agent" throughout. `npm run build` clean; backend pytest suite 300 passed. No
+      frontend test framework exists in this repo, matching every prior item's own note. Test
+      project/feature and isolated backend/frontend processes cleaned up afterward.
+
+48. **Per-Project Domain Knowledge Upload + "/" Document Mention for Domain Agent -- found already
+    fully implemented (backend RAG pipeline, upload service, routes, and every frontend piece)
+    from earlier in this same session; this pass was real, live, skeptical end-to-end
+    verification of that state, not a reimplementation, and it caught one real cosmetic bug.**
+    Full design: the plan approved in plan mode this session (now superseded per this file's own
+    "plan file is scratch" convention). Confirmed present and correct by reading every file the
+    plan named: `rag/vector_store.py` (`get_chunks_by_document`/`delete_by_document`/`query(...,
+    where=...)`), `rag/chunking.py` (`document_id`-namespaced chunk IDs), `domain_knowledge_
+    service.py` (`retrieve(..., project_id=...)`'s Python-side cross-project-leak guard,
+    `ingest_upload`/`get_document_chunks`/`rank_chunks_by_relevance`/`delete_document`), the new
+    `knowledge_document_service.py` (upload/list/get/delete, mirroring `project_memory_service`'s
+    storage convention), `knowledge_schema.py`, the `knowledge_documents` Mongo collection, `POST/
+    GET/DELETE /projects/{id}/knowledge/documents` + download route, `domain_schema.py`'s
+    `referenced_document_ids`, and `DomainAgent._collect_pinned_chunks`/`_retrieve_domain_
+    knowledge(...)` wiring pinned chunks ahead of similarity-search chunks. Frontend: `api/
+    knowledge.js`, `useKnowledgeDocuments.js`, `DomainKnowledgePanel.jsx` (wired into
+    `FeatureListPanel.jsx` behind a "Domain Knowledge" modal), `DocumentMentionPicker.jsx` +
+    `DomainAgentChat.jsx`'s `/`-trigger regex/mention-chip state (from item 45's dedicated Domain
+    chat component -- the picker/chips slot directly into its existing composer, no separate
+    integration needed).
+    - **Real, live verification, no mocks**: a standalone script (no HTTP, no LLM, real Chroma +
+      real `sentence-transformers` embedding) exercised `knowledge_document_service`/
+      `domain_knowledge_service` directly against two real projects -- upload succeeds with a real
+      non-zero `chunk_count`, `list_documents` is correctly project-scoped, **the cross-project
+      leak guard holds** (a query from project B for project A's unique marker text returns zero
+      of A's chunks), project A's own retrieval correctly finds its own document, `DomainAgent.
+      _collect_pinned_chunks` correctly returns the pinned document's real chunk text, raw-byte
+      download round-trips exactly, and delete removes the chunks (0 remain via `get_document_
+      chunks` afterward). Then, in a real isolated browser session (fresh backend :8070/frontend
+      :5199, real project/feature), opened the Domain Knowledge modal, uploaded a real `.txt` file
+      through the actual file input, watched it reach `status: ready` via the panel's own 3s
+      polling, navigated to Domain Agent's chat, typed `/returns` and confirmed the mention picker
+      appeared showing the uploaded filename, clicked it, and confirmed a removable
+      `returns_schema.txt ×` chip appeared above the composer with the `/returns` token correctly
+      stripped from the message text -- exactly the Claude/ChatGPT-style file-mention UX the plan
+      called for.
+    - **Real bug found and fixed**: `DomainKnowledgePanel.jsx` mapped a knowledge document's own
+      `status` (`processing`/`ready`/`failed`) onto `StatusBadge`'s `approved`/`rejected`
+      vocabulary purely to reuse its green/red color styling -- but `StatusBadge`'s label text was
+      hardcoded per status key, so a successfully-processed document's badge literally read
+      "Approved" (and a failed one "Rejected"), falsely implying a human approval decision had
+      happened to a document that was never gated at all. Fixed by giving `StatusBadge` an
+      optional `label` override prop (falls back to its existing hardcoded label map when
+      omitted, so every other call site in the app is unaffected) and passing "Ready"/"Failed"/
+      "Processing..." from `DomainKnowledgePanel` -- confirmed via a fresh screenshot after the
+      fix. **Any future reuse of `StatusBadge` for a status vocabulary that isn't actually
+      pending/approved/rejected should pass its own `label`**, not rely on the approval-flavored
+      default text.
+    - No backend changes were needed -- the backend half of this feature was already correct as
+      found. Full backend suite: 300 passed (no regressions, confirmed before starting this
+      verification pass). `npm run build` clean after the `StatusBadge`/`DomainKnowledgePanel`
+      fix. No frontend test framework exists in this repo, matching every prior item's own note.
+    - **Loose end, not investigated further**: the throwaway verification project
+      (`proj_37f06cfd`, "KB Mention Verify") could not be found via `DELETE`/`GET` immediately
+      after the browser verification session ended, despite having been fully functional (upload,
+      list, chat, mention picker) moments earlier through the same backend process -- no on-disk
+      `outputs/kb-mention-verify/` directory existed either, so there was nothing left to clean up
+      by hand. Not reproduced or root-caused (this session's isolated test backends/projects are
+      always short-lived and thrown away regardless, so a project vanishing on its own before
+      cleanup has zero practical impact) -- flagged here only in case a similar "a just-created
+      project silently disappeared" report ever surfaces as a real, non-throwaway complaint.
+
+49. **Domain Agent treated a human-referenced document as merely optional background, identical
+    to an ordinary similarity-search hit -- so "enrichment" often looked static/generic even
+    though the RAG plumbing (items 45/48) was already real. Fixed by giving referenced
+    documents mandatory-incorporation treatment in the prompt, distinct from ordinary retrieval.
+    Also fixed a second, real, reproduced bug: the agent's chat reply visibly disappeared for a
+    beat right when a stream finished, before the persisted bubble replaced it.** Direct user
+    report, three parts: (1) "the domain agent only enhanced the SRS static way... must enhance
+    dynamically according to the user prompt and user select files," (2) "user must be able to
+    add extra sections to the SRS explicitly... if user needs to add database schema... domain
+    agent must do it," (3) "once the domain agent replies... the message disappears instantly."
+    - **Root cause, parts 1-2**: confirmed by reading `_format_retrieved_chunks` (`prompt.py`) --
+      every retrieved chunk, whether it came from ordinary similarity search OR from a document
+      the human explicitly selected via "/" (item 48's pinned-chunk mechanism), was rendered
+      identically as a generic `[KB-N]` block with no signal that one class of chunk was
+      hand-picked by the human and the other wasn't. The system prompt's own "TWO legitimate
+      sources" framing (retrieved chunks vs. the human's *typed* comment) never distinguished a
+      referenced *file* from a generic retrieval hit -- so the model was free to judge a
+      referenced document's relevance the same way it judges any KB search result, and could (and
+      did, on the first repro attempt) engage with it only partially instead of treating the
+      human's explicit selection as an instruction. This is the same defect class already fixed
+      for *typed* human comments in item 45 (`HUMAN_PROVIDED_SOURCE`), just never extended to
+      *referenced files* -- the chat's own proactive prompt invites "type / to reference an
+      uploaded document," implying selection alone should carry weight, which it didn't.
+    - **Fix**: `DomainAgent._collect_pinned_chunks` now tags every pinned chunk
+      `referenced_by_human: True`. `prompt.py`'s `_format_retrieved_chunks` renders tagged chunks
+      as a separate `[REFERENCED-N]` block (own section, "mandatory to use") ahead of ordinary
+      `[KB-N]` blocks ("optional background"). Both `DOMAIN_AGENT_SYSTEM_PROMPT` and
+      `DOMAIN_REVISION_SYSTEM_PROMPT` gained explicit "you MUST incorporate every [REFERENCED-N]
+      chunk's relevant content, not just consider it optional" rules, plus the SAME "if it
+      describes one cohesive structure, write ONE complete addition covering the whole thing"
+      instruction item 45 already gave typed comments -- now applying to referenced files too.
+      `build_domain_user_prompt`/`build_domain_revision_prompt` each gained a small dynamic
+      reminder line (counting how many `[REFERENCED-N]` chunks are present) reinforcing the same
+      point right before generation, matching this project's own established "local models respond
+      better to repeated instructions" precedent. Citation format is unchanged and needed no
+      validator changes -- a `[REFERENCED-N]` chunk cites with its own real
+      `source_document`/`chunk_id`, exactly like a `[KB-N]` chunk already does; only `human_provided`
+      remains reserved for the human's own *typed* text.
+    - **Root cause, part 2's "extra sections"**: turned out to already be the exact mechanism item
+      45 built -- `data_requirements` renders as its own titled `## 14. Data Requirements` Markdown
+      section (confirmed by reading `markdown_builder.py`), which is precisely "an extra section
+      for a database schema." The gap was never a missing schema mechanism, only that a
+      *referenced file's* schema wasn't being reliably pulled in -- fixed by the same change as
+      part 1.
+    - **Root cause, part 3, confirmed by reading the actual mutation code**:
+      `useDomainAgentFlow.js`'s `invalidateAfterCompletion` fired four `queryClient.
+      invalidateQueries(...)` calls without awaiting any of them, and was a plain (non-async)
+      function passed as the mutation's `onSuccess`. React Query's `mutateAsync()` only resolves
+      once `onSuccess` itself resolves -- since this `onSuccess` returned `undefined` synchronously
+      instead of a pending promise, `mutateAsync()` (and therefore `activeStream.isPending`
+      flipping false, and `submitDomainMessage`'s `.finally(() => setPendingHumanReply(null))`)
+      all fired essentially immediately, well before the invalidated queries had actually
+      refetched fresh data from the backend. Net effect: the live streaming/reaction bubble and
+      the optimistic "You" bubble both vanished the instant the stream's `"done"` event landed,
+      but the real persisted bubbles (which only exist once the refetched `events`/`artifacts`
+      queries land in the cache) hadn't appeared yet -- a real, reproducible empty-frame gap,
+      exactly the reported "message disappears instantly."
+    - **Fix**: made `invalidateAfterCompletion` `async` and awaited every `invalidateQueries(...)`
+      call via `Promise.all([...])` -- `mutateAsync()` (and thus the live bubbles' teardown) now
+      genuinely waits until the fresh timeline data has landed in the query cache before
+      resolving, making the live-bubble-to-persisted-bubble handoff seamless. **The identical
+      unawaited pattern was found in two more places sharing the same root cause** (not reported
+      for these, but the same bug class, fixed for consistency and cheap to fix safely):
+      `useRequirementConversationFlow.js`'s `confirmStream`/`reviseStream` `onSuccess` handlers
+      (Requirement Agent's post-SRS revise chat -- `RequirementRevisionChat.jsx` mirrors
+      `DomainAgentChat.jsx`'s exact bubble-teardown pattern, so it had the exact same race), and
+      `useAgentMutations.js`'s shared `useAgentMutation` factory (used by Architecture/UI-UX/Coder
+      Agent's plain, non-streaming chats -- same "pending flips false right as onSuccess starts"
+      mechanism, same fix).
+    - **Real, live verification, no mocks, through the actual browser chat UI** (isolated
+      backend/frontend, real Ollama calls -- temporarily switched Domain Agent's live per-agent
+      LLM override from `qwen3-coder:latest`, discovered mid-verification to be genuinely slow on
+      this machine's GPU per the already-documented gotcha, to `llama3:latest` for the duration of
+      this pass only, then restored it back to `qwen3-coder:latest` exactly afterward -- this is
+      real, persisted, shared configuration in the live Atlas cluster, not test-local state, so it
+      was put back rather than left changed):
+      - Message-disappear fix: submitted a real Domain Agent message, watched a genuine Stop
+        button appear then disappear as the real stream completed, and screenshotted the exact
+        next frame after completion -- the real "Domain Agent: Produced Enhanced SRS, Domain
+        Improvements (v1)" bubble was already visible with zero empty gap, confirmed both visually
+        and via `page.inner_text` (no "No activity yet" flash, "Produced" present immediately).
+      - Dynamic/referenced-file enrichment fix: uploaded a real knowledge document (a
+        `return_reasons` lookup table schema: `id`, `code`, `display_label`,
+        `requires_photo_evidence`, `refund_eligible`) to a fresh project, referenced it via "/" in
+        Domain Agent's chat with only a generic, non-copy-pasted instruction ("Please enrich the
+        SRS using [the referenced file]") -- the resulting Enhanced SRS's `domain_improvements`
+        correctly cited `return_reasons_schema.txt` by its real `chunk_id` (not a generic KB hit,
+        not "human_provided") and added a genuinely content-derived enrichment (a `reason_id`
+        foreign-key requirement + a status-enum acceptance-criteria modification), both explicitly
+        reasoned from "[REFERENCED-1]" in the model's own rationale text -- concrete evidence the
+        model now treats a referenced file differently from background retrieval, not the
+        pre-fix generic/static behavior. A follow-up revision request ("add the full
+        return_reasons lookup table... including every field in that document," again without
+        retyping the schema, just re-referencing the same file) produced a `data_requirements`
+        entry that was an EXACT, complete match to the uploaded file's full 5-field schema --
+        confirming both the mandatory-incorporation fix and the pre-existing "one complete
+        addition per cohesive structure" instruction now correctly extend to referenced files, not
+        just typed comments.
+    - Full backend suite: **300 passed** (`tests/test_domain_validator.py`/
+      `test_domain_agent_fallback.py` specifically re-run first, all still passing unmodified --
+      this change only touched prompt text and chunk tagging/formatting, no validator logic).
+      `npm run build` clean. No new backend unit tests were added for the prompt-wording change
+      itself (there is no automated way to assert an LLM "treats X as mandatory" -- this was
+      verified live, against a real model, matching this project's established practice for
+      prompt-quality changes). No frontend test framework exists in this repo, matching every
+      prior item's own note.
+    - **A real, reachable bug found ALONG THE WAY during this verification's own test setup, NOT
+      part of this fix and NOT fixed here (recorded honestly rather than silently left for a
+      future session to rediscover)**: `approval_service.py`'s SRS-exclusivity rule (item 37) reverts
+      every OTHER `srs`-type artifact currently `APPROVED` back to `pending` when a new one is
+      approved -- scoped by `artifact_type` alone, with **no format awareness**. Since every SRS
+      version is saved as a JSON+Markdown *pair* sharing one version (this project's own
+      long-established convention -- see item 34's cascade-delete fix for the first time this
+      exact pairing caused a bug), approving the JSON half of a version, after its Markdown
+      sibling was already separately approved, silently reverts that Markdown sibling back to
+      "pending" -- confirmed directly and reproducibly in this session (approved `srs` markdown
+      v1, then `srs` json v1; the markdown flipped back to pending the instant the json was
+      approved). **This is reachable through the normal UI, not just direct API calls**: item 40's
+      own fix made every pending/rejected version of every artifact_type independently
+      approvable, including a gating type's Markdown row, which previously had no path to
+      independent approval at all. Likely low real-world impact today, since the frontend's own
+      approve flow (`ResultTab.jsx`'s `requestSrsApproveConfirmation`) always targets the row the
+      UI shows (typically the JSON representative, per `dedupeArtifactVersions`' format
+      preference) rather than a human manually approving the Markdown row on its own -- but a
+      human who *does* explicitly approve a Markdown row first, then approves its JSON sibling
+      (or vice versa), will see the first one silently un-approve. Worth a future fix (the
+      cleanest one: scope the exclusivity revert to same-`artifact_format`-siblings the same way
+      item 34's `delete_artifact` already treats a JSON+Markdown pair as one logical version) --
+      not fixed here, since it's unrelated to what this item's user report asked for.
+
+50. **Domain Agent could structurally only enrich 6 of the SRS's ~18 sections (in practice
+    converging on non_functional_requirements/acceptance_criteria almost every run) -- fixed by
+    genuinely widening what it's allowed to touch, not just prompting it to try harder. Also
+    added inline, color-coded highlighting for domain-added content across every section, not
+    just the original 4.** Direct user report: "the domain agent only improves the Nonfunctional
+    requirement section and the acceptance criteria section... must enrich the entire SRS
+    dynamically instead of static... must display the domain improvements separately... highlight
+    and use separate colour codes for domain agent improvements."
+    - **Root cause, confirmed by reading the actual schema, not assumed**:
+      `domain_validator.py`'s `ADDITION_TARGET_SECTIONS` was hard-capped at the 5 ID-tagged
+      sections (FR/NFR/AC/VR/US) plus `data_requirements` -- `scope`, `out_of_scope`,
+      `constraints`, `risks`, `dependencies`, `assumptions`, `user_roles`, `api_expectations`,
+      `ui_expectations`, `input_requirements`, `output_requirements` were **structurally
+      impossible** targets for an "addition," rejected by the validator regardless of what the
+      retrieved knowledge supported. The system prompt's own "Never touch project/feature-level
+      fields (business_goal, scope, constraints, etc.)" line made this a deliberate original
+      design choice, not an oversight -- but it meant the model's only real creative freedom
+      narrowed down to NFR/AC in practice (the two sections that read most naturally as "domain
+      knowledge" without a schema/citation to hang off of), exactly matching the reported
+      complaint. This was a real schema restriction, not a model preference the prompt could
+      talk its way around.
+    - **Fix, backend**: `domain_validator.py` gained `PLAIN_LIST_SECTIONS` (the 11 sections
+      above -- deliberately matching `DOMAIN_REVISION_SYSTEM_PROMPT`'s pre-existing "operations"
+      field list, which could already reach every one of these via remove/modify; only
+      "additions," shared by both initial generation and revision, was missing them) and
+      `ADDITION_ONLY_SECTIONS = [data_requirements] + PLAIN_LIST_SECTIONS` --
+      `ADDITION_TARGET_SECTIONS` now includes all of them, addition-only (like data_requirements,
+      none have a per-item id to modify; `_validate_modifications`/`_check_one_modification`
+      reject a modification targeting any of them with the same "propose an addition instead"
+      message data_requirements already had). `agent.py`'s `_apply_enrichment_plan` generalized
+      its data_requirements-only special case to `if target_section in ADDITION_ONLY_SECTIONS`,
+      appending the description to whichever plain list[str] field the LLM targeted -- one code
+      path for all 12 addition-only sections instead of one hardcoded to `data_requirements`.
+    - **Fix, prompt**: `DOMAIN_AGENT_SYSTEM_PROMPT` and `DOMAIN_REVISION_SYSTEM_PROMPT` both gained
+      an explicit "do NOT default to only non_functional_requirements/acceptance_criteria --
+      actively check EVERY section against the retrieved knowledge, only propose what the content
+      genuinely supports, never pad a section just to appear thorough" rule, plus per-section
+      guidance on what kind of domain fact fits each new target (a compliance rule -> constraints,
+      a known failure mode -> risks, a third-party service -> dependencies, an exact
+      endpoint/auth expectation -> api_expectations, etc.). The old blanket "never touch
+      project/feature-level fields" line was replaced with a short, explicit exclusion list
+      (business_goal, feature_name, project_type, target_stack, architectural_style,
+      traceability, domain_enrichment_metadata -- identity/system-managed fields only); everything
+      else is now a legitimate target.
+    - **Fix, "display domain improvements separately"**: already existed from item 42 (the
+      `domain_improvements` artifact is excluded from the approvable artifact list and rendered
+      as a read-only attachment directly under the Enhanced SRS) -- confirmed still correct,
+      unchanged by this item.
+    - **Fix, "highlight with separate color codes"**: `EnrichedItemList`/`SrsDocumentViewer`
+      already did this for FR/NFR/AC/VR (green="Added by Domain Agent", blue="Enhanced by Domain
+      Agent") -- but two real gaps were found reading the actual component: `user_stories` was
+      missing from `ENRICHABLE_SECTIONS` entirely (Domain Agent could already add to it per
+      `SECTION_PREFIX_MAP`, just never got the highlight treatment), and every plain-list section
+      (including the pre-existing `data_requirements`) had **no highlighting mechanism at all**,
+      since a plain string can't carry its own `origin`/`modified_by_domain_agent` flag the way an
+      FR/NFR/AC/VR/US dict item can. Fixed: `user_stories` added to `ENRICHABLE_SECTIONS`. New
+      `EnrichedPlainList.jsx` (same green "Added by Domain Agent" card + citation convention as
+      `EnrichedItemList`, addition-only -- a plain-list section has no "modified" concept since
+      there's no original text left to diff against once a string is edited in place) renders any
+      of the 12 addition-only plain-list sections; a domain-added entry is identified by **exact
+      text match** against the sibling Domain Improvements artifact's own recorded
+      `additions[].description` for that `target_section` (new `buildHighlightedTextsBySection`
+      helper in `SrsDocumentViewer.jsx`) -- no SRS schema change needed, since
+      `domain_improvements_json` already records exactly this. `ArtifactContentView.jsx` gained an
+      optional `domainImprovementsArtifact` prop (fetches its content via the same
+      `useArtifactContent` hook, React-Query-cached so no extra network cost since `ResultTab.jsx`
+      already fetches this same artifact for its own separate "Domain Improvements" attachment
+      below) and passes it into `SrsDocumentViewer` as `domainImprovements`; `ResultTab.jsx`'s one
+      call site updated. Also mirrored the same tagging into the Markdown output for symmetry
+      (`markdown_builder.py`'s `_simple_list` gained an optional `highlighted_texts` set param,
+      prefixing a matched plain-list entry with `**[DOMAIN ADDED]**`, computed once per `build()`
+      call from `domain_improvements_json`'s own additions) -- the downloaded/rendered Markdown
+      report now shows the same distinction the JSON-driven React view does, not just one of the
+      two.
+    - **Known, honest scope limit**: the artifact-viewer **popup** (`ArtifactViewerModal.jsx`,
+      reached via a "View" link anywhere outside the main Result panel) does not currently look up
+      sibling artifacts, so it renders an Enhanced SRS without the inline highlighting -- falls
+      back to the exact same plain rendering as before this item (no regression, just missing the
+      enhancement there). The **primary** reading surface (`ResultTab.jsx`'s inline document view,
+      the same place a human actually reviews and approves the Enhanced SRS) has it. Threading
+      sibling-lookup into the popup path would need `allArtifacts` plumbed into
+      `WorkspaceSelectionContext`, out of this item's scope.
+    - **Real, live verification, no mocks, through the actual API and browser** (isolated
+      backend/frontend, temporarily switched Domain Agent's live per-agent LLM override to
+      `llama3:latest` for the duration of this pass only -- same real, persisted, shared Atlas
+      configuration as item 49, restored to `qwen3-coder:latest` exactly afterward): created a
+      fresh "Payment Processing" feature specifically to exercise the payment/PCI seed knowledge
+      base. A broad enrichment request ("cover requirements, constraints, risks, and dependencies,
+      not just non-functional requirements") produced additions in `functional_requirements` AND
+      `data_requirements` -- **zero** in NFR/AC this run, a complete reversal of the reported
+      bias, direct evidence the schema is no longer the bottleneck (the model's per-run section
+      choice is a separate, harder "which sections does retrieved content actually support"
+      question this fix doesn't and can't fully control, honestly noted rather than overclaimed).
+      A second, targeted revision request ("add a constraints entry: must comply with PCI DSS and
+      never store raw card numbers") -- after one real, unrelated JSON-parse fallback on the first
+      attempt (the pre-existing reliability ladder correctly caught it and preserved the document
+      unchanged, confirmed via `fallback_used: true` in the resulting metadata; not a regression,
+      the same ladder every Domain Agent call already has) -- succeeded on retry: the new
+      `constraints` entry was confirmed present, verbatim, in the real Enhanced SRS JSON. A real
+      browser screenshot of the Result panel's Constraints section shows the exact PCI DSS text in
+      a green card with an "ADDED BY DOMAIN AGENT" badge and "Source: human_provided" citation,
+      while the adjacent, untouched Risks/Dependencies entries (original Requirement Agent
+      content) correctly render as plain, unhighlighted bullets right below it in the same
+      screenshot -- direct visual proof of both the enrichment breadth fix and the highlighting
+      fix working together, with no false-positive highlighting.
+    - Full backend suite: **300 passed** (`tests/test_domain_validator.py`/
+      `test_domain_agent_fallback.py`/`test_domain_markdown_builder.py` specifically re-run first,
+      all still passing unmodified by this schema-expansion change). `npm run build` clean. No new
+      backend unit tests added for the prompt-wording change itself (same reasoning as item 49 --
+      "does the model actually diversify" is a live-verification question, not a unit-testable
+      one); the deterministic schema/merge/markdown changes (`ADDITION_ONLY_SECTIONS`,
+      `_apply_enrichment_plan`'s generalized branch, `_simple_list`'s highlighting) are exactly
+      the kind of logic this project's existing tests already cover structurally and continued to
+      pass unmodified. No frontend test framework exists in this repo, matching every prior item's
+      own note.
+
 ## Where to look
 
 - Full build spec (read this first, in order, before any new milestone): `instructions .md`

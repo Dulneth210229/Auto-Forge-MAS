@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { useFeature } from "../../hooks/useFeatures";
 import { useFeatureApprovals, useFeatureEvents, useGraphStatus } from "../../hooks/usePipeline";
 import { useFeatureArtifacts } from "../../hooks/useArtifacts";
-import { useKnowledgeDocuments } from "../../hooks/useKnowledgeDocuments";
 import { deriveStageStatus, listGatingArtifactVersions, STATUS } from "../../lib/deriveStageStatus";
 import { GATED_STAGES, STAGE_LABELS } from "../../lib/pipelineStages";
 import { buildAgentTimeline } from "../../lib/buildAgentTimeline";
@@ -11,26 +10,18 @@ import { useWorkspaceSelection } from "../workspace/WorkspaceSelectionContext";
 import {
   useReviseArchitecture,
   useReviseCoder,
-  useReviseDomain,
   useRunArchitecture,
   useRunCoder,
-  useRunDomain,
   useRunUiux,
 } from "../../hooks/useAgentMutations";
 import ArchitectureRunForm from "../pipeline/ArchitectureRunForm";
 import ChatBubble from "./ChatBubble";
 import ChatComposerBox from "./ChatComposerBox";
-import DocumentMentionPicker from "./DocumentMentionPicker";
 import RequirementConversationChat from "./RequirementConversationChat";
 import RequirementRevisionChat from "./RequirementRevisionChat";
+import DomainAgentChat from "./DomainAgentChat";
 import LoadingSpinner from "../common/LoadingSpinner";
 import ErrorBanner from "../common/ErrorBanner";
-
-// Matches a trailing "/word" token at the end of the text typed so far (e.g. "check the /sche"
-// while typing "/schema.pdf") -- used to open the document mention picker. Requires the "/" to
-// start a token (start-of-string or preceded by whitespace) so a literal "/" inside a normal
-// sentence (e.g. "input/output") doesn't spuriously trigger it.
-const MENTION_TRIGGER_PATTERN = /(?:^|\s)\/(\w*)$/;
 
 function isProcessingNode(graphStatus, stage) {
   return Boolean(graphStatus?.next?.includes(`${stage}_node`));
@@ -108,63 +99,22 @@ export default function ChatPanel({ featureId }) {
 
   // Not memoized: allArtifacts/allApprovals/allEvents are fresh `|| []` fallbacks each render
   // (see above), so a dependency array here would never actually skip recomputation anyway --
-  // buildAgentTimeline itself is cheap (a handful of array scans + one sort).
-  const timeline = buildAgentTimeline(allArtifacts, allApprovals, allEvents);
+  // buildAgentTimeline itself is cheap (a handful of array scans + one sort). Scoped to
+  // selectedAgent -- see buildAgentTimeline's own docstring for why each agent must hold only
+  // its own chat, not a feed shared across every agent.
+  const timeline = buildAgentTimeline(selectedAgent, allArtifacts, allApprovals, allEvents);
 
   const [comment, setComment] = useState("");
   const [showArchitectureForm, setShowArchitectureForm] = useState(false);
 
-  // "/" document mention (Domain Agent only) -- referencedDocuments holds the picked
-  // {document_id, original_filename} chips; mentionQuery is non-null while the picker is open,
-  // holding whatever's been typed after "/" so far.
-  const [referencedDocuments, setReferencedDocuments] = useState([]);
-  const [mentionQuery, setMentionQuery] = useState(null);
-
-  const projectId = feature?.project_id;
-  const isDomainSelected = selectedAgent === "domain";
-  const { data: knowledgeDocuments } = useKnowledgeDocuments(projectId, {
-    enabled: Boolean(projectId) && isDomainSelected,
-  });
-
   const runArchitecture = useRunArchitecture(featureId);
   const runUiux = useRunUiux(featureId);
   const runCoder = useRunCoder(featureId);
-  const runDomain = useRunDomain(featureId);
-  const reviseDomain = useReviseDomain(featureId);
   const reviseArchitecture = useReviseArchitecture(featureId);
   const reviseCoder = useReviseCoder(featureId);
 
-  const runMutationsByStage = { architecture: runArchitecture, uiux: runUiux, coder: runCoder, domain: runDomain };
-  const reviseMutationsByStage = {
-    domain: reviseDomain,
-    architecture: reviseArchitecture,
-    coder: reviseCoder,
-  };
-
-  function handleCommentChange(event) {
-    const value = event.target.value;
-    setComment(value);
-
-    if (!isDomainSelected) {
-      setMentionQuery(null);
-      return;
-    }
-
-    const match = value.slice(0, event.target.selectionStart ?? value.length).match(MENTION_TRIGGER_PATTERN);
-    setMentionQuery(match ? match[1] : null);
-  }
-
-  function handleMentionSelect(doc) {
-    setComment((current) => current.replace(MENTION_TRIGGER_PATTERN, (full) => (full.startsWith(" ") ? " " : "")));
-    setReferencedDocuments((current) =>
-      current.some((d) => d.document_id === doc.document_id) ? current : [...current, doc]
-    );
-    setMentionQuery(null);
-  }
-
-  function removeReferencedDocument(documentId) {
-    setReferencedDocuments((current) => current.filter((d) => d.document_id !== documentId));
-  }
+  const runMutationsByStage = { architecture: runArchitecture, uiux: runUiux, coder: runCoder };
+  const reviseMutationsByStage = { architecture: reviseArchitecture, coder: reviseCoder };
 
   const versions = listGatingArtifactVersions(selectedAgent, allArtifacts);
   const hasOutput = versions.length > 0;
@@ -205,34 +155,52 @@ export default function ChatPanel({ featureId }) {
     );
   }
 
+  // Domain Agent: its own dedicated chat (both the pre-output "run" and post-output "revise"
+  // sub-flows), live-streamed the same way Requirement Agent's chats are -- see
+  // DomainAgentChat.jsx's own docstring for the direct user report this replaced.
+  if (selectedAgent === "domain") {
+    return (
+      <DomainAgentChat
+        featureId={featureId}
+        feature={feature}
+        runningStage={runningStage}
+        selectedAgent={selectedAgent}
+        selectAgent={selectAgent}
+        timeline={timeline}
+        allArtifacts={allArtifacts}
+        onViewArtifact={viewArtifact}
+        isLoadingTimeline={graphLoading || artifactsLoading || eventsLoading}
+      />
+    );
+  }
+
   const runMutation = runMutationsByStage[selectedAgent];
   const reviseMutation = reviseMutationsByStage[selectedAgent];
   const activeMutation = hasOutput ? reviseMutation : runMutation;
   const isAgentRunning = runningStage === selectedAgent || Boolean(activeMutation?.isPending);
 
-  async function handleSubmit(event) {
-    event.preventDefault();
-    if (!comment.trim() || !activeMutation) return;
-
-    const referencedDocumentIds = referencedDocuments.map((doc) => doc.document_id);
+  // Shared by the composer's Send and a chat bubble's inline "Save & Send" (see ChatBubble's own
+  // docstring for why editing an old message resubmits rather than rewriting history) -- both
+  // ultimately do the same thing: fire whichever mutation (run vs. revise) currently applies, with
+  // whatever text the human settled on.
+  async function submitAgentMessage(text) {
+    const trimmed = text.trim();
+    if (!trimmed || !activeMutation) return;
 
     if (hasOutput) {
-      await activeMutation.mutateAsync({
-        revision_comment: comment.trim(),
-        revised_by: "human_user",
-        ...(isDomainSelected ? { referenced_document_ids: referencedDocumentIds } : {}),
-      });
+      await activeMutation.mutateAsync({ revision_comment: trimmed, revised_by: "human_user" });
     } else if (selectedAgent === "architecture") {
-      await activeMutation.mutateAsync({ human_comment: comment.trim(), architecture_notes: null });
+      await activeMutation.mutateAsync({ human_comment: trimmed, architecture_notes: null });
     } else {
-      await activeMutation.mutateAsync({
-        human_comment: comment.trim(),
-        ...(isDomainSelected ? { referenced_document_ids: referencedDocumentIds } : {}),
-      });
+      await activeMutation.mutateAsync({ human_comment: trimmed });
     }
+  }
+
+  async function handleSubmit(event) {
+    event.preventDefault();
+    if (!comment.trim()) return;
+    await submitAgentMessage(comment);
     setComment("");
-    setReferencedDocuments([]);
-    setMentionQuery(null);
   }
 
   const status = stageStatuses[selectedAgent];
@@ -251,7 +219,14 @@ export default function ChatPanel({ featureId }) {
           <p className="text-sm text-gray-400 dark:text-gray-500 italic">No activity yet. Say something below to get started.</p>
         ) : (
           timeline.map((item, i) => (
-            <ChatBubble key={i} item={item} allArtifacts={allArtifacts} onViewArtifact={viewArtifact} onEdit={setComment} />
+            <ChatBubble
+              key={i}
+              item={item}
+              allArtifacts={allArtifacts}
+              onViewArtifact={viewArtifact}
+              onEditSubmit={submitAgentMessage}
+              isEditPending={Boolean(activeMutation?.isPending)}
+            />
           ))
         )}
 
@@ -271,30 +246,6 @@ export default function ChatPanel({ featureId }) {
       </div>
 
       <div className="flex-shrink-0 pt-1">
-        {!hasOutput && selectedAgent === "domain" && (
-          <div className="bg-accent-50 dark:bg-accent-500/10 border border-accent-200 dark:border-accent-500/30 rounded-md px-3 py-2.5 mb-2">
-            <p className="text-sm font-semibold text-accent-900 dark:text-accent-200">
-              Should Domain Agent enrich this SRS using its existing domain knowledge, or do you
-              have something specific to add -- like a database schema, a compliance rule, or a
-              business constraint?
-            </p>
-            <p className="text-xs text-accent-700 dark:text-accent-400 mt-1">
-              Describe it below, or type <code>/</code> to reference an uploaded document. If you
-              don't have anything specific, just click through and it'll use domain knowledge
-              alone.
-            </p>
-            <button
-              type="button"
-              onClick={() => runDomain.mutate({})}
-              disabled={runDomain.isPending}
-              className="mt-2 text-xs font-semibold bg-white dark:bg-white/10 hover:bg-accent-100 dark:hover:bg-white/20 disabled:opacity-50 text-accent-700 dark:text-accent-300 border border-accent-300 dark:border-accent-500/40 rounded-full px-3 py-1"
-            >
-              {runDomain.isPending ? "Starting..." : "Just use domain knowledge"}
-            </button>
-            <ErrorBanner error={runDomain.error} fallback="Failed to start Domain Agent." />
-          </div>
-        )}
-
         {hasOutput && selectedAgent === "uiux" && (
           <p className="text-xs bg-gray-50 dark:bg-white/5 text-gray-500 dark:text-gray-400 rounded-md px-2.5 py-1.5 mb-2">
             There's no revise action for UI/UX yet -- approve, reject, or request revision on
@@ -340,9 +291,10 @@ export default function ChatPanel({ featureId }) {
 
             <ChatComposerBox
               value={comment}
-              onChange={handleCommentChange}
+              onChange={(event) => setComment(event.target.value)}
               disabled={!canCompose}
               pending={activeMutation?.isPending}
+              onStop={() => activeMutation?.stop?.()}
               selectedAgent={selectedAgent}
               onSelectAgent={selectAgent}
               isAgentRunning={isAgentRunning}
@@ -351,40 +303,9 @@ export default function ChatPanel({ featureId }) {
                   ? `${STAGE_LABELS[selectedAgent]} Agent can't be messaged directly right now`
                   : hasOutput
                   ? `Ask ${STAGE_LABELS[selectedAgent]} Agent for a change...`
-                  : isDomainSelected
-                  ? "e.g. Here's our database schema: ... (or leave blank and use the button above)"
                   : `Tell ${STAGE_LABELS[selectedAgent]} Agent what to build...`
               }
-            >
-              {mentionQuery !== null && (
-                <DocumentMentionPicker
-                  documents={knowledgeDocuments}
-                  query={mentionQuery}
-                  onSelect={handleMentionSelect}
-                />
-              )}
-
-              {isDomainSelected && referencedDocuments.length > 0 && (
-                <div className="flex flex-wrap gap-1.5">
-                  {referencedDocuments.map((doc) => (
-                    <span
-                      key={doc.document_id}
-                      className="inline-flex items-center gap-1 text-xs bg-accent-50 dark:bg-accent-500/15 text-accent-700 dark:text-accent-300 rounded-full px-2 py-1"
-                    >
-                      {doc.original_filename}
-                      <button
-                        type="button"
-                        onClick={() => removeReferencedDocument(doc.document_id)}
-                        className="text-accent-500 hover:text-accent-800 dark:hover:text-accent-100"
-                        aria-label={`Remove ${doc.original_filename}`}
-                      >
-                        &times;
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              )}
-            </ChatComposerBox>
+            />
           </form>
         )}
       </div>

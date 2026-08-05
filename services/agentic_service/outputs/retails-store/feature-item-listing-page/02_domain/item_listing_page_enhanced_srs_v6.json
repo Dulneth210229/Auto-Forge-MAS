@@ -223,7 +223,10 @@
   "assumptions": [
     "API endpoints were inferred from functional and data requirements using REST conventions",
     "Admin functionality for marking items as featured is assumed to be available via an admin panel",
-    "UI expectations were inferred from functional requirements"
+    "UI expectations were inferred from functional requirements",
+    "Requested edit could not be applied -- Skipped operation on unsupported field '' (action=remove).",
+    "Requested edit could not be applied -- Skipped operation on unsupported field '' (action=remove).",
+    "Requested edit could not be applied -- Skipped operation on unsupported field '' (action=remove)."
   ],
   "risks": [
     "Performance degradation with large datasets if not optimized",
@@ -279,17 +282,13 @@
     }
   ],
   "revision_metadata": {
-    "revision_type": "srs_revision",
-    "revision_comment": "Add this \"UI expectations were inferred from functional requirements\" to the assumptions and generate sthe SRS",
+    "revision_type": "domain_enrichment_revision",
+    "revision_comment": "Remove this \"Exporting or printing listing results\" from out of scope",
     "revised_by": "human_user",
-    "revision_summary": "I added the statement 'UI expectations were inferred from functional requirements' to the assumptions as requested.",
-    "applied_changes": [
-      "Added to assumptions: UI expectations were inferred from functional requirements"
-    ],
-    "unmatched_operations": []
+    "fallback_used": false
   },
   "domain_enrichment_metadata": {
-    "generated_at": "2026-08-03T19:31:19.515914+00:00",
+    "generated_at": "2026-08-05T07:21:29.051592+00:00",
     "based_on_srs_version": 3,
     "knowledge_sources_considered": [
       "checkout_and_cart_conventions.txt",

@@ -74,6 +74,10 @@ Help customers quickly find relevant products through browsing, search, and filt
 - **NFR-004**: Out-of-stock items are still visible but visually de-emphasized and not addable to cart — Category: Usability
 - **NFR-DOM-001** **[DOMAIN ADDED]**: The system must clearly indicate when an item is out-of-stock but still searchable, using a visual indicator (e.g., strike-through or grayed-out text) and provide an estimated restocking date. — Category: Domain
   - *Domain source:* product_catalog_and_inventory.txt (product_catalog_and_inventory.txt#4)
+- **NFR-DOM-002** **[DOMAIN ADDED]**: The system shall support efficient search and filtering of products using full-text search, semantic search, and faceted filtering to improve user discovery and conversion rates. — Category: Domain
+  - *Domain source:* human_provided (None)
+- **NFR-DOM-003** **[DOMAIN ADDED]**: The system shall implement atomic database operations and stock movement logs to ensure accurate inventory tracking and prevent overselling. — Category: Domain
+  - *Domain source:* human_provided (None)
 
 ---
 
@@ -82,6 +86,7 @@ Help customers quickly find relevant products through browsing, search, and filt
 - **US-001**: As a **Guest**, I want to **Browse items without logging in**, so that **Access to product information without barriers**.
 - **US-002**: As a **Registered Customer**, I want to **Search and filter items efficiently**, so that **Faster discovery of desired products**.
 - **US-003**: As a **Admin**, I want to **Promote featured items**, so that **Increased visibility for key products**.
+- **US-DOM-001** **[DOMAIN ADDED]**: As a **user**, I want to **use the feature**, so that **achieve the business goal**.
 
 ---
 
@@ -95,6 +100,10 @@ Help customers quickly find relevant products through browsing, search, and filt
 - **AC-004**: Applying multiple filters at once combines them (AND logic, not OR)
 - **AC-005**: Pagination controls correctly reflect total item count and current page
 - **AC-006**: Sorting by price low-to-high always shows the cheapest available item first
+- **AC-DOM-001** **[DOMAIN ADDED]**: The product listing page shall display clear availability indicators for each product, including low-stock warnings and out-of-stock status.
+  - *Domain source:* human_provided (None)
+- **AC-DOM-002** **[DOMAIN ADDED]**: The system shall support inventory reconciliation and provide logs for all stock movements to maintain auditability.
+  - *Domain source:* human_provided (None)
 
 ---
 
@@ -157,6 +166,7 @@ Help customers quickly find relevant products through browsing, search, and filt
 - is_featured
 - average_rating
 - created_at
+- **[DOMAIN ADDED]** Product catalog data shall include fields for SKU, variants, attributes, images, categories, and stock levels with separate inventory tracking.
 
 ---
 
@@ -166,6 +176,10 @@ Help customers quickly find relevant products through browsing, search, and filt
 - **VR-002**: Price filters must be numeric and valid ranges
 - **VR-003**: Sorting options must be one of: price_low_to_high, price_high_to_low, newest_first, popularity
 - **VR-004**: Pagination must support 12, 24, or 48 items per page
+- **VR-DOM-001** **[DOMAIN ADDED]**: All product quantity updates must be handled through atomic operations to prevent race conditions during concurrent checkout.
+  - *Domain source:* human_provided (None)
+- **VR-DOM-002** **[DOMAIN ADDED]**: The system shall release expired reservations and prevent unintentional overselling by monitoring reservation timeouts.
+  - *Domain source:* human_provided (None)
 
 ---
 
@@ -180,6 +194,10 @@ Help customers quickly find relevant products through browsing, search, and filt
 - API endpoints were inferred from functional and data requirements using REST conventions
 - Admin functionality for marking items as featured is assumed to be available via an admin panel
 - UI expectations were inferred from functional requirements
+- Requested edit could not be applied -- Skipped operation on unsupported field '' (action=remove).
+- Requested edit could not be applied -- Skipped operation on unsupported field '' (action=remove).
+- Requested edit could not be applied -- Skipped operation on unsupported field '' (action=remove).
+- Requested edit could not be applied -- Skipped operation on unsupported field '' (action=remove).
 
 ---
 
@@ -223,20 +241,28 @@ Help customers quickly find relevant products through browsing, search, and filt
 
 ## 21. Domain Agent Enrichment Summary
 
-This plan enriches the approved SRS with additional requirements and clarifications derived from domain knowledge chunks [KB-1] to [KB-6].
+The SRS has been enhanced by incorporating domain knowledge from 'ecommerce_domain_knowledge.txt' to improve the structure and completeness of the product listing page, search & discovery module, inventory handling, and frontend UX considerations.
 
 **Knowledge sources used:**
-- product_catalog_and_inventory.txt (1 chunk(s) used)
+- human_provided (1 chunk(s) used)
 
 **Additions:**
-- **NFR-DOM-001** (non_functional_requirements): The system must clearly indicate when an item is out-of-stock but still searchable, using a visual indicator (e.g., strike-through or grayed-out text) and provide an estimated restocking date.
-  - *Rationale:* To ensure customers are aware of unavailable items and can plan accordingly.
-
-**Modifications:**
-- **AC-003** (acceptance_criteria)
-  - *Before:* Given a price range filter, only items within that range are shown
-  - *After:* Given a category filter, only items in that category are shown, and out-of-stock products are still visible but clearly marked as unavailable.
-  - *Rationale:* To ensure customers can browse and discover available products even when some items are out of stock.
+- **NFR-DOM-002** (non_functional_requirements): The system shall support efficient search and filtering of products using full-text search, semantic search, and faceted filtering to improve user discovery and conversion rates.
+  - *Rationale:* 
+- **NFR-DOM-003** (non_functional_requirements): The system shall implement atomic database operations and stock movement logs to ensure accurate inventory tracking and prevent overselling.
+  - *Rationale:* 
+- **AC-DOM-001** (acceptance_criteria): The product listing page shall display clear availability indicators for each product, including low-stock warnings and out-of-stock status.
+  - *Rationale:* 
+- **AC-DOM-002** (acceptance_criteria): The system shall support inventory reconciliation and provide logs for all stock movements to maintain auditability.
+  - *Rationale:* 
+- **VR-DOM-001** (validation_rules): All product quantity updates must be handled through atomic operations to prevent race conditions during concurrent checkout.
+  - *Rationale:* 
+- **VR-DOM-002** (validation_rules): The system shall release expired reservations and prevent unintentional overselling by monitoring reservation timeouts.
+  - *Rationale:* 
+- **US-DOM-001** (user_stories): As a user, I want to see clear stock availability indicators on the product listing page, so that I can make informed purchasing decisions.
+  - *Rationale:* 
+- **None** (data_requirements): Product catalog data shall include fields for SKU, variants, attributes, images, categories, and stock levels with separate inventory tracking.
+  - *Rationale:* 
 
 
 ---

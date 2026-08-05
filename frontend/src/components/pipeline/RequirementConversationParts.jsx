@@ -1,5 +1,6 @@
 import { useState } from "react";
 import LoadingSpinner from "../common/LoadingSpinner";
+import CopyButton from "../common/CopyButton";
 
 export function PencilIcon() {
   return (
@@ -74,18 +75,21 @@ export function HumanBubble({ text, onEdit, isEditPending }) {
           <p className="text-xs text-accent-200 dark:text-accent-100/80 mb-0.5">You</p>
           <p className="whitespace-pre-wrap">{text}</p>
         </div>
-        {onEdit && (
-          <button
-            type="button"
-            onClick={() => setIsEditing(true)}
-            disabled={isEditPending}
-            title="Edit this message"
-            className="opacity-0 group-hover:opacity-100 focus:opacity-100 disabled:opacity-30 transition-opacity text-xs text-gray-400 dark:text-gray-500 hover:text-accent-600 dark:hover:text-accent-400 flex items-center gap-1 px-1"
-          >
-            <PencilIcon />
-            Edit
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {onEdit && (
+            <button
+              type="button"
+              onClick={() => setIsEditing(true)}
+              disabled={isEditPending}
+              title="Edit this message"
+              className="opacity-0 group-hover:opacity-100 focus:opacity-100 disabled:opacity-30 transition-opacity text-xs text-gray-400 dark:text-gray-500 hover:text-accent-600 dark:hover:text-accent-400 flex items-center gap-1 px-1"
+            >
+              <PencilIcon />
+              Edit
+            </button>
+          )}
+          <CopyButton text={text} />
+        </div>
       </div>
     </div>
   );
@@ -98,8 +102,12 @@ export function AgentTurnBubble({ turn }) {
 
   if (!hasQuestions && !hasAssumptions && !hasReaction) return null;
 
+  const copyText = [turn.agent_reaction, ...(turn.questions_asked || []).map((q) => q.question)]
+    .filter(Boolean)
+    .join("\n\n");
+
   return (
-    <div className="flex justify-start">
+    <div className="flex flex-col items-start gap-1 group">
       <div className="max-w-[85%] bg-gray-100 dark:bg-white/10 text-gray-800 dark:text-gray-200 rounded-lg rounded-tl-sm px-3 py-2 text-sm flex flex-col gap-2">
         <p className="text-xs text-gray-500 dark:text-gray-400">Requirement Agent</p>
 
@@ -140,6 +148,7 @@ export function AgentTurnBubble({ turn }) {
           </div>
         )}
       </div>
+      <CopyButton text={copyText} />
     </div>
   );
 }
@@ -254,12 +263,14 @@ export function LiveGenerationView({ displayText, hasStarted, connectingLabel, g
 // single chat message, so this shows ONLY that field's text growing inside a normal
 // AgentTurnBubble-styled bubble -- no JSON, no surrounding known_answers/questions noise -- and
 // swaps seamlessly into a real AgentTurnBubble the instant the stream completes and the actual
-// turn (with its questions) lands.
-export function LiveReactionBubble({ reactionText, hasStarted }) {
+// turn (with its questions) lands. Also reused by DomainAgentChat.jsx for its own streaming
+// summary -- `agentLabel` defaults to "Requirement Agent" only for that original caller's sake;
+// every other caller should pass its own agent's label explicitly.
+export function LiveReactionBubble({ reactionText, hasStarted, agentLabel = "Requirement Agent" }) {
   return (
     <div className="flex justify-start">
       <div className="max-w-[85%] bg-gray-100 dark:bg-white/10 text-gray-800 dark:text-gray-200 rounded-lg rounded-tl-sm px-3 py-2 text-sm flex flex-col gap-2">
-        <p className="text-xs text-gray-500 dark:text-gray-400">Requirement Agent</p>
+        <p className="text-xs text-gray-500 dark:text-gray-400">{agentLabel}</p>
         {!hasStarted || !reactionText ? (
           <LoadingSpinner variant="cube" size={20} label="Thinking..." />
         ) : (
