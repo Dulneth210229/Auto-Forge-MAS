@@ -40,6 +40,12 @@ export function buildAgentTimeline(stage, allArtifacts, allApprovals, allEvents)
     const group = byVersion.get(key);
     group.types.push(artifact.artifact_type);
     group.artifactIds.push(artifact.artifact_id);
+    // First non-empty summary wins -- when a version has a JSON+Markdown pair sharing one
+    // version, only one of them typically carries a model-generated summary (e.g. CODE_PLAN's
+    // own "summary" field lives on the JSON half only).
+    if (!group.summary && artifact.summary) {
+      group.summary = artifact.summary;
+    }
   }
   for (const group of byVersion.values()) {
     items.push({
@@ -48,6 +54,7 @@ export function buildAgentTimeline(stage, allArtifacts, allApprovals, allEvents)
       timestamp: group.timestamp,
       version: group.version,
       types: [...new Set(group.types)],
+      summary: group.summary || null,
     });
   }
 

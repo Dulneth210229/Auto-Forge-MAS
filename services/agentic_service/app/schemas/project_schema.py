@@ -20,7 +20,7 @@ class ProjectCreateRequest(BaseModel):
     """
     project_name: str = Field(..., example="E-commerce Platform")
     project_type: str = Field(..., example="E-commerce")
-    target_stack: str = Field(default="MERN", example="MERN")
+    target_stack: str = Field(default="Next.js", example="Next.js")
     created_by: str = Field(default="human_user", example="ba_user")
 
 
@@ -32,7 +32,7 @@ class ProjectUpdateRequest(BaseModel):
     """
     project_name: str | None = Field(default=None, example="E-commerce Platform")
     project_type: str | None = Field(default=None, example="E-commerce")
-    target_stack: str | None = Field(default=None, example="MERN")
+    target_stack: str | None = Field(default=None, example="Next.js")
 
 
 class ProjectResponse(BaseModel):

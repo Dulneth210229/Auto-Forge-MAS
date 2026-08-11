@@ -33,7 +33,8 @@ class UseCaseQualityValidator:
         "api", "endpoint", "controller", "service", "repository", "model",
         "schema", "server", "backend", "frontend", "react", "node",
         "express", "mongoose", "jwt", "token", "library", "middleware",
-        "component", "page", "form",
+        "component", "page", "form", "next.js", "nextjs", "typescript",
+        "server component", "route handler", "app router",
     ]
 
     GENERIC_USE_CASE_NAMES = [
@@ -44,6 +45,8 @@ class UseCaseQualityValidator:
     NON_UML_USE_CASE_TERMS = [
         "response time", "performance", "responsive ui", "mern stack", "mvc",
         "architecture style", "database collection", "api endpoint",
+        "next.js", "nextjs", "typescript", "server component", "route handler",
+        "app router",
     ]
 
     # Articles/determiners/possessive-pronouns/Given-When-Then leftovers only

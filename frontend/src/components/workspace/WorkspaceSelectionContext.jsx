@@ -30,6 +30,11 @@ export function WorkspaceSelectionProvider({ featureId, onSelectFeature, childre
   const [selectedModel, setSelectedModel] = useState(null);
   const [activeOutputTab, setActiveOutputTab] = useState("result");
   const [viewingArtifact, setViewingArtifact] = useState(null);
+  // Cursor-style fullscreen toggle for the live preview iframe -- UI-only, no server round trip,
+  // so it lives here alongside activeOutputTab/viewingArtifact rather than in preview-specific
+  // state. Reset whenever the feature changes (selectFeature below), same as the other UI-only
+  // fields, so switching features never leaves a stale fullscreen preview covering the new one.
+  const [isPreviewExpanded, setIsPreviewExpanded] = useState(false);
 
   function setAgentQueryParam(stage) {
     setSearchParams(
@@ -54,6 +59,7 @@ export function WorkspaceSelectionProvider({ featureId, onSelectFeature, childre
         setSelectedAgentState("requirement");
         setActiveOutputTab("result");
         setAgentQueryParam(null);
+        setIsPreviewExpanded(false);
       },
       selectedAgent,
       selectAgent: (stage) => {
@@ -67,12 +73,14 @@ export function WorkspaceSelectionProvider({ featureId, onSelectFeature, childre
       setActiveOutputTab,
       viewingArtifact,
       viewArtifact: setViewingArtifact,
+      isPreviewExpanded,
+      togglePreviewExpanded: () => setIsPreviewExpanded((v) => !v),
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- setAgentQueryParam/onSelectFeature
     // are recreated every render (setSearchParams identity, prop from parent); including them
     // would invalidate this memo every render and defeats its purpose. featureId/selectedAgent/etc
     // are the only values that actually need to trigger a new value object.
-    [featureId, selectedAgent, selectedModel, activeOutputTab, viewingArtifact]
+    [featureId, selectedAgent, selectedModel, activeOutputTab, viewingArtifact, isPreviewExpanded]
   );
 
   return <WorkspaceSelectionContext.Provider value={value}>{children}</WorkspaceSelectionContext.Provider>;

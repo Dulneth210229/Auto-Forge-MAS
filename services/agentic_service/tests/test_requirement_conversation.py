@@ -332,6 +332,54 @@ async def test_confirm_conversation_stream_yields_tokens_then_done(conversation_
 
 
 @pytest.mark.asyncio
+async def test_confirm_conversation_stream_backstops_empty_user_stories(conversation_fixture):
+    """
+    Real, confirmed routing bug this locks in: confirm_conversation_stream is the ONLY method the
+    frontend actually calls for confirm, and it duplicates _generate_requirement_output's entire
+    ladder inline rather than calling it -- a completeness fix applied to only one of them would
+    silently never reach the other. VALID_SRS_JSON_TEMPLATE deliberately has no "user_stories" key
+    at all (matching the real, reported bug: nothing in REQUIRED_KEYS required it), so streaming
+    it through confirm_conversation_stream and finding a non-empty user_stories in the SAVED
+    artifact proves ensure_srs_completeness actually ran on this specific real code path.
+    """
+    feature_id = conversation_fixture["feature_id"]
+
+    srs_json = dict(VALID_SRS_JSON_TEMPLATE)
+    srs_json["project_id"] = conversation_fixture["project_id"]
+    srs_json["feature_id"] = feature_id
+    assert "user_stories" not in srs_json  # confirms the fixture itself reproduces the real gap
+
+    raw_json = json.dumps(srs_json)
+
+    provider = MagicMock()
+
+    async def fake_stream(prompt, system_prompt=None, **kwargs):
+        yield raw_json
+
+    provider.stream = fake_stream
+
+    agent = RequirementAgent()
+
+    with patch("app.agents.requirement_agent.agent.llm_provider_service") as mock_llm:
+        mock_llm.get_provider.return_value = provider
+
+        events = [
+            event
+            async for event in agent.confirm_conversation_stream(feature_id, RequirementConversationConfirmRequest())
+        ]
+
+    done_event = next(e for e in events if e["type"] == "done")
+    json_artifact_id = next(
+        aid for aid in done_event["artifact_ids"]
+        if store.artifacts[aid]["artifact_format"] == "json"
+    )
+    saved_srs = json.load(open(store.artifacts[json_artifact_id]["file_path"], encoding="utf-8"))
+
+    assert len(saved_srs["user_stories"]) >= 1
+    assert any("user_stories" in note for note in saved_srs["assumptions"])
+
+
+@pytest.mark.asyncio
 async def test_confirm_conversation_stream_blocks_when_quality_gate_not_ready(conversation_fixture):
     feature_id = conversation_fixture["feature_id"]
 

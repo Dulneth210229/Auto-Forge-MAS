@@ -247,6 +247,101 @@ def project_ba_input_to_srs_shape(project: dict, feature: dict, ba_input: dict) 
     return srs_json, defaulted_fields
 
 
+# Fields ensure_srs_completeness backstops -- every one of these was confirmed (by reading
+# REQUIREMENT_AGENT_SYSTEM_PROMPT and project_ba_input_to_srs_shape directly) to have NO
+# "must not be empty" guarantee on at least one of the two real generation paths (the real LLM
+# call, or the deterministic fallback) before this fix. scope/out_of_scope/output_requirements/
+# validation_rules/acceptance_criteria/functional_requirements/non_functional_requirements are
+# deliberately excluded -- already reliably populated by both paths today.
+_COMPLETENESS_BACKSTOP_FIELDS = {
+    "user_stories", "user_roles", "constraints", "api_expectations", "ui_expectations",
+    "input_requirements", "risks", "dependencies",
+}
+
+
+def ensure_srs_completeness(srs_json: dict) -> tuple[dict, list[str]]:
+    """
+    Final, deterministic, no-LLM guarantee that no SRS section is left genuinely empty -- runs on
+    ANY fully-shaped srs_json regardless of how it was produced (validated real LLM output,
+    JSON-repaired output, or project_ba_input_to_srs_shape's own fallback projection). Confirmed
+    real, reported bug this closes: REQUIREMENT_AGENT_SYSTEM_PROMPT has no "must not be empty"
+    instruction for user_stories (or several other fields) at all, so the real LLM path could --
+    and did -- produce "user_stories": [] with nothing catching it before this fix.
+
+    Returns (srs_json, notes) -- srs_json is mutated in place AND returned for convenience; notes
+    is a list of human-readable strings the caller should append to srs_json["assumptions"] so a
+    backstopped field is never silently presented as if it were genuinely known -- matching this
+    project's own established honesty convention (see project_ba_input_to_srs_shape's own
+    defaulted_fields/assumptions handling).
+
+    Deliberately grounds every backstop in content that's ALREADY reliably present by this point
+    (target_stack/architectural_style/data_requirements/user_stories) rather than fabricating
+    specifics -- and never claims an empty risks/dependencies list as a genuine "no risks found"
+    conclusion, only "not evaluated."
+    """
+    notes: list[str] = []
+
+    user_stories = srs_json.get("user_stories")
+    if not isinstance(user_stories, list) or not user_stories:
+        srs_json["user_stories"] = _make_user_stories(
+            {"user_roles": srs_json.get("user_roles") or [], "feature_name": srs_json.get("feature_name", "feature")}
+        )
+        notes.append("user_stories was empty -- generated a default entry per user role.")
+
+    user_roles = srs_json.get("user_roles")
+    if not isinstance(user_roles, list) or not user_roles:
+        inferred_roles = sorted({
+            story.get("role") for story in srs_json.get("user_stories", [])
+            if isinstance(story, dict) and story.get("role")
+        })
+        srs_json["user_roles"] = inferred_roles or ["User"]
+        notes.append("user_roles was empty -- inferred from user_stories (or defaulted to 'User').")
+
+    constraints = srs_json.get("constraints")
+    if not isinstance(constraints, list) or not constraints:
+        target_stack = srs_json.get("target_stack") or "the specified stack"
+        architectural_style = srs_json.get("architectural_style") or "the specified architecture"
+        srs_json["constraints"] = [
+            f"Must be implemented using {target_stack}.",
+            f"Must follow a {architectural_style} architectural style.",
+        ]
+        notes.append("constraints was empty -- derived from target_stack/architectural_style.")
+
+    for field, description in (("api_expectations", "API endpoints"), ("ui_expectations", "UI elements")):
+        value = srs_json.get(field)
+        if not isinstance(value, list) or not value:
+            srs_json[field] = [
+                f"{description} inferred from functional/data requirements -- exact details to be "
+                "finalized during Architecture/UI-UX Agent review."
+            ]
+            notes.append(f"{field} was empty -- a placeholder inference note was added.")
+
+    input_requirements = srs_json.get("input_requirements")
+    if not isinstance(input_requirements, list) or not input_requirements:
+        data_requirements = srs_json.get("data_requirements") or []
+        if data_requirements:
+            srs_json["input_requirements"] = list(data_requirements)
+            notes.append("input_requirements was empty -- copied from data_requirements.")
+        else:
+            srs_json["input_requirements"] = [
+                "No additional input requirements beyond what's captured in functional requirements."
+            ]
+            notes.append("input_requirements was empty -- no data_requirements to derive from either.")
+
+    for field, placeholder in (
+        ("risks", "No feature-specific risks were identified during generation -- this has not "
+                  "been reviewed for risk, not confirmed risk-free."),
+        ("dependencies", "No external dependencies were identified during generation -- this has "
+                          "not been reviewed for dependencies, not confirmed to have none."),
+    ):
+        value = srs_json.get(field)
+        if not isinstance(value, list) or not value:
+            srs_json[field] = [placeholder]
+            notes.append(f"{field} was empty -- an honest 'not evaluated' placeholder was added, not a claim of none.")
+
+    return srs_json, notes
+
+
 class GapAnalysisResult:
     """
     Plain result container for run_gap_analysis -- not a Pydantic model since this is internal to

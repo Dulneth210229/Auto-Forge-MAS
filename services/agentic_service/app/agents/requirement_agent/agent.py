@@ -19,6 +19,7 @@ import re
 
 from app.agents.requirement_agent.conversation_engine import (
     _deterministic_gap_checklist,
+    ensure_srs_completeness,
     extract_json_object,
     parse_gap_analysis_response,
     project_ba_input_to_srs_shape,
@@ -73,6 +74,16 @@ logger = get_logger(__name__)
 # override, so an unbounded document could silently get truncated by Ollama itself mid-JSON-field
 # instead of cleanly at a text boundary the human can see.
 MAX_ATTACHED_DOCUMENT_CHARS = 8000
+
+# SRS fields the schema documents as list[str] (RequirementBAInput / requirement_schema.py) --
+# distinct from the 5 ID-tagged sections (functional_requirements/non_functional_requirements/
+# acceptance_criteria/validation_rules/user_stories), which are SUPPOSED to be
+# {"id", "description", ...}-shaped objects. Used by _normalize_plain_list_fields, below.
+PLAIN_LIST_SRS_FIELDS = [
+    "scope", "out_of_scope", "user_roles", "input_requirements", "output_requirements",
+    "ui_expectations", "api_expectations", "data_requirements", "constraints",
+    "assumptions", "risks", "dependencies",
+]
 
 
 class RequirementAgent:
@@ -269,7 +280,7 @@ class RequirementAgent:
         known_answers = {
             "project_type": project.get("project_type", ""),
             "feature_name": feature.get("feature_name", ""),
-            "target_stack": project.get("target_stack", "MERN"),
+            "target_stack": project.get("target_stack", "Next.js"),
         }
 
         gap_result = await run_gap_analysis(
@@ -921,7 +932,7 @@ class RequirementAgent:
                 logger.warning("JSON repair also failed: %s", second_error)
                 srs_json = self._build_fallback_srs_json(project, feature, ba_input, reason=str(second_error))
 
-        srs_markdown = self.markdown_builder.build(srs_json)
+        srs_json, srs_markdown = self._finalize_srs_json(srs_json)
 
         if not quality_gate.ready and request.override_quality_gate:
             override_note = (
@@ -954,6 +965,31 @@ class RequirementAgent:
                 "Human approval is required before Domain Agent can run."
             ),
         }
+
+    def _finalize_srs_json(self, srs_json: dict) -> tuple[dict, str]:
+        """
+        Shared tail for every code path that produces a freshly-generated srs_json (real LLM
+        success, JSON-repaired output, or the deterministic fallback) -- runs
+        ensure_srs_completeness (conversation_engine.py) as an unconditional, no-LLM guarantee
+        that no section is left genuinely empty, appends its notes to assumptions, then builds
+        the markdown.
+
+        MUST be called from every real entry point that can produce a final srs_json, not just
+        _generate_requirement_output -- confirmed real, reported bug: confirm_conversation_stream
+        (the ONLY method the frontend actually calls for confirm) does not call
+        _generate_requirement_output at all, it duplicates the parse/repair/fallback ladder
+        inline. A completeness fix added to only one of them would silently never reach the other.
+        """
+        srs_json, completeness_notes = ensure_srs_completeness(srs_json)
+
+        if completeness_notes:
+            assumptions = srs_json.get("assumptions", [])
+            if not isinstance(assumptions, list):
+                assumptions = []
+            srs_json["assumptions"] = assumptions + completeness_notes
+
+        srs_markdown = self.markdown_builder.build(srs_json)
+        return srs_json, srs_markdown
 
     async def _generate_requirement_output(self, project: dict, feature: dict, ba_input: dict, human_comment: str | None) -> RequirementAgentOutput:
         """
@@ -1004,7 +1040,7 @@ class RequirementAgent:
                 reason=str(call_error)
             )
             raw_output = json.dumps(srs_json, indent=2)
-            srs_markdown = self.markdown_builder.build(srs_json)
+            srs_json, srs_markdown = self._finalize_srs_json(srs_json)
             return RequirementAgentOutput(
                 srs_json=srs_json,
                 srs_markdown=srs_markdown,
@@ -1048,7 +1084,7 @@ class RequirementAgent:
 
                 raw_output = json.dumps(srs_json, indent=2)
 
-        srs_markdown = self.markdown_builder.build(srs_json)
+        srs_json, srs_markdown = self._finalize_srs_json(srs_json)
 
         return RequirementAgentOutput(
             srs_json=srs_json,
@@ -1083,8 +1119,40 @@ class RequirementAgent:
             raise ValueError(f"Missing required SRS keys: {missing}")
 
         self._validate_stable_ids(parsed)
+        self._normalize_plain_list_fields(parsed)
 
         return parsed
+
+    def _normalize_plain_list_fields(self, parsed: dict) -> None:
+        """
+        Real, confirmed bug: the LLM generating an SRS mimicked the ID-tagged
+        {"id", "description"} shape functional_requirements/acceptance_criteria/etc. use for a
+        field that's documented (RequirementBAInput/requirement_schema.py) as a plain list[str]
+        (data_requirements) -- nothing here checked the SHAPE of these fields, only that
+        required top-level keys were present, so the malformed artifact saved cleanly and later
+        crashed the frontend's document viewer ("Objects are not valid as a React child").
+
+        Coerces every PLAIN_LIST_SRS_FIELDS entry to a plain string in place -- an object entry
+        has its "description" (or "text"/"value") extracted, anything else is stringified. Never
+        raises: a schema violation degrades to "the text still shows up correctly" instead of a
+        saved artifact that crashes on first render.
+        """
+        for field in PLAIN_LIST_SRS_FIELDS:
+            values = parsed.get(field)
+            if not isinstance(values, list):
+                continue
+
+            normalized = []
+            for entry in values:
+                if isinstance(entry, str):
+                    normalized.append(entry)
+                elif isinstance(entry, dict):
+                    text = entry.get("description") or entry.get("text") or entry.get("value")
+                    normalized.append(text if isinstance(text, str) else json.dumps(entry))
+                else:
+                    normalized.append(str(entry))
+
+            parsed[field] = normalized
 
     def _extract_json_object(self, text: str) -> dict:
         """
@@ -1300,6 +1368,101 @@ class RequirementAgent:
                 "A new SRS version was created and requires human approval."
             ),
             artifact_ids=artifact_ids
+        )
+
+    async def edit_fields(
+        self,
+        feature_id: str,
+        operations: list[dict],
+        edited_by: str = "human_user",
+        base_artifact_id: str | None = None,
+    ) -> AgentRunResponse:
+        """
+        Apply a small list of deterministic field-edit operations directly to the latest SRS,
+        bypassing the LLM entirely -- the field-by-field inline-edit UI's backend counterpart to
+        revise() (which uses the LLM to first DECIDE what operations to run). Reuses
+        apply_revision_operations (revision_patcher.py) directly: the frontend is simply another
+        producer of the exact same operations-list shape revise() already produces internally.
+        """
+
+        logger.info("Requirement Agent field edit started for feature_id=%s", feature_id)
+
+        feature = store.features.get(feature_id)
+
+        if not feature:
+            raise ValueError("Feature not found.")
+
+        project = store.projects.get(feature["project_id"])
+
+        if not project:
+            raise ValueError("Project not found for this feature.")
+
+        latest_srs_artifact = self._find_latest_srs_json_artifact(feature_id)
+
+        if not latest_srs_artifact:
+            raise ValueError(
+                "No existing SRS JSON artifact found. Run Requirement Agent first before editing."
+            )
+
+        # Stale-version guard: a direct edit and an in-flight LLM revision both read the SRS
+        # before saving, with no locking (store.artifacts is a plain in-memory dict) -- an edit
+        # based on a version that's no longer the latest would silently apply over data a
+        # concurrent revision has already superseded. Reject rather than guess.
+        if base_artifact_id and latest_srs_artifact["artifact_id"] != base_artifact_id:
+            raise ValueError(
+                "The SRS was updated by another change since you started editing -- "
+                "refresh and try again."
+            )
+
+        existing_srs_json = read_json_file(latest_srs_artifact["file_path"])
+
+        patched, applied, unmatched = apply_revision_operations(existing_srs_json, operations)
+
+        if not applied and not unmatched:
+            raise ValueError("No edit operations were provided.")
+
+        # Same non-empty/shape guarantee run()/confirm_conversation() already enforce via
+        # _parse_and_validate_json -- revise()/edit_fields() otherwise skip it entirely, meaning
+        # a UI trash icon could remove the last functional_requirements/
+        # non_functional_requirements/acceptance_criteria entry with no server-side guard (the
+        # frontend also refuses this -- see EnrichedItemList's own guard -- but a real backend
+        # guarantee shouldn't depend on the UI alone catching it).
+        self._validate_stable_ids(patched)
+
+        patched["revision_metadata"] = {
+            "revision_type": "manual_field_edit",
+            "edited_by": edited_by,
+            "applied_changes": applied,
+            "unmatched_operations": unmatched,
+        }
+
+        assumptions = patched.get("assumptions", [])
+        if not isinstance(assumptions, list):
+            assumptions = []
+        for note in unmatched:
+            assumptions.append(f"Edit could not be fully applied -- {note}")
+        patched["assumptions"] = assumptions
+
+        srs_markdown = self.markdown_builder.build(patched)
+
+        artifact_ids = self._save_revised_srs_artifacts(
+            project=project, feature=feature, srs_json=patched, srs_markdown=srs_markdown
+        )
+
+        logger.info(
+            "Requirement Agent field edit completed for feature_id=%s artifacts=%s",
+            feature_id, artifact_ids,
+        )
+
+        return AgentRunResponse(
+            feature_id=feature_id,
+            agent_name=AgentName.REQUIREMENT,
+            status="revised",
+            message=(
+                "SRS updated successfully. A new SRS version was created and requires human "
+                "approval."
+            ),
+            artifact_ids=artifact_ids,
         )
 
     async def revise_stream(self, feature_id: str, revision_comment: str, revised_by: str):

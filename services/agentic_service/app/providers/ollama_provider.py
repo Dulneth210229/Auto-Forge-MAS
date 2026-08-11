@@ -26,6 +26,7 @@ from typing import Any
 
 import httpx
 
+from app.core.config import settings
 from app.providers.base_provider import BaseLLMProvider
 
 
@@ -49,6 +50,13 @@ class OllamaProvider(BaseLLMProvider):
             "options": {
                 "temperature": kwargs.get("temperature", self.temperature),
                 "num_predict": kwargs.get("max_tokens", self.max_tokens),
+                # Without this, Ollama falls back to its own server-side default context
+                # window (historically 2048-4096) and silently truncates a long prompt --
+                # already confirmed as a real failure mode elsewhere in this project (the
+                # agentic tool-calling path sets this same value; this one-shot path
+                # previously didn't, and every one-shot agent's prompt can carry a full
+                # SRS/architecture plan/project manifest).
+                "num_ctx": settings.AGENTIC_OLLAMA_NUM_CTX,
             },
         }
 
@@ -79,6 +87,7 @@ class OllamaProvider(BaseLLMProvider):
             "options": {
                 "temperature": kwargs.get("temperature", self.temperature),
                 "num_predict": kwargs.get("max_tokens", self.max_tokens),
+                "num_ctx": settings.AGENTIC_OLLAMA_NUM_CTX,
             },
         }
 

@@ -5,7 +5,7 @@ import ErrorBanner from "../common/ErrorBanner";
 export default function CreateProjectForm({ onCreated, onCancel }) {
   const [projectName, setProjectName] = useState("");
   const [projectType, setProjectType] = useState("E-commerce");
-  const [targetStack, setTargetStack] = useState("MERN");
+  const [targetStack, setTargetStack] = useState("Next.js");
   const createProject = useCreateProject();
 
   async function handleSubmit(event) {
@@ -14,7 +14,7 @@ export default function CreateProjectForm({ onCreated, onCancel }) {
     const project = await createProject.mutateAsync({
       project_name: projectName.trim(),
       project_type: projectType.trim(),
-      target_stack: targetStack.trim() || "MERN",
+      target_stack: targetStack.trim() || "Next.js",
       created_by: "human_user",
     });
 

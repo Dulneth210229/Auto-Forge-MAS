@@ -96,6 +96,26 @@ async def test_recursion_limit_is_treated_as_a_clean_failure_not_a_crash():
 
 
 @pytest.mark.asyncio
+async def test_unexpected_exception_is_treated_as_a_clean_failure_not_a_crash():
+    """A real, confirmed gap: previously only GraphRecursionError was caught around
+    agent.ainvoke(...) -- any other exception (a transient Ollama/langchain-ollama transport
+    error, already documented elsewhere in this project's history as a real occurrence)
+    propagated straight out uncaught. Confirms it now falls through to the same
+    "plan_json not in captured" -> CodePlanGenerationError path as a turn-limit timeout,
+    letting _plan_with_retries retry it like any other incomplete attempt."""
+    planner = CodePlanner()
+    captured: dict = {}
+    fake_agent = _mock_agent(ainvoke_side_effect=RuntimeError("Ollama connection reset"))
+
+    with (
+        patch("app.agents.coder_agent.planner.build_revision_planning_tools", return_value=([], captured)),
+        patch("app.agents.coder_agent.planner.create_agent", return_value=fake_agent),
+    ):
+        with pytest.raises(CodePlanGenerationError, match="submit_code_plan"):
+            await planner.generate_via_exploration(**_call_kwargs())
+
+
+@pytest.mark.asyncio
 async def test_malformed_submitted_json_goes_through_the_existing_repair_path():
     planner = CodePlanner()
     captured = {"plan_json": "not valid json at all"}
@@ -115,3 +135,30 @@ async def test_malformed_submitted_json_goes_through_the_existing_repair_path():
 
     assert code_plan_json["files"][0]["path"] == "client/src/pages/TaskDetailPage.jsx"
     repaired_provider.invoke_agent.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_keyword_hint_files_is_threaded_into_the_user_prompt():
+    """
+    Tier 1b (CoderAgent._find_keyword_hint_files) -- confirms generate_via_exploration
+    actually forwards keyword_hint_files into build_agentic_revision_planner_user_prompt,
+    not just accepts it as a dead parameter.
+    """
+    planner = CodePlanner()
+    captured = {"plan_json": VALID_PLAN_JSON_STR}
+    fake_agent = _mock_agent(ainvoke_result={})
+    hint_files = ["app/login/LoginForm.tsx", "components/Footer.tsx"]
+
+    with (
+        patch("app.agents.coder_agent.planner.build_revision_planning_tools", return_value=([], captured)),
+        patch("app.agents.coder_agent.planner.create_agent", return_value=fake_agent),
+        patch(
+            "app.agents.coder_agent.planner.build_agentic_revision_planner_user_prompt",
+            wraps=None,
+            return_value="prompt text",
+        ) as mock_build_prompt,
+    ):
+        await planner.generate_via_exploration(**_call_kwargs(keyword_hint_files=hint_files))
+
+    _, call_kwargs = mock_build_prompt.call_args
+    assert call_kwargs["keyword_hint_files"] == hint_files

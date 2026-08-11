@@ -7,13 +7,13 @@ import { GATED_STAGES, STAGE_LABELS } from "../../lib/pipelineStages";
 import { buildAgentTimeline } from "../../lib/buildAgentTimeline";
 import { SUGGESTION_CHIPS } from "../../lib/suggestionChips";
 import { useWorkspaceSelection } from "../workspace/WorkspaceSelectionContext";
-import { useReviseCoder, useRunCoder, useRunUiux } from "../../hooks/useAgentMutations";
+import { useRunUiux } from "../../hooks/useAgentMutations";
 import ChatBubble from "./ChatBubble";
 import ChatComposerBox from "./ChatComposerBox";
 import RequirementConversationChat from "./RequirementConversationChat";
-import RequirementRevisionChat from "./RequirementRevisionChat";
 import DomainAgentChat from "./DomainAgentChat";
 import ArchitectureAgentChat from "./ArchitectureAgentChat";
+import CoderAgentChat from "./CoderAgentChat";
 import LoadingSpinner from "../common/LoadingSpinner";
 import ErrorBanner from "../common/ErrorBanner";
 
@@ -101,21 +101,20 @@ export default function ChatPanel({ featureId }) {
   const [comment, setComment] = useState("");
 
   const runUiux = useRunUiux(featureId);
-  const runCoder = useRunCoder(featureId);
-  const reviseCoder = useReviseCoder(featureId);
 
-  const runMutationsByStage = { uiux: runUiux, coder: runCoder };
-  const reviseMutationsByStage = { coder: reviseCoder };
+  const runMutationsByStage = { uiux: runUiux };
+  const reviseMutationsByStage = {};
 
   const versions = listGatingArtifactVersions(selectedAgent, allArtifacts);
   const hasOutput = versions.length > 0;
 
-  // Requirement Agent, pre-SRS: built from the exact same building blocks as every other agent's
-  // chat (ChatHeader, ChatComposerBox) instead of a separate bespoke UI -- per direct user
-  // feedback that the chat window must look and behave the same regardless of which agent is
-  // selected. Only the data source (a conversation's turn_history, not the generic cross-agent
-  // timeline) and what Send does (reply to the conversation, not run/revise) differ.
-  if (selectedAgent === "requirement" && !hasOutput) {
+  // Requirement Agent: ONE continuous chat covering both the pre-SRS gap-filling conversation and
+  // post-SRS revision activity -- previously two separate components ChatPanel hard-swapped
+  // between the instant hasOutput flipped true, which read as "the chat disappeared" even after
+  // an earlier fix (a collapsed history toggle) -- direct, repeated user feedback that this must
+  // feel like one ChatGPT/Claude-style conversation, never a swap. `hasOutput` now only decides
+  // which composer/banners are active INSIDE the single component, not which component renders.
+  if (selectedAgent === "requirement") {
     return (
       <RequirementConversationChat
         featureId={featureId}
@@ -123,21 +122,7 @@ export default function ChatPanel({ featureId }) {
         runningStage={runningStage}
         selectedAgent={selectedAgent}
         selectAgent={selectAgent}
-      />
-    );
-  }
-
-  // Requirement Agent, post-SRS: same reasoning as the pre-SRS branch above, but for asking the
-  // already-generated SRS to change -- live, streamed revision instead of the generic ChatPanel
-  // composer's blocking-wait-then-static-reveal (see RequirementRevisionChat's own docstring).
-  if (selectedAgent === "requirement" && hasOutput) {
-    return (
-      <RequirementRevisionChat
-        featureId={featureId}
-        feature={feature}
-        runningStage={runningStage}
-        selectedAgent={selectedAgent}
-        selectAgent={selectAgent}
+        hasOutput={hasOutput}
         timeline={timeline}
         allArtifacts={allArtifacts}
         onViewArtifact={viewArtifact}
@@ -171,6 +156,25 @@ export default function ChatPanel({ featureId }) {
   if (selectedAgent === "architecture") {
     return (
       <ArchitectureAgentChat
+        featureId={featureId}
+        feature={feature}
+        runningStage={runningStage}
+        selectedAgent={selectedAgent}
+        selectAgent={selectAgent}
+        timeline={timeline}
+        allArtifacts={allArtifacts}
+        onViewArtifact={viewArtifact}
+        isLoadingTimeline={graphLoading || artifactsLoading || eventsLoading}
+      />
+    );
+  }
+
+  // Coder Agent: its own dedicated chat (live streaming + phase/elapsed-time banner for the
+  // non-streamable coding/verify tail, plus a verification-result banner and Stop-safety-net
+  // caveat neither Domain nor Architecture need) -- see CoderAgentChat.jsx's own docstring.
+  if (selectedAgent === "coder") {
+    return (
+      <CoderAgentChat
         featureId={featureId}
         feature={feature}
         runningStage={runningStage}

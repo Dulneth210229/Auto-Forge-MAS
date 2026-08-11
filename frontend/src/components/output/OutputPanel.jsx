@@ -5,6 +5,7 @@ import { useWorkspaceSelection } from "../workspace/WorkspaceSelectionContext";
 import { getEffectiveActiveArtifact } from "../../lib/activeArtifactSelection";
 import { ARTIFACT_TYPE_LABELS, ARTIFACT_TYPE_STAGE } from "../../lib/artifactTypeMeta";
 import ResultTab from "./ResultTab";
+import PreviewPanel from "./PreviewPanel";
 import LoadingSpinner from "../common/LoadingSpinner";
 import ErrorBanner from "../common/ErrorBanner";
 
@@ -13,6 +14,10 @@ const TABS = [
   { key: "files", label: "Files" },
   { key: "preview", label: "Preview" },
 ];
+
+// Only "files" stays disabled -- it's a separate, not-yet-built workspace file browser.
+// "preview" is live (see PreviewPanel).
+const DISABLED_TABS = new Set(["files"]);
 
 // artifact_type -> which downstream agent actually consumes it, for the "Using SRS vN for..."
 // indicator. Requirement -> Domain and Domain -> Architecture are both wired (direct user
@@ -24,10 +29,8 @@ const NEXT_AGENT_BY_ARTIFACT_TYPE = {
 };
 
 // The right panel -- deliberately the largest of the three (see ResizableWorkspace's default
-// sizes). Files/Preview are visible but disabled this milestone: both depend on the Coder Agent's
-// output shape/behavior, which is about to change, so building them now would mean redoing them
-// against a moving target. The tab structure is reserved so this doesn't need to change shape
-// again once that backend work (workspace file browser + live preview) lands.
+// sizes). "Preview" is live (Cursor-style Start/Stop of the Coder Agent's generated Next.js app,
+// see PreviewPanel). "Files" stays disabled -- a workspace file browser hasn't been built yet.
 export default function OutputPanel({ featureId }) {
   const { selectedAgent, activeOutputTab, setActiveOutputTab } = useWorkspaceSelection();
   const { data: artifacts, isLoading, error } = useFeatureArtifacts(featureId);
@@ -38,7 +41,7 @@ export default function OutputPanel({ featureId }) {
       <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-800 flex-shrink-0 px-2">
         <div className="flex items-center">
           {TABS.map((tab) => {
-            const disabled = tab.key !== "result";
+            const disabled = DISABLED_TABS.has(tab.key);
             return (
               <button
                 key={tab.key}
@@ -88,12 +91,18 @@ export default function OutputPanel({ featureId }) {
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto p-4">
-        <ErrorBanner error={error} fallback="Failed to load artifacts." />
-
-        {isLoading ? (
-          <LoadingSpinner variant="cube" label="Loading output..." />
+        {activeOutputTab === "preview" ? (
+          <PreviewPanel featureId={featureId} />
         ) : (
-          <ResultTab featureId={featureId} stage={selectedAgent} allArtifacts={artifacts || []} />
+          <>
+            <ErrorBanner error={error} fallback="Failed to load artifacts." />
+
+            {isLoading ? (
+              <LoadingSpinner variant="cube" label="Loading output..." />
+            ) : (
+              <ResultTab featureId={featureId} stage={selectedAgent} allArtifacts={artifacts || []} />
+            )}
+          </>
         )}
       </div>
     </div>

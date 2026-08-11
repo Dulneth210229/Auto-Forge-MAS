@@ -2379,7 +2379,7 @@ class ArchitectureAgent:
         project_type = project.get("project_type", srs.get("project_type", "General"))
         feature_id = feature.get("feature_id", srs.get("feature_id", "feature"))
         feature_name = feature.get("feature_name", srs.get("feature_name", "Feature"))
-        target_stack = project.get("target_stack", srs.get("target_stack", "MERN"))
+        target_stack = project.get("target_stack", srs.get("target_stack", "Next.js"))
         architecture_style = srs.get("preferred_architectural_style", srs.get("architecture_style", srs.get("architectural_style", "mvc")))
 
         base_sds_json = self._build_base_design_from_srs(
@@ -2560,9 +2560,11 @@ class ArchitectureAgent:
         SRS-derived fallback and converted legacy SDS plans -- must carry a
         real, structurally-valid implementation_plan, because the Coder Agent
         treats it as the blueprint to realize. File paths follow the exact
-        scaffold conventions the Coder Agent's own planner prompt teaches
-        (server/src/routes/..., client/src/pages/..., the FEATURE_ROUTES_END
-        and FEATURE_LINKS_END markers).
+        Next.js App Router + TypeScript scaffold conventions the Coder
+        Agent's own planner prompt teaches (app/api/<resource>/route.ts,
+        app/<route>/page.tsx, the FEATURE_LINKS_END marker) -- with no
+        "mount the router" step at all, since Next.js's file-based routing
+        makes a Route Handler live the instant its file exists.
         """
 
         slug = self._slug(feature_name)
@@ -2581,31 +2583,33 @@ class ArchitectureAgent:
             if isinstance(model, dict) and model.get("name")
         }
 
-        routes_file = f"server/src/routes/{slug}.routes.js"
+        # Group endpoints by the Route Handler file their path resolves to --
+        # a collection endpoint ("/api/tasks") and an item endpoint
+        # ("/api/tasks/:id") ALWAYS resolve to two separate files
+        # (app/api/tasks/route.ts vs. app/api/tasks/[id]/route.ts), since
+        # Next.js routes by folder path, not by an Express-style single
+        # router file handling every method+path combination.
+        endpoints_by_route_file: dict[str, list[dict[str, Any]]] = {}
+        for endpoint in api_endpoints:
+            endpoint_path = str(endpoint.get("endpoint") or f"/api/{slug}")
+            endpoints_by_route_file.setdefault(self._endpoint_route_file(endpoint_path), []).append(endpoint)
 
         backend_files: list[dict[str, Any]] = []
-        if api_endpoints:
+        for route_file, group_endpoints in endpoints_by_route_file.items():
+            implements = [e.get("endpoint") for e in group_endpoints if e.get("endpoint")]
+            methods = ", ".join(sorted({str(e.get("method", "GET")).upper() for e in group_endpoints}))
             backend_files.append({
-                "path": routes_file,
+                "path": route_file,
                 "action": "create",
-                "purpose": f"Express router implementing every {feature_name} API endpoint, "
-                           "with request validation before any handler logic.",
-                "implements_endpoints": [
-                    endpoint.get("endpoint") for endpoint in api_endpoints if endpoint.get("endpoint")
-                ],
-            })
-            backend_files.append({
-                "path": "server/src/app.js",
-                "action": "modify",
-                "purpose": f"Mount the new {feature_name} router with require(...) + app.use(...) "
-                           "inserted at the // FEATURE_ROUTES_END marker.",
-                "implements_endpoints": [],
+                "purpose": f"Next.js Route Handler implementing {methods} for {feature_name} "
+                           f"({', '.join(implements)}), with request validation before any handler logic.",
+                "implements_endpoints": implements,
             })
 
         models: list[dict[str, Any]] = []
         for entity in data_entities:
             entity_name = str(entity.get("name") or f"{pascal}Data")
-            model_file = f"server/src/models/{self._pascal_case(entity_name)}.js"
+            model_file = f"models/{self._pascal_case(entity_name)}.ts"
 
             fields = []
             for field in entity.get("fields", []) or []:
@@ -2625,7 +2629,9 @@ class ArchitectureAgent:
             backend_files.append({
                 "path": model_file,
                 "action": "create",
-                "purpose": f"Mongoose model for the {entity_name} entity.",
+                "purpose": f"Mongoose model for the {entity_name} entity (must use the "
+                           f"`mongoose.models.{self._pascal_case(entity_name)} || mongoose.model(...)` "
+                           "guard to avoid OverwriteModelError).",
                 "implements_endpoints": [],
             })
 
@@ -2674,7 +2680,7 @@ class ArchitectureAgent:
             )
 
         pages = [{
-            "path": f"client/src/pages/{page_name}.jsx",
+            "path": f"app/{slug}/page.tsx",
             "route": route_path,
             "purpose": page_purpose,
             "uses_components": [],
@@ -2698,7 +2704,7 @@ class ArchitectureAgent:
             "pages": pages,
             "components_to_reuse": [],
             "services": [{
-                "path": f"client/src/services/{camel}Service.js",
+                "path": f"lib/api/{camel}.ts",
                 "functions": service_functions,
             }] if service_functions else [],
             "routing": {
@@ -2712,25 +2718,24 @@ class ArchitectureAgent:
             implementation_order.append(
                 "Create the Mongoose model(s): " + ", ".join(model["file"] for model in models)
             )
-        if api_endpoints:
+        for route_file, group_endpoints in endpoints_by_route_file.items():
+            implements = ", ".join(str(e.get("endpoint")) for e in group_endpoints if e.get("endpoint"))
             implementation_order.append(
-                f"Create {routes_file} implementing every endpoint above, validating required "
-                "request fields before use (400 on missing/malformed)."
-            )
-            implementation_order.append(
-                "Mount the new router in server/src/app.js at the // FEATURE_ROUTES_END marker."
+                f"Create {route_file} implementing {implements}, validating required request "
+                "fields before use (400 on missing/malformed) -- it is automatically live the "
+                "instant the file exists, no separate mount step needed."
             )
         if service_functions:
             implementation_order.append(
-                f"Create client/src/services/{camel}Service.js with one function per endpoint."
+                f"Create lib/api/{camel}.ts with one function per endpoint."
             )
         implementation_order.append(
-            f"Create client/src/pages/{page_name}.jsx, reusing approved UI/UX components where "
-            "available instead of re-authoring their markup."
+            f"Create app/{slug}/page.tsx (a Client Component, `\"use client\"` as its first line), "
+            "reusing approved UI/UX components where available instead of re-authoring their markup."
         )
         implementation_order.append(
-            f"Register <Route path=\"{route_path}\"> AND a HomePage <Link> in client/src/App.jsx "
-            "at the FEATURE_LINKS markers -- a route with no link is not complete."
+            f"Register a real <Link href=\"{route_path}\"> in app/page.tsx at the FEATURE_LINKS "
+            "markers -- a page with no link to it is not complete."
         )
 
         return {
@@ -2742,17 +2747,35 @@ class ArchitectureAgent:
             "frontend": frontend,
             "implementation_order": implementation_order,
             "constraints": [
-                "The Express+Vite scaffold already exists and works -- never recreate "
-                "server/src/app.js, server/src/server.js, client/src/main.jsx, "
-                "client/vite.config.js, or client/index.html.",
-                "Mount new backend routers by patching the // FEATURE_ROUTES_END marker in "
-                "server/src/app.js -- never rewrite the file.",
-                "Register new pages by adding both a <Route> and a reachable <Link> in "
-                "client/src/App.jsx (FEATURE_LINKS markers) -- an unreachable page is not done.",
+                "The Next.js App Router scaffold already exists and works -- never recreate "
+                "app/layout.tsx, next.config.mjs, tsconfig.json, or lib/mongodb.ts.",
+                "A Route Handler (route.ts) is live the instant it exists -- there is no router "
+                "to mount it on, unlike an Express app.js.",
+                "Register new pages by adding a real <Link href=\"...\"> in app/page.tsx (FEATURE_LINKS "
+                "markers) -- an unreachable page is not done.",
+                "Every Mongoose model file must use the `mongoose.models.X || mongoose.model(...)` "
+                "guard to avoid OverwriteModelError.",
                 "Reuse approved UI/UX components verbatim (via read_ui_component) instead of "
                 "re-authoring their markup.",
             ],
         }
+
+    def _endpoint_route_file(self, endpoint_path: str) -> str:
+        """
+        Translate an endpoint path (e.g. "/api/tasks/:id") into the Next.js
+        Route Handler file path that must implement it (e.g.
+        "app/api/tasks/[id]/route.ts") -- a dynamic segment ":name" becomes
+        a "[name]" folder, mirroring coder_agent/route_checker.py's own
+        translation (kept as a small, separate copy here rather than a
+        cross-agent import, since this fallback and that checker are
+        independent, deterministic pieces with no other coupling).
+        """
+        segments = [segment for segment in endpoint_path.strip("/").split("/") if segment]
+        translated = [
+            f"[{segment[1:]}]" if segment.startswith(":") else segment
+            for segment in segments
+        ]
+        return "app/" + "/".join(translated) + "/route.ts"
 
     def _clean_architecture_plan_text(self, value: Any) -> Any:
         """
@@ -2828,8 +2851,8 @@ class ArchitectureAgent:
                 "task": f"Create or update frontend screen/components for the {feature_name} feature.",
                 "layer": "frontend",
                 "suggested_files": [
-                    f"frontend/src/pages/{self._pascal_case(feature_name)}.jsx",
-                    f"frontend/src/components/{self._pascal_case(feature_name)}Form.jsx",
+                    f"app/{feature_slug.replace('_', '-')}/page.tsx",
+                    f"components/{self._pascal_case(feature_name)}Form.tsx",
                 ],
                 "related_requirements": functional_ids + acceptance_ids,
             })
@@ -2837,12 +2860,11 @@ class ArchitectureAgent:
         if interface_view.get("api_endpoints") or srs.get("api_expectations"):
             tasks.append({
                 "task_id": f"TASK-{len(tasks) + 1:03d}",
-                "task": f"Implement backend route/controller/service flow for the {feature_name} API expectations.",
+                "task": f"Implement Next.js Route Handler(s) for the {feature_name} API expectations.",
                 "layer": "backend",
                 "suggested_files": [
-                    f"backend/routes/{feature_slug}.routes.js",
-                    f"backend/controllers/{feature_slug}.controller.js",
-                    f"backend/services/{feature_slug}.service.js",
+                    f"app/api/{feature_slug.replace('_', '-')}/route.ts",
+                    f"models/{self._pascal_case(feature_name)}.ts",
                 ],
                 "related_requirements": functional_ids + acceptance_ids,
             })

@@ -57,7 +57,7 @@ alongside the enhanced wording.
 - **Project Type:** {enhanced_srs_json.get("project_type", "N/A")}
 - **Feature ID:** {enhanced_srs_json.get("feature_id", "N/A")}
 - **Feature Name:** {enhanced_srs_json.get("feature_name", "N/A")}
-- **Target Stack:** {enhanced_srs_json.get("target_stack", "MERN")}
+- **Target Stack:** {enhanced_srs_json.get("target_stack", "Next.js")}
 - **Preferred Architectural Style:** {enhanced_srs_json.get("architectural_style", "modular")}
 
 ---

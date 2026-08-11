@@ -9,7 +9,7 @@ function emptyBaInput(feature) {
   return {
     project_type: "",
     feature_name: feature?.feature_name || "",
-    target_stack: "MERN",
+    target_stack: "Next.js",
     architectural_style: "modular",
     user_roles: [],
     business_goal: "",
@@ -146,7 +146,7 @@ export default function RequirementRunForm({ featureId, feature }) {
         label="Constraints"
         value={baInput.constraints}
         onChange={(v) => set("constraints", v)}
-        placeholder="Use MERN stack"
+        placeholder="Use Next.js with TypeScript"
       />
       <RepeatableTextList
         label="Assumptions"

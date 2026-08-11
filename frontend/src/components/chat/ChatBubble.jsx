@@ -15,6 +15,7 @@ const STATUS_LABELS = {
 const ASK_EVENT_LABELS = {
   run: "Started",
   revise: "Revision requested",
+  edit: "Manual edit",
   clarify_start: "Conversation started",
   clarify: "Answered questions",
   confirm: "Confirmed SRS",
@@ -120,6 +121,7 @@ export default function ChatBubble({ item, allArtifacts, onViewArtifact, onEditS
       (a) => a.version === item.version && item.types.includes(a.artifact_type)
     );
     const messageText = `Produced ${label} (v${item.version})`;
+    const copyText = item.summary ? `${messageText}\n${item.summary}` : messageText;
 
     return (
       <div className="flex justify-start group">
@@ -140,8 +142,13 @@ export default function ChatBubble({ item, allArtifacts, onViewArtifact, onEditS
                 </>
               )}
             </p>
+            {item.summary && (
+              <p className="mt-1 text-gray-600 dark:text-gray-300 whitespace-pre-wrap">
+                {item.summary}
+              </p>
+            )}
           </div>
-          <CopyButton text={messageText} />
+          <CopyButton text={copyText} />
         </div>
       </div>
     );

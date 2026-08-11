@@ -17,11 +17,13 @@ export function useArchitectureAgentFlow(featureId) {
   const [runStreamStarted, setRunStreamStarted] = useState(false);
   const [runPhase, setRunPhase] = useState(null);
   const [runPhaseStartedAt, setRunPhaseStartedAt] = useState(null);
+  const [runStreamError, setRunStreamError] = useState(null);
 
   const [revisionStreamedText, setRevisionStreamedText] = useState("");
   const [revisionStreamStarted, setRevisionStreamStarted] = useState(false);
   const [revisionPhase, setRevisionPhase] = useState(null);
   const [revisionPhaseStartedAt, setRevisionPhaseStartedAt] = useState(null);
+  const [revisionStreamError, setRevisionStreamError] = useState(null);
 
   const runAbortRef = useRef(null);
   const reviseAbortRef = useRef(null);
@@ -52,6 +54,12 @@ export function useArchitectureAgentFlow(featureId) {
           } else if (event.type === "phase") {
             setRunPhase({ phase: event.phase, label: event.label });
             setRunPhaseStartedAt(Date.now());
+          } else if (event.type === "error") {
+            // The backend route always converts an uncaught exception into a real
+            // {"type": "error"} NDJSON line before the stream ends -- but the streamed request's
+            // own promise still resolves normally for it (only a genuine network/HTTP failure
+            // rejects), so without this branch a real backend crash was completely invisible.
+            setRunStreamError(event.message);
           }
         },
         controller.signal
@@ -65,6 +73,7 @@ export function useArchitectureAgentFlow(featureId) {
     setRunStreamStarted(false);
     setRunPhase(null);
     setRunPhaseStartedAt(null);
+    setRunStreamError(null);
     return runStream.mutateAsync(payload);
   }
 
@@ -86,6 +95,8 @@ export function useArchitectureAgentFlow(featureId) {
           } else if (event.type === "phase") {
             setRevisionPhase({ phase: event.phase, label: event.label });
             setRevisionPhaseStartedAt(Date.now());
+          } else if (event.type === "error") {
+            setRevisionStreamError(event.message);
           }
         },
         controller.signal
@@ -99,6 +110,7 @@ export function useArchitectureAgentFlow(featureId) {
     setRevisionStreamStarted(false);
     setRevisionPhase(null);
     setRevisionPhaseStartedAt(null);
+    setRevisionStreamError(null);
     return reviseStream.mutateAsync(payload);
   }
 
@@ -114,6 +126,7 @@ export function useArchitectureAgentFlow(featureId) {
     runStreamStarted,
     runPhase,
     runPhaseStartedAt,
+    runStreamError,
     reviseStream,
     handleReviseStream,
     stopReviseStream,
@@ -121,5 +134,6 @@ export function useArchitectureAgentFlow(featureId) {
     revisionStreamStarted,
     revisionPhase,
     revisionPhaseStartedAt,
+    revisionStreamError,
   };
 }

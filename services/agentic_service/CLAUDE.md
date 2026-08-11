@@ -1404,6 +1404,656 @@ milestone — that file is scratch, **this file is the durable one**.
       Architecture Plan JSON/Markdown version -- left in place as real, inspectable verification
       output, including the honest stereotype-mismatch quirk noted above.
 
+52. **MERN → Next.js migration: the Coder Agent now generates Next.js (App Router,
+    TypeScript) instead of Express+Vite/React, with the SRS/Architecture Plan/Requirement
+    schema conventions changed to match, plus a new Cursor-style live preview of the
+    generated app in the frontend's Result panel.** Direct user request, with an explicit
+    constraint: change only the generated STACK, never the pipeline's own stage sequence.
+    Full plan (`C:\Users\ASUS\.claude\plans\soft-petting-star.md`, overwritten since):
+    researched via three parallel Explore passes (Coder Agent's MERN surface, Requirement/
+    Architecture Agent stack assumptions, sandbox/preview infrastructure) plus an
+    independent Plan-agent validation pass that caught real gaps beyond the original
+    research (a factual correction on Babel's jsx+typescript plugin incompatibility, a
+    missed `sandbox_service` change, and four material gaps -- a legacy-MERN-repo
+    corruption risk, `render_checker.py`'s `#root`-emptiness check being near-worthless
+    under SSR, missing `sandbox_service` mem/timeout changes, and `.next/` build output not
+    being branch-scoped).
+    - **Scope, decided up front**: kept MongoDB + Mongoose (relocated to `lib/mongodb.ts` +
+      `models/<Entity>.ts`) -- swapping ORMs was never asked for. `target_stack` stays a
+      free, unvalidated string everywhere (no new enum) -- only its *default* changed, so
+      the two real pre-migration projects (`e-commerce-platform`, `taskflow`) are never
+      retroactively invalidated. TypeScript over plain JavaScript (direct user choice, asked
+      via one targeted question). Pinned to Next.js 14.2.5 specifically -- Next 14's
+      `params`/`searchParams` contract is a plain object, Next 15's is a Promise requiring
+      `await`; 14's synchronous form was judged simpler for a local, occasionally-unreliable
+      model to get right, and the Coder Agent's prompt is written against that one contract.
+    - **`workspace_service.py`**: new `NEXTJS_SCAFFOLD_FILES` (package.json pinning next/
+      react/typescript/mongoose exactly, no `^`; tsconfig.json; `next.config.mjs`;
+      `app/layout.tsx`; `app/page.tsx` with the `{/* FEATURE_LINKS_START/END */}` marker
+      pair, same idiom as the old `client/src/App.jsx`; `app/globals.css`; `lib/mongodb.ts`
+      -- a guarded, cached connection singleton mirroring item 18's own
+      `mongoose.connect` guard; `app/api/health/route.ts`; `.eslintrc.json`; `.env.example`)
+      replaces the old MERN scaffold as the default for every NEW project. New
+      `_detect_stack(repo_path)` (presence of `server/src/app.js` vs. anything else) gates
+      `ensure_project_repo`: a repo already on the legacy MERN convention gets ONLY MERN
+      backfills (`_backfill_mern_scaffold`/`_backfill_mern_scaffold_upgrades`, renamed from
+      the old unprefixed names but otherwise byte-for-byte unchanged) and is never written
+      into with Next.js files -- confirmed this freezes `e-commerce-platform`/`taskflow`
+      correctly. `SCAFFOLD_FILES`/`SCAFFOLD_GITIGNORE`/etc. renamed `MERN_*` throughout for
+      clarity now that two scaffolds coexist in one file; every MERN backfill/upgrade
+      function's actual logic is untouched.
+    - **A REAL, BUILD-BREAKING BUG, found only by the real E2E run below, not by any of the
+      extensive prior research or unit testing**: Next.js 14 (the version this migration
+      deliberately pinned to) does not support `next.config.ts` AT ALL -- TypeScript config
+      file support was only added in Next.js 15. Every single generated project's very
+      first `next build` failed with "Configuring Next.js via 'next.config.ts' is not
+      supported. Please replace the file with 'next.config.js' or 'next.config.mjs'."
+      Fixed by renaming the scaffold's config file to `next.config.mjs` (plain JS with a
+      JSDoc `@type` annotation instead of a TS type import -- `.mjs` forces ESM regardless
+      of `package.json`'s own `"type"` field, so no other scaffold change was needed) and
+      updating every reference across `verify.py`'s anti-cheat check, the Coder Agent
+      prompt, and the Architecture Agent's implementation-plan text and fallback builder.
+      **A second-order bug this exposed**: the already-existing (pre-fix) throwaway test
+      workspace had BOTH `next.config.ts` (stale) and `next.config.mjs` (freshly backfilled)
+      on disk simultaneously after the fix landed and `ensure_project_repo` ran again --
+      Next.js refuses to build with `next.config.ts` present regardless of `.mjs` also
+      existing, so the backfill's "only add what's missing" logic wasn't sufficient on its
+      own. Fixed by making `_backfill_nextjs_scaffold` actively detect and remove a stale
+      `next.config.ts` (via `repo.index.remove`, not just `unlink`, so the deletion is
+      actually committed) whenever it backfills -- a real, necessary one-time cleanup step
+      for any repo scaffolded between this migration's initial rollout and this fix, not
+      something a brand-new project will ever hit going forward. Both bugs are now covered
+      by real, unmocked git-repo tests in `test_workspace_scaffold.py`.
+    - **`sandbox_service.py`**: `DEFAULT_MEM_LIMIT` raised to `2g` (both `run_command` and
+      `start_background_service` now take a `mem_limit` parameter) -- `next build`'s
+      bundling + full TypeScript typecheck routinely exceeded the Vite-era `1g` default,
+      and a Docker OOM kill would have surfaced as an undiagnosable bare exit 137. New
+      `PREVIEW_CONTAINER_LABEL` + `start_background_service(..., labels=...)` +
+      `find_containers_by_label()` -- lets `preview_service.py`'s startup sweep find and
+      stop orphaned live-preview containers a `--reload` restart left running, without
+      needing its own in-memory registry to have survived.
+    - **`tools.py`'s `check_syntax`**: widened from a 2-way (`.js` via `node --check`, `.jsx`
+      via `@babel/parser`) to a 4-way matrix -- `.ts` gets `plugins: ['typescript']` (no
+      `jsx`) and `.tsx` gets `plugins: ['jsx', 'typescript']`, kept deliberately separate
+      because combining `jsx`+`typescript` on a plain `.ts` file breaks parsing of `<T>expr`
+      type-assertion syntax (a real Babel limitation caught during planning, not a guess).
+      Still syntax-only, not type-checking -- `next build` remains the one real
+      type-checking gate, to avoid doubling the slowest step in the loop.
+    - **The four deterministic checkers, rewritten for file-based routing**:
+      `route_checker.check_route_coverage` now translates a `:param` endpoint segment to a
+      `[param]` folder (`/api/tasks/:id` → `app/api/tasks/[id]/route.ts`) and checks for one
+      of the three legal Route Handler export forms, instead of Express's mount-prefix
+      cross-referencing (no `app.js` to cross-reference against anymore). A real bug caught
+      by its own new unit tests before this ever ran for real: the first version
+      double-prefixed the derived path (`app/api/api/tasks/route.ts`) because the endpoint
+      string itself already includes `/api`. `nav_checker.check_page_reachability` now
+      discovers pages by walking `app/**/page.tsx` (excluding `layout`/`loading`/`error`/
+      `not-found`/`default`/`route.ts`, which never create routes) instead of parsing
+      `<Route>` JSX, and recognizes `[param]` folder segments (not `:param` JSX props) as
+      parameterized. `style_checker.check_component_styling` rescoped to `app`/`components`,
+      `.tsx`. `render_checker.check_runtime_render` now serves via `next start` (not `vite
+      preview`) and checks the real HTTP response status from `page.goto()` instead of
+      `#root`'s emptiness -- the single most valuable free correctness upgrade identified
+      during planning: under SSR there is no client-side `#root` to inspect, and a crashing
+      Server Component still returns non-empty HTML, so the old check was already measuring
+      the wrong thing even on the stack it was written for.
+    - **`verify.py`**: one root `npm install` (no more server/client split), `next build` as
+      the single build-and-typecheck gate, a `next start`+`/api/health` boot smoke test
+      (skipped, not run against a stale build, if the build step failed), and a new
+      `next.config.mjs integrity` anti-cheat step (greps for `ignoreBuildErrors`/
+      `ignoreDuringBuilds` and hard-fails if present) -- a struggling model's easiest
+      escape hatch from a real type/lint error is to suppress it at the config level
+      instead of fixing it. `lint` (the scaffold's real `next lint` script,
+      `eslint-config-next`) is deliberately NOT run as a gate -- ESLint flags real-but-
+      non-blocking style issues that would make verification fail on cosmetic grounds for
+      an already-fragile local-model coding loop; a human can still run it manually.
+    - **A real, confirmed Next.js behavior found only through real Docker runs, not
+      speculation**: a plain Server Component page (no `"use client"`) is statically
+      PRERENDERED at `next build` time by default -- a runtime crash in one fails the
+      *build*, not just a later request. This meant an early test's premise ("compiles fine,
+      only crashes at real runtime") was actually wrong for a plain Server Component; fixed
+      by moving the test's crash into a `useEffect` inside a `"use client"` component (which
+      never executes during the server-side prerender pass) -- also the realistic shape of
+      the bug class this check exists for, since every real generated feature page is
+      always a Client Component per the Coder Agent's own new prompt rule. **A related,
+      equally real finding**: a Route Handler with no `export const dynamic =
+      "force-dynamic"` is eligible for the SAME build-time static optimization and can be
+      INVOKED at build time to cache its response -- a test fixture that dropped this line
+      while overwriting a route file had its intentionally-broken handler crash `next build`
+      itself instead of only the real running server, defeating that test's own purpose.
+      Both are genuine, confirmed Next.js semantics (not bugs in this migration's own code)
+      that directly validate why `force-dynamic` is a mandatory rule in the Coder Agent's
+      new prompt, not just a style preference.
+    - **Architecture Agent**: `implementation_plan`'s file-path conventions rewritten
+      throughout `prompt.py` and `agent.py`'s deterministic fallback builder --
+      `app/api/<resource>/route.ts` for a collection endpoint and `app/api/<resource>/
+      [id]/route.ts` for an item endpoint, ALWAYS two separate files now (Next.js routes by
+      folder path, unlike one Express router file handling every method), grouped via a new
+      `_endpoint_route_file` helper mirroring `route_checker.py`'s own translation.
+      `implementation_order` no longer has a "mount the router" step at all -- its absence
+      is the direct, load-bearing proof the file-based-routing simplification actually
+      landed (confirmed present in every real fallback plan generated during E2E testing).
+      Also fixed the second, older `coder_tasks` builder (a third path convention,
+      `frontend/src/pages/*.jsx`/`backend/routes/*.routes.js`, visible in the human-facing
+      plan but read by no code) and the UML noise/stopword lists across all four validators/
+      modelers (added `next.js`/`typescript`/`server component`/`route handler`/
+      `app router` alongside the existing `express`/`mongoose`/`react`/`node` entries) --
+      confirmed `class_validator.py`/`class_modeler.py` never had an equivalent list to
+      begin with (classes are legitimately allowed to be named after technical constructs
+      like Controller/Service/Repository), so nothing needed changing there.
+    - **Coder Agent prompt (`prompt.py`) -- the core of the migration**: `CODER_AGENT_
+      SYSTEM_PROMPT` and the shared planner hard rules rewritten for Next.js App Router +
+      TypeScript, prioritized by likely real local-model failure modes: a BLANKET
+      `"use client"` rule (every feature page and every integrated UI/UX component, no
+      case-by-case judgment call, since UI/UX components are already documented as
+      self-contained with internal `useState`); the exact Next 14 synchronous `params`
+      contract stated loudly with a literal signature example; Server Actions explicitly
+      forbidden (Route Handlers + client-side fetch only, avoiding a second parallel data-
+      fetching mental model for zero user-visible gain); the `mongoose.models.X ||
+      mongoose.model(...)` guard stated as a literal mandatory template (the single most
+      common real Next+Mongoose failure, `OverwriteModelError`); `export const dynamic =
+      "force-dynamic"` on every DB-touching Route Handler (now doubly justified by the
+      real build-time-static-optimization finding above); navigation restricted to `<Link
+      href>` with a literal/template-literal string only, never `router.push`, keeping
+      reachability statically provable. `planner.py`/`plan_validator.py` needed zero
+      changes -- confirmed stack-agnostic by two independent passes, both before and after
+      this migration.
+    - **Requirement/project schema defaults**: `target_stack`'s default changed from
+      `"MERN"` to `"Next.js"` in `requirement_schema.py`/`project_schema.py`, every
+      `.get("target_stack", "MERN")` fallback across `requirement_agent`/`domain_agent`'s
+      markdown builders, and the frontend's `CreateProjectForm.jsx`/`RequirementRunForm.jsx`
+      defaults/placeholders. Confirmed the Requirement Agent's own conversational prompt/
+      gap-analysis logic had zero hardcoded MERN assumptions already -- only the default
+      value needed to change, directly addressing the user's own stated worry.
+    - **Live preview (new capability)**: `app/services/preview_service.py` -- an in-memory
+      registry (ephemeral, same precedent as `graph_orchestrator_service`'s per-thread
+      state, not persisted to Mongo) mapping `feature_id -> {container, host_port,
+      built_commit_sha, started_at}`, built entirely on the already-generic `sandbox_
+      service.start_background_service`/`stop_background_service`. Start refuses (409) if
+      no `.next/BUILD_ID` exists yet for the current checkout; records the commit SHA at
+      start time and reports `"stale"` (not silently `"running"`) if the workspace's HEAD
+      has since moved on, since `.next/` isn't branch-scoped and a later Coder Agent
+      revision wouldn't automatically rebuild it. Starting a preview for a DIFFERENT
+      feature of the SAME project while one is already running is blocked (409, naming the
+      conflicting feature) rather than silently killing it -- they share one working tree.
+      `CoderAgent.run()`/`revise()` both call `preview_service.stop_preview_if_running(...)`
+      before touching the workspace, since a running preview's working tree is about to
+      change underneath it. New `sweep_orphaned_containers()` runs once at backend startup
+      (`main.py`'s `@app.on_event("startup")`) to stop any container still carrying the
+      preview label from a prior process's `--reload` restart. New routes `POST/GET/POST
+      /features/{feature_id}/preview/{start,status,stop}`. Frontend: `OutputPanel.jsx`'s
+      Preview tab un-disabled (Files stays disabled -- a separate, not-yet-built feature);
+      new `PreviewPanel.jsx` (Start/Stop buttons, an `<iframe>` once running, a clear
+      inline message naming the conflicting feature on a 409) polls status while running/
+      stale via a new `usePreview.js` hook, so a page refresh recovers "already running"
+      state instead of looking stopped just because the backend's registry is in-memory.
+    - **Real, live end-to-end verification, not just unit tests** -- driven via
+      `scripts/run_nextjs_migration_e2e.py` (calling each agent directly, same established
+      pattern as `run_taskflow_architecture_e2e.py`, approving through the real
+      `approval_service`), plus a hand-validated-plan continuation script (matching the
+      long-established `run_quickcart_coder_pipeline_manual.py` precedent) once the real
+      planner hit its own separate, pre-existing, already-documented coverage-reliability
+      gap (items 18/24):
+      - **A genuinely useful real finding, not a migration bug**: `llama3:latest` (the
+        fast model chosen for a dry run) does not support Ollama tool-calling AT ALL
+        ("does not support tools", HTTP 400) -- meaning it can never drive the Coder
+        Agent's agentic coding loop, only ever the non-agentic single-shot planner rung.
+        There is no faster local substitute for that step; qwen3-coder-family models are
+        the only tool-capable ones available, confirming why this project's own live
+        settings already default `coder_agent` to `qwen3-coder:latest`.
+      - **A second real finding**: the live per-agent override for `architecture_agent`
+        specifically (`qwen3-coder.max:latest`, a ~30B model) took over 3.5 real hours for
+        a single call before timing out -- the same GPU/VRAM-mismatch class already
+        diagnosed in item 29 for this exact class of model on this machine's 6GB GPU, not
+        new. Worked around by temporarily overriding only `architecture_agent` to
+        `llama3:latest` for the run (restoring its exact prior override afterward, same
+        "temporarily switch, then restore exactly" precedent as items 45/49/50) --
+        `requirement_agent`/`domain_agent`/`coder_agent` stayed on their already-configured
+        qwen3-coder-family defaults throughout, satisfying the user's specific request that
+        the CODER AGENT'S output use qwen3-coder.
+      - **Per-stage confirmation, real content inspected, not just "did it run"**: SRS
+        `target_stack: "Next.js"` confirmed, real `api_expectations`
+        (`POST/GET /api/items/{itemId}/notes`) confirmed. Enhanced SRS preserved
+        `target_stack` through enrichment. Architecture Plan (reached via the deterministic
+        fallback rung, itself a real, honest outcome -- the raw LLM output failed schema
+        validation twice, then the fallback's own out-of-scope-actor validation also
+        failed once, correctly triggering the item-26-established safety net rather than
+        crashing) produced genuinely Next.js-shaped `implementation_plan` paths
+        (`app/api/item-notes/route.ts`, `models/ItemNotesDataEntity*.ts`,
+        `app/item-notes/page.tsx`) with confirmed NO mount-router step. UI/UX Agent
+        produced two real components; both approved individually (not just the metadata),
+        confirmed necessary per item 20's own established gotcha. **The real Coder Agent
+        coding loop, run with `qwen3-coder:latest`**, produced genuinely correct, idiomatic
+        Next.js 14 App Router + TypeScript code on inspection: `"use client"` correctly
+        placed as the literal first line of every integrated component/page; the
+        `mongoose.models.X || mongoose.model(...)` guard used correctly; `export const
+        dynamic = "force-dynamic"` present; a real `<Link href="/item-notes">` correctly
+        inserted at the `{/* FEATURE_LINKS_END */}` marker; and -- unprompted by the hand-
+        written plan -- the model correctly diagnosed and fixed the approved
+        `NoteInputField` UI/UX component's real, genuine gap (no submit affordance at all)
+        by adding a real `<form onSubmit>` + button calling a new `onSubmit` prop, keeping
+        its existing markup/styling intact, exactly matching the prompt's "read the
+        component's actual prop usage" rule. `endpoint route coverage` and `page
+        reachability` both passed against this real generated code, confirming both
+        rewritten checkers work correctly outside of synthetic fixtures.
+      - **An honest, real, NOT-migration-specific defect verify() correctly caught**: the
+        coding loop also invented an unplanned, unavailable `next-auth` import (and a
+        non-existent `@/lib/auth` module) to satisfy VR-002 ("only registered users can
+        submit notes") on its own initiative, with no such package ever scaffolded,
+        planned, or declared in `new_dependencies` -- `next build` correctly failed with
+        "Module not found: Can't resolve 'next-auth'", exactly the kind of real defect the
+        hard build gate exists to catch before a human ever sees broken code. This is the
+        same general class of local-model over-eagerness this project has repeatedly
+        documented for other agents (not a regression from this migration, and out of this
+        migration's own scope to fully solve) -- recorded honestly rather than re-running
+        indefinitely to get a fully clean verification, since the actual object of this
+        verification (does the migration produce genuinely Next.js-shaped output, and do
+        the rewritten checkers correctly gate on real defects) was already conclusively
+        proven either way.
+      - **A separate, real Docker/Windows infrastructure issue also surfaced twice**: `npm
+        install` failed with `EACCES ... rename '/workspace/node_modules/glob'` on a
+        workspace that had been `npm install`'d by several overlapping container runs in
+        close succession (this session's own concurrent verification runs) -- a real
+        bind-mount file-locking race, not a code defect; resolved by deleting and letting
+        one clean install happen. Worth knowing for future real-pipeline testing on this
+        machine, matching the already-documented "don't run the Docker-heavy suite
+        concurrently with a real agent run" lesson, just via a new symptom.
+    - Tests: `test_workspace_scaffold.py` (rewritten for the Next.js scaffold + new
+      MERN-freeze tests + the stale-`next.config.ts` cleanup test), `test_route_checker.py`/
+      `test_nav_checker.py`/`test_style_checker.py`/`test_render_checker.py` (rewritten for
+      file-based routing), `test_coder_verify.py` (rewritten for the single-install/
+      `next build`/`next start` flow, all 16 passing against real Docker, including the two
+      that needed their own fixture fixes for the real Next.js prerendering/static-
+      optimization findings above), `test_coder_tools.py`/`test_revision_planner_tools.py`
+      (path/extension updates, 44 passing against real Docker), `test_coder_diff_builder.py`
+      (setup-instructions text), `test_architecture_plan_schema.py` (Next.js path
+      assertions), `test_coder_prompt.py` (rewritten substring locks for every new hard
+      rule), new `test_preview_service.py` (10 tests, sandbox/workspace mocked -- the real
+      container mechanics are already covered by `test_render_checker.py`'s Docker-backed
+      tests). **389 tests collected** (up from 300), all confirmed passing across this
+      session's runs (327 fast/non-Docker in one sweep; the Docker-dependent files
+      individually confirmed in separate real runs against a live Docker daemon).
+    - **Real state**: `proj_0892c5b6` ("NextJS Migration Verify", feature_90dfc700 "Item
+      Notes") and `proj_3b717019` (same project name, feature_66e1362f, same feature name --
+      a genuinely separate confirmation-run project, left in place alongside the first
+      despite the name collision) both left in place as real, inspectable verification
+      evidence, matching this file's own established convention -- not test debris.
+      `feature_66e1362f` has a real `feature/item-notes` branch with real Coder Agent
+      commits and a `verification_passed: False` artifact set (the honest, correctly-
+      caught `next-auth` defect above) pending human review, not merged. Purely-internal
+      scratch debris from this session's own debugging (`Debug`/`Debug4`/`Render Test`/
+      `Verify Test`-named throwaway projects and their orphaned workspace directories) was
+      cleaned up from both Mongo and disk, per this file's own established convention.
+
+53. **Coder Agent revision fast path + Live Preview URL tracking.** Two direct user reports:
+    (1) a real screenshot showed `revise()`'s planning phase stuck on "Exploring the codebase
+    and planning your revision..." for **80 minutes 57 seconds**, even for small, well-specified
+    changes; (2) the Live Preview panel showed a fixed base URL that never updated when the user
+    navigated to a different route inside the iframe. Full plan (validated by an independent
+    Plan-agent design review before implementation, which caught two real gaps in the first
+    draft): `C:\Users\ASUS\.claude\plans\soft-petting-star.md` at time of writing.
+    - **Root cause, Fix 1**: confirmed by direct code reading that `revise()`/`revise_stream()`
+      unconditionally routed every revision through `generate_via_exploration` (up to
+      `REVISION_PLANNING_RECURSION_LIMIT=80` real tool-calling turns per attempt,
+      `MAX_PLANNING_ATTEMPTS=4` -- worst case 320 turns) regardless of how precisely the human
+      specified the target file(s). The single-shot planner (`planner.generate()`, one plain LLM
+      call) was only ever reachable from `run()`'s first-time planning.
+    - **Fix 1**: new `CoderAgent._find_well_specified_target_files(revision_comment, known_files)`
+      -- a deliberately conservative regex-based heuristic (requires a real file extension; an
+      exact full-path match against `_collect_cumulative_plan_files` is trusted directly; a bare
+      filename is only trusted if it's the ONE file in the project with that basename, since
+      generic Next.js filenames like `page.tsx`/`route.ts` legitimately recur across features --
+      an ambiguous match falls through to exploration rather than guessing). `_plan_with_retries`
+      gained `prefer_single_shot: bool` -- only attempt 1 skips exploration in favor of
+      `planner.generate()`; `exploration_context` itself stays truthy throughout (load-bearing:
+      it's what keeps `enforce_endpoint_coverage=exploration_context is None` relaxed for
+      revisions regardless of which planner ran). **Two real gaps a Plan-agent review caught
+      before implementation, both fixed**: the single-shot branch had no exception handling at
+      all (an uncaught JSON-parse or transport failure would have crashed the whole revision
+      instead of falling through to exploration on attempt 2 -- fixed with the same
+      log/retry/`continue` shape the exploration branch already had); and the single-shot
+      planner's prompt had zero visibility into which files already exist (risking a wrong
+      `"create"` action silently overwriting real content via `write_file`) -- fixed by adding an
+      optional `coverage_baseline_files` param to `CodePlanner.generate()`/
+      `build_code_planner_user_prompt`, extracting the "files already touched" prompt section
+      (previously only rendered by the agentic prompt) into a shared
+      `_build_cumulative_touched_files_section` helper reused by both. `revise()`/`revise_stream()`
+      compute `prefer_single_shot` right after `coverage_baseline_files` (already computed
+      there); `revise_stream()`'s phase label is now conditional ("Drafting a plan for the
+      file(s) you mentioned..." vs. the old generic exploration label).
+    - **Fix 2**: the preview iframe's `src` is genuinely cross-origin (a dynamically Docker-
+      assigned host port vs. the frontend's own fixed dev port) -- `iframe.contentWindow.location`
+      is unreadable by the parent by browser design, not a bug to route around. New scaffold file
+      `components/PreviewRouteAnnouncer.tsx` (`"use client"`, `usePathname()`, posts
+      `{type: "autoforge-preview-route", path}` to `window.parent` on every path change, `"*"`
+      targetOrigin -- the parent-side origin check is what's actually load-bearing), mounted in
+      `NEXTJS_APP_LAYOUT`'s `<body>`. New idempotent `_upgrade_layout_for_preview_route_announcer`
+      (mirrors the established `_upgrade_globals_css_for_tailwind` pattern exactly -- anchored on
+      the literal `<body>{children}</body>` line, no-ops with a logged warning rather than
+      guessing at an insertion point if a feature has already customized the layout past
+      recognition, confirmed for real against the live `nextjs-migration-verify` project's
+      already-customized `layout.tsx`). `PreviewPanel.jsx` gained `currentPath` state (reset on
+      `[reloadKey, status?.preview_url]`) and a `window.addEventListener("message", ...)` that
+      verifies `event.origin === new URL(status.preview_url).origin` before trusting the payload
+      -- both the displayed URL text and the "open in new tab" href now append `currentPath`.
+    - Tests: `tests/test_coder_agent_well_specified_files.py` (new, 10 -- exact-path match,
+      unique-basename match, ambiguous-basename falls through, no-extension never matches, both
+      real previously-reported vague comments from this project's own history correctly stay on
+      exploration), `tests/test_coder_agent_revise.py` (+5 -- `_plan_with_retries`'s
+      `prefer_single_shot` branch: uses single-shot on attempt 1, `prefer_single_shot=False`
+      always uses exploration, falls back to exploration after an exception, falls back after a
+      validation rejection, and a full `revise()` end-to-end test confirming a well-specified
+      comment never calls `generate_via_exploration`), `tests/test_workspace_preview_route_
+      announcer.py` (new, 5 -- fresh project has the component + layout mount, upgrade backfill
+      adds it to a pre-existing stock layout, upgrade never touches a layout customized past
+      recognition, idempotent). Full suite: **416 passed** (up from 305). `npm run build` clean.
+    - **Real, live verification, not synthetic**: ran the actual `revise_stream()` against the
+      real, live "Item Notes" feature (`feature_66e1362f`, `nextjs-migration-verify` project) with
+      a well-specified comment naming a real file (`app/item-notes/page.tsx`) -- confirmed the
+      phase label read "Drafting a plan for the file(s) you mentioned...", planning finished in
+      ~50 real seconds (vs. the reported 80+ minutes), the whole revision (plan + code + verify)
+      completed in **288 seconds total** with `verification_passed: True` on attempt 1/3, and the
+      resulting real git commit was a clean one-line diff to the named file (`+  <p
+      className="mt-2 text-sm text-gray-500">Notes are saved automatically.</p>`) -- a correct
+      `"modify"`, not a recreation. For Fix 2, built a fresh throwaway Next.js project+feature for
+      real inside the sandbox (`npm install && npx next build`, since the one available
+      already-generated Next.js project's `layout.tsx` was already customized past the upgrade's
+      anchor) with a second real page and a real `<Link>` between them, then drove the actual
+      frontend through Playwright: started a live preview, clicked the in-iframe link, and
+      confirmed both the displayed URL text and the "open in new tab" href updated live to
+      `http://localhost:{port}/about` within ~1.5s of the click (screenshot confirmed visually);
+      confirmed a Stop→Start cycle correctly reset the displayed path on the fresh host port.
+      Throwaway project and Docker containers cleaned up afterward via the real `DELETE
+      /projects/{id}` endpoint; the real "Item Notes" feature's new v8 revision (code_plan +
+      diff + manifest artifacts) is left in place per this file's own established convention.
+
+54. **Coder Agent revision: plain-English requests without exact file names.** Direct follow-up
+    to item 53 -- the fast path only helped when the human named an exact file; the real,
+    reported workflow is plain English ("the login form doesn't clear after submit"), the same
+    way a human talks to Claude Code, and that still fell through to the slow, unconditional
+    exploration planner. Full plan (validated by an independent Plan-agent design review that
+    caught two real problems before any code was written):
+    `C:\Users\ASUS\.claude\plans\soft-petting-star.md` at time of writing.
+    - **Two problems the design review found in the first draft**: (1) an ordering bug -- a
+      content-reading pre-retrieval step called at the same point `prefer_single_shot` is
+      computed would read whatever branch happens to already be checked out in the shared
+      working tree, not this feature's real content, since that point is *before*
+      `resume_feature_branch` runs; (2) a trust bug, more serious -- `CodePlanValidator.validate()`
+      for a revision (confirmed by reading `plan_validator.py`) only checks coverage, never "is
+      this the right file." A confident-but-wrong keyword/content match would pass validation,
+      get coded, get verified, and reach the human as a "completed" revision that silently
+      touched the wrong file -- the exact blind spot already documented in item 22 (grepping
+      "tailwind"/"css" for "styles are missing" finds the files that already correctly use
+      Tailwind, not the one broken one).
+    - **Fix: two new tiers, with asymmetric trust, between "exact file named" and "full
+      exploration"**:
+      - **Tier 1a** (`agent.py`'s new `_find_keyword_matched_known_files`, metadata-only, no
+        filesystem access -- safe to compute at the same point Tier 0 already is, before
+        `resume_feature_branch`): fuzzy-matches the comment's keyword stems against each known
+        file's own basename stems. New shared `_split_into_words`/`_meaningful_stems` tokenize
+        BOTH the human's prose comment and a file's basename identically (CamelCase-aware, so
+        "CommentList" typed in a comment and `CommentList.jsx` on disk produce the same stems
+        even though the comment never names an extension) -- one function, not two separate
+        extractors. Requires >=2 shared stems (a single generic shared word isn't real signal)
+        AND a unique top-scoring file (a tie is treated as ambiguous, same "don't guess"
+        philosophy as `_find_well_specified_target_files`); skips any known-files entry whose
+        most recent recorded `action` is `"delete"`. Sets `prefer_single_shot=True` exactly like
+        Tier 0 does, inheriting the same exception/validation-rejection retry-to-exploration
+        safety net for free.
+      - **Tier 1b** (`agent.py`'s new `_find_keyword_hint_files`, called AFTER
+        `resume_feature_branch` since it needs real file content on disk, always computed
+        unconditionally so exploration has a head start whether it's used from the start or as a
+        fallback after Tier 0/1a's guess fails): a real keyword search of the workspace, reusing
+        `search_code`'s exact walking logic (extracted into a new module-level
+        `tools.py:search_workspace_content`, called directly as a plain function -- not through
+        the `@tool` wrapper -- so `search_code` and this pre-retrieval share one source of truth;
+        `.next` added to `SEARCH_EXCLUDED_DIRS` while touching this). Returns paths only, never
+        content or a confidence claim -- **never sets `prefer_single_shot`**, only ever fed into
+        the exploration prompt (new `prompt.py:_build_keyword_hint_files_section`, explicitly
+        labeled "NOT a guarantee, especially for a request about something MISSING," threaded
+        through `build_agentic_revision_planner_user_prompt` -> `generate_via_exploration` ->
+        `_plan_with_retries`) as an unverified starting-point hint the model's own tools must
+        confirm or override. This is the load-bearing safety property that routes around the
+        design review's trust-bug finding: content matching stays a hint forever, name matching
+        alone gets to skip exploration.
+      - `revise_stream()`'s phase label gained a third variant: `"Drafting a plan based on your
+        description..."` for Tier 1a, distinct from Tier 0's `"...file(s) you mentioned..."` and
+        the exploration fallback's `"Exploring the codebase..."`.
+    - **Supporting fix, found and fixed during design review**: `OllamaProvider.generate()`/
+      `.stream()` (`app/providers/ollama_provider.py`) built their Ollama `options` dict with
+      only `temperature`/`num_predict` -- no `num_ctx` anywhere, unlike the agentic tool-calling
+      path (`agentic_model_factory.py`, sets `settings.AGENTIC_OLLAMA_NUM_CTX=32768`). This is
+      the same "Ollama's server-side default context window silently truncates" gotcha already
+      documented elsewhere in this file, just never patched at the one-shot path every single-shot
+      agent call uses (Requirement/Domain/Architecture Agent too, not just Coder). Fixed by adding
+      `"num_ctx": settings.AGENTIC_OLLAMA_NUM_CTX` to both `options` dicts.
+    - Tests: `tests/test_coder_agent_keyword_matching.py` (new, 25 -- word-splitting/stemming,
+      Tier 1a unique/ambiguous-tie/deleted-file/no-comment cases, Tier 1b real-content-match/
+      too-few-stems/capped-at-max-hints cases against a real `tmp_path` tree, plus the
+      `prompt.py` section-builder and full-prompt-threading tests), `tests/test_ollama_provider.py`
+      (new, 2 -- `num_ctx` present in both `generate()`/`stream()`'s real request payload, httpx
+      mocked), `tests/test_coder_planner_exploration.py` (+1 -- `keyword_hint_files` genuinely
+      reaches `build_agentic_revision_planner_user_prompt`, not just accepted as a dead param),
+      `tests/test_coder_agent_revise.py` (+2 -- a plain-English comment end-to-end routes through
+      `planner.generate()` not `generate_via_exploration()`; a genuinely vague comment with no
+      name-shaped signal at all still correctly uses full exploration, confirming the new tiers
+      don't widen what counts as "well-specified"). Full suite: **447 passed** (up from 416).
+    - **Real, live verification against the same live "Item Notes" feature item 53 used**: a
+      genuinely plain-English comment with zero file names ("The note input field doesn't show a
+      character limit warning") -- confirmed deterministically first
+      (`_find_well_specified_target_files` empty, `_find_keyword_matched_known_files` uniquely
+      resolved to `components/NoteInputField.jsx`), then ran the real `revise_stream()`: phase
+      label correctly read "Drafting a plan based on your description...", and the **planning
+      phase itself completed in ~75 real seconds** (2.2s -> 77.0s) -- the actual target of this
+      fix, confirming plain-English requests no longer pay the previously-reported 30-80+ minute
+      exploration cost just to figure out what to plan. The overall run then took ~37 more minutes
+      across 3 coding+verify attempts -- **root-caused as Docker Desktop being unreachable during
+      that window** ("Sandbox unavailable: could not reach Docker daemon"), a real, already-
+      documented environmental gotcha, confirmed unrelated to this fix: restarted Docker and
+      re-ran `coder_verifier.verify()` directly against the SAME already-generated code (no
+      re-planning, no re-coding, matching the established item 20/27 "re-verify, don't re-spend
+      real LLM time" precedent) -- **passed cleanly, every hard gate green** (`next build`,
+      server boot, endpoint route coverage, page reachability, home page render). The single-shot
+      planner chose to modify `app/item-notes/page.tsx` rather than `NoteInputField.jsx` directly
+      (a defensible, on-topic choice, not a wrong-file mistake -- confirmed by reading the real
+      diff: added a real character-limit note to the page, plus a real backend PUT endpoint
+      enforcing the same 500-character limit server-side). `npm run build`: not run, since this
+      fix touched no frontend files.
+
+55. **A real, reported crash: "Objects are not valid as a React child (found: object with keys
+    {id, description})" when viewing a freshly-generated SRS.** Root-caused against the user's
+    own real, live SRS (`proj_34e07440` "Sample E-commerce" / `feature_94701501` "Item Listing
+    (CRUD)", `artifact_2eba4476`): the SRS-generation LLM call produced `data_requirements`
+    (documented as `list[str]` in `requirement_schema.py`) as a list of `{"id": "DR-001",
+    "description": "..."}` objects, mimicking the ID-tagged shape functional_requirements/
+    non_functional_requirements/acceptance_criteria/validation_rules legitimately use --
+    `_parse_and_validate_json` only checked required top-level keys and FR/NFR/AC's own stable
+    IDs, never the shape of `data_requirements` or the other 11 plain-list SRS fields, so the
+    malformed artifact saved cleanly and crashed the frontend's `EnrichedPlainList.jsx` on first
+    render (`{item}` rendered raw, no field access).
+    - **Frontend fix** (`EnrichedPlainList.jsx`): new `itemText(item)` helper extracts a display
+      string regardless of shape (`item.description`/`item.text`/`item.value` for an object,
+      `JSON.stringify` as a last resort) -- makes an existing malformed artifact viewable
+      immediately without needing to regenerate, and makes future schema drift degrade instead
+      of crash. `DocumentValue.jsx` (the OTHER generic JSON renderer, used for Architecture Plan
+      etc.) was checked and confirmed already fully defensive/recursive -- not a second instance
+      of this bug.
+    - **Backend fix, root cause** (`app/agents/requirement_agent/agent.py`): new module-level
+      `PLAIN_LIST_SRS_FIELDS` (the 12 real plain-list fields: scope, out_of_scope, user_roles,
+      input_requirements, output_requirements, ui_expectations, api_expectations,
+      data_requirements, constraints, assumptions, risks, dependencies) + new
+      `_normalize_plain_list_fields`, called at the end of `_parse_and_validate_json` (the one
+      shared parse path all 4 SRS-generation call sites already funnel through) -- coerces any
+      object entry to its `.description`/`.text`/`.value`, or a JSON dump as a last resort, never
+      raises. `REQUIREMENT_AGENT_SYSTEM_PROMPT` also gained an explicit rule stating these 12
+      fields are plain strings and naming the 5 fields that legitimately use the object shape --
+      the prompt's own JSON-shape example previously showed `"data_requirements": []` (an empty
+      array, no example entry) directly adjacent to FR/NFR/AC's `{"id", "description"}`-shaped
+      examples, plausibly inviting exactly this pattern-copying mistake (the same "model anchors
+      on nearby shown JSON shape" gotcha already documented elsewhere in this file).
+    - **Real state corrected**: the actual malformed `artifact_2eba4476` (JSON) and its sibling
+      Markdown artifact were normalized in place (`data_requirements` now 9 plain strings; the
+      Markdown's raw Python-dict-repr bullets, e.g. `- {'id': 'DR-001', 'description': '...'}`,
+      regenerated cleanly via the same `RequirementSRSMarkdownBuilder`) so the user's real,
+      in-progress feature is immediately usable, not just future generations.
+    - Tests: `tests/test_requirement_srs_normalization.py` (new, 6 -- object entries normalized,
+      already-string entries left alone, mixed lists, a description-less object falls back to a
+      JSON dump rather than crashing, the 5 ID-tagged sections are never touched by this
+      normalization, and a locked list of `PLAIN_LIST_SRS_FIELDS` as a regression guard for a
+      future new plain-list field). Full suite: **453 passed** (up from 447). `npm run build`
+      clean.
+
+56. **Requirement Agent: field-by-field SRS editing + fixed the disappearing post-SRS chat
+    history.** Three direct user reports: must be able to change SRS content through "revise";
+    must be able to change ANYTHING on the SRS explicitly (user picked field-by-field inline
+    editing over a raw-JSON editor or improving the chat-only flow, when asked); the Requirement
+    Agent chat disappears once the SRS is generated. Full plan (Plan-agent-validated, catching two
+    real risks before implementation): `C:\Users\ASUS\.claude\plans\soft-petting-star.md` at time
+    of writing.
+    - **Root cause, chat-disappearing bug**: `ChatPanel.jsx` swaps `RequirementConversationChat`
+      (pre-SRS gap-filling chat, the ONLY renderer of `conversation.turn_history` anywhere in the
+      frontend) for `RequirementRevisionChat` (post-SRS) the moment `versions.length > 0` --
+      `RequirementRevisionChat` never read `conversation` at all, even though the same shared
+      `RequirementConversationFlowContext` already fetches it unconditionally. Fixed by reading
+      `conversation` there too and rendering `turn_history` in a collapsed-by-default section
+      (reusing `HumanBubble`/`AgentTurnBubble`, read-only -- no `onEdit`, since rewinding the
+      original conversation after an SRS already exists would need to trigger regeneration, out
+      of scope; the ask was visibility, not re-editing history).
+    - **Direct field editing, backend**: `app/agents/requirement_agent/revision_patcher.py`'s
+      `apply_revision_operations` already deterministically applied `add`/`remove`/`modify`/`set`
+      against 18 of 20 real SRS fields (no LLM needed) -- the frontend just needed to become
+      another producer of the same operations shape the LLM-mediated `/requirement/revise` flow
+      already produces internally. New `RequirementAgent.edit_fields(feature_id, operations,
+      edited_by, base_artifact_id)` mirrors `revise()`'s exact shape but skips the LLM call
+      entirely, saves via the existing `_save_revised_srs_artifacts`. New route `POST
+      /requirement/edit`, new `SrsFieldEditOperation`/`RequirementAgentFieldEditRequest` schemas.
+      Small, backward-compatible fix to `_apply_user_story_operation`'s `modify` branch (only
+      ever overwrote `.goal`, never `.role`/`.benefit`, even when the operation carried them).
+    - **Two real risks a Plan-agent design review caught before implementation**: (1) a direct
+      edit and an in-flight LLM revision both read the SRS before saving with no locking -- an
+      edit fired mid-revision could be silently discarded when the revision's save lands
+      afterward, built from a stale snapshot. Fixed with a `base_artifact_id` stale-version guard
+      (`edit_fields()` rejects with a clear "updated by another change, refresh and retry" if the
+      latest artifact_id has moved since the edit UI loaded); (2) `revise()`/`edit_fields()` never
+      re-validate that `functional_requirements`/`non_functional_requirements`/
+      `acceptance_criteria` stay non-empty after patching (unlike `run()`, which funnels through
+      `_validate_stable_ids`) -- a UI trash icon makes "remove the last FR" newly easy to trigger
+      by accident. Fixed both server-side (`edit_fields()` now calls `_validate_stable_ids` before
+      saving) and client-side (`EnrichedItemList`'s remove button disables itself on the last item
+      in those three sections specifically).
+    - **Frontend inline editing**: reuses the established `HumanBubble` in-place-edit shape
+      (hover reveals a pencil, click swaps to a textarea + Cancel/Save) throughout --
+      `EnrichedItemList.jsx` (FR/NFR/AC/VR/user_stories: edit/remove/add per card, `target =
+      item.id`), `EnrichedPlainList.jsx` (the 12 plain-string fields: same shape, `target` = the
+      item's exact current text, since these have no id), new `EditableScalarField.jsx`
+      (business_goal/target_stack/architectural_style -- the latter two newly promoted from the
+      header-only summary line into their own full `SrsDocumentViewer` sections so they have
+      somewhere to be edited). Gating: `ResultTab.jsx` computes `isLatestSrsVersion` and threads
+      `featureId`/`editable` through `ArtifactContentView` -> `SrsDocumentViewer`, which further
+      requires `artifactType === "srs"` (never `enhanced_srs`, Domain Agent's document);
+      `ArtifactViewerModal`'s generic popup passes neither prop, so editing is structurally
+      unreachable there. One shared `useEditRequirementFields` mutation (`useAgentMutations.js`,
+      reusing the existing generic `useAgentMutation` helper and its awaited-invalidation
+      pattern) -- one operation per Save click, each edit becomes its own new SRS version.
+    - **A real, pre-existing bug found only by live-testing this feature end-to-end, not
+      introduced by it**: `ResultTab.jsx`'s "a new version arrived for this stage" effect
+      (comment already claimed this was handled) only ever checked whether the *previously
+      selected* version had disappeared -- it never checked whether a *newer* version now
+      existed. Since editing/revising never invalidates the old version, the old selection always
+      "still existed," so the effect silently did nothing: a human's own edit saved correctly but
+      the screen kept showing the pre-edit document with no visible sign anything happened,
+      confirmed live (edited `business_goal`, screen still showed the old text; Mongo/disk showed
+      the correct new v3 with the edit applied). This same bug plausibly affects `revise()` too,
+      not just the new edit feature. Fixed by tracking the latest version number in a `useRef` and
+      also jumping when it has genuinely increased since the last render (not just when the old
+      selection vanished) -- deliberately NOT keyed on `versions` changing for any reason (e.g. an
+      existing version's own `approval_status` changing), so a human deliberately reviewing an
+      older version is never yanked away by an unrelated re-render.
+    - Tests: `tests/test_requirement_field_edit.py` (new, 8 -- modify/add/set across all three
+      field shapes, unmatched operations reported not silently dropped, last-FR-removal refused,
+      stale/matching `base_artifact_id` both handled correctly, no-prior-SRS raises),
+      `tests/test_requirement_revision_patcher.py` (+2 -- user_stories modify backward-compatible
+      goal-only calls, and the new role/benefit extension). Full suite: **463 passed** (up from
+      453). `npm run build` clean.
+    - **Real, live verification against the user's own real, in-progress "Item Listing (CRUD)"
+      feature** (`proj_34e07440`/`feature_94701501`, the same one item 55 fixed): confirmed the
+      "Original requirement conversation (6 turns)" toggle is visible and expands to show real
+      turn bubbles in the post-SRS chat; edited `business_goal` inline -- confirmed a real new SRS
+      version (v3) was saved with the exact edited text and correct
+      `revision_metadata.applied_changes`, though the version selector didn't visibly jump to it
+      (the bug above, found by this exact test); after the `ResultTab.jsx` fix, edited a real
+      functional requirement's description -- confirmed the new version (v4) was both saved
+      correctly AND immediately visible on screen with no manual dropdown interaction needed.
+
+57. **Requirement Agent: reliably change ANY SRS section via an explicit chat prompt, not just
+    the field-by-field manual editor.** Direct follow-up to item 56 -- the user clarified this
+    must work for every section, using "add user stories" only as an illustrative example, not
+    the actual scope. Full plan (Plan-agent-validated): `C:\Users\ASUS\.claude\plans\
+    soft-petting-star.md` at time of writing.
+    - **Real, already-live evidence of the bug, found in the actual feature's own `assumptions`
+      array before any fix**: the user had already tried this exact scenario --
+      `"No SRS changes were made for revision comment: 'User stories are missing fil the user
+      stories as well' -- agent's response: The human comment was unclear... No actionable
+      revision was provided"` (recorded twice, from two real attempts). Root cause, confirmed by
+      reading `REQUIREMENT_REVISION_SYSTEM_PROMPT` directly: its only cardinality guidance was
+      `"One operation per distinct change... most revision comments need exactly one operation"`
+      -- nothing told the model that a plural/section-level request ("add user stories") means
+      several separate items, biasing it toward treating a broad request as too vague to act on
+      at all rather than decomposing it. `apply_revision_operations` itself (`revision_patcher.py`)
+      already looped over an arbitrary-length `operations` list with no cap -- confirmed via
+      direct trace that N sequential `add` operations against the same field already produce
+      correctly-sequenced, collision-free ids. This was purely a prompt-instruction gap, not a
+      plumbing one.
+    - **Fix**: two new prompt bullets (`prompt.py`, `REQUIREMENT_REVISION_SYSTEM_PROMPT`) --
+      explicitly generic across all ~20 real SRS fields (not user_stories-specific), instructing
+      the model that an empty-section or plural-phrased request means multiple items, one `add`
+      operation each, grounded in the SRS's own other fields -- paired with an explicit
+      anti-padding counter-clause (never manufacture items beyond what's genuinely implied),
+      deliberately mirroring item 46's own lesson that an unbounded instruction with no
+      counterweight is exactly the shape of problem that's made this local model overshoot
+      before.
+    - **A second, real, concrete gap found by the design review**: the operation schema shown to
+      the model documented `value`/`role`/`priority` but never `benefit`, even though
+      `_apply_user_story_operation` reads it and silently falls back to one generic default
+      string when absent -- confirmed live in the real feature's own data (`US-004`'s `benefit`
+      was literally `"complete the intended business process"`, the generic fallback). Fixed by
+      adding `benefit` (and, symmetrically, `category` for `non_functional_requirements`) to the
+      schema, AND wiring `category` into `_apply_id_description_operation`'s `add` branch
+      (previously not set at all, not even with a default, despite `functional_requirements`'
+      `priority` already getting equivalent treatment).
+    - **A third, real bug found only by live-testing this fix against the real model, not
+      predicted by any code reading**: a narrow, single-item scalar-field request ("update the
+      business goal to also mention...") naturally produced `action: "modify"` from the model --
+      a completely reasonable word for changing an existing value -- but
+      `apply_revision_operations`'s dispatch only ever accepted `action == "set"` for
+      `SCALAR_FIELDS`, so the operation silently fell through to the generic
+      "unsupported field" catch-all and the change never happened. Fixed by accepting `action in
+      ("set", "modify")` for scalar fields specifically (add/remove still make no sense for a
+      field that's always present, so those are untouched) -- a code-level fix, not a
+      prompt-compliance one, matching this project's own established preference for deterministic
+      fixes over relying on wording alone.
+    - Tests: `tests/test_requirement_revision_patcher.py` (+10 -- add-to-completely-empty-list for
+      both an ID-tagged and a plain-string field, multiple same-field adds for both shapes,
+      explicit `benefit`/`category` honored not overwritten by the generic default, one call
+      combining operations against two different fields at once, and the scalar `set`/`modify`
+      equivalence including the exact regression this session found). Full suite: **472 passed**
+      (up from 463... 470 after the prompt/schema-only pass, 472 after the scalar-modify fix).
+      `npm run build` not run (no frontend files touched).
+    - **Real, live verification against the same real, in-progress "Item Listing (CRUD)" feature**
+      (`proj_34e07440`/`feature_94701501`), three genuinely different field shapes, real model:
+      (1) "Add two more user stories: one for a guest browsing without logging in, one for an
+      admin managing categories" -- produced exactly two new, correctly-scoped user stories
+      (`US-005`/`US-006`) each with real, distinct `benefit` text, not the generic fallback; (2)
+      "Add two dependencies: image storage, caching layer" -- produced exactly two new, correctly
+      -scoped plain-string entries; (3) "Update the business goal to also mention supporting bulk
+      operations in the future" -- failed on the first real run exactly as predicted by the
+      scalar `modify`-vs-`set` bug above (`unmatched_operations: ["Skipped operation on
+      unsupported field 'business_goal' (action=modify)."]`), then after the fix, re-ran cleanly:
+      `business_goal` correctly updated to "...with support for bulk operations in the future,"
+      `applied_changes: ["Set business_goal."]`, `unmatched_operations: []`. All three real
+      results are left in place on the real feature (new SRS versions, all pending review), per
+      this file's own established convention.
+
 ## Known model-quality gotchas (not code bugs — prompts already account for these)
 
 - `qwen3-coder:latest` sometimes emits function-valued mock props (e.g. `"onSubmit": () => {}`)
@@ -3720,6 +4370,89 @@ milestone — that file is scratch, **this file is the durable one**.
     - Full backend suite: **305 passed** (up from 300 -- the two pin tests + three exclusivity
       tests from steps 1-2 above). `npm run build` clean throughout. No frontend test framework
       exists in this repo, matching every prior item's own note.
+
+58. **SRS completeness guarantee (any section, not just user_stories) + a genuine single
+    continuous ChatGPT-style Requirement Agent chat, replacing the two-component hard-swap.**
+    Direct user report: `user_stories` always came out empty on initial generation ("user_stories
+    or any other sections can not be empty"), and despite item 34's earlier collapsed-toggle fix,
+    the chat still didn't feel continuous across the pre-SRS -> post-SRS transition ("the agent
+    chats is disappear once the requirement agent generates the output"). Full plan
+    (Explore-agent root-cause + independent Plan-agent design review, which caught a critical
+    routing bug before any code was written): `C:\Users\ASUS\.claude\plans\soft-petting-star.md`
+    at time of writing.
+    - **Root cause, Problem A**: `REQUIREMENT_AGENT_SYSTEM_PROMPT` had exactly one "must not be
+      empty, infer from context" rule and it only covered `api_expectations`/`ui_expectations` --
+      `user_stories` (and ~10 other fields: `user_roles`, `constraints`, `risks`, `dependencies`,
+      etc.) had zero such instruction, and nothing caught it if the real LLM path produced them
+      empty (`REQUIRED_KEYS` never required `user_stories` present; `_validate_stable_ids` only
+      enforced FR/NFR/AC non-empty).
+    - **A critical routing bug the design review caught before implementation**:
+      `confirm_conversation_stream` -- the ONLY method the frontend actually calls for confirm --
+      does NOT call `_generate_requirement_output`; it duplicates that method's entire
+      parse-repair-fallback ladder inline (confirmed by direct read of both). A completeness fix
+      applied to only one would never reach the code path the real bug goes through.
+    - **Why hard-validating `user_stories` (mirroring FR/NFR/AC) was rejected**: `JSON_REPAIR_
+      PROMPT`'s repair mechanism is a syntax fixer -- `"user_stories": []` is already valid JSON,
+      so a repair retry has nothing to fix and would just echo the same empty array back, wasting
+      an LLM round-trip for zero benefit. The real guarantee had to be a deterministic backstop.
+    - **Fix**: new `conversation_engine.ensure_srs_completeness(srs_json)` -- a deterministic,
+      no-LLM backstop covering 8 previously-unprotected fields (`user_stories`, `user_roles`,
+      `constraints`, `api_expectations`, `ui_expectations`, `input_requirements`, `risks`,
+      `dependencies`), grounding every fallback in content already reliably present by that point
+      (reuses the existing `_make_user_stories` helper, derives constraints from
+      `target_stack`/`architectural_style`, aliases `input_requirements` from
+      `data_requirements`) and never claiming an empty `risks`/`dependencies` as "confirmed none"
+      -- only "not evaluated," matching this project's own honesty convention. Every backstopped
+      field gets a human-readable note appended to `assumptions`. New `RequirementAgent.
+      _finalize_srs_json` (shared tail) wires this into **all three** real call sites: `confirm_
+      conversation_stream`'s own tail, and both of `_generate_requirement_output`'s exit paths
+      (LLM-exception fallback, and the main success/repair/fallback tail) -- fixing the routing
+      bug directly. `REQUIREMENT_AGENT_SYSTEM_PROMPT` also gained a generalized "never leave any
+      section empty, infer from context" rule covering all ~12 previously-unprotected fields, so
+      the real LLM path produces better content on its own, not just a non-empty backstop.
+    - **Root cause, Problem B**: `ChatPanel.jsx` hard-swapped between two different React
+      components (`RequirementConversationChat` pre-SRS, `RequirementRevisionChat` post-SRS)
+      based on `hasOutput`. Item 34's earlier fix (a collapsed-by-default toggle inside the
+      post-SRS component) still read as "two conversations stacked" -- a visually separate block
+      above a different, sparser feed using different bubble components, not one continuous
+      thread.
+    - **Fix**: merged `RequirementRevisionChat.jsx` into `RequirementConversationChat.jsx`
+      (deleted the former entirely -- confirmed only 4 harmless comment references remained
+      afterward) -- one component now renders `conversation.turn_history` in full (existing
+      `HumanBubble`/`AgentTurnBubble`, unchanged) followed immediately by the post-SRS `timeline`
+      (existing `ChatBubble`, unchanged) as one continuous scroll, with `hasOutput` deciding only
+      which composer/banners are active (pre-SRS reply/confirm/quality-gate vs. post-SRS revise),
+      never which component renders. `ChatPanel.jsx` collapsed its two `if (selectedAgent ===
+      "requirement" && ...)` branches into one.
+    - Tests: `tests/test_requirement_srs_completeness.py` (new, 11 -- each backstopped field
+      gets honest, grounded content when empty; already-populated fields untouched; notes
+      appended to `assumptions`; missing keys entirely treated the same as empty lists; risks/
+      dependencies never framed as "confirmed none"), plus a new regression test in `tests/
+      test_requirement_conversation.py` (`test_confirm_conversation_stream_backstops_empty_user_
+      stories` -- streams a template with NO `user_stories` key at all through the real
+      `confirm_conversation_stream` and confirms the SAVED artifact has the backstop applied,
+      specifically locking in the routing-bug fix, not just `_generate_requirement_output` in
+      isolation). Full suite: **484 passed** (up from 472). `npm run build`: clean (1315
+      modules).
+    - **Real, live verification, a genuinely new feature (not the already-heavily-revised "Item
+      Listing" feature), so the real INITIAL-generation path was actually exercised**: created a
+      fresh project/feature ("Wishlist"), drove a real conversation through the real local LLM
+      (`qwen3-coder:latest`) to a confirmed SRS -- the real LLM path itself produced 4 concrete,
+      feature-grounded user stories (add/remove/view/move-to-cart, each with a real `benefit`,
+      not generic filler) with **no** backstop note needed, directly confirming the prompt
+      strengthening improved real quality, not just the safety net. Every other previously
+      gap-prone field (`user_roles`, `constraints`, `api_expectations`, `ui_expectations`,
+      `input_requirements`, `risks`, `dependencies`) was also non-empty in the real saved
+      artifact. Separately drove the merged chat through a real browser: confirmed via full-page
+      screenshots that the pre-SRS conversation (gap-analysis Q&A, "ASSUMED INSTEAD OF ASKED"
+      banner) and the post-SRS activity ("Conversation started"/"Answered questions"/"Confirmed
+      SRS"/"Produced SRS (v1)") render as one unbroken scroll with zero page errors, and grepped
+      the full page text for every prior collapse-toggle marker ("Show old conversation",
+      "original conversation", etc.) -- none present, confirming the toggle mechanism itself is
+      genuinely gone, not just visually hidden. Composer correctly showed the post-SRS "Ask
+      Requirement Agent for a change..." placeholder once `hasOutput` was true. Test
+      project/feature deleted via the real `DELETE /projects/{id}` endpoint afterward; isolated
+      backend/frontend verification processes killed.
 
 ## Where to look
 

@@ -27,12 +27,14 @@ from app.agents.domain_agent.agent import domain_agent
 from app.agents.architecture_agent.agent import architecture_agent
 from app.agents.uiux_agent.agent import uiux_agent
 from app.agents.coder_agent.agent import coder_agent
+from app.agents.coder_agent.schemas import CoderAgentEnvSaveResult
 from app.core.enums import AgentName, ArtifactType, ArtifactFormat
 from app.schemas.agent_schema import AgentRunRequest, AgentRunResponse
 from app.services.artifact_service import artifact_service
 from app.schemas.requirement_schema import (
     RequirementAgentRunRequest,
     RequirementAgentReviseRequest,
+    RequirementAgentFieldEditRequest,
 )
 from app.schemas.requirement_conversation_schema import (
     RequirementConversationConfirmRequest,
@@ -175,6 +177,42 @@ async def revise_requirement_agent_stream(feature_id: str, request: RequirementA
             ) + "\n"
 
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")
+
+
+@router.post("/requirement/edit", response_model=AgentRunResponse)
+async def edit_requirement_agent_fields(feature_id: str, request: RequirementAgentFieldEditRequest):
+    """
+    Apply direct field-by-field edits to the latest SRS -- no LLM call, deterministic
+    apply_revision_operations only. Backend counterpart to the field-by-field inline-edit UI
+    (business_goal/a single functional requirement/etc.), as opposed to /requirement/revise's
+    plain-English, LLM-mediated flow.
+    """
+
+    _validate_feature(feature_id)
+    stage_event_service.record(
+        feature_id,
+        AgentName.REQUIREMENT,
+        "edit",
+        f"Manual field edit ({len(request.operations)} operation(s))",
+        request.edited_by,
+    )
+
+    try:
+        return await requirement_agent.edit_fields(
+            feature_id=feature_id,
+            operations=[op.model_dump(exclude_none=True) for op in request.operations],
+            edited_by=request.edited_by,
+            base_artifact_id=request.base_artifact_id,
+        )
+
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Requirement Agent field edit failed: {str(error)}"
+        )
 
 
 # ----------------------------------------------------------------------
@@ -784,6 +822,15 @@ async def revise_coder_agent(feature_id: str, request: CoderAgentReviseRequest):
     try:
         output = await coder_agent.revise(feature_id=feature_id, request=request)
 
+        if isinstance(output, CoderAgentEnvSaveResult):
+            return AgentRunResponse(
+                feature_id=feature_id,
+                agent_name=AgentName.CODER,
+                status="database_connection_saved",
+                message=output.message,
+                artifact_ids=[],
+            )
+
         return AgentRunResponse(
             feature_id=feature_id,
             agent_name=AgentName.CODER,
@@ -810,6 +857,59 @@ async def revise_coder_agent(feature_id: str, request: CoderAgentReviseRequest):
             status_code=500,
             detail=f"Coder Agent revision failed: {str(error)}"
         )
+
+
+@router.post("/coder/run/stream")
+async def run_coder_agent_stream(feature_id: str, request: CoderAgentRunRequest):
+    """
+    Streaming variant of /coder/run -- same newline-delimited JSON event shape as
+    Domain/Architecture Agent's streaming endpoints, plus a "phase" event during the
+    non-streamable coding/verify tail (coding_loop.py's agentic loop has no token-level
+    streaming at all) so the frontend can show real progress instead of a bare loader once
+    the plan text itself has finished streaming:
+        {"type": "token", "text": "..."}
+        {"type": "phase", "phase": "...", "label": "..."}
+        {"type": "error", "message": "..."}
+        {"type": "done", "artifact_ids": [...], "verification_passed": bool, "status": "...", "message": "..."}
+    """
+    _validate_feature(feature_id)
+    stage_event_service.record(feature_id, AgentName.CODER, "run", request.human_comment)
+
+    async def event_stream():
+        try:
+            async for event in coder_agent.run_stream(feature_id=feature_id, request=request):
+                yield json.dumps(event) + "\n"
+        except ValueError as error:
+            yield json.dumps({"type": "error", "message": str(error)}) + "\n"
+        except Exception as error:
+            yield json.dumps({"type": "error", "message": f"Coder Agent failed: {str(error)}"}) + "\n"
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
+
+
+@router.post("/coder/revise/stream")
+async def revise_coder_agent_stream(feature_id: str, request: CoderAgentReviseRequest):
+    """
+    Streaming variant of /coder/revise -- same newline-delimited JSON event shape as
+    /coder/run/stream.
+    """
+    _validate_feature(feature_id)
+    stage_event_service.record(
+        feature_id, AgentName.CODER, "revise", request.revision_comment, request.revised_by
+    )
+
+    async def event_stream():
+        try:
+            async for event in coder_agent.revise_stream(feature_id=feature_id, request=request):
+                yield json.dumps(event) + "\n"
+        except ValueError as error:
+            yield json.dumps({"type": "error", "message": str(error)}) + "\n"
+        except Exception as error:
+            yield json.dumps(
+                {"type": "error", "message": f"Coder Agent revision failed: {str(error)}"}
+            ) + "\n"
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
 
 @router.post("/deployment/run", response_model=AgentRunResponse)

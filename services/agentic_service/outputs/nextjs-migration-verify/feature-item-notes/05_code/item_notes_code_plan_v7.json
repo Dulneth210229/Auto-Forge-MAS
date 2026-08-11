@@ -1,0 +1,32 @@
+{
+  "env_vars_needed": [],
+  "files": [
+    {
+      "action": "create",
+      "maps_to": [
+        "/api/item-notes/:id",
+        "FR-001"
+      ],
+      "path": "app/api/item-notes/[id]/route.ts",
+      "rationale": "Route Handler implementing the single-item endpoints (update/delete) for item notes"
+    },
+    {
+      "action": "modify",
+      "maps_to": [
+        "FR-001"
+      ],
+      "path": "lib/api/itemNotes.ts",
+      "rationale": "Add functions for updating and deleting item notes to the API service"
+    },
+    {
+      "action": "modify",
+      "maps_to": [
+        "FR-001"
+      ],
+      "path": "app/item-notes/page.tsx",
+      "rationale": "Update the frontend to clear the input field after successfully adding a note"
+    }
+  ],
+  "new_dependencies": [],
+  "summary": "Implementing the human revision request to add edit and delete functionality for item notes, and to clear the input field after adding a note. This requires adding PUT and DELETE route handlers for item notes, updating the frontend to clear the input field, and modifying the API service to support these new operations."
+}

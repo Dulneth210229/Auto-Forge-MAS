@@ -53,7 +53,7 @@ SRS = {
     "user_roles": ["Registered User"],
 }
 
-PROJECT = {"project_id": "proj_test", "project_name": "TaskFlow", "target_stack": "MERN"}
+PROJECT = {"project_id": "proj_test", "project_name": "TaskFlow", "target_stack": "Next.js"}
 FEATURE = {"feature_id": "feature_test", "feature_name": "Task Comments"}
 
 
@@ -89,25 +89,30 @@ def test_fallback_plan_contains_a_complete_implementation_plan(fallback_plan):
 
     backend = implementation_plan["backend"]
     file_paths = [item["path"] for item in backend["files"]]
-    assert "server/src/routes/task-comments.routes.js" in file_paths
-    assert "server/src/app.js" in file_paths  # mount step
-    assert any(path.startswith("server/src/models/") for path in file_paths)
+    # POST and GET /api/task-comments share the same (collection) route file --
+    # no separate "mount the router" file/step exists under Next.js's
+    # file-based routing.
+    assert "app/api/task-comments/route.ts" in file_paths
+    assert any(path.startswith("models/") for path in file_paths)
 
     endpoint_paths = {(item["method"], item["path"]) for item in backend["endpoints"]}
     assert ("POST", "/api/task-comments") in endpoint_paths
     assert ("GET", "/api/task-comments") in endpoint_paths
 
     assert backend["models"], "SRS has data requirements -- models must be planned"
-    assert backend["models"][0]["file"].startswith("server/src/models/")
+    assert backend["models"][0]["file"].startswith("models/")
 
     frontend = implementation_plan["frontend"]
-    assert frontend["pages"][0]["path"] == "client/src/pages/TaskCommentsPage.jsx"
+    assert frontend["pages"][0]["path"] == "app/task-comments/page.tsx"
     assert frontend["pages"][0]["route"] == "/task-comments"
     assert frontend["services"], "endpoints exist -- a service module must be planned"
     assert frontend["routing"]["new_routes"] and frontend["routing"]["nav_links"]
 
     assert implementation_plan["implementation_order"]
-    assert any("FEATURE_ROUTES_END" in step for step in implementation_plan["implementation_order"])
+    assert not any(
+        "mount" in step.lower() and "router" in step.lower()
+        for step in implementation_plan["implementation_order"]
+    )
     assert any("FEATURE_LINKS" in step for step in implementation_plan["implementation_order"])
     assert implementation_plan["constraints"]
 
@@ -185,6 +190,6 @@ def test_markdown_renders_the_implementation_plan_sections(fallback_plan):
     markdown = ArchitecturePlanMarkdownBuilder().build(fallback_plan)
 
     assert "End-to-End Implementation Plan (Coder Agent Blueprint)" in markdown
-    assert "server/src/routes/task-comments.routes.js" in markdown
+    assert "app/api/task-comments/route.ts" in markdown
     assert "Implementation Order" in markdown
     assert "POST /api/task-comments" in markdown or "/api/task-comments" in markdown

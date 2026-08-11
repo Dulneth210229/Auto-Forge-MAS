@@ -103,6 +103,16 @@ export async function reviseRequirementStream(featureId, { revision_comment, rev
   );
 }
 
+// Direct, no-LLM field-by-field edit -- deterministic apply_revision_operations only, so this is
+// a fast plain POST (no streaming needed, there's nothing to "type" live).
+export async function editRequirementFields(featureId, { operations, edited_by, base_artifact_id }, signal) {
+  return postCancelable(
+    `${base(featureId)}/requirement/edit`,
+    { operations, edited_by, base_artifact_id },
+    signal
+  );
+}
+
 // Requirement Agent conversational gap-filling loop -- additive, alongside run/revise above.
 export async function startRequirementConversation(featureId) {
   const { data } = await apiClient.post(`${base(featureId)}/requirement/conversation/start`);
@@ -310,4 +320,34 @@ export async function runCoder(
 
 export async function reviseCoder(featureId, { revision_comment, revised_by }, signal) {
   return postCancelable(`${base(featureId)}/coder/revise`, { revision_comment, revised_by }, signal);
+}
+
+// Live, streaming variants (ChatGPT/Claude-style), same mechanism as Domain/Architecture Agent's
+// run*Stream/revise*Stream above -- what CoderAgentChat/useCoderAgentFlow use instead of the
+// plain runCoder/reviseCoder. Events additionally include a "phase" type for the non-streamable
+// coding/verify tail (coding_loop.py's agentic loop has no token-level streaming at all) once the
+// plan text itself finishes streaming/exploring -- see the backend routes' own docstrings. The
+// "done" event also carries verification_passed/status, unlike Domain/Architecture's uniform
+// "done, success" framing, since a Coder Agent run can finish with verification failures.
+export async function runCoderStream(
+  featureId,
+  { use_enhanced_srs_if_available = true, human_comment } = {},
+  onEvent,
+  signal
+) {
+  return streamNdjsonPost(
+    `${API_BASE_URL}${base(featureId)}/coder/run/stream`,
+    { use_enhanced_srs_if_available, human_comment },
+    onEvent,
+    signal
+  );
+}
+
+export async function reviseCoderStream(featureId, { revision_comment, revised_by }, onEvent, signal) {
+  return streamNdjsonPost(
+    `${API_BASE_URL}${base(featureId)}/coder/revise/stream`,
+    { revision_comment, revised_by },
+    onEvent,
+    signal
+  );
 }

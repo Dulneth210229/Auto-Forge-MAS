@@ -130,13 +130,20 @@ def apply_revision_operations(srs_json: dict, operations: list[dict]) -> tuple[d
         field = str(operation.get("field", "")).strip()
 
         try:
-            if action == "set" and field in SCALAR_FIELDS:
+            # A real, confirmed gap: a request to change an EXISTING scalar value (e.g. "update
+            # the business goal to also mention...") naturally reads to the model as "modify,"
+            # not "set" -- but only "set" was ever accepted here, so a perfectly reasonable
+            # synonym silently fell through to the unsupported-field catch-all below and the
+            # requested change never happened. "modify"/"set" are treated as equivalent for
+            # scalar fields specifically (there's no meaningful difference for a field that's
+            # always present, unlike a list where add/modify/remove are genuinely distinct).
+            if action in ("set", "modify") and field in SCALAR_FIELDS:
                 value = operation.get("value")
                 if value:
                     patched[field] = value
                     applied.append(f"Set {field}.")
                 else:
-                    unmatched.append(f"Skipped 'set {field}' -- no value provided.")
+                    unmatched.append(f"Skipped '{action} {field}' -- no value provided.")
                 continue
 
             if field == USER_STORIES_FIELD:
@@ -213,6 +220,11 @@ def _apply_id_description_operation(
         new_item = {"id": _next_id(items, prefix), "description": description}
         if field == "functional_requirements":
             new_item["priority"] = operation.get("priority", "Should Have")
+        elif field == "non_functional_requirements":
+            # Previously never set at all (not even a default) despite the prompt schema now
+            # documenting "category" -- the exact same silent-default gap already fixed for
+            # user_stories' "benefit" (see _apply_user_story_operation).
+            new_item["category"] = operation.get("category", "General")
         items.append(new_item)
         patched[field] = items
         applied.append(f"Added to {field}: {description}")
@@ -275,13 +287,31 @@ def _apply_user_story_operation(
         patched[USER_STORIES_FIELD] = items
         applied.append(f"Removed user story: {removed.get('goal', removed)}")
     elif action == "modify":
+        # Previously only ever overwrote "goal", even when the operation carried "role"/
+        # "benefit" -- a real gap for the field-by-field inline-edit UI, which needs to be able
+        # to edit any part of a user story, not just its goal text. Backward-compatible: an
+        # operation that only sends "value"/"goal" (every existing caller) behaves identically.
         new_goal = operation.get("value") or operation.get("goal")
-        if not new_goal:
-            unmatched.append("Skipped 'modify user_stories' -- no replacement goal provided.")
+        new_role = operation.get("role")
+        new_benefit = operation.get("benefit")
+        if not new_goal and not new_role and not new_benefit:
+            unmatched.append(
+                "Skipped 'modify user_stories' -- no replacement goal/role/benefit provided."
+            )
             return
-        items[index] = {**items[index], "goal": new_goal}
+        updated = dict(items[index])
+        if new_goal:
+            updated["goal"] = new_goal
+        if new_role:
+            updated["role"] = new_role
+        if new_benefit:
+            updated["benefit"] = new_benefit
+        items[index] = updated
         patched[USER_STORIES_FIELD] = items
-        applied.append(f"Modified user story to: {new_goal}")
+        changed_parts = [
+            part for part, value in (("goal", new_goal), ("role", new_role), ("benefit", new_benefit)) if value
+        ]
+        applied.append(f"Modified user story ({', '.join(changed_parts)}): {updated.get('goal')}")
     else:
         unmatched.append(f"Skipped unsupported action '{action}' on user_stories.")
 

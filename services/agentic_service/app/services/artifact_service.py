@@ -152,13 +152,19 @@ class ArtifactService:
         artifact_type: ArtifactType,
         filename: str,
         data: dict[str, Any],
-        version_override: int | None = None
+        version_override: int | None = None,
+        summary: str | None = None,
     ) -> ArtifactResponse:
         """
         Save a JSON artifact and register metadata.
 
         version_override lets this JSON file share the same version
         as the related Markdown artifact.
+
+        summary, when given, is a short human-readable description of this
+        artifact's content (e.g. a CODE_PLAN's own "summary" field) --
+        stored alongside the artifact record so the frontend chat can show
+        real, model-generated text instead of a generic placeholder.
         """
         version = version_override or self.get_next_version(
             feature_id=feature["feature_id"],
@@ -182,7 +188,8 @@ class ArtifactService:
             artifact_type=artifact_type,
             artifact_format=ArtifactFormat.JSON,
             file_path=saved_path,
-            version=version
+            version=version,
+            summary=summary,
         )
 
     def _hydrate_artifact_response(self, artifact: dict[str, Any]) -> ArtifactResponse:
@@ -208,7 +215,8 @@ class ArtifactService:
         artifact_type: ArtifactType,
         artifact_format: ArtifactFormat,
         file_path: str,
-        version: int
+        version: int,
+        summary: str | None = None,
     ) -> ArtifactResponse:
         """
         Create artifact metadata and store it in the temporary in-memory store.
@@ -227,6 +235,7 @@ class ArtifactService:
             "version": version,
             "approval_status": ApprovalStatus.PENDING,
             "created_at": created_at,
+            "summary": summary,
         }
 
         store.artifacts[artifact_id] = artifact

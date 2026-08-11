@@ -1,6 +1,14 @@
 import DocumentValue, { humanizeKey } from "./DocumentValue";
 import EnrichedItemList from "./EnrichedItemList";
 import EnrichedPlainList from "./EnrichedPlainList";
+import EditableScalarField from "./EditableScalarField";
+import ErrorBanner from "../common/ErrorBanner";
+import { useEditRequirementFields } from "../../hooks/useAgentMutations";
+
+// business_goal/target_stack/architectural_style are real, editable SCALAR_FIELDS
+// (revision_patcher.py) with no per-item id/list shape of their own -- rendered via
+// EditableScalarField instead of the generic read-only DocumentValue when editing is enabled.
+const SCALAR_EDITABLE_SECTIONS = new Set(["business_goal", "target_stack", "architectural_style"]);
 
 // These five sections carry Domain Agent enrichment markers (modified_by_domain_agent,
 // original_description, origin, domain_citation) directly on their array items in a real
@@ -60,6 +68,8 @@ function buildHighlightedTextsBySection(domainImprovements) {
 // expectations, then constraints/risks/traceability last.
 const SECTION_ORDER = [
   ["business_goal", "Business Goal"],
+  ["target_stack", "Target Stack"],
+  ["architectural_style", "Architectural Style"],
   ["scope", "Scope"],
   ["out_of_scope", "Out of Scope"],
   ["user_roles", "User Roles"],
@@ -83,14 +93,30 @@ const SECTION_ORDER = [
 
 const HEADER_FIELDS = ["feature_name", "project_name", "target_stack", "architectural_style", "project_type"];
 
-function Section({ sectionKey, title, value, highlightedBySection }) {
-  if (value === null || value === undefined || (Array.isArray(value) && value.length === 0)) return null;
+function Section({ sectionKey, title, value, highlightedBySection, canEdit, onEdit }) {
+  const isEditableEmpty = canEdit && PLAIN_LIST_ENRICHABLE_SECTIONS.has(sectionKey) && Array.isArray(value) && value.length === 0;
+  if (
+    !isEditableEmpty &&
+    (value === null || value === undefined || (Array.isArray(value) && value.length === 0))
+  ) {
+    return null;
+  }
 
   let body;
   if (ENRICHABLE_SECTIONS.has(sectionKey)) {
-    body = <EnrichedItemList items={value} />;
+    body = <EnrichedItemList items={value} field={sectionKey} canEdit={canEdit} onEdit={onEdit} />;
   } else if (PLAIN_LIST_ENRICHABLE_SECTIONS.has(sectionKey)) {
-    body = <EnrichedPlainList items={value} highlighted={highlightedBySection?.get(sectionKey)} />;
+    body = (
+      <EnrichedPlainList
+        items={value}
+        highlighted={highlightedBySection?.get(sectionKey)}
+        field={sectionKey}
+        canEdit={canEdit}
+        onEdit={onEdit}
+      />
+    );
+  } else if (SCALAR_EDITABLE_SECTIONS.has(sectionKey)) {
+    body = <EditableScalarField value={value} field={sectionKey} canEdit={canEdit} onEdit={onEdit} />;
   } else {
     body = <DocumentValue value={value} />;
   }
@@ -116,8 +142,21 @@ const DOCUMENT_TYPE_LABELS = {
 // a plain SRS (Requirement Agent's own output, never domain-enriched) or when the caller doesn't
 // have it in scope (e.g. the artifact-viewer popup, which doesn't currently look up siblings) --
 // every section then just renders its plain, unhighlighted form exactly as before this feature.
-export default function SrsDocumentViewer({ data, artifactType, domainImprovements }) {
+//
+// featureId/editable/artifactId (optional): only ever set by ResultTab, and only for the latest
+// SRS version -- enables field-by-field inline editing. Editing is further restricted to
+// artifactType === "srs" specifically: Enhanced SRS is Domain Agent's document, and the backend
+// /requirement/edit route only ever touches ArtifactType.SRS, never ENHANCED_SRS.
+export default function SrsDocumentViewer({ data, artifactType, domainImprovements, featureId, editable, artifactId }) {
+  const mutation = useEditRequirementFields(featureId);
+
   if (!data) return null;
+
+  const canEdit = Boolean(editable) && artifactType === "srs";
+
+  function handleEdit(operation) {
+    mutation.mutate({ operations: [operation], edited_by: "human_user", base_artifact_id: artifactId });
+  }
 
   const knownKeys = new Set([...SECTION_ORDER.map(([k]) => k), ...HEADER_FIELDS, "project_id", "feature_id"]);
   const extraKeys = Object.keys(data).filter((k) => !knownKeys.has(k));
@@ -133,16 +172,38 @@ export default function SrsDocumentViewer({ data, artifactType, domainImprovemen
         <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
           {[data.project_name, data.project_type, data.target_stack, data.architectural_style].filter(Boolean).join(" · ")}
         </p>
+        {canEdit && (
+          <p className="text-xs text-gray-400 dark:text-gray-500 mt-1.5 italic">
+            Editing will create a new SRS version for approval.
+          </p>
+        )}
+        <ErrorBanner error={mutation.error} fallback="Failed to save your edit." />
       </div>
 
       {SECTION_ORDER.map(([key, title]) => (
-        <Section key={key} sectionKey={key} title={title} value={data[key]} highlightedBySection={highlightedBySection} />
+        <Section
+          key={key}
+          sectionKey={key}
+          title={title}
+          value={data[key]}
+          highlightedBySection={highlightedBySection}
+          canEdit={canEdit}
+          onEdit={handleEdit}
+        />
       ))}
 
       {/* Nothing generated by the agent is ever silently hidden: any field this component
           doesn't explicitly know about still renders, generically, at the end. */}
       {extraKeys.map((key) => (
-        <Section key={key} sectionKey={key} title={humanizeKey(key)} value={data[key]} highlightedBySection={highlightedBySection} />
+        <Section
+          key={key}
+          sectionKey={key}
+          title={humanizeKey(key)}
+          value={data[key]}
+          highlightedBySection={highlightedBySection}
+          canEdit={false}
+          onEdit={handleEdit}
+        />
       ))}
     </div>
   );

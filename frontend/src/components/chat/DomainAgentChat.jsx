@@ -69,11 +69,13 @@ export default function DomainAgentChat({
     stopRunStream,
     runStreamedText,
     runStreamStarted,
+    runStreamError,
     reviseStream,
     handleReviseStream,
     stopReviseStream,
     revisionStreamedText,
     revisionStreamStarted,
+    revisionStreamError,
   } = useDomainAgentFlowContext();
 
   const [comment, setComment] = useState("");
@@ -88,6 +90,10 @@ export default function DomainAgentChat({
   const streamedText = hasOutput ? revisionStreamedText : runStreamedText;
   const streamStarted = hasOutput ? revisionStreamStarted : runStreamStarted;
   const stopActiveStream = hasOutput ? stopReviseStream : stopRunStream;
+  // Set from a real {"type": "error"} NDJSON line -- unlike activeStream.error (only set on a
+  // genuine promise rejection), this is the only signal available when the stream completed
+  // "successfully" from fetch's point of view but the agent itself crashed mid-attempt.
+  const streamError = hasOutput ? revisionStreamError : runStreamError;
 
   const projectId = feature?.project_id;
   const { data: knowledgeDocuments } = useKnowledgeDocuments(projectId, { enabled: Boolean(projectId) });
@@ -216,7 +222,10 @@ export default function DomainAgentChat({
           </>
         )}
 
-        <ErrorBanner error={activeStream.error} fallback="Domain Agent request failed." />
+        <ErrorBanner
+          error={activeStream.error || (streamError && { message: streamError })}
+          fallback="Domain Agent request failed."
+        />
       </div>
 
       <div className="flex-shrink-0 pt-1">

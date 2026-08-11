@@ -140,6 +140,150 @@ def test_user_story_add():
     assert not unmatched
 
 
+def test_add_to_completely_empty_id_description_field():
+    """Real gap this locks in: a plural/broad revision request ('add user stories') targeting a
+    field that starts genuinely empty must work, not just adding to an already-populated one."""
+    srs = _srs()
+    srs["user_stories"] = []
+    operations = [
+        {"action": "add", "field": "user_stories", "role": "Guest", "value": "browse public tasks", "benefit": "see what's available"}
+    ]
+
+    patched, applied, unmatched = apply_revision_operations(srs, operations)
+
+    assert len(patched["user_stories"]) == 1
+    assert patched["user_stories"][0]["id"] == "US-001"
+    assert not unmatched
+
+
+def test_add_to_completely_empty_plain_string_field():
+    srs = _srs()
+    srs["constraints"] = []
+    operations = [{"action": "add", "field": "constraints", "value": "Must use Next.js."}]
+
+    patched, applied, unmatched = apply_revision_operations(srs, operations)
+
+    assert patched["constraints"] == ["Must use Next.js."]
+    assert not unmatched
+
+
+def test_multiple_add_operations_against_the_same_id_description_field_in_one_call():
+    """A broad request like 'add user stories' (plural) must produce several correctly-sequenced,
+    collision-free ids in one operations list, not just one item."""
+    srs = _srs()
+    srs["user_stories"] = []
+    operations = [
+        {"action": "add", "field": "user_stories", "role": "Admin", "value": "create tasks", "benefit": "manage the backlog"},
+        {"action": "add", "field": "user_stories", "role": "Customer", "value": "view tasks", "benefit": "track progress"},
+    ]
+
+    patched, applied, unmatched = apply_revision_operations(srs, operations)
+
+    assert [story["id"] for story in patched["user_stories"]] == ["US-001", "US-002"]
+    assert patched["user_stories"][0]["role"] == "Admin"
+    assert patched["user_stories"][1]["role"] == "Customer"
+    assert len(applied) == 2
+    assert not unmatched
+
+
+def test_multiple_add_operations_against_the_same_plain_string_field_in_one_call():
+    srs = _srs()
+    srs["constraints"] = []
+    operations = [
+        {"action": "add", "field": "constraints", "value": "Must use Next.js."},
+        {"action": "add", "field": "constraints", "value": "Must enforce JWT authentication on every endpoint."},
+    ]
+
+    patched, applied, unmatched = apply_revision_operations(srs, operations)
+
+    assert patched["constraints"] == [
+        "Must use Next.js.",
+        "Must enforce JWT authentication on every endpoint.",
+    ]
+    assert not unmatched
+
+
+def test_user_story_add_honors_explicit_benefit_not_the_generic_default():
+    """Real, confirmed gap this closes: the operation schema never documented "benefit" even
+    though _apply_user_story_operation reads it -- every prior revision-added user story silently
+    got the same generic default benefit regardless of what was actually requested."""
+    srs = _srs()
+    operations = [
+        {
+            "action": "add",
+            "field": "user_stories",
+            "role": "Guest",
+            "value": "browse public tasks",
+            "benefit": "decide whether to sign up",
+        }
+    ]
+
+    patched, applied, unmatched = apply_revision_operations(srs, operations)
+
+    new_story = patched["user_stories"][-1]
+    assert new_story["benefit"] == "decide whether to sign up"
+    assert new_story["benefit"] != "complete the intended business process"  # the generic default
+
+
+def test_non_functional_requirement_add_honors_explicit_category():
+    srs = _srs()
+    operations = [
+        {"action": "add", "field": "non_functional_requirements", "value": "Must support 1000 concurrent users.", "category": "Scalability"}
+    ]
+
+    patched, applied, unmatched = apply_revision_operations(srs, operations)
+
+    new_nfr = patched["non_functional_requirements"][-1]
+    assert new_nfr["category"] == "Scalability"
+
+
+def test_operations_against_two_different_fields_in_one_call():
+    """Confirms the field-agnostic design: one broad revision comment covering several sections
+    at once (e.g. 'add a user story and a constraint') works exactly like two separate,
+    single-field revisions would."""
+    srs = _srs()
+    srs["user_stories"] = []
+    srs["constraints"] = []
+    operations = [
+        {"action": "add", "field": "user_stories", "role": "Admin", "value": "archive old tasks", "benefit": "keep the list tidy"},
+        {"action": "add", "field": "constraints", "value": "Must use Next.js."},
+    ]
+
+    patched, applied, unmatched = apply_revision_operations(srs, operations)
+
+    assert len(patched["user_stories"]) == 1
+    assert patched["constraints"] == ["Must use Next.js."]
+    assert len(applied) == 2
+    assert not unmatched
+
+
+def test_scalar_field_set_action_works():
+    srs = _srs()
+    srs["business_goal"] = "Original goal."
+    operations = [{"action": "set", "field": "business_goal", "value": "Updated goal."}]
+
+    patched, applied, unmatched = apply_revision_operations(srs, operations)
+
+    assert patched["business_goal"] == "Updated goal."
+    assert not unmatched
+
+
+def test_scalar_field_modify_action_is_treated_as_set():
+    """Real, confirmed bug found via live verification against the real model: a request to
+    change an EXISTING scalar value ("update the business goal to also mention...") naturally
+    produces action="modify", not "set" -- previously only "set" was accepted, so the change
+    silently fell through to the unsupported-field catch-all and never happened."""
+    srs = _srs()
+    srs["business_goal"] = "Original goal."
+    operations = [{"action": "modify", "field": "business_goal", "value": "Updated goal."}]
+
+    patched, applied, unmatched = apply_revision_operations(srs, operations)
+
+    assert patched["business_goal"] == "Updated goal."
+    assert not unmatched
+    assert applied
+
+
 def test_traceability_is_rebuilt_after_functional_requirement_removal():
     srs = _srs()
     srs["functional_requirements"].append({"id": "FR-002", "description": "Admin can delete a task", "priority": "Must Have"})
@@ -148,6 +292,37 @@ def test_traceability_is_rebuilt_after_functional_requirement_removal():
     patched, _, _ = apply_revision_operations(srs, operations)
 
     assert [row["requirement_id"] for row in patched["traceability"]] == ["FR-002"]
+
+
+def test_user_story_modify_goal_only_backward_compatible():
+    """Every pre-existing caller only ever sends value/goal -- must behave identically after
+    the role/benefit extension."""
+    srs = _srs()
+    operations = [{"action": "modify", "field": "user_stories", "target": "US-001", "value": "manage all tasks"}]
+
+    patched, applied, unmatched = apply_revision_operations(srs, operations)
+
+    assert patched["user_stories"][0]["goal"] == "manage all tasks"
+    assert patched["user_stories"][0]["role"] == "Admin"
+    assert patched["user_stories"][0]["benefit"] == "stay organized"
+    assert not unmatched
+
+
+def test_user_story_modify_role_and_benefit():
+    """Real gap this closes: modify previously only ever touched goal, even when the operation
+    carried role/benefit -- the field-by-field inline-edit UI needs to edit any part of a
+    user story, not just its goal text."""
+    srs = _srs()
+    operations = [
+        {"action": "modify", "field": "user_stories", "target": "US-001", "role": "Manager", "benefit": "keep the team on track"}
+    ]
+
+    patched, applied, unmatched = apply_revision_operations(srs, operations)
+
+    assert patched["user_stories"][0]["role"] == "Manager"
+    assert patched["user_stories"][0]["benefit"] == "keep the team on track"
+    assert patched["user_stories"][0]["goal"] == "manage tasks"  # untouched
+    assert not unmatched
 
 
 def test_malformed_operation_is_skipped_not_raised():

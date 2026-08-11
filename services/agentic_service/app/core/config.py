@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     LLM_TIMEOUT_SECONDS: int = 320
     LLM_STREAMING_ENABLED: bool = True
 
-    # Root folder for persistent per-project git repositories (the actual generated MERN app).
+    # Root folder for persistent per-project git repositories (the actual generated Next.js app).
     WORKSPACE_DIR: str = "workspaces"
 
     # MongoDB connection URI.

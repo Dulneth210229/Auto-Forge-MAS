@@ -1,0 +1,13 @@
+{
+  "files": [
+    {
+      "path": "app/item-notes/page.tsx",
+      "action": "modify",
+      "description": "Add a small helper text below the note input field explaining that notes are saved automatically",
+      "maps_to": [
+        "FR-001"
+      ],
+      "actually_touched": true
+    }
+  ]
+}

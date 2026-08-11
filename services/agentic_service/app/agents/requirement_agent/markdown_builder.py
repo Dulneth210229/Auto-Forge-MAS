@@ -60,7 +60,7 @@ class RequirementSRSMarkdownBuilder:
 - **Project Type:** {srs_json.get("project_type", "N/A")}
 - **Feature ID:** {srs_json.get("feature_id", "N/A")}
 - **Feature Name:** {srs_json.get("feature_name", "N/A")}
-- **Target Stack:** {srs_json.get("target_stack", "MERN")}
+- **Target Stack:** {srs_json.get("target_stack", "Next.js")}
 - **Preferred Architectural Style:** {srs_json.get("architectural_style", "modular")}
 
 ---

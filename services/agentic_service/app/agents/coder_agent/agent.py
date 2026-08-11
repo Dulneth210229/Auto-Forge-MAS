@@ -29,9 +29,12 @@ See services/agentic_service/instructions .md section 5 for the full plan.
 
 from __future__ import annotations
 
+import asyncio
 import re
-from typing import Any
+from pathlib import Path
+from typing import Any, AsyncGenerator
 
+from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.errors import GraphRecursionError
 
 from app.agents.coder_agent.coding_loop import build_coder_react_agent, build_task_message
@@ -42,16 +45,26 @@ from app.agents.coder_agent.diff_builder import (
     build_requirement_code_map,
     build_setup_instructions_markdown,
 )
+from app.agents.coder_agent.env_uri import extract_mongodb_uri, is_uri_only, strip_uri_from_comment
 from app.agents.coder_agent.plan_validator import CodePlanValidationError, code_plan_validator
 from app.agents.coder_agent.planner import CodePlanGenerationError, code_planner
-from app.agents.coder_agent.schemas import CoderAgentInput, CoderAgentOutput
+from app.agents.coder_agent.prompt import (
+    CODE_PLAN_JSON_REPAIR_PROMPT,
+    CODE_PLANNER_SYSTEM_PROMPT,
+    build_code_plan_repair_prompt,
+    build_code_planner_user_prompt,
+)
+from app.agents.coder_agent.schemas import CoderAgentEnvSaveResult, CoderAgentInput, CoderAgentOutput
+from app.agents.coder_agent.tools import search_workspace_content
 from app.agents.coder_agent.verify import coder_verifier
 from app.core.enums import AgentName, ApprovalStatus, ArtifactFormat, ArtifactType
 from app.schemas.coder_schema import CoderAgentReviseRequest, CoderAgentRunRequest
 from app.services.artifact_service import artifact_service
 from app.services.in_memory_store import store
+from app.services.llm_provider_service import llm_provider_service
 from app.services.project_memory_service import project_memory_service
-from app.services.workspace_service import workspace_service
+from app.services.preview_service import preview_service
+from app.services.workspace_service import MAIN_BRANCH, workspace_service
 from app.utils.file_manager import read_json_file
 from app.utils.logger import get_logger
 
@@ -76,6 +89,133 @@ MAX_CODING_ATTEMPTS = 3
 # this limit no longer needs to be exactly right -- just generous enough that a
 # realistically-sized plan can usually finish in one attempt.
 CODING_LOOP_RECURSION_LIMIT = 100
+
+# Used by _find_well_specified_target_files -- deliberately requires a real extension so a bare
+# word (e.g. "footer") never counts as a file reference, only something the human actually typed
+# as a file-shaped token (e.g. "components/Footer.tsx" or "Footer.tsx").
+_REVISION_FILE_TOKEN_RE = re.compile(
+    r"[\w][\w\-./]*\.(?:tsx|ts|jsx|js|css|json|mjs)\b", re.IGNORECASE
+)
+
+# Used by _meaningful_stems (Tier 1a/1b's keyword extraction) -- generic English filler words
+# PLUS domain-generic words that would match almost every generated Next.js file (page,
+# component, file, code, app, feature, function...) and so carry no real distinguishing signal.
+# "not" is included because contraction preprocessing (see _split_into_words) turns "doesn't"
+# into "does not" -- without it, a negated request ("the button does NOT work") would spuriously
+# treat "not" as a keyword.
+_KEYWORD_STOPWORDS = {
+    "the", "a", "an", "and", "or", "but", "to", "of", "in", "on", "for", "with", "at", "by",
+    "from", "into", "onto", "is", "are", "was", "were", "be", "been", "being", "it", "its",
+    "this", "that", "these", "those", "i", "you", "we", "they", "there", "here",
+    "add", "adds", "adding", "make", "makes", "fix", "fixes", "fixed", "update", "updates",
+    "please", "need", "needs", "want", "wants", "should", "must", "can", "could", "would",
+    "when", "once", "also", "not", "does", "do", "did", "doing", "get", "gets", "getting",
+    "page", "pages", "component", "components", "file", "files", "code", "app", "apps",
+    "feature", "features", "project", "function", "functions", "issue", "bug", "problem",
+    "just", "some", "any", "all", "new", "still", "again", "properly", "correctly",
+}
+
+# Used by _meaningful_stems -- a small local suffix-stripper. Deliberately its OWN copy, not
+# imported from app.agents.architecture_agent.usecase_modeler's own _stem_word -- mirrors this
+# codebase's own established convention that each deterministic module keeps its own copy rather
+# than sharing files across agent boundaries (usecase_validator.py/sequence_validator.py each
+# already have their own separate copies of the same idea).
+def _stem_word(word: str) -> str:
+    for suffix in ("ations", "ation", "ments", "ment", "ing", "ed", "es", "s"):
+        if word.endswith(suffix) and len(word) > len(suffix) + 3:
+            return word[: -len(suffix)]
+    return word
+
+
+def _split_into_words(text: str) -> list[str]:
+    """
+    Splits text into individual lowercase words, handling both plain prose AND CamelCase/
+    PascalCase identifiers identically -- this one function tokenizes a human's revision
+    comment ("the login form doesn't clear") AND a file's basename ("LoginForm.tsx" ->
+    "LoginForm") into the SAME shape of word list, so "CommentList" typed in a comment and
+    CommentList.jsx on disk produce overlapping stems even though the comment never names a
+    file extension (which _find_well_specified_target_files' regex requires).
+
+    Contractions are expanded first ("doesn't" -> "does not") so an apostrophe never leaves
+    stray single-letter noise ("t") or an unstrippable partial word ("doesn") behind.
+    """
+    text = re.sub(r"n't\b", " not", text, flags=re.IGNORECASE)
+    words: list[str] = []
+    for chunk in re.findall(r"[A-Za-z]+", text):
+        words.extend(re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])", chunk))
+    return [word.lower() for word in words]
+
+
+def _meaningful_stems(text: str) -> set[str]:
+    """
+    Real, filtered keyword stems from `text` -- drops stopwords/domain-generic filler
+    (_KEYWORD_STOPWORDS) and anything under 4 characters (too short to carry real signal),
+    stems what's left with _stem_word. Used by both _find_keyword_matched_known_files
+    (Tier 1a, matched against a file's own basename) and _find_keyword_hint_files (Tier 1b,
+    matched against real file content).
+    """
+    stems = set()
+    for word in _split_into_words(text):
+        if word in _KEYWORD_STOPWORDS or len(word) < 4:
+            continue
+        stems.add(_stem_word(word))
+    return stems
+
+# Human-readable label builders for each real coding-loop tool (app/agents/coder_agent/tools.py)
+# -- used to turn a live AIMessage.tool_calls entry into a {"type": "tool_activity"} NDJSON
+# event so a human watching the chat can see real, incremental progress during the coding loop
+# (an opaque, tool-calling LangGraph agent with zero token-level output of its own) instead of a
+# single static phase label sitting unchanged for however long the whole attempt takes. Verified
+# directly against a real .astream(stream_mode="values") run: a ToolCall is always
+# {"name", "args", "id", "type"}, and `args` uses each tool's own real parameter names below.
+_TOOL_ACTIVITY_LABELS: dict[str, Any] = {
+    "list_dir": lambda args: f"Listing {args.get('path', '.')}",
+    "read_file": lambda args: f"Reading {args.get('path', '?')}",
+    "write_file": lambda args: f"Writing {args.get('path', '?')}",
+    "apply_patch": lambda args: f"Editing {args.get('path', '?')}",
+    "run_shell": lambda args: f"Running: {args.get('command', '?')}",
+    "search_code": lambda args: f"Searching codebase for \"{args.get('query', '?')}\"",
+    "read_project_manifest": lambda args: "Checking the project manifest",
+    "read_ui_component": lambda args: f"Reading UI component {args.get('component_name', '?')}",
+    "list_unimplemented_planned_files": lambda args: "Checking which planned files remain",
+    "check_syntax": lambda args: f"Checking syntax of {args.get('path', '?')}",
+    "check_component_styling": lambda args: "Scanning component styling",
+    "submit_code_plan": lambda args: "Finalizing the plan",
+}
+
+_TOOL_ACTIVITY_RESULT_MAX_CHARS = 120
+
+
+def _build_tool_activity_events(message: Any) -> list[dict[str, Any]]:
+    """
+    Given one new message from a react_agent.astream(stream_mode="values") step, return zero or
+    more {"type": "tool_activity", ...} events to surface live: one per tool call on an
+    AIMessage (a single turn can carry several), or a terse follow-up for a ToolMessage result.
+    Never raises -- an unrecognized tool/shape just falls back to a generic label rather than
+    breaking the stream over a cosmetic detail.
+    """
+    events: list[dict[str, Any]] = []
+
+    if isinstance(message, AIMessage) and message.tool_calls:
+        for call in message.tool_calls:
+            name = call.get("name", "tool")
+            args = call.get("args") or {}
+            label_fn = _TOOL_ACTIVITY_LABELS.get(name)
+            label = label_fn(args) if label_fn else f"Calling {name}"
+            events.append({"type": "tool_activity", "tool": name, "label": label})
+    elif isinstance(message, ToolMessage):
+        content = str(message.content or "").strip().replace("\n", " ")
+        if len(content) > _TOOL_ACTIVITY_RESULT_MAX_CHARS:
+            content = content[:_TOOL_ACTIVITY_RESULT_MAX_CHARS] + "..."
+        events.append(
+            {
+                "type": "tool_activity",
+                "tool": message.name or "tool",
+                "label": f"→ {content}" if content else f"→ {message.name} finished",
+            }
+        )
+
+    return events
 
 
 class CoderAgent:
@@ -108,6 +248,16 @@ class CoderAgent:
         project = store.projects.get(feature["project_id"])
         if not project:
             raise ValueError("Project not found for this feature.")
+
+        # A URI is saved unconditionally whenever found, but run() never short-circuits on it --
+        # there's no existing build/preview to protect, and skipping feature generation on a
+        # URI-only first message would leave the human with nothing (see env_uri.py's module
+        # docstring for why revise() is where the short-circuit actually matters).
+        human_comment_for_planning = request.human_comment
+        uri = extract_mongodb_uri(request.human_comment)
+        if uri:
+            workspace_service.write_env_local(project["project_id"], {"MONGODB_URI": uri})
+            human_comment_for_planning = strip_uri_from_comment(request.human_comment, uri)
 
         srs_artifact = self._find_latest_approved_artifact(
             feature_id=feature_id,
@@ -151,19 +301,30 @@ class CoderAgent:
             architecture_plan_json=architecture_plan_json,
             ui_integration_manifest_json=ui_integration_manifest_json,
             project_manifest_json=project_manifest_json,
-            human_comment=request.human_comment,
+            human_comment=human_comment_for_planning,
         )
 
         srs_for_planning = enhanced_srs_json or srs_json
         code_plan_json = await self._plan_with_retries(agent_input, srs_for_planning)
 
+        preview_service.stop_preview_if_running(feature_id)
         workspace_service.start_feature_branch(project["project_id"], feature_id)
+        revision_start_sha = workspace_service.ensure_project_repo(
+            project["project_id"]
+        ).head.commit.hexsha
 
         verify_result, coding_attempts = await self._code_with_retries(
-            project["project_id"], feature_id, code_plan_json
+            project["project_id"],
+            feature_id,
+            code_plan_json,
+            revision_start_sha=revision_start_sha,
+            original_request=human_comment_for_planning,
         )
 
         diff = workspace_service.diff_against_main(project["project_id"], feature_id)
+        real_database_configured = bool(
+            workspace_service.read_env_local(project["project_id"]).get("MONGODB_URI")
+        )
 
         output = CoderAgentOutput(
             code_plan_json=code_plan_json,
@@ -173,7 +334,7 @@ class CoderAgent:
             requirement_code_map_json=build_requirement_code_map(code_plan_json, diff),
             setup_instructions_markdown=build_setup_instructions_markdown(code_plan_json),
             merge_report_markdown=build_merge_report_markdown(
-                feature["feature_name"], diff, verify_result, coding_attempts
+                feature["feature_name"], diff, verify_result, coding_attempts, real_database_configured
             ),
         )
 
@@ -189,7 +350,9 @@ class CoderAgent:
 
         return output
 
-    async def revise(self, feature_id: str, request: CoderAgentReviseRequest) -> CoderAgentOutput:
+    async def revise(
+        self, feature_id: str, request: CoderAgentReviseRequest
+    ) -> CoderAgentOutput | CoderAgentEnvSaveResult:
         """
         Revise the latest Coder Agent output for a feature that already has
         a real prior run -- mirrors RequirementAgent.revise()/
@@ -228,6 +391,33 @@ class CoderAgent:
             )
         existing_plan_json = read_json_file(latest_plan_artifact["file_path"])
 
+        # Short-circuit around the whole plan/code/verify cycle when the revision comment is
+        # JUST a MongoDB URI -- this is the actual point of env_uri.py's mechanism: avoid a real
+        # multi-minute cycle just to update one env var. If a URI arrives alongside other real
+        # instructions, the file is still saved here, but the normal revise flow proceeds below
+        # with the URI stripped out (no restart triggered here -- the normal path below already
+        # calls stop_preview_if_running right before touching the workspace).
+        revision_comment_for_planning = request.revision_comment
+        uri = extract_mongodb_uri(request.revision_comment)
+        if uri:
+            workspace_service.write_env_local(project["project_id"], {"MONGODB_URI": uri})
+            if is_uri_only(request.revision_comment, uri):
+                restarted = self._maybe_restart_running_preview(feature_id)
+                message = (
+                    "Database connection saved. Restarting the live preview to use your real data."
+                    if restarted
+                    else "Database connection saved. No live preview is currently running -- it "
+                    "will use this connection the next time a preview is started."
+                )
+                logger.info(
+                    "Coder Agent revision short-circuited for feature_id=%s: MongoDB URI saved, "
+                    "preview_restarted=%s",
+                    feature_id,
+                    restarted,
+                )
+                return CoderAgentEnvSaveResult(saved=True, preview_restarted=restarted, message=message)
+            revision_comment_for_planning = strip_uri_from_comment(request.revision_comment, uri)
+
         srs_artifact = self._find_latest_approved_artifact(
             feature_id=feature_id,
             agent_name=AgentName.REQUIREMENT,
@@ -258,7 +448,7 @@ class CoderAgent:
             architecture_plan_json=architecture_plan_json,
             ui_integration_manifest_json=ui_integration_manifest_json,
             project_manifest_json=project_manifest_json,
-            human_comment=request.revision_comment,
+            human_comment=revision_comment_for_planning,
         )
 
         # Frames the existing plan honestly, as a revision request rather than a
@@ -277,12 +467,34 @@ class CoderAgent:
         )
 
         coverage_baseline_files = self._collect_cumulative_plan_files(feature_id)
+        well_specified_files = self._find_well_specified_target_files(
+            revision_comment_for_planning, coverage_baseline_files
+        )
+        keyword_matched_files = (
+            set()
+            if well_specified_files
+            else self._find_keyword_matched_known_files(
+                revision_comment_for_planning, coverage_baseline_files
+            )
+        )
+        prefer_single_shot = bool(well_specified_files) or bool(keyword_matched_files)
 
         # Must happen BEFORE planning, not after: the agentic revision planner's
         # tools (list_dir/read_file/search_code) read whatever is currently
         # checked out in the workspace, so the feature branch's real, current
         # file content must already be checked out when planning starts.
+        preview_service.stop_preview_if_running(feature_id)
         workspace_service.resume_feature_branch(project["project_id"], feature_id)
+        revision_start_sha = workspace_service.ensure_project_repo(
+            project["project_id"]
+        ).head.commit.hexsha
+
+        # Cheap and deterministic (no LLM) -- always computed so exploration has a head start
+        # whether it's used from the start (prefer_single_shot False) or as a fallback after a
+        # Tier 0/1a fast-path guess fails (see _find_keyword_hint_files' own docstring).
+        keyword_hint_files = self._find_keyword_hint_files(
+            revision_comment_for_planning, workspace_service.get_repo_path(project["project_id"])
+        )
 
         code_plan_json = await self._plan_with_retries(
             agent_input,
@@ -291,13 +503,22 @@ class CoderAgent:
             validation_feedback=revision_feedback,
             coverage_baseline_files=coverage_baseline_files,
             exploration_context=(project["project_id"], feature_id),
+            prefer_single_shot=prefer_single_shot,
+            keyword_hint_files=keyword_hint_files,
         )
 
         verify_result, coding_attempts = await self._code_with_retries(
-            project["project_id"], feature_id, code_plan_json
+            project["project_id"],
+            feature_id,
+            code_plan_json,
+            revision_start_sha=revision_start_sha,
+            original_request=revision_comment_for_planning,
         )
 
         diff = workspace_service.diff_against_main(project["project_id"], feature_id)
+        real_database_configured = bool(
+            workspace_service.read_env_local(project["project_id"]).get("MONGODB_URI")
+        )
 
         output = CoderAgentOutput(
             code_plan_json=code_plan_json,
@@ -307,7 +528,7 @@ class CoderAgent:
             requirement_code_map_json=build_requirement_code_map(code_plan_json, diff),
             setup_instructions_markdown=build_setup_instructions_markdown(code_plan_json),
             merge_report_markdown=build_merge_report_markdown(
-                feature["feature_name"], diff, verify_result, coding_attempts
+                feature["feature_name"], diff, verify_result, coding_attempts, real_database_configured
             ),
         )
 
@@ -323,6 +544,709 @@ class CoderAgent:
         )
 
         return output
+
+    async def run_stream(
+        self, feature_id: str, request: CoderAgentRunRequest
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """
+        Streaming variant of run() -- same NDJSON event shape as Domain/Architecture Agent's
+        streaming endpoints. Deliberately NOT a thin wrapper around run(): planning is inlined
+        here so its single LLM call (code_planner.generate()'s underlying provider call) can be
+        token-streamed, and the coding/verify tail is delegated to _code_with_retries_stream so
+        its attempt/verify boundaries can be surfaced as phase events -- coding_loop.py has no
+        token-level streaming at all (an opaque, unbounded tool-calling loop), so that tail is
+        phase events only, never tokens. Mirrors generate()'s own parse-failure-is-terminal
+        behavior (a JSON parse failure on both the raw and repaired output is NOT retried across
+        planning attempts, exactly like the non-streaming path) -- only a plan_validator
+        rejection drives the attempt loop, exactly like _plan_with_retries.
+
+        Events:
+            {"type": "token", "text": "..."}
+            {"type": "phase", "phase": "...", "label": "..."}
+            {"type": "error", "message": "..."}
+            {"type": "done", "artifact_ids": [...], "verification_passed": bool, "status": "...", "message": "..."}
+        """
+        logger.info("Coder Agent (streamed) started for feature_id=%s", feature_id)
+
+        feature = store.features.get(feature_id)
+        if not feature:
+            yield {"type": "error", "message": "Feature not found."}
+            return
+
+        project = store.projects.get(feature["project_id"])
+        if not project:
+            yield {"type": "error", "message": "Project not found for this feature."}
+            return
+
+        # Unconditional save, never a short-circuit (see run()'s own identical comment) -- the
+        # credential is stripped out of the comment before it ever reaches the planner prompt.
+        human_comment_for_planning = request.human_comment
+        uri = extract_mongodb_uri(request.human_comment)
+        if uri:
+            workspace_service.write_env_local(project["project_id"], {"MONGODB_URI": uri})
+            human_comment_for_planning = strip_uri_from_comment(request.human_comment, uri)
+            yield {
+                "type": "phase",
+                "phase": "database_connection_saved",
+                "label": "Saved your database connection -- it will be used once this feature is built.",
+            }
+
+        srs_artifact = self._find_latest_approved_artifact(
+            feature_id=feature_id,
+            agent_name=AgentName.REQUIREMENT,
+            artifact_type=ArtifactType.SRS,
+            artifact_format=ArtifactFormat.JSON,
+        )
+        if not srs_artifact:
+            yield {
+                "type": "error",
+                "message": (
+                    "No approved SRS JSON artifact found. "
+                    "Approve Requirement Agent SRS JSON before running Coder Agent."
+                ),
+            }
+            return
+        srs_json = read_json_file(srs_artifact["file_path"])
+
+        enhanced_srs_json = None
+        if request.use_enhanced_srs_if_available:
+            enhanced_srs_artifact = self._find_latest_approved_artifact(
+                feature_id=feature_id,
+                agent_name=AgentName.DOMAIN,
+                artifact_type=ArtifactType.ENHANCED_SRS,
+                artifact_format=ArtifactFormat.JSON,
+            )
+            if enhanced_srs_artifact:
+                enhanced_srs_json = read_json_file(enhanced_srs_artifact["file_path"])
+
+        architecture_plan_json = self._load_approved_architecture_plan(feature_id)
+        if architecture_plan_json is None:
+            yield {
+                "type": "error",
+                "message": (
+                    "No approved Architecture Plan (or legacy SDS) JSON artifact found. "
+                    "Approve Architecture Agent output before running Coder Agent."
+                ),
+            }
+            return
+
+        ui_integration_manifest_json = self._load_approved_ui_integration_manifest(feature_id)
+        project_manifest_json = project_memory_service.load_project_manifest(project["project_id"])
+
+        agent_input = CoderAgentInput(
+            project=dict(project),
+            feature=dict(feature),
+            srs_json=srs_json,
+            enhanced_srs_json=enhanced_srs_json,
+            architecture_plan_json=architecture_plan_json,
+            ui_integration_manifest_json=ui_integration_manifest_json,
+            project_manifest_json=project_manifest_json,
+            human_comment=human_comment_for_planning,
+        )
+
+        srs_for_planning = enhanced_srs_json or srs_json
+        provider = llm_provider_service.get_provider(agent_name=AgentName.CODER.value)
+
+        code_plan_json: dict[str, Any] | None = None
+        last_error: CodePlanValidationError | None = None
+        previous_plan_json: dict[str, Any] | None = None
+        validation_feedback: str | None = None
+
+        for attempt in range(1, MAX_PLANNING_ATTEMPTS + 1):
+            yield {
+                "type": "phase",
+                "phase": f"planning_attempt_{attempt}_of_{MAX_PLANNING_ATTEMPTS}",
+                "label": f"Planning (attempt {attempt} of {MAX_PLANNING_ATTEMPTS})...",
+            }
+
+            prompt = build_code_planner_user_prompt(
+                project=agent_input.project,
+                feature=agent_input.feature,
+                srs_json=srs_for_planning,
+                architecture_plan_json=agent_input.architecture_plan_json,
+                ui_integration_manifest_json=agent_input.ui_integration_manifest_json,
+                project_manifest_json=agent_input.project_manifest_json,
+                human_comment=agent_input.human_comment,
+                previous_plan_json=previous_plan_json,
+                validation_feedback=validation_feedback,
+            )
+
+            raw_chunks: list[str] = []
+            try:
+                async for chunk in provider.stream(prompt=prompt, system_prompt=CODE_PLANNER_SYSTEM_PROMPT):
+                    raw_chunks.append(chunk)
+                    yield {"type": "token", "text": chunk}
+            except Exception as stream_error:
+                logger.warning(
+                    "Streamed Coder Agent planning failed mid-stream for feature_id=%s: %s",
+                    feature_id,
+                    stream_error,
+                )
+
+            raw_output = "".join(raw_chunks)
+
+            try:
+                attempt_plan_json = self.planner._extract_json_object(raw_output)
+            except ValueError:
+                repaired_output = await provider.invoke_agent(
+                    [
+                        {"role": "system", "content": CODE_PLAN_JSON_REPAIR_PROMPT},
+                        {"role": "user", "content": build_code_plan_repair_prompt(raw_output)},
+                    ]
+                )
+                try:
+                    attempt_plan_json = self.planner._extract_json_object(repaired_output)
+                except ValueError as error:
+                    # Matches generate()'s own behavior: a JSON parse failure on both the raw
+                    # and the repaired output is a terminal failure, not retried across
+                    # planning attempts -- only a plan_validator rejection retries.
+                    yield {
+                        "type": "error",
+                        "message": (
+                            "Coder Agent planner could not produce valid code_plan_json after "
+                            f"one repair attempt: {error}"
+                        ),
+                    }
+                    return
+
+            try:
+                self.plan_validator.validate(
+                    srs_for_planning,
+                    agent_input.architecture_plan_json,
+                    attempt_plan_json,
+                    enforce_endpoint_coverage=True,
+                )
+                code_plan_json = attempt_plan_json
+                break
+            except CodePlanValidationError as error:
+                logger.warning(
+                    "Streamed plan attempt %d/%d failed validation: %s",
+                    attempt,
+                    MAX_PLANNING_ATTEMPTS,
+                    error,
+                )
+                last_error = error
+                previous_plan_json = attempt_plan_json
+                validation_feedback = str(error)
+
+        if code_plan_json is None:
+            yield {
+                "type": "error",
+                "message": (
+                    f"Coder Agent could not produce a valid plan after {MAX_PLANNING_ATTEMPTS} "
+                    f"attempts: {last_error}"
+                ),
+            }
+            return
+
+        yield {"type": "phase", "phase": "preparing_workspace", "label": "Preparing the workspace..."}
+        preview_service.stop_preview_if_running(feature_id)
+        workspace_service.start_feature_branch(project["project_id"], feature_id)
+        revision_start_sha = workspace_service.ensure_project_repo(
+            project["project_id"]
+        ).head.commit.hexsha
+
+        result_holder: dict[str, Any] = {}
+        async for event in self._code_with_retries_stream(
+            project["project_id"],
+            feature_id,
+            code_plan_json,
+            result_holder,
+            revision_start_sha=revision_start_sha,
+            original_request=human_comment_for_planning,
+        ):
+            yield event
+
+        verify_result = result_holder["verify_result"]
+        coding_attempts = result_holder["coding_attempts"]
+
+        yield {"type": "phase", "phase": "diffing", "label": "Building the diff and manifest..."}
+        diff = workspace_service.diff_against_main(project["project_id"], feature_id)
+        real_database_configured = bool(
+            workspace_service.read_env_local(project["project_id"]).get("MONGODB_URI")
+        )
+
+        output = CoderAgentOutput(
+            code_plan_json=code_plan_json,
+            verification_passed=verify_result["passed"],
+            file_tree_json=build_file_tree(diff),
+            code_manifest_json=build_code_manifest(code_plan_json, diff),
+            requirement_code_map_json=build_requirement_code_map(code_plan_json, diff),
+            setup_instructions_markdown=build_setup_instructions_markdown(code_plan_json),
+            merge_report_markdown=build_merge_report_markdown(
+                feature["feature_name"], diff, verify_result, coding_attempts, real_database_configured
+            ),
+        )
+
+        output.artifact_ids = self._save_artifacts(dict(project), dict(feature), output)
+
+        logger.info(
+            "Coder Agent (streamed) completed for feature_id=%s verification_passed=%s "
+            "attempts=%d artifacts=%s",
+            feature_id,
+            verify_result["passed"],
+            coding_attempts,
+            output.artifact_ids,
+        )
+
+        yield {
+            "type": "done",
+            "artifact_ids": output.artifact_ids,
+            "verification_passed": verify_result["passed"],
+            "status": "completed" if verify_result["passed"] else "completed_with_verification_failures",
+            "message": (
+                "Coder Agent completed and verification passed. Requires human approval."
+                if verify_result["passed"]
+                else "Coder Agent completed but verification failed. Requires human review before approval."
+            ),
+        }
+
+    async def revise_stream(
+        self, feature_id: str, request: CoderAgentReviseRequest
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """
+        Streaming variant of revise() -- same event shape as run_stream(). Unlike run_stream,
+        planning is NOT inlined for token streaming: revise()'s planner is the agentic
+        exploration loop (generate_via_exploration), which -- like Architecture Agent's own
+        agentic exploration tier -- only ever produces a plan as arguments to a final tool call,
+        never as incremental text, so there is nothing to stream token-by-token. CLAUDE.md items
+        22/23 document, at real cost, that this exploration planner is specifically what lets a
+        vague, file-unspecified revision request be correctly scoped -- silently downgrading to
+        the single-shot planner just to get token output would reintroduce that exact,
+        already-fixed regression, so this method keeps it unconditionally.
+
+        This deliberately reuses _plan_with_retries UNCHANGED (not reimplemented inline) to
+        avoid duplicating its exploration-retry logic, which is extensively, carefully tuned
+        (turn budgets, efficiency-hint retry feedback, coverage-baseline unioning) -- hand-
+        duplicating it here would risk silently drifting out of sync with revise()'s own
+        behavior. The tradeoff: one "planning" phase event covers the whole (possibly
+        multi-attempt) exploration ladder, with an elapsed-time counter carrying the "still
+        working" signal, rather than a phase event per attempt.
+
+        Events: same shape as run_stream.
+        """
+        logger.info("Coder Agent revision (streamed) started for feature_id=%s", feature_id)
+
+        feature = store.features.get(feature_id)
+        if not feature:
+            yield {"type": "error", "message": "Feature not found."}
+            return
+
+        project = store.projects.get(feature["project_id"])
+        if not project:
+            yield {"type": "error", "message": "Project not found for this feature."}
+            return
+
+        latest_plan_artifact = self._find_latest_code_plan_artifact(feature_id)
+        if not latest_plan_artifact:
+            yield {
+                "type": "error",
+                "message": (
+                    "No existing Coder Agent output found for this feature. "
+                    "Run the Coder Agent before requesting a revision."
+                ),
+            }
+            return
+        existing_plan_json = read_json_file(latest_plan_artifact["file_path"])
+
+        # Same short-circuit as revise() -- see that method's own comment for the full
+        # reasoning. Here the confirmation is streamed as phase + done events instead of a
+        # returned CoderAgentEnvSaveResult.
+        revision_comment_for_planning = request.revision_comment
+        uri = extract_mongodb_uri(request.revision_comment)
+        if uri:
+            workspace_service.write_env_local(project["project_id"], {"MONGODB_URI": uri})
+            if is_uri_only(request.revision_comment, uri):
+                restarted = self._maybe_restart_running_preview(feature_id)
+                yield {"type": "phase", "phase": "database_connection_saved", "label": "Database connection saved."}
+                if restarted:
+                    yield {
+                        "type": "phase",
+                        "phase": "restarting_preview",
+                        "label": "Restarting the live preview to use your real data...",
+                    }
+                yield {
+                    "type": "done",
+                    "status": "database_connection_saved",
+                    "artifact_ids": [],
+                    "verification_passed": None,
+                    "message": (
+                        "Database connection saved. Restarting the live preview to use your real data."
+                        if restarted
+                        else "Database connection saved. No live preview is currently running -- it "
+                        "will use this connection the next time a preview is started."
+                    ),
+                }
+                return
+            revision_comment_for_planning = strip_uri_from_comment(request.revision_comment, uri)
+
+        srs_artifact = self._find_latest_approved_artifact(
+            feature_id=feature_id,
+            agent_name=AgentName.REQUIREMENT,
+            artifact_type=ArtifactType.SRS,
+            artifact_format=ArtifactFormat.JSON,
+        )
+        if not srs_artifact:
+            yield {
+                "type": "error",
+                "message": (
+                    "No approved SRS JSON artifact found. "
+                    "Approve Requirement Agent SRS JSON before revising the Coder Agent."
+                ),
+            }
+            return
+        srs_json = read_json_file(srs_artifact["file_path"])
+
+        architecture_plan_json = self._load_approved_architecture_plan(feature_id)
+        if architecture_plan_json is None:
+            yield {
+                "type": "error",
+                "message": "No approved Architecture Plan (or legacy SDS) JSON artifact found.",
+            }
+            return
+
+        ui_integration_manifest_json = self._load_approved_ui_integration_manifest(feature_id)
+        project_manifest_json = project_memory_service.load_project_manifest(project["project_id"])
+
+        agent_input = CoderAgentInput(
+            project=dict(project),
+            feature=dict(feature),
+            srs_json=srs_json,
+            enhanced_srs_json=None,
+            architecture_plan_json=architecture_plan_json,
+            ui_integration_manifest_json=ui_integration_manifest_json,
+            project_manifest_json=project_manifest_json,
+            human_comment=revision_comment_for_planning,
+        )
+
+        revision_feedback = (
+            "This is a HUMAN-REQUESTED REVISION of an already-implemented and verified "
+            "feature, not a validation rejection. The plan below already passed validation "
+            "and was successfully coded once. Apply ONLY the specific change described in "
+            "the human revision comment above -- keep every existing file entry that "
+            "doesn't need to change; add or modify entries only for what this revision "
+            "requires."
+        )
+
+        coverage_baseline_files = self._collect_cumulative_plan_files(feature_id)
+        well_specified_files = self._find_well_specified_target_files(
+            revision_comment_for_planning, coverage_baseline_files
+        )
+        keyword_matched_files = (
+            set()
+            if well_specified_files
+            else self._find_keyword_matched_known_files(
+                revision_comment_for_planning, coverage_baseline_files
+            )
+        )
+        prefer_single_shot = bool(well_specified_files) or bool(keyword_matched_files)
+
+        yield {"type": "phase", "phase": "preparing_workspace", "label": "Preparing the workspace..."}
+        # Must happen BEFORE planning, not after -- the agentic revision planner's tools
+        # (list_dir/read_file/search_code) read whatever is currently checked out, so the
+        # feature branch's real, current content must already be checked out first (same
+        # ordering revise() itself uses, and load-bearing for the same reason).
+        preview_service.stop_preview_if_running(feature_id)
+        workspace_service.resume_feature_branch(project["project_id"], feature_id)
+        revision_start_sha = workspace_service.ensure_project_repo(
+            project["project_id"]
+        ).head.commit.hexsha
+
+        # Cheap and deterministic (no LLM) -- always computed so exploration has a head start
+        # whether it's used from the start or as a fallback after a Tier 0/1a fast-path guess
+        # fails (see _find_keyword_hint_files' own docstring).
+        keyword_hint_files = self._find_keyword_hint_files(
+            revision_comment_for_planning, workspace_service.get_repo_path(project["project_id"])
+        )
+
+        if well_specified_files:
+            planning_label = "Drafting a plan for the file(s) you mentioned..."
+        elif keyword_matched_files:
+            planning_label = "Drafting a plan based on your description..."
+        else:
+            planning_label = "Exploring the codebase and planning your revision..."
+
+        yield {"type": "phase", "phase": "planning", "label": planning_label}
+
+        try:
+            code_plan_json = await self._plan_with_retries(
+                agent_input,
+                srs_json,
+                previous_plan_json=existing_plan_json,
+                validation_feedback=revision_feedback,
+                coverage_baseline_files=coverage_baseline_files,
+                exploration_context=(project["project_id"], feature_id),
+                prefer_single_shot=prefer_single_shot,
+                keyword_hint_files=keyword_hint_files,
+            )
+        except (CodePlanValidationError, CodePlanGenerationError) as error:
+            yield {
+                "type": "error",
+                "message": f"Coder Agent could not produce a valid revision plan: {error}",
+            }
+            return
+
+        result_holder: dict[str, Any] = {}
+        async for event in self._code_with_retries_stream(
+            project["project_id"],
+            feature_id,
+            code_plan_json,
+            result_holder,
+            revision_start_sha=revision_start_sha,
+            original_request=revision_comment_for_planning,
+        ):
+            yield event
+
+        verify_result = result_holder["verify_result"]
+        coding_attempts = result_holder["coding_attempts"]
+
+        yield {"type": "phase", "phase": "diffing", "label": "Building the diff and manifest..."}
+        diff = workspace_service.diff_against_main(project["project_id"], feature_id)
+        real_database_configured = bool(
+            workspace_service.read_env_local(project["project_id"]).get("MONGODB_URI")
+        )
+
+        output = CoderAgentOutput(
+            code_plan_json=code_plan_json,
+            verification_passed=verify_result["passed"],
+            file_tree_json=build_file_tree(diff),
+            code_manifest_json=build_code_manifest(code_plan_json, diff),
+            requirement_code_map_json=build_requirement_code_map(code_plan_json, diff),
+            setup_instructions_markdown=build_setup_instructions_markdown(code_plan_json),
+            merge_report_markdown=build_merge_report_markdown(
+                feature["feature_name"], diff, verify_result, coding_attempts, real_database_configured
+            ),
+        )
+
+        output.artifact_ids = self._save_artifacts(dict(project), dict(feature), output)
+
+        logger.info(
+            "Coder Agent revision (streamed) completed for feature_id=%s verification_passed=%s "
+            "attempts=%d artifacts=%s",
+            feature_id,
+            verify_result["passed"],
+            coding_attempts,
+            output.artifact_ids,
+        )
+
+        yield {
+            "type": "done",
+            "artifact_ids": output.artifact_ids,
+            "verification_passed": verify_result["passed"],
+            "status": "revised" if verify_result["passed"] else "revised_with_verification_failures",
+            "message": (
+                "Coder Agent revision completed and verification passed. "
+                "A new version was created and requires human approval."
+                if verify_result["passed"]
+                else "Coder Agent revision completed but verification failed. "
+                "A new version was created and requires human review before approval."
+            ),
+        }
+
+    async def _code_with_retries_stream(
+        self,
+        project_id: str,
+        feature_id: str,
+        code_plan_json: dict[str, Any],
+        result_holder: dict[str, Any],
+        revision_start_sha: str | None = None,
+        original_request: str | None = None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """
+        Streaming counterpart to _code_with_retries -- identical retry/gap-detection/verify
+        logic, but yields a `phase` event at each attempt/verify boundary (coding_loop.py has
+        no token-level streaming, so this is phase events only) and writes its result into
+        result_holder (an async generator can't `return` a value) instead of returning a tuple.
+        _code_with_retries itself is untouched and still used by the non-streaming run()/revise().
+
+        Also closes a real gap the non-streaming _code_with_retries doesn't have to worry about:
+        a genuine Stop (client disconnect -> Starlette cancels the StreamingResponse generator)
+        raises asyncio.CancelledError from inside `await react_agent.ainvoke(...)`, which the
+        existing `except GraphRecursionError:` clause does not catch -- left unhandled, it would
+        propagate past the commit_changes() call that normally runs right after every attempt,
+        silently leaving whatever was written uncommitted. Catching it here and committing first,
+        then re-raising, makes Stop's guarantee identical regardless of whether the loop stopped
+        itself (recursion limit) or was stopped by a human: partial progress is always committed
+        to the feature branch (safe -- nothing merges or gets approved automatically), just
+        unverified.
+
+        verify() is a blocking, synchronous call (multiple sequential Docker containers over
+        several real minutes) -- run via asyncio.to_thread so it doesn't block the shared event
+        loop the streaming route runs on (unlike the non-streaming path, which is already
+        insulated from this by FastAPI's automatic sync-route threadpool).
+        """
+        prior_failure_output = None
+        already_touched: dict[str, list[str]] | None = None
+        verify_result: dict[str, Any] = {"passed": False, "steps": []}
+
+        for attempt in range(1, MAX_CODING_ATTEMPTS + 1):
+            yield {
+                "type": "phase",
+                "phase": f"coding_attempt_{attempt}_of_{MAX_CODING_ATTEMPTS}",
+                "label": f"Coding (attempt {attempt} of {MAX_CODING_ATTEMPTS})...",
+            }
+
+            react_agent = build_coder_react_agent(project_id, feature_id, code_plan_json)
+            task_message = build_task_message(
+                code_plan_json, prior_failure_output, already_touched, original_request
+            )
+            hit_recursion_limit = False
+            attempt_error: str | None = None
+
+            try:
+                seen_messages = 0
+                async for state in react_agent.astream(
+                    {"messages": [{"role": "user", "content": task_message}]},
+                    config={"recursion_limit": CODING_LOOP_RECURSION_LIMIT},
+                    stream_mode="values",
+                ):
+                    messages = state.get("messages", [])
+                    for message in messages[seen_messages:]:
+                        for event in _build_tool_activity_events(message):
+                            yield event
+                    seen_messages = len(messages)
+            except GraphRecursionError:
+                hit_recursion_limit = True
+                logger.warning(
+                    "Streamed coding attempt %d/%d for feature_id=%s hit the recursion limit "
+                    "(%d) before finishing -- committing partial progress and retrying with a "
+                    "note to work efficiently.",
+                    attempt,
+                    MAX_CODING_ATTEMPTS,
+                    feature_id,
+                    CODING_LOOP_RECURSION_LIMIT,
+                )
+            except asyncio.CancelledError:
+                logger.warning(
+                    "Streamed coding attempt %d/%d for feature_id=%s was stopped -- "
+                    "committing partial progress.",
+                    attempt,
+                    MAX_CODING_ATTEMPTS,
+                    feature_id,
+                )
+                workspace_service.commit_changes(
+                    project_id,
+                    feature_id,
+                    message=f"Coder Agent attempt {attempt} (stopped): {feature_id}",
+                )
+                raise
+            except Exception as error:
+                # Any OTHER failure (malformed tool-call JSON, a transport hiccup, an
+                # unexpected tool error against the local model) previously propagated
+                # uncaught, skipping commit_changes/verify/_save_artifacts entirely --
+                # confirmed as a real bug: a revision request crashed mid-attempt with zero
+                # saved artifact and a dirty, uncommitted workspace, indistinguishable to the
+                # human from "the agent did nothing" (the route's own catch-all DOES turn this
+                # into a real {"type": "error"} event, but nothing upstream of this point ever
+                # got the chance to save real progress or a real merge report). Treat it like
+                # a failed attempt instead: commit whatever was written, retry with an honest
+                # message.
+                attempt_error = str(error)
+                logger.exception(
+                    "Streamed coding attempt %d/%d for feature_id=%s raised an unexpected "
+                    "error -- committing partial progress and retrying.",
+                    attempt,
+                    MAX_CODING_ATTEMPTS,
+                    feature_id,
+                )
+
+            try:
+                workspace_service.commit_changes(
+                    project_id, feature_id, message=f"Coder Agent attempt {attempt}: {feature_id}"
+                )
+            except Exception as commit_error:
+                logger.exception(
+                    "Streamed coding attempt %d/%d for feature_id=%s: commit_changes itself "
+                    "failed",
+                    attempt,
+                    MAX_CODING_ATTEMPTS,
+                    feature_id,
+                )
+                attempt_error = attempt_error or f"Failed to commit changes: {commit_error}"
+
+            touched_error: str | None = None
+            try:
+                already_touched = workspace_service.get_touched_files(
+                    project_id, feature_id, since=revision_start_sha or MAIN_BRANCH
+                )
+            except Exception as touched_exc:
+                logger.exception(
+                    "Streamed coding attempt %d/%d for feature_id=%s: get_touched_files "
+                    "itself failed",
+                    attempt,
+                    MAX_CODING_ATTEMPTS,
+                    feature_id,
+                )
+                touched_error = str(touched_exc)
+                already_touched = {"added": [], "modified": [], "deleted": []}
+
+            gaps = self._find_plan_gaps(code_plan_json, already_touched)
+
+            if gaps or hit_recursion_limit or attempt_error or touched_error:
+                logger.warning(
+                    "Streamed coding attempt %d/%d for feature_id=%s left %d planned file(s) "
+                    "untouched",
+                    attempt,
+                    MAX_CODING_ATTEMPTS,
+                    feature_id,
+                    len(gaps),
+                )
+                prior_failure_output = self._format_plan_gaps(gaps)
+                if hit_recursion_limit:
+                    prior_failure_output = (
+                        "The previous attempt ran out of turns before finishing -- work "
+                        "efficiently this time: do not re-read files you already know the "
+                        "contents of, do not call check_syntax more than once per file, and "
+                        "prioritize finishing every remaining planned file over polishing ones "
+                        "that are already correct.\n\n" + (prior_failure_output or "")
+                    )
+                if attempt_error:
+                    prior_failure_output = (
+                        f"The previous attempt failed with an unexpected error: {attempt_error}\n\n"
+                        + (prior_failure_output or "")
+                    )
+                if touched_error:
+                    prior_failure_output = (
+                        "Could not determine which files were touched by the previous attempt "
+                        f"(error: {touched_error}) -- proceed carefully and re-check your work.\n\n"
+                        + (prior_failure_output or "")
+                    )
+                verify_result = {
+                    "passed": False,
+                    "steps": [
+                        {
+                            "name": "planned files touched",
+                            "status": "failed",
+                            "output": prior_failure_output,
+                        }
+                    ],
+                }
+                continue
+
+            yield {
+                "type": "phase",
+                "phase": f"verifying_attempt_{attempt}",
+                "label": f"Verifying (attempt {attempt} of {MAX_CODING_ATTEMPTS})...",
+            }
+            verify_result = await asyncio.to_thread(
+                self.verifier.verify, project_id, feature_id, code_plan_json, original_request
+            )
+
+            if verify_result["passed"]:
+                result_holder["verify_result"] = verify_result
+                result_holder["coding_attempts"] = attempt
+                return
+
+            logger.warning(
+                "Streamed coding attempt %d/%d failed verification for feature_id=%s",
+                attempt,
+                MAX_CODING_ATTEMPTS,
+                feature_id,
+            )
+            prior_failure_output = self._summarize_verify_failure(verify_result)
+
+        result_holder["verify_result"] = verify_result
+        result_holder["coding_attempts"] = MAX_CODING_ATTEMPTS
 
     def _find_latest_code_plan_artifact(self, feature_id: str) -> dict | None:
         """
@@ -347,6 +1271,23 @@ class CoderAgent:
             and artifact.get("artifact_type") in [ArtifactType.CODE_PLAN, ArtifactType.CODE_PLAN.value]
             and artifact.get("artifact_format") in [ArtifactFormat.JSON, ArtifactFormat.JSON.value]
         ]
+
+    def _maybe_restart_running_preview(self, feature_id: str) -> bool:
+        """
+        Restarts the live preview ONLY if one is currently running/stale for
+        this feature -- never starts one from stopped. preview_service's own
+        design is explicit Start only, never automatic; this is a narrow,
+        deliberate exception scoped to "refresh an already-running preview
+        so it picks up a freshly-saved .env.local," never "launch a new one
+        as a side effect of a chat message." Returns whether a restart
+        actually happened.
+        """
+        status = preview_service.get_status(feature_id)
+        if status["status"] == "stopped":
+            return False
+
+        preview_service.start_preview(feature_id)  # already does stop+restart internally
+        return True
 
     def _collect_cumulative_plan_files(self, feature_id: str) -> list[dict[str, Any]]:
         """
@@ -383,6 +1324,182 @@ class CoderAgent:
 
         return list(files_by_path.values())
 
+    def _find_well_specified_target_files(
+        self, revision_comment: str | None, known_files: list[dict[str, Any]]
+    ) -> set[str]:
+        """
+        Cheap, deterministic heuristic: does the human's revision comment already name a REAL
+        file this feature has previously touched? If so, the agentic exploration planner's whole
+        reason for existing (scoping a VAGUE, file-unspecified request by looking at the real
+        codebase -- see _plan_with_retries' exploration_context docstring) doesn't apply, and a
+        single, fast, one-call planner attempt can go straight to drafting a plan against the
+        named file(s) instead of spending up to REVISION_PLANNING_RECURSION_LIMIT real
+        tool-calling turns "discovering" a file the human already named. Confirmed real: a
+        request as simple as "fix the typo in components/Footer.tsx" was taking 80+ minutes
+        under the old unconditional-exploration design.
+
+        Deliberately conservative -- returns an empty set (never guesses) unless the comment
+        contains something that actually looks like a file reference:
+        - A token with a real extension is required (a bare word like "footer" never matches).
+        - A token that already looks like a qualified path (contains "/") is only trusted on an
+          EXACT match against a real path -- a qualified-but-not-exact token isn't guessed at
+          further.
+        - A bare filename (no "/") is only trusted if it's the ONE file in the whole project with
+          that basename -- guards against generic Next.js filenames (page.tsx/route.ts/
+          layout.tsx) that legitimately exist under many different directories once a project has
+          more than one feature; an ambiguous match falls through to full exploration rather than
+          picking one at random.
+
+        Returns the set of matched real paths (empty if nothing qualifies) -- the caller only
+        needs to know whether this is non-empty ("well-specified"), but the real paths are also
+        useful for logging/debugging.
+        """
+        if not revision_comment or not known_files:
+            return set()
+
+        tokens = {
+            match.group(0) for match in _REVISION_FILE_TOKEN_RE.finditer(revision_comment)
+        }
+        if not tokens:
+            return set()
+
+        known_paths = {
+            entry.get("path")
+            for entry in known_files
+            if isinstance(entry, dict) and entry.get("path")
+        }
+        if not known_paths:
+            return set()
+
+        matched: set[str] = set()
+        for token in tokens:
+            token_lower = token.lower()
+
+            exact = {path for path in known_paths if path.lower() == token_lower}
+            if exact:
+                matched |= exact
+                continue
+
+            if "/" in token:
+                # A qualified-but-not-exact path was given -- don't guess further for this token.
+                continue
+
+            basename_matches = {
+                path for path in known_paths if path.rsplit("/", 1)[-1].lower() == token_lower
+            }
+            if len(basename_matches) == 1:
+                matched |= basename_matches
+            # 0 or 2+ basename matches: no match, or genuinely ambiguous -- fall through to
+            # exploration rather than guess.
+
+        return matched
+
+    def _find_keyword_matched_known_files(
+        self, revision_comment: str | None, known_files: list[dict[str, Any]]
+    ) -> set[str]:
+        """
+        Tier 1a: sibling to _find_well_specified_target_files, for the common case a human
+        describes a change in plain English WITHOUT naming a file at all (e.g. "the login
+        form doesn't clear after submit") -- fuzzy-matches the comment's keyword stems
+        against each known file's own basename stems (CamelCase/kebab/snake-aware, see
+        _split_into_words). This is what lets "the login form" resolve to LoginForm.tsx even
+        though the comment never types a real file extension, which
+        _find_well_specified_target_files' regex requires.
+
+        Deliberately metadata-only (no filesystem access) -- safe to call at the exact same
+        point _find_well_specified_target_files already is (before
+        workspace_service.resume_feature_branch has checked out this feature's real branch).
+        Content-based matching (which CAN find plausible-but-wrong files -- confirmed real:
+        grepping for "tailwind"/"css" on a "styles are missing" request finds the files that
+        ALREADY correctly use Tailwind, not the one broken, unstyled file) is a separate,
+        deliberately less-trusted mechanism -- see _find_keyword_hint_files.
+
+        Mirrors _find_well_specified_target_files' own "never guess an ambiguous case"
+        philosophy: requires >=2 shared stems (a single generic shared word is not real
+        signal) AND a UNIQUE top-scoring file across known_files (a tie is treated as
+        ambiguous, not guessed at -- falls through to exploration same as 0 matches).
+        """
+        if not revision_comment or not known_files:
+            return set()
+
+        comment_stems = _meaningful_stems(revision_comment)
+        if len(comment_stems) < 2:
+            return set()
+
+        scored: dict[str, int] = {}
+        for entry in known_files:
+            if not isinstance(entry, dict) or not entry.get("path"):
+                continue
+            if entry.get("action") == "delete":
+                # A stale, no-longer-real filename shouldn't be matchable.
+                continue
+
+            path = entry["path"]
+            basename = path.rsplit("/", 1)[-1]
+            basename = re.sub(r"\.(tsx|ts|jsx|js|css|json|mjs)$", "", basename, flags=re.IGNORECASE)
+            overlap = comment_stems & _meaningful_stems(basename)
+            if len(overlap) >= 2:
+                scored[path] = len(overlap)
+
+        if not scored:
+            return set()
+
+        top_score = max(scored.values())
+        top_matches = {path for path, score in scored.items() if score == top_score}
+        if len(top_matches) != 1:
+            # Multiple files tied for the best match -- genuinely ambiguous, don't guess.
+            return set()
+
+        return top_matches
+
+    def _find_keyword_hint_files(
+        self, revision_comment: str | None, workspace_root: Path, max_hints: int = 8
+    ) -> list[str]:
+        """
+        Tier 1b: a cheap, deterministic keyword search of the REAL workspace content, fed
+        into the agentic exploration planner's prompt as an unverified starting-point hint --
+        never trusted to skip exploration (unlike Tier 0/1a). Must be called AFTER
+        workspace_service.resume_feature_branch (needs this feature's real, current files on
+        disk, not whatever happens to already be checked out).
+
+        Deliberately never promoted to prefer_single_shot: content/keyword matching can find
+        files that mention a topic without being the actually-broken one (the Tailwind
+        example above is this exact project's own documented counter-example -- see
+        tools.py's check_component_styling, built for precisely this blind spot). The
+        exploration model keeps every one of its own tools, so a wrong hint just gets
+        ignored or overridden, never silently acted on.
+
+        Returns paths only (no content) -- mirrors _build_cumulative_touched_files_section's
+        own already-proven pattern of rendering only a path list, never file content, for the
+        planner's file-level create/modify decisions.
+        """
+        if not revision_comment:
+            return []
+
+        stems = _meaningful_stems(revision_comment)
+        if len(stems) < 2:
+            return []
+
+        try:
+            pattern = re.compile("|".join(re.escape(stem) for stem in stems), re.IGNORECASE)
+        except re.error:
+            return []
+
+        matches = search_workspace_content(workspace_root, pattern, max_results=500)
+
+        scores: dict[str, int] = {}
+        for match in matches:
+            # "path:line:content" -- path itself never contains ":" on this project's
+            # supported platforms, so split on the first two colons only.
+            path = match.split(":", 2)[0]
+            if not path or path == "...":
+                continue
+            path_bonus = 3 if any(stem in path.lower() for stem in stems) else 0
+            scores[path] = scores.get(path, 0) + 1 + path_bonus
+
+        ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+        return [path for path, _score in ranked[:max_hints]]
+
     async def _plan_with_retries(
         self,
         agent_input: CoderAgentInput,
@@ -391,6 +1508,8 @@ class CoderAgent:
         validation_feedback: str | None = None,
         coverage_baseline_files: list[dict[str, Any]] | None = None,
         exploration_context: tuple[str, str] | None = None,
+        prefer_single_shot: bool = False,
+        keyword_hint_files: list[str] | None = None,
     ) -> dict[str, Any]:
         """
         previous_plan_json/validation_feedback can be pre-seeded by a caller
@@ -422,11 +1541,34 @@ class CoderAgent:
         are missing, add tailwind css") needs the model to actually look at
         the codebase to know which files are affected. Everything else about
         the retry loop (coverage validation, feedback framing) is unchanged.
+
+        prefer_single_shot: for revise()'s fast path only (see
+        CoderAgent._find_well_specified_target_files) -- when the human's revision comment
+        already names a real file this feature has previously touched, exploring the codebase
+        via up to REVISION_PLANNING_RECURSION_LIMIT tool-calling turns just to "discover" a file
+        the human already named is pure waste (confirmed real: 80+ minutes for a request as
+        simple as "fix the typo in components/Footer.tsx"). When True, ONLY attempt 1 skips
+        exploration in favor of the single-shot planner.generate() (one plain LLM call, no
+        tool-calling turns) -- exploration_context itself stays truthy throughout regardless
+        (deliberately: it's what keeps enforce_endpoint_coverage relaxed for revisions below,
+        independent of which planner actually ran). If attempt 1 fails for ANY reason
+        (validation rejection or an unexpected exception), attempts 2-4 fall through to the
+        normal, thorough exploration path -- a wrong fast guess self-corrects instead of
+        permanently degrading reliability.
+
+        keyword_hint_files: for revise() only -- an unverified starting-point hint from
+        CoderAgent._find_keyword_hint_files ("Tier 1b"), a cheap keyword search of the real
+        workspace against the human's comment. Threaded into every exploration attempt
+        (whenever exploration actually runs, whether that's from the start or because a
+        Tier 0/1a fast-path guess failed and fell through) -- never affects prefer_single_shot
+        itself, only gives exploration a head start instead of starting blind.
         """
         last_error: CodePlanValidationError | CodePlanGenerationError | None = None
 
         for attempt in range(1, MAX_PLANNING_ATTEMPTS + 1):
-            if exploration_context:
+            use_exploration = exploration_context and not (prefer_single_shot and attempt == 1)
+
+            if use_exploration:
                 project_id, feature_id = exploration_context
                 try:
                     code_plan_json, _raw = await self.planner.generate_via_exploration(
@@ -442,6 +1584,7 @@ class CoderAgent:
                         previous_plan_json=previous_plan_json,
                         validation_feedback=validation_feedback,
                         coverage_baseline_files=coverage_baseline_files or [],
+                        keyword_hint_files=keyword_hint_files,
                     )
                 except CodePlanGenerationError as error:
                     # The exploration loop ran out of its turn budget before
@@ -475,18 +1618,74 @@ class CoderAgent:
                         "verifying every one by reading its source."
                     )
                     continue
+                except Exception as error:
+                    # Any OTHER failure (a transient Ollama/langchain-ollama transport error --
+                    # already documented elsewhere in this project's history as a real, if rare,
+                    # occurrence -- a malformed tool call, etc.) previously propagated all the way
+                    # out of _plan_with_retries uncaught, meaning revise()/revise_stream() never
+                    # even reached the coding loop, let alone _save_artifacts. Treat it like a
+                    # rejected/incomplete attempt instead -- retry with an honest message, same
+                    # mechanism as the CodePlanGenerationError branch above.
+                    logger.exception(
+                        "Exploration-planning attempt %d/%d for feature_id=%s raised an "
+                        "unexpected error.",
+                        attempt,
+                        MAX_PLANNING_ATTEMPTS,
+                        feature_id,
+                    )
+                    last_error = CodePlanGenerationError(
+                        f"Exploration-planning attempt raised an unexpected error: {error}"
+                    )
+                    validation_feedback = (
+                        "Your previous attempt failed with an unexpected error before it could "
+                        f"submit a plan ({error}). This is a fresh attempt with no memory of what "
+                        "you explored last time -- try again, and call submit_code_plan as soon "
+                        "as you're confident, without over-exploring."
+                    )
+                    continue
             else:
-                code_plan_json, _raw = await self.planner.generate(
-                    project=agent_input.project,
-                    feature=agent_input.feature,
-                    srs_json=srs_for_planning,
-                    architecture_plan_json=agent_input.architecture_plan_json,
-                    ui_integration_manifest_json=agent_input.ui_integration_manifest_json,
-                    project_manifest_json=agent_input.project_manifest_json,
-                    human_comment=agent_input.human_comment,
-                    previous_plan_json=previous_plan_json,
-                    validation_feedback=validation_feedback,
-                )
+                try:
+                    code_plan_json, _raw = await self.planner.generate(
+                        project=agent_input.project,
+                        feature=agent_input.feature,
+                        srs_json=srs_for_planning,
+                        architecture_plan_json=agent_input.architecture_plan_json,
+                        ui_integration_manifest_json=agent_input.ui_integration_manifest_json,
+                        project_manifest_json=agent_input.project_manifest_json,
+                        human_comment=agent_input.human_comment,
+                        previous_plan_json=previous_plan_json,
+                        validation_feedback=validation_feedback,
+                        coverage_baseline_files=coverage_baseline_files,
+                    )
+                except Exception as error:
+                    # Previously uncaught -- a JSON-parse failure (both raw and repaired) or any
+                    # other exception (a real, if rare, transient Ollama/langchain-ollama error --
+                    # already documented elsewhere in this project's history) would propagate
+                    # straight out of _plan_with_retries, crashing the whole run()/revise() call.
+                    # Treat it like a rejected attempt instead, same mechanism as the exploration
+                    # branch above -- for the fast path specifically, this is what makes attempt
+                    # 2 correctly fall through to full exploration (use_exploration is only False
+                    # when attempt == 1) instead of the whole revision crashing on a bad guess.
+                    logger.warning(
+                        "Single-shot planning attempt %d/%d failed: %s",
+                        attempt,
+                        MAX_PLANNING_ATTEMPTS,
+                        error,
+                    )
+                    last_error = (
+                        error
+                        if isinstance(error, CodePlanGenerationError)
+                        else CodePlanGenerationError(f"Planning attempt raised an unexpected error: {error}")
+                    )
+                    if exploration_context:
+                        validation_feedback = (
+                            "Your previous attempt (a quick, targeted guess based on the file(s) "
+                            f"you named) failed: {error}. This attempt will explore the codebase "
+                            "more thoroughly instead."
+                        )
+                    else:
+                        validation_feedback = f"Your previous attempt failed with an error: {error}. Try again."
+                    continue
 
             plan_for_coverage_check = code_plan_json
             if coverage_baseline_files:
@@ -514,7 +1713,12 @@ class CoderAgent:
         raise last_error
 
     async def _code_with_retries(
-        self, project_id: str, feature_id: str, code_plan_json: dict[str, Any]
+        self,
+        project_id: str,
+        feature_id: str,
+        code_plan_json: dict[str, Any],
+        revision_start_sha: str | None = None,
+        original_request: str | None = None,
     ) -> tuple[dict[str, Any], int]:
         prior_failure_output = None
         already_touched: dict[str, list[str]] | None = None
@@ -522,8 +1726,11 @@ class CoderAgent:
 
         for attempt in range(1, MAX_CODING_ATTEMPTS + 1):
             react_agent = build_coder_react_agent(project_id, feature_id, code_plan_json)
-            task_message = build_task_message(code_plan_json, prior_failure_output, already_touched)
+            task_message = build_task_message(
+                code_plan_json, prior_failure_output, already_touched, original_request
+            )
             hit_recursion_limit = False
+            attempt_error: str | None = None
 
             try:
                 await react_agent.ainvoke(
@@ -548,15 +1755,56 @@ class CoderAgent:
                     feature_id,
                     CODING_LOOP_RECURSION_LIMIT,
                 )
+            except Exception as error:
+                # Any OTHER failure -- a real, plausible occurrence against a local Ollama
+                # model (malformed tool-call JSON, a transport hiccup, an unexpected tool
+                # error) -- previously propagated uncaught, skipping commit_changes/verify/
+                # _save_artifacts entirely and leaving no trace of the attempt at all (a
+                # confirmed real bug: a revision request could crash mid-attempt with zero
+                # saved artifact and a dirty, uncommitted workspace, indistinguishable from
+                # "the agent did nothing"). Treat it exactly like a failed attempt instead --
+                # commit whatever was written before the crash, and let the caller see an
+                # honest failure message rather than the request silently vanishing.
+                attempt_error = str(error)
+                logger.exception(
+                    "Coding attempt %d/%d for feature_id=%s raised an unexpected error -- "
+                    "committing partial progress and retrying.",
+                    attempt,
+                    MAX_CODING_ATTEMPTS,
+                    feature_id,
+                )
 
-            workspace_service.commit_changes(
-                project_id, feature_id, message=f"Coder Agent attempt {attempt}: {feature_id}"
-            )
+            try:
+                workspace_service.commit_changes(
+                    project_id, feature_id, message=f"Coder Agent attempt {attempt}: {feature_id}"
+                )
+            except Exception as commit_error:
+                logger.exception(
+                    "Coding attempt %d/%d for feature_id=%s: commit_changes itself failed",
+                    attempt,
+                    MAX_CODING_ATTEMPTS,
+                    feature_id,
+                )
+                attempt_error = attempt_error or f"Failed to commit changes: {commit_error}"
 
-            already_touched = workspace_service.get_touched_files(project_id, feature_id)
+            touched_error: str | None = None
+            try:
+                already_touched = workspace_service.get_touched_files(
+                    project_id, feature_id, since=revision_start_sha or MAIN_BRANCH
+                )
+            except Exception as touched_exc:
+                logger.exception(
+                    "Coding attempt %d/%d for feature_id=%s: get_touched_files itself failed",
+                    attempt,
+                    MAX_CODING_ATTEMPTS,
+                    feature_id,
+                )
+                touched_error = str(touched_exc)
+                already_touched = {"added": [], "modified": [], "deleted": []}
+
             gaps = self._find_plan_gaps(code_plan_json, already_touched)
 
-            if gaps or hit_recursion_limit:
+            if gaps or hit_recursion_limit or attempt_error or touched_error:
                 logger.warning(
                     "Coding attempt %d/%d for feature_id=%s left %d planned file(s) untouched",
                     attempt,
@@ -573,6 +1821,17 @@ class CoderAgent:
                         "prioritize finishing every remaining planned file over polishing ones "
                         "that are already correct.\n\n" + (prior_failure_output or "")
                     )
+                if attempt_error:
+                    prior_failure_output = (
+                        f"The previous attempt failed with an unexpected error: {attempt_error}\n\n"
+                        + (prior_failure_output or "")
+                    )
+                if touched_error:
+                    prior_failure_output = (
+                        "Could not determine which files were touched by the previous attempt "
+                        f"(error: {touched_error}) -- proceed carefully and re-check your work.\n\n"
+                        + (prior_failure_output or "")
+                    )
                 verify_result = {
                     "passed": False,
                     "steps": [
@@ -585,7 +1844,9 @@ class CoderAgent:
                 }
                 continue
 
-            verify_result = self.verifier.verify(project_id, feature_id, code_plan_json)
+            verify_result = self.verifier.verify(
+                project_id, feature_id, code_plan_json, original_request
+            )
 
             if verify_result["passed"]:
                 return verify_result, attempt
@@ -654,6 +1915,7 @@ class CoderAgent:
             filename=f"{feature_slug}_code_plan_v{{version}}.json",
             data=output.code_plan_json,
             version_override=version,
+            summary=output.code_plan_json.get("summary") if output.code_plan_json else None,
         )
         artifact_ids.append(plan_artifact.artifact_id)
 

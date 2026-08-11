@@ -1,0 +1,79 @@
+{
+  "files": [
+    {
+      "path": "models/ItemNote.ts",
+      "action": "create",
+      "rationale": "Mongoose model for a note on a catalog item: itemId, content (max 500 chars per VR-001), authorId, createdAt. Uses the mongoose.models.ItemNote || mongoose.model(...) guard. Covers all four crude per-field entities the Architecture Plan's deterministic fallback split out separately (they are all fields of the same real ItemNote record).",
+      "maps_to": [
+        "Item NotesDataEntity1",
+        "Item NotesDataEntity2",
+        "Item NotesDataEntity3",
+        "Item NotesDataEntity4",
+        "FR-001"
+      ]
+    },
+    {
+      "path": "app/api/item-notes/route.ts",
+      "action": "create",
+      "rationale": "Route Handler implementing GET (list notes for an item via a ?itemId= query param, newest first per AC-002) and POST (create a note, validating required fields and the 500-character limit per VR-001, and that the request comes from a registered user per VR-002). export const dynamic = 'force-dynamic' since this touches the database.",
+      "maps_to": [
+        "/api/item-notes",
+        "FR-001",
+        "VR-001",
+        "VR-002",
+        "AC-001",
+        "AC-002",
+        "AC-003"
+      ]
+    },
+    {
+      "path": "lib/api/itemNotes.ts",
+      "action": "create",
+      "rationale": "Client-side fetch wrapper functions (listItemNotes, createItemNote) that app/item-notes/page.tsx calls -- the real API-calling layer, not fake/hardcoded logic.",
+      "maps_to": [
+        "FR-001"
+      ]
+    },
+    {
+      "path": "components/ItemNotesList.jsx",
+      "action": "create",
+      "rationale": "Integrate the approved ItemNotesList UI/UX component verbatim via read_ui_component -- do not re-author its markup.",
+      "maps_to": [
+        "FR-001",
+        "US-002",
+        "AC-002"
+      ]
+    },
+    {
+      "path": "components/NoteInputField.jsx",
+      "action": "create",
+      "rationale": "Integrate the approved NoteInputField UI/UX component via read_ui_component, but it has a real, confirmed gap: it tracks its own input text in internal state but has no way to actually submit it (no button, no Enter-key handler, no onSubmit prop call). Add a real submit affordance (Enter key and/or a button) that calls a new onSubmit(text) prop, keeping its existing markup/styling/state machine intact.",
+      "maps_to": [
+        "FR-001",
+        "AC-001",
+        "VR-001"
+      ]
+    },
+    {
+      "path": "app/item-notes/page.tsx",
+      "action": "create",
+      "rationale": "Host page (Client Component, \"use client\" first line): fetch real notes for the item on mount via lib/api/itemNotes, render them with the integrated ItemNotesList component, wire NoteInputField's onSubmit to a real create-note API call, refresh the list afterward.",
+      "maps_to": [
+        "FR-001",
+        "US-001",
+        "US-002",
+        "AC-001",
+        "AC-002"
+      ]
+    },
+    {
+      "path": "app/page.tsx",
+      "action": "modify",
+      "rationale": "Register a real <Link href=\"/item-notes\"> in HomePage at the FEATURE_LINKS markers -- a page with no link to it is not complete.",
+      "maps_to": []
+    }
+  ],
+  "new_dependencies": [],
+  "env_vars_needed": [],
+  "summary": "Full-stack Item Notes implementation for Next.js: one ItemNote Mongoose model (with the mongoose.models guard), a Route Handler implementing list/create with VR-001/VR-002/AC-001/AC-002/AC-003 validation, a real lib/api client module, and real wiring of the approved ItemNotesList/NoteInputField UI/UX components (fixing NoteInputField's missing submit affordance) via a new app/item-notes/page.tsx, linked from the home page."
+}

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useRequirementConversationFlowContext } from "../workspace/RequirementConversationFlowContext";
 import { AgentTurnBubble, HumanBubble, LiveReactionBubble, QualityGateBanner } from "../pipeline/RequirementConversationParts";
 import RequirementRunForm from "../pipeline/RequirementRunForm";
+import ChatBubble from "./ChatBubble";
 import ChatComposerBox from "./ChatComposerBox";
 import LoadingSpinner from "../common/LoadingSpinner";
 import ErrorBanner from "../common/ErrorBanner";
@@ -27,12 +28,30 @@ function ChatHeader({ feature, runningStage }) {
   );
 }
 
-// The Requirement Agent's pre-SRS conversational gap-filling flow, wrapped in the exact same
-// shell (header + scrollable message area + ChatComposerBox) every other agent's chat uses --
-// per direct user feedback that the chat window must be visually/behaviorally consistent across
-// agents. Replies go through one free-text box (like every other agent), not a stack of
-// per-question inputs; the questions' example answers are shown inline in AgentTurnBubble instead.
-export default function RequirementConversationChat({ featureId, feature, runningStage, selectedAgent, selectAgent }) {
+// The Requirement Agent's ENTIRE chat, pre-SRS gap-filling AND post-SRS revision, as ONE
+// continuous conversation -- previously two separate components (RequirementConversationChat +
+// RequirementRevisionChat) that ChatPanel hard-swapped between the instant an SRS artifact
+// existed, which (even after an earlier fix that added a collapsed "show old conversation"
+// toggle inside the post-SRS component) still read as "the chat disappeared and a different,
+// sparser one took its place" -- direct, repeated user feedback: this must feel like ONE
+// ChatGPT/Claude-style conversation, never a swap. `conversation.turn_history` (the pre-SRS Q&A)
+// is now ALWAYS rendered in full, followed immediately by `timeline` (the post-SRS revision
+// activity) once it exists -- one continuous scroll, no collapsing, no separate card chrome.
+// `hasOutput` (artifact-existence-based, the same mode-switch signal every other agent's chat
+// already uses) decides which composer/banners are active, not `conversation.status` -- there's a
+// real, narrow desync window between the two right after confirm succeeds.
+export default function RequirementConversationChat({
+  featureId,
+  feature,
+  runningStage,
+  selectedAgent,
+  selectAgent,
+  hasOutput,
+  timeline,
+  allArtifacts,
+  onViewArtifact,
+  isLoadingTimeline,
+}) {
   const {
     conversation,
     isLoading,
@@ -54,8 +73,14 @@ export default function RequirementConversationChat({ featureId, feature, runnin
     stopConfirmStream,
     isGenerating,
     isConfirmed,
+    reviseStream,
+    handleReviseStream,
+    stopReviseStream,
+    revisionStreamedText,
+    revisionStreamStarted,
   } = useRequirementConversationFlowContext();
 
+  // Pre-SRS composer state.
   const [replyText, setReplyText] = useState("");
   const [attachedFile, setAttachedFile] = useState(null);
   const [showManualForm, setShowManualForm] = useState(false);
@@ -69,6 +94,10 @@ export default function RequirementConversationChat({ featureId, feature, runnin
   // turn after it (see editTurnStream's own docstring), so while this is set, later turns are
   // hidden entirely rather than briefly shown then yanked away once the stream finishes.
   const [editingContext, setEditingContext] = useState(null);
+
+  // Post-SRS composer state.
+  const [revisionComment, setRevisionComment] = useState("");
+  const [pendingRevisionReply, setPendingRevisionReply] = useState(null);
 
   function handleEditTurn(turnIndex, newReply) {
     setEditingContext({ turnIndex, pendingReply: newReply });
@@ -109,11 +138,35 @@ export default function RequirementConversationChat({ featureId, feature, runnin
       .finally(() => setPendingHumanReply(null));
   }
 
-  const isAgentRunning = runningStage === "requirement" || isReplying || editTurnStream.isPending;
-  const showComposer = conversation && !isConfirmed && !isGenerating && !showManualForm;
+  // Shared by the post-SRS composer's Send and a ChatBubble's inline "Save & Send" (see
+  // ChatBubble's own docstring for why editing an old ask bubble resubmits rather than rewriting
+  // history).
+  function submitRevision(text) {
+    if (reviseStream.isPending) return;
+    const trimmed = text.trim();
+    if (!trimmed) return;
+
+    setPendingRevisionReply(trimmed);
+    handleReviseStream({ revision_comment: trimmed, revised_by: "human_user" }).finally(() =>
+      setPendingRevisionReply(null)
+    );
+  }
+
+  function handleRevisionSubmit(event) {
+    event.preventDefault();
+    const trimmed = revisionComment.trim();
+    if (!trimmed) return;
+    setRevisionComment("");
+    submitRevision(trimmed);
+  }
+
+  const isAgentRunning =
+    runningStage === "requirement" || isReplying || editTurnStream.isPending || reviseStream.isPending;
+  const showPreSrsComposer = !hasOutput && conversation && !isConfirmed && !isGenerating && !showManualForm;
   // Editing a past reply discards it and everything after it, then regenerates -- only safe while
   // the conversation is still in the gathering phase, same as replying normally.
-  const canEditTurns = showComposer;
+  const canEditTurns = showPreSrsComposer;
+  const revisionReactionText = extractStreamingJsonStringField(revisionStreamedText, "revision_summary");
 
   return (
     <div className="h-full flex flex-col bg-white dark:bg-gray-900 rounded-lg shadow-sm border border-gray-200 dark:border-gray-800 p-4">
@@ -139,7 +192,7 @@ export default function RequirementConversationChat({ featureId, feature, runnin
             </button>
             {start.isPending && <LoadingSpinner label="Reading the feature description..." />}
           </div>
-        ) : showManualForm ? (
+        ) : showManualForm && !hasOutput ? (
           <RequirementRunForm featureId={featureId} feature={feature} />
         ) : (
           <>
@@ -184,8 +237,8 @@ export default function RequirementConversationChat({ featureId, feature, runnin
               );
             })}
 
-            {pendingHumanReply && <HumanBubble text={pendingHumanReply} />}
-            {respondStream.isPending && (
+            {!hasOutput && pendingHumanReply && <HumanBubble text={pendingHumanReply} />}
+            {!hasOutput && respondStream.isPending && (
               <LiveReactionBubble
                 reactionText={extractStreamingJsonStringField(replyStreamedText, "reaction")}
                 hasStarted={replyStreamStarted}
@@ -194,13 +247,13 @@ export default function RequirementConversationChat({ featureId, feature, runnin
 
             <ErrorBanner error={editTurnStream.error} fallback="Failed to save your edit." />
 
-            {isConfirmed ? (
+            {!hasOutput && isConfirmed ? (
               <div className="bg-green-50 dark:bg-green-500/10 border border-green-200 dark:border-green-500/30 rounded-lg px-3 py-2.5">
                 <p className="text-sm text-green-800 dark:text-green-300 font-semibold">
                   Confirmed -- the final SRS has been generated and is awaiting approval in the Result panel.
                 </p>
               </div>
-            ) : isGenerating ? (
+            ) : !hasOutput && isGenerating ? (
               <div className="flex items-center justify-between gap-2 bg-accent-50 dark:bg-accent-500/10 border border-accent-200 dark:border-accent-500/30 rounded-lg px-3 py-2.5">
                 <div className="flex items-center gap-2 min-w-0">
                   <span className="relative flex h-2 w-2 flex-shrink-0">
@@ -221,7 +274,7 @@ export default function RequirementConversationChat({ featureId, feature, runnin
                   </button>
                 )}
               </div>
-            ) : (
+            ) : !hasOutput ? (
               <>
                 <ErrorBanner error={respondStream.error} fallback="Failed to send your reply." />
                 <ErrorBanner error={respondWithDocument.error} fallback="Failed to process the attached document." />
@@ -233,12 +286,74 @@ export default function RequirementConversationChat({ featureId, feature, runnin
                   disabled={isReplying}
                 />
               </>
+            ) : null}
+
+            {/* Post-SRS revision activity continues the SAME scroll immediately below the
+                original conversation -- one continuous thread, never a separate block. */}
+            {hasOutput && (
+              <>
+                {isLoadingTimeline ? (
+                  <LoadingSpinner label="Loading activity..." />
+                ) : timeline.length === 0 && !pendingRevisionReply ? (
+                  <p className="text-sm text-gray-400 dark:text-gray-500 italic">
+                    No revision activity yet. Ask for a change below.
+                  </p>
+                ) : (
+                  timeline.map((item, i) => (
+                    <ChatBubble
+                      key={i}
+                      item={item}
+                      allArtifacts={allArtifacts}
+                      onViewArtifact={onViewArtifact}
+                      onEditSubmit={submitRevision}
+                      isEditPending={reviseStream.isPending}
+                    />
+                  ))
+                )}
+
+                {pendingRevisionReply && (
+                  <div className="flex justify-end">
+                    <div className="max-w-[85%] bg-accent-600 dark:bg-accent-500 text-white rounded-lg rounded-tr-sm px-3 py-2 text-sm">
+                      <p className="text-xs text-accent-200 dark:text-accent-100/80 mb-0.5">You</p>
+                      <p className="whitespace-pre-wrap">{pendingRevisionReply}</p>
+                    </div>
+                  </div>
+                )}
+
+                {reviseStream.isPending && (
+                  <>
+                    <LiveReactionBubble reactionText={revisionReactionText} hasStarted={revisionStreamStarted} />
+                    {revisionStreamStarted && (
+                      <div className="flex items-center justify-between gap-2 bg-accent-50 dark:bg-accent-500/10 border border-accent-200 dark:border-accent-500/30 rounded-lg px-3 py-2.5">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="relative flex h-2 w-2 flex-shrink-0">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent-400 opacity-75" />
+                            <span className="relative inline-flex rounded-full h-2 w-2 bg-accent-600" />
+                          </span>
+                          <p className="text-sm text-accent-800 dark:text-accent-300 font-semibold truncate">
+                            Applying your requested change -- watch progress live in the Result panel &rarr;
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={stopReviseStream}
+                          className="text-xs font-semibold text-accent-700 dark:text-accent-300 hover:text-accent-900 dark:hover:text-accent-100 underline flex-shrink-0"
+                        >
+                          Stop
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
+
+                <ErrorBanner error={reviseStream.error} fallback="Failed to revise the SRS." />
+              </>
             )}
           </>
         )}
       </div>
 
-      {conversation && !isConfirmed && !isGenerating && (
+      {!hasOutput && conversation && !isConfirmed && !isGenerating && (
         <div className="flex-shrink-0 flex items-center justify-between pb-2">
           <button
             onClick={() => setShowManualForm((v) => !v)}
@@ -256,7 +371,7 @@ export default function RequirementConversationChat({ featureId, feature, runnin
         </div>
       )}
 
-      {showComposer && (
+      {showPreSrsComposer && (
         <form onSubmit={handleReplySubmit} className="flex-shrink-0">
           <ChatComposerBox
             value={replyText}
@@ -274,6 +389,24 @@ export default function RequirementConversationChat({ featureId, feature, runnin
             onRemoveAttachedFile={() => setAttachedFile(null)}
           />
         </form>
+      )}
+
+      {hasOutput && (
+        <div className="flex-shrink-0 pt-1">
+          <form onSubmit={handleRevisionSubmit}>
+            <ChatComposerBox
+              value={revisionComment}
+              onChange={(event) => setRevisionComment(event.target.value)}
+              disabled={reviseStream.isPending}
+              pending={reviseStream.isPending}
+              onStop={stopReviseStream}
+              selectedAgent={selectedAgent}
+              onSelectAgent={selectAgent}
+              isAgentRunning={isAgentRunning}
+              placeholder="Ask Requirement Agent for a change..."
+            />
+          </form>
+        </div>
       )}
     </div>
   );

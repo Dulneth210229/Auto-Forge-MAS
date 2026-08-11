@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { listGatingArtifactVersions } from "../../lib/deriveStageStatus";
 import { ARTIFACT_TYPE_STAGE, STAGE_GATING_ARTIFACT, dedupeArtifactVersions } from "../../lib/artifactTypeMeta";
 import { getEffectiveActiveArtifact } from "../../lib/activeArtifactSelection";
@@ -17,6 +17,7 @@ import { useWorkspaceSelection } from "../workspace/WorkspaceSelectionContext";
 import { useRequirementConversationFlowContext } from "../workspace/RequirementConversationFlowContext";
 import { useDomainAgentFlowContext } from "../workspace/DomainAgentFlowContext";
 import { useArchitectureAgentFlowContext } from "../workspace/ArchitectureAgentFlowContext";
+import { useCoderAgentFlowContext } from "../workspace/CoderAgentFlowContext";
 import { useFeature, useSetActiveArtifactSelection } from "../../hooks/useFeatures";
 import { useApprovalMutation } from "../../hooks/useApprovalMutation";
 
@@ -62,7 +63,37 @@ const APPROVE_CONTINUATION_BY_STAGE = {
 // that was never a real decision point, on top of the Enhanced SRS itself. Excluded from the
 // listed/approvable artifacts entirely; rendered instead as a read-only attachment directly under
 // the Enhanced SRS document for the same version (see the domain-stage branch below).
-const UNLISTED_ARTIFACT_TYPES = ["domain_improvements"];
+//
+// code_plan/code_diff/code_manifest/requirement_code_map are Coder Agent's own internal working
+// documents -- real, useful to a human who wants to dig in, but not individually meaningful
+// approval decisions the way the pipeline treats every other listed artifact. All four belong
+// exclusively to the "coder" stage (per ARTIFACT_TYPE_STAGE), so excluding them by type alone,
+// same mechanism as domain_improvements, needs no stage-conditional branching. The single real
+// decision for this stage -- approving the generated code -- still happens exactly as before,
+// through GovernancePanel's own Approve/Reject panel below (STAGE_GATING_ARTIFACT.coder points at
+// code_diff/markdown, read from the unfiltered allArtifacts, independent of this list).
+const UNLISTED_ARTIFACT_TYPES = ["domain_improvements", "code_plan", "code_diff", "code_manifest", "requirement_code_map"];
+
+// setup_instructions is the one Coder Agent artifact still worth showing a human directly (real
+// npm/build/run instructions for the generated project) -- but every past version is superseded
+// the instant a newer one exists (there's nothing to compare/choose between, unlike the gating
+// code_diff's own version history), so only the latest is kept.
+const LATEST_VERSION_ONLY_ARTIFACT_TYPES = ["setup_instructions"];
+
+function keepLatestVersionOnly(artifacts, types) {
+  const latestVersionByType = {};
+  for (const artifact of artifacts) {
+    if (!types.includes(artifact.artifact_type)) continue;
+    latestVersionByType[artifact.artifact_type] = Math.max(
+      latestVersionByType[artifact.artifact_type] ?? 0,
+      artifact.version
+    );
+  }
+  return artifacts.filter(
+    (artifact) =>
+      !types.includes(artifact.artifact_type) || artifact.version === latestVersionByType[artifact.artifact_type]
+  );
+}
 
 // The Result tab: whichever agent is selected in the chat, this shows what it produced (version
 // picker + document/diagram/screenshot view), plus governance (approve/reject, trace links) and
@@ -87,10 +118,33 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
     // here; that case (a new version arriving for the SAME stage) is handled by the effect below.
   }, [stage]);
 
+  // Real, confirmed bug found while building field-by-field SRS editing: this effect's own
+  // comment above always claimed a new version arriving for the SAME stage would jump the
+  // selector to it, but the check only ever covered "the previously-selected version vanished."
+  // A freshly-created version (from a revision OR a direct field edit) never invalidates the
+  // OLD version -- v2 stays a real, selectable version after v3 is created -- so `versions.some
+  // (...)` still found the old selection and the effect silently did nothing, leaving a human
+  // staring at their pre-edit document with no visible sign anything happened. Fixed by also
+  // jumping when the latest version NUMBER has genuinely increased since the last render
+  // (tracked via a ref, not `versions` itself, so an unrelated re-render -- e.g. an existing
+  // version's own approval_status changing -- doesn't yank a human away from a version they're
+  // deliberately reviewing).
+  const previousLatestVersionRef = useRef(versions[0]?.version ?? null);
   useEffect(() => {
+    const latestVersion = versions[0]?.version ?? null;
+    const previousLatestVersion = previousLatestVersionRef.current;
+
     if (versions.length > 0 && !versions.some((v) => v.version === selectedVersion)) {
-      setSelectedVersion(versions[0].version);
+      setSelectedVersion(latestVersion);
+    } else if (
+      latestVersion !== null &&
+      previousLatestVersion !== null &&
+      latestVersion > previousLatestVersion
+    ) {
+      setSelectedVersion(latestVersion);
     }
+
+    previousLatestVersionRef.current = latestVersion;
   }, [versions, selectedVersion]);
 
   // While the Requirement Agent conversation is still in progress (no SRS artifact saved yet),
@@ -156,13 +210,42 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
   const architecturePhase = isArchitectureRevising ? architectureRevisionPhase : architectureRunPhase;
   const architecturePhaseStartedAt = isArchitectureRevising ? architectureRevisionPhaseStartedAt : architectureRunPhaseStartedAt;
 
+  // Same idea, Coder Agent -- the code plan text streams live during run()'s planning (revise()'s
+  // planning uses the agentic exploration planner instead, which has no tokens at all -- see
+  // CoderAgent.revise_stream's own docstring), then a "phase" tail (preparing the workspace,
+  // coding attempts, verification, diffing) covers the rest, shown the same isFinalizing way
+  // Architecture's diagram-generation tail already is.
+  const {
+    runStream: coderRunStream,
+    runStreamedText: coderRunStreamedText,
+    runStreamStarted: coderRunStreamStarted,
+    runPhase: coderRunPhase,
+    runPhaseStartedAt: coderRunPhaseStartedAt,
+    reviseStream: coderReviseStream,
+    revisionStreamedText: coderRevisionStreamedText,
+    revisionStreamStarted: coderRevisionStreamStarted,
+    revisionPhase: coderRevisionPhase,
+    revisionPhaseStartedAt: coderRevisionPhaseStartedAt,
+  } = useCoderAgentFlowContext();
+  const isCoderStage = stage === "coder";
+  const isCoderRevising = isCoderStage && coderReviseStream.isPending;
+  const isCoderRunning = isCoderStage && coderRunStream.isPending;
+  const isCoderGenerating = isCoderRevising || isCoderRunning;
+  const coderStreamedText = isCoderRevising ? coderRevisionStreamedText : coderRunStreamedText;
+  const coderStreamStarted = isCoderRevising ? coderRevisionStreamStarted : coderRunStreamStarted;
+  const coderPhase = isCoderRevising ? coderRevisionPhase : coderRunPhase;
+  const coderPhaseStartedAt = isCoderRevising ? coderRevisionPhaseStartedAt : coderRunPhaseStartedAt;
+
   // Deduped for display: every gating artifact_type saves a JSON+Markdown pair sharing one
   // version, and listing both as separate rows read as the same version being duplicated (a real
   // reported issue) -- see dedupeArtifactVersions's own docstring.
-  const stageArtifacts = dedupeArtifactVersions(
-    allArtifacts.filter(
-      (a) => ARTIFACT_TYPE_STAGE[a.artifact_type] === stage && !UNLISTED_ARTIFACT_TYPES.includes(a.artifact_type)
-    )
+  const stageArtifacts = keepLatestVersionOnly(
+    dedupeArtifactVersions(
+      allArtifacts.filter(
+        (a) => ARTIFACT_TYPE_STAGE[a.artifact_type] === stage && !UNLISTED_ARTIFACT_TYPES.includes(a.artifact_type)
+      )
+    ),
+    LATEST_VERSION_ONLY_ARTIFACT_TYPES
   );
 
   // Lets a human pin which APPROVED version feeds the next agent (e.g. which SRS version Domain
@@ -278,6 +361,16 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
           finalizingLabel={architecturePhase?.label}
           phaseStartedAt={architecturePhaseStartedAt}
         />
+      ) : isCoderGenerating ? (
+        <LiveGenerationView
+          displayText={declutterJsonForDisplay(coderStreamedText)}
+          hasStarted={coderStreamStarted}
+          connectingLabel="Connecting to Coder Agent..."
+          generatingLabel={isCoderRevising ? "Applying your requested change..." : "Planning the implementation..."}
+          isFinalizing={Boolean(coderPhase)}
+          finalizingLabel={coderPhase?.label}
+          phaseStartedAt={coderPhaseStartedAt}
+        />
       ) : versions.length === 0 && isRequirementStage ? (
         <RequirementSrsOutputPanel />
       ) : versions.length === 0 ? (
@@ -333,9 +426,19 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
                       (a) => a.artifact_type === "domain_improvements" && a.version === artifact.version
                     )
                   : null;
+              // Field-by-field inline editing is only offered for the SRS's own latest version --
+              // editing a historical version, or the Enhanced SRS artifact below, doesn't make
+              // sense (SrsDocumentViewer itself also gates on artifactType === "srs").
+              const isLatestSrsVersion =
+                isRequirementStage && artifact.version === versions[0]?.version;
               return (
                 <div>
-                  <ArtifactContentView artifact={artifact} domainImprovementsArtifact={domainImprovements} />
+                  <ArtifactContentView
+                    artifact={artifact}
+                    domainImprovementsArtifact={domainImprovements}
+                    featureId={featureId}
+                    editable={isLatestSrsVersion}
+                  />
                   {stage === "architecture" && <ArchitectureDiagramsGallery allArtifacts={allArtifacts} />}
                   {domainImprovements && (
                     <div className="mt-5 pt-5 border-t border-gray-100 dark:border-gray-800">

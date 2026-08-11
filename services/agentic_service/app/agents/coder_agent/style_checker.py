@@ -3,10 +3,10 @@ Coder Agent component-styling checker.
 
 Purpose:
 Best-effort, regex-based signal for the agentic revision planner
-(planner.py's generate_via_exploration): which existing page/component .jsx
-files under client/src appear to have ZERO Tailwind utility-class usage (no
-`className=` at all), or use raw inline `style={{...}}` instead -- the
-concrete, checkable signal behind a vague human revision request like
+(planner.py's generate_via_exploration): which existing page/component .tsx
+files under app/ and components/ appear to have ZERO Tailwind utility-class
+usage (no `className=` at all), or use raw inline `style={{...}}` instead --
+the concrete, checkable signal behind a vague human revision request like
 "styles are missing, add tailwind css."
 
 Confirmed necessary directly, not speculatively: a real end-to-end
@@ -30,13 +30,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-_COMPONENT_DIRS = ("client/src/pages", "client/src/components")
+_COMPONENT_DIRS = ("app", "components")
+_EXCLUDED_DIRS = {"node_modules", ".git", ".next"}
 
 
 def check_component_styling(workspace_root: Path) -> list[dict[str, str]]:
     """
     Returns [{"path": "...", "status": "styled"|"inline_styles"|"unstyled"}]
-    for every .jsx file under client/src/pages and client/src/components.
+    for every .tsx file under app/ and components/.
 
     "styled": contains at least one `className=`.
     "inline_styles": no `className=`, but uses `style={{` or `style={` --
@@ -50,7 +51,9 @@ def check_component_styling(workspace_root: Path) -> list[dict[str, str]]:
         if not directory.is_dir():
             continue
 
-        for file_path in sorted(directory.rglob("*.jsx")):
+        for file_path in sorted(directory.rglob("*.tsx")):
+            if any(part in _EXCLUDED_DIRS for part in file_path.parts):
+                continue
             try:
                 text = file_path.read_text(encoding="utf-8")
             except (UnicodeDecodeError, OSError):

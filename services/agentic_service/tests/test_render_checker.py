@@ -1,10 +1,11 @@
 """
 Real, Docker+Playwright-backed tests for the Coder Agent's runtime-render
-checker (app/agents/coder_agent/render_checker.py). No mocking of Docker or
-Playwright here -- this is infra-level (like test_coder_verify.py's real
-npm-install/boot/build tests), proving the actual mechanism works: serving
-a real built client/dist via vite preview in a container with a published
-port, and a real host-side Playwright browser navigating to it.
+checker (app/agents/coder_agent/render_checker.py), for the Next.js
+scaffold. No mocking of Docker or Playwright here -- this is infra-level
+(like test_coder_verify.py's real npm-install/boot/build tests), proving
+the actual mechanism works: serving a real built .next output via
+`next start` in a container with a published port, and a real host-side
+Playwright browser navigating to it.
 """
 
 import os
@@ -28,17 +29,22 @@ def _remove_readonly(func, path, _exc_info):
 @pytest.fixture
 def built_project():
     """
-    A real throwaway project with the client actually built (vite build),
-    so there's a real client/dist for vite preview to serve.
+    A real throwaway project with the app actually built (next build), so
+    there's a real .next output for `next start` to serve.
     """
     project_id = generate_id("project")
     store.projects[project_id] = {"project_id": project_id, "project_name": f"Render Test {project_id}"}
     workspace_service.ensure_project_repo(project_id)
 
-    install_result = sandbox_service.run_command(project_id, "npm install", cwd="client", timeout=180)
+    # 240s was too tight once Tailwind's devDependencies were added to the
+    # scaffold (confirmed directly: a real, otherwise-successful install can
+    # take up to ~7 minutes over a slow Windows-Docker-Desktop bind mount) --
+    # matches verify.py's own INSTALL_TIMEOUT_SECONDS widening for the same
+    # reason.
+    install_result = sandbox_service.run_command(project_id, "npm install", cwd=".", timeout=600)
     assert install_result["exit_code"] == 0, install_result["stderr"]
 
-    build_result = sandbox_service.run_command(project_id, "npm run build", cwd="client", timeout=180)
+    build_result = sandbox_service.run_command(project_id, "npm run build", cwd=".", timeout=300)
     assert build_result["exit_code"] == 0, build_result["stderr"]
 
     yield project_id
@@ -84,9 +90,9 @@ def test_check_runtime_render_works_when_called_from_a_running_event_loop(built_
 def test_sandbox_background_service_publishes_a_reachable_port(built_project):
     service = sandbox_service.start_background_service(
         project_id=built_project,
-        command="npx vite preview --host 0.0.0.0 --port 4173",
-        cwd="client",
-        container_port=4173,
+        command="npx next start -H 0.0.0.0 -p 3000",
+        cwd=".",
+        container_port=3000,
     )
     try:
         assert isinstance(service["host_port"], int)
@@ -94,7 +100,7 @@ def test_sandbox_background_service_publishes_a_reachable_port(built_project):
 
         import urllib.request
 
-        for _ in range(20):
+        for _ in range(40):
             try:
                 response = urllib.request.urlopen(f"http://localhost:{service['host_port']}", timeout=2)
                 assert response.status == 200
@@ -104,6 +110,6 @@ def test_sandbox_background_service_publishes_a_reachable_port(built_project):
 
                 time.sleep(1)
         else:
-            pytest.fail("vite preview never became reachable on the published host port")
+            pytest.fail("next start never became reachable on the published host port")
     finally:
         sandbox_service.stop_background_service(service["container"])

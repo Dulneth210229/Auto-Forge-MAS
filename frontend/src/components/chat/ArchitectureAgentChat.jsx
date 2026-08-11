@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useArchitectureAgentFlowContext } from "../workspace/ArchitectureAgentFlowContext";
 import { listGatingArtifactVersions } from "../../lib/deriveStageStatus";
 import { SUGGESTION_CHIPS } from "../../lib/suggestionChips";
-import { LiveReactionBubble } from "../pipeline/RequirementConversationParts";
+import { LiveReactionBubble, useElapsedLabel } from "../pipeline/RequirementConversationParts";
 import { extractStreamingJsonStringField } from "../../lib/streamingJsonDisplay";
 import ArchitectureRunForm from "../pipeline/ArchitectureRunForm";
 import ChatBubble from "./ChatBubble";
@@ -28,15 +28,6 @@ function ChatHeader({ feature, runningStage }) {
       )}
     </div>
   );
-}
-
-function elapsedLabelFrom(startedAt) {
-  if (!startedAt) return null;
-  const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
-  if (elapsedSeconds < 1) return null;
-  const minutes = Math.floor(elapsedSeconds / 60);
-  const seconds = elapsedSeconds % 60;
-  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
 }
 
 // Architecture Agent's own dedicated chat, mirroring DomainAgentChat.jsx -- live token-by-token
@@ -71,6 +62,7 @@ export default function ArchitectureAgentChat({
     runStreamStarted,
     runPhase,
     runPhaseStartedAt,
+    runStreamError,
     reviseStream,
     handleReviseStream,
     stopReviseStream,
@@ -78,6 +70,7 @@ export default function ArchitectureAgentChat({
     revisionStreamStarted,
     revisionPhase,
     revisionPhaseStartedAt,
+    revisionStreamError,
   } = useArchitectureAgentFlowContext();
 
   const [comment, setComment] = useState("");
@@ -91,6 +84,10 @@ export default function ArchitectureAgentChat({
   const streamedText = hasOutput ? revisionStreamedText : runStreamedText;
   const streamStarted = hasOutput ? revisionStreamStarted : runStreamStarted;
   const stopActiveStream = hasOutput ? stopReviseStream : stopRunStream;
+  // Set from a real {"type": "error"} NDJSON line -- unlike activeStream.error (only set on a
+  // genuine promise rejection), this is the only signal available when the stream completed
+  // "successfully" from fetch's point of view but the agent itself crashed mid-attempt.
+  const streamError = hasOutput ? revisionStreamError : runStreamError;
   const activePhase = hasOutput ? revisionPhase : runPhase;
   const activePhaseStartedAt = hasOutput ? revisionPhaseStartedAt : runPhaseStartedAt;
 
@@ -134,7 +131,9 @@ export default function ArchitectureAgentChat({
 
   const reactionText = extractStreamingJsonStringField(streamedText, "architecture_rationale");
   const isAgentRunning = runningStage === "architecture" || activeStream.isPending;
-  const elapsedLabel = elapsedLabelFrom(activePhaseStartedAt);
+  // Real ticking timer, not a static render-time-only label -- same fix as CoderAgentChat's
+  // identical pattern, for the same reason (a long, token-free phase otherwise reads as stuck).
+  const elapsedLabel = useElapsedLabel(activePhaseStartedAt);
 
   return (
     <div className="h-full flex flex-col bg-white dark:bg-gray-900 rounded-lg shadow-sm border border-gray-200 dark:border-gray-800 p-4">
@@ -199,7 +198,10 @@ export default function ArchitectureAgentChat({
           </>
         )}
 
-        <ErrorBanner error={activeStream.error} fallback="Architecture Agent request failed." />
+        <ErrorBanner
+          error={activeStream.error || (streamError && { message: streamError })}
+          fallback="Architecture Agent request failed."
+        />
       </div>
 
       <div className="flex-shrink-0 pt-1">

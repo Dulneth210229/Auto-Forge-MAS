@@ -51,3 +51,18 @@ class CoderAgentOutput(BaseModel):
     setup_instructions_markdown: str
     merge_report_markdown: str
     artifact_ids: list[str] = []
+
+
+class CoderAgentEnvSaveResult(BaseModel):
+    """
+    Returned by CoderAgent.revise()/revise_stream() instead of
+    CoderAgentOutput when a revision comment is JUST a MongoDB URI (see
+    env_uri.py) -- a real, deliberate short-circuit around the normal
+    plan/code/verify cycle, since nothing about the generated code changes.
+    Deliberately not shoehorned into CoderAgentOutput's shape (no
+    code_plan_json/diff/verification fields make sense here).
+    """
+
+    saved: bool
+    preview_restarted: bool
+    message: str

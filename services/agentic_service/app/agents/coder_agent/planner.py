@@ -34,6 +34,9 @@ from app.agents.coder_agent.tools import build_revision_planning_tools
 from app.core.enums import AgentName
 from app.providers.agentic_model_factory import get_agentic_chat_model
 from app.services.llm_provider_service import llm_provider_service
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 # Read-only exploration (list_dir/read_file/search_code) is cheap -- no
 # Docker/npm involved, just filesystem reads -- so this can be generous
@@ -80,6 +83,7 @@ class CodePlanner:
         human_comment: str | None,
         previous_plan_json: dict | None = None,
         validation_feedback: str | None = None,
+        coverage_baseline_files: list[dict[str, Any]] | None = None,
     ) -> tuple[dict[str, Any], str]:
         """
         Returns (code_plan_json, raw_llm_output).
@@ -88,6 +92,13 @@ class CodePlanner:
         after CodePlanValidator rejected an earlier attempt -- the caller
         (CoderAgent.run()) is responsible for the retry loop and budget;
         this method just knows how to build one better-informed attempt.
+
+        coverage_baseline_files: only ever set by CoderAgent.revise()'s fast path (see
+        CoderAgent._find_well_specified_target_files) -- the cumulative list of files this
+        feature has already touched, so this single-shot call (which otherwise has zero
+        visibility into the real codebase) knows which files genuinely already exist and
+        should be planned as "modify", not "create" (a wrong "create" would let the coding
+        loop's write_file tool silently overwrite real content).
         """
 
         provider = llm_provider_service.get_provider(agent_name=AgentName.CODER.value)
@@ -102,6 +113,7 @@ class CodePlanner:
             human_comment=human_comment,
             previous_plan_json=previous_plan_json,
             validation_feedback=validation_feedback,
+            coverage_baseline_files=coverage_baseline_files,
         )
 
         raw_output = await provider.invoke_agent(
@@ -146,6 +158,7 @@ class CodePlanner:
         previous_plan_json: dict | None,
         validation_feedback: str | None,
         coverage_baseline_files: list[dict[str, Any]],
+        keyword_hint_files: list[str] | None = None,
     ) -> tuple[dict[str, Any], str]:
         """
         Agentic counterpart to generate() -- used only for CoderAgent.revise().
@@ -162,6 +175,12 @@ class CodePlanner:
         The caller MUST have already checked out the correct branch
         (workspace_service.resume_feature_branch) before calling this --
         the tools read whatever is currently on disk.
+
+        keyword_hint_files: an unverified starting-point hint from
+        CoderAgent._find_keyword_hint_files -- see
+        build_agentic_revision_planner_user_prompt's own docstring for why
+        this is never trusted, only offered as a lead the model's own tools
+        must confirm or override.
 
         Returns (code_plan_json, raw_plan_json_string), mirroring generate()'s
         (code_plan_json, raw_output) shape.
@@ -185,6 +204,7 @@ class CodePlanner:
             previous_plan_json=previous_plan_json,
             validation_feedback=validation_feedback,
             coverage_baseline_files=coverage_baseline_files,
+            keyword_hint_files=keyword_hint_files,
         )
 
         try:
@@ -194,6 +214,14 @@ class CodePlanner:
             )
         except GraphRecursionError:
             pass  # handled uniformly below -- "plan_json" simply won't be in `captured`
+        except Exception as error:
+            # Any other failure (a transient Ollama/langchain-ollama transport error, a
+            # malformed tool call, etc.) -- previously propagated straight out of this method
+            # uncaught. Falling through to the same "plan_json not in captured" check below
+            # lets the caller (_plan_with_retries) handle it via its existing
+            # CodePlanGenerationError retry path uniformly, the same as a turn-limit timeout,
+            # instead of needing separate handling for this class of failure.
+            logger.warning("Agentic revision planning raised an unexpected error: %s", error)
 
         if "plan_json" not in captured:
             raise CodePlanGenerationError(

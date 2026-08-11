@@ -1,0 +1,1039 @@
+{
+  "document_control": {
+    "document_title": "Architecture Plan: Item Notes",
+    "document_type": "Feature Architecture Plan",
+    "project_id": "proj_3b717019",
+    "project_name": "NextJS Migration Verify",
+    "project_type": "E-commerce",
+    "feature_id": "feature_66e1362f",
+    "feature_name": "Item Notes",
+    "target_stack": "Next.js",
+    "architecture_style": "modular",
+    "version": "v1",
+    "generated_by": "Architecture Agent",
+    "input_artifacts": [
+      "Approved SRS JSON",
+      "Approved Enhanced SRS JSON if available"
+    ],
+    "approval_status": "pending"
+  },
+  "feature_overview": {
+    "business_goal": "Deliver the Item Notes feature for the E-commerce application.",
+    "scope": [
+      "Allow registered users to add a short text note to a catalog item.",
+      "Display all notes for a catalog item, sorted by creation date (newest first)."
+    ],
+    "out_of_scope": [
+      "Editing or deleting existing notes.",
+      "Notes on items not accessible to the user.",
+      "Rich text formatting in notes."
+    ],
+    "user_roles": [
+      "Registered User"
+    ],
+    "feature_boundary": "This Architecture Plan covers only the Item Notes feature and excludes unrelated features."
+  },
+  "requirement_interpretation": {
+    "functional_requirements": [
+      {
+        "id": "FR-001",
+        "description": "Users can add a short text note to a catalog item and view every note left on that item, newest first.",
+        "priority": "Must Have"
+      }
+    ],
+    "acceptance_criteria": [
+      {
+        "id": "AC-001",
+        "description": "A user can successfully submit a note for an item and see it appear in the list."
+      },
+      {
+        "id": "AC-002",
+        "description": "Notes are displayed in descending order of creation date."
+      },
+      {
+        "id": "AC-003",
+        "description": "The system prevents submission of notes exceeding 500 characters."
+      }
+    ],
+    "validation_rules": [
+      {
+        "id": "VR-001",
+        "description": "Note content must not exceed 500 characters."
+      },
+      {
+        "id": "VR-002",
+        "description": "Only registered users can submit notes."
+      }
+    ],
+    "non_functional_requirements": [
+      {
+        "id": "NFR-001",
+        "description": "The system shall support up to 100 notes per item.",
+        "category": "Performance"
+      },
+      {
+        "id": "NFR-002",
+        "description": "The system shall ensure that note content is sanitized to prevent XSS attacks.",
+        "category": "Security"
+      }
+    ]
+  },
+  "architecture_approach": {
+    "architecture_style": "modular",
+    "architecture_rationale": "Use modular to keep the Item Notes feature separated into presentation, business logic, and data responsibilities where applicable.",
+    "frontend_overview": "Frontend design should provide the user-facing entry points, inputs, states, and feedback required by the approved SRS.",
+    "backend_overview": "Backend design should process feature requests, enforce business rules, validate inputs, and return structured responses.",
+    "data_overview": "Data design should support the data requirements defined in the approved SRS.",
+    "integration_overview": "Integration design should follow the API expectations and dependencies listed in the approved SRS.",
+    "design_tradeoffs": [
+      "Design is derived directly from the approved SRS to preserve traceability and feature scope.",
+      "Design is kept feature-scoped to preserve feature-by-feature SDLC development.",
+      "Internal generation or repair details are kept in backend logs and are not exposed in the approval-ready Architecture Plan."
+    ]
+  },
+  "design_views": {
+    "context_view": {
+      "actors": [
+        "Registered User"
+      ],
+      "external_systems": [
+        "User authentication system.",
+        "Item catalog service."
+      ],
+      "feature_boundary": "Item Notes feature boundary.",
+      "main_interactions": [
+        "Registered User interacts with the Item Notes feature.",
+        "Users can add a short text note to a catalog item and view every note left on that item, newest first."
+      ]
+    },
+    "logical_view": {
+      "frontend_modules": [
+        {
+          "name": "ItemNotesFrontendModule",
+          "responsibility": "Handle frontend responsibilities for the Item Notes feature.",
+          "derived_from": [
+            "A text input field for adding a note.",
+            "A section displaying all notes for an item, sorted newest first.",
+            "Note content should be displayed with author and timestamp.",
+            "Text input for note content (max 500 characters).",
+            "Item identifier (e.g., item ID)."
+          ]
+        }
+      ],
+      "backend_modules": [
+        {
+          "name": "ItemNotesBackendModule",
+          "responsibility": "Handle backend responsibilities for the Item Notes feature.",
+          "derived_from": [
+            "Users can add a short text note to a catalog item and view every note left on that item, newest first.",
+            "Note content must not exceed 500 characters.",
+            "Only registered users can submit notes."
+          ]
+        }
+      ],
+      "domain_services": [
+        {
+          "name": "ItemNotesService",
+          "responsibility": "Apply business rules for the Item Notes feature.",
+          "related_requirements": [
+            "FR-001"
+          ]
+        }
+      ],
+      "data_modules": [
+        {
+          "name": "ItemNotesDataModule",
+          "responsibility": "Manage data access required by the feature.",
+          "derived_from": [
+            "Note content (string, max 500 characters).",
+            "Author ID (linked to user).",
+            "Timestamp of creation.",
+            "Item ID (foreign key)."
+          ]
+        }
+      ],
+      "integration_points": [
+        {
+          "type": "API",
+          "description": "POST /api/items/{itemId}/notes"
+        },
+        {
+          "type": "API",
+          "description": "GET /api/items/{itemId}/notes"
+        },
+        {
+          "type": "Dependency",
+          "description": "User authentication system."
+        },
+        {
+          "type": "Dependency",
+          "description": "Item catalog service."
+        }
+      ]
+    },
+    "interface_view": {
+      "api_endpoints": [
+        {
+          "endpoint": "/api/item-notes",
+          "method": "GET",
+          "purpose": "Support the Item Notes feature.",
+          "request_model": "ItemNotesRequest",
+          "success_response_model": "ItemNotesSuccessResponse",
+          "error_response_model": "ItemNotesErrorResponse",
+          "related_requirements": [
+            "FR-001"
+          ]
+        },
+        {
+          "endpoint": "/api/item-notes",
+          "method": "GET",
+          "purpose": "Support the Item Notes feature.",
+          "request_model": "ItemNotesRequest",
+          "success_response_model": "ItemNotesSuccessResponse",
+          "error_response_model": "ItemNotesErrorResponse",
+          "related_requirements": [
+            "FR-001"
+          ]
+        }
+      ],
+      "request_models": [
+        {
+          "name": "ItemNotesRequest",
+          "fields": [
+            {
+              "name": "field",
+              "type": "string",
+              "format": "Text input for note content (max 500 characters).",
+              "required": true
+            },
+            {
+              "name": "field",
+              "type": "string",
+              "format": "Item identifier (e.g., item ID).",
+              "required": true
+            }
+          ],
+          "related_requirements": [
+            "FR-001"
+          ]
+        }
+      ],
+      "response_models": [
+        {
+          "name": "ItemNotesSuccessResponse",
+          "type": "success",
+          "fields": [
+            {
+              "name": "field",
+              "type": "string",
+              "description": "List of notes associated with an item."
+            },
+            {
+              "name": "field",
+              "type": "string",
+              "description": "Individual note details including content, author, and timestamp."
+            }
+          ],
+          "related_requirements": [
+            "FR-001"
+          ]
+        },
+        {
+          "name": "ItemNotesErrorResponse",
+          "type": "error",
+          "fields": [],
+          "related_requirements": []
+        }
+      ]
+    },
+    "data_view": {
+      "data_entities": [
+        {
+          "name": "Item NotesDataEntity1",
+          "purpose": "Note content (string, max 500 characters).",
+          "fields": [
+            {
+              "name": "noteContent",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "string",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "max500Characters",
+              "type": "String",
+              "required": false
+            }
+          ],
+          "relationships": [],
+          "indexes_or_constraints": [],
+          "related_requirements": [
+            "FR-001"
+          ]
+        },
+        {
+          "name": "Item NotesDataEntity2",
+          "purpose": "Author ID (linked to user).",
+          "fields": [
+            {
+              "name": "authorID",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "linkedToUser",
+              "type": "String",
+              "required": false
+            }
+          ],
+          "relationships": [],
+          "indexes_or_constraints": [],
+          "related_requirements": [
+            "FR-001"
+          ]
+        },
+        {
+          "name": "Item NotesDataEntity3",
+          "purpose": "Timestamp of creation.",
+          "fields": [
+            {
+              "name": "timestampOfCreation",
+              "type": "String",
+              "required": false
+            }
+          ],
+          "relationships": [],
+          "indexes_or_constraints": [],
+          "related_requirements": [
+            "FR-001"
+          ]
+        },
+        {
+          "name": "Item NotesDataEntity4",
+          "purpose": "Item ID (foreign key).",
+          "fields": [
+            {
+              "name": "itemID",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "foreignKey",
+              "type": "String",
+              "required": false
+            }
+          ],
+          "relationships": [],
+          "indexes_or_constraints": [],
+          "related_requirements": [
+            "FR-001"
+          ]
+        }
+      ],
+      "storage_rules": [
+        "Note content (string, max 500 characters).",
+        "Author ID (linked to user).",
+        "Timestamp of creation.",
+        "Item ID (foreign key)."
+      ],
+      "data_validation_rules": [
+        {
+          "rule_id": "VR-001",
+          "rule": "Note content must not exceed 500 characters.",
+          "related_requirements": [
+            "VR-001"
+          ]
+        },
+        {
+          "rule_id": "VR-002",
+          "rule": "Only registered users can submit notes.",
+          "related_requirements": [
+            "VR-002"
+          ]
+        }
+      ]
+    },
+    "behavior_view": {
+      "main_success_flow": [
+        {
+          "id": "AC-001",
+          "description": "A user can successfully submit a note for an item and see it appear in the list.",
+          "related_requirements": [
+            "FR-001"
+          ]
+        },
+        {
+          "id": "AC-002",
+          "description": "Notes are displayed in descending order of creation date.",
+          "related_requirements": [
+            "FR-001"
+          ]
+        }
+      ],
+      "alternative_flows": [],
+      "exception_flows": [
+        {
+          "id": "AC-003",
+          "description": "The system prevents submission of notes exceeding 500 characters.",
+          "related_requirements": [
+            "FR-001"
+          ]
+        }
+      ],
+      "state_changes": [
+        {
+          "description": "Feature state changes should follow the approved Item Notes acceptance criteria.",
+          "related_requirements": []
+        }
+      ]
+    },
+    "error_handling_view": {
+      "validation_errors": [
+        {
+          "source_id": "VR-001",
+          "condition": "Note content must not exceed 500 characters.",
+          "handling": "Return a clear validation message and prevent invalid processing."
+        },
+        {
+          "source_id": "VR-002",
+          "condition": "Only registered users can submit notes.",
+          "handling": "Return a clear validation message and prevent invalid processing."
+        }
+      ],
+      "business_errors": [
+        {
+          "source_id": "AC-003",
+          "condition": "The system prevents submission of notes exceeding 500 characters.",
+          "handling": "Return a clear, user-friendly error and prevent the invalid action."
+        }
+      ],
+      "authorization_errors": [],
+      "system_errors": [
+        "Unexpected system errors should return safe generic messages without exposing internal details."
+      ],
+      "user_message_rules": [
+        "All user-facing errors must be clear, non-technical, and aligned with the approved SRS."
+      ]
+    },
+    "security_authorization_view": {
+      "authentication_design": [],
+      "authorization_design": [],
+      "sensitive_data_rules": [],
+      "risk_mitigations": [
+        {
+          "risk": "{'description': 'Potential performance degradation with large numbers of notes per item.'}",
+          "mitigation": "Apply suitable mitigation based on project security policy.",
+          "related_requirements": [
+            "FR-001"
+          ]
+        },
+        {
+          "risk": "{'description': 'Security risk from unsanitized note content.'}",
+          "mitigation": "Apply suitable mitigation based on project security policy.",
+          "related_requirements": [
+            "FR-001"
+          ]
+        }
+      ]
+    },
+    "quality_attributes_view": {
+      "performance": [
+        {
+          "nfr_id": "NFR-001",
+          "description": "The system shall support up to 100 notes per item.",
+          "design_decision": "Design must satisfy this non-functional requirement."
+        }
+      ],
+      "usability": [],
+      "reliability": [],
+      "scalability": [],
+      "maintainability": [
+        {
+          "nfr_id": "NFR-002",
+          "description": "The system shall ensure that note content is sanitized to prevent XSS attacks.",
+          "design_decision": "Design must satisfy this non-functional requirement."
+        }
+      ],
+      "accessibility": []
+    }
+  },
+  "frontend_architecture_plan": {
+    "responsibilities": [
+      {
+        "name": "ItemNotesFrontendModule",
+        "responsibility": "Handle frontend responsibilities for the Item Notes feature.",
+        "derived_from": [
+          "A text input field for adding a note.",
+          "A section displaying all notes for an item, sorted newest first.",
+          "Note content should be displayed with author and timestamp.",
+          "Text input for note content (max 500 characters).",
+          "Item identifier (e.g., item ID)."
+        ]
+      }
+    ],
+    "pages_or_components": [
+      {
+        "description": "A text input field for adding a note."
+      },
+      {
+        "description": "A section displaying all notes for an item, sorted newest first."
+      },
+      {
+        "description": "Note content should be displayed with author and timestamp."
+      }
+    ],
+    "state_and_feedback": [
+      "Notes are displayed in descending order of creation date."
+    ]
+  },
+  "backend_architecture_plan": {
+    "responsibilities": [
+      {
+        "name": "ItemNotesBackendModule",
+        "responsibility": "Handle backend responsibilities for the Item Notes feature.",
+        "derived_from": [
+          "Users can add a short text note to a catalog item and view every note left on that item, newest first.",
+          "Note content must not exceed 500 characters.",
+          "Only registered users can submit notes."
+        ]
+      }
+    ],
+    "layers": [
+      {
+        "name": "ItemNotesService",
+        "responsibility": "Apply business rules for the Item Notes feature.",
+        "related_requirements": [
+          "FR-001"
+        ]
+      },
+      {
+        "name": "ItemNotesDataModule",
+        "responsibility": "Manage data access required by the feature.",
+        "derived_from": [
+          "Note content (string, max 500 characters).",
+          "Author ID (linked to user).",
+          "Timestamp of creation.",
+          "Item ID (foreign key)."
+        ]
+      }
+    ],
+    "integration_points": [
+      {
+        "type": "API",
+        "description": "POST /api/items/{itemId}/notes"
+      },
+      {
+        "type": "API",
+        "description": "GET /api/items/{itemId}/notes"
+      },
+      {
+        "type": "Dependency",
+        "description": "User authentication system."
+      },
+      {
+        "type": "Dependency",
+        "description": "Item catalog service."
+      }
+    ]
+  },
+  "validation_plan": {
+    "input_validation": [
+      {
+        "rule_id": "VR-001",
+        "rule": "Note content must not exceed 500 characters.",
+        "related_requirements": [
+          "VR-001"
+        ]
+      },
+      {
+        "rule_id": "VR-002",
+        "rule": "Only registered users can submit notes.",
+        "related_requirements": [
+          "VR-002"
+        ]
+      }
+    ],
+    "processing_validation": [
+      {
+        "source_id": "VR-001",
+        "condition": "Note content must not exceed 500 characters.",
+        "handling": "Return a clear validation message and prevent invalid processing."
+      },
+      {
+        "source_id": "VR-002",
+        "condition": "Only registered users can submit notes.",
+        "handling": "Return a clear validation message and prevent invalid processing."
+      }
+    ]
+  },
+  "coder_implementation_tasks": [
+    {
+      "task_id": "TASK-001",
+      "task": "Create or update frontend screen/components for the Item Notes feature.",
+      "layer": "frontend",
+      "suggested_files": [
+        "app/item-notes/page.tsx",
+        "components/ItemNotesForm.tsx"
+      ],
+      "related_requirements": [
+        "FR-001",
+        "AC-001",
+        "AC-002",
+        "AC-003"
+      ]
+    },
+    {
+      "task_id": "TASK-002",
+      "task": "Implement Next.js Route Handler(s) for the Item Notes API expectations.",
+      "layer": "backend",
+      "suggested_files": [
+        "app/api/item-notes/route.ts",
+        "models/ItemNotes.ts"
+      ],
+      "related_requirements": [
+        "FR-001",
+        "AC-001",
+        "AC-002",
+        "AC-003"
+      ]
+    },
+    {
+      "task_id": "TASK-003",
+      "task": "Create or update data model/repository required by the Item Notes feature.",
+      "layer": "data",
+      "suggested_files": [
+        "backend/models/item_notes.model.js",
+        "backend/repositories/item_notes.repository.js"
+      ],
+      "related_requirements": [
+        "FR-001"
+      ]
+    },
+    {
+      "task_id": "TASK-004",
+      "task": "Implement validation rules before processing feature requests.",
+      "layer": "validation",
+      "suggested_files": [
+        "backend/validators/item_notes.validator.js"
+      ],
+      "related_requirements": [
+        "VR-001",
+        "VR-002"
+      ]
+    },
+    {
+      "task_id": "TASK-005",
+      "task": "Implement success, alternative, and exception handling according to acceptance criteria.",
+      "layer": "backend/frontend",
+      "suggested_files": [],
+      "related_requirements": [
+        "AC-001",
+        "AC-002",
+        "AC-003"
+      ]
+    },
+    {
+      "task_id": "TASK-006",
+      "task": "Implement security controls required by the feature, including authentication/authorization or sensitive data handling where applicable.",
+      "layer": "security",
+      "suggested_files": [],
+      "related_requirements": [
+        "FR-001",
+        "NFR-001",
+        "NFR-002"
+      ]
+    }
+  ],
+  "implementation_plan": {
+    "backend": {
+      "files": [
+        {
+          "path": "app/api/item-notes/route.ts",
+          "action": "create",
+          "purpose": "Next.js Route Handler implementing GET for Item Notes (/api/item-notes, /api/item-notes), with request validation before any handler logic.",
+          "implements_endpoints": [
+            "/api/item-notes",
+            "/api/item-notes"
+          ]
+        },
+        {
+          "path": "models/ItemNotesDataEntity1.ts",
+          "action": "create",
+          "purpose": "Mongoose model for the Item NotesDataEntity1 entity (must use the `mongoose.models.ItemNotesDataEntity1 || mongoose.model(...)` guard to avoid OverwriteModelError).",
+          "implements_endpoints": []
+        },
+        {
+          "path": "models/ItemNotesDataEntity2.ts",
+          "action": "create",
+          "purpose": "Mongoose model for the Item NotesDataEntity2 entity (must use the `mongoose.models.ItemNotesDataEntity2 || mongoose.model(...)` guard to avoid OverwriteModelError).",
+          "implements_endpoints": []
+        },
+        {
+          "path": "models/ItemNotesDataEntity3.ts",
+          "action": "create",
+          "purpose": "Mongoose model for the Item NotesDataEntity3 entity (must use the `mongoose.models.ItemNotesDataEntity3 || mongoose.model(...)` guard to avoid OverwriteModelError).",
+          "implements_endpoints": []
+        },
+        {
+          "path": "models/ItemNotesDataEntity4.ts",
+          "action": "create",
+          "purpose": "Mongoose model for the Item NotesDataEntity4 entity (must use the `mongoose.models.ItemNotesDataEntity4 || mongoose.model(...)` guard to avoid OverwriteModelError).",
+          "implements_endpoints": []
+        }
+      ],
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/api/item-notes",
+          "request_body": [
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Text input for note content (max 500 characters)."
+            },
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Item identifier (e.g., item ID)."
+            }
+          ],
+          "response": "ItemNotesSuccessResponse",
+          "error_cases": [
+            "400 when required request fields are missing or invalid",
+            "{'source_id': 'VR-001', 'condition': 'Note content must not exceed 500 characters.', 'handling': 'Return a clear validation message and prevent invalid processing.'}",
+            "{'source_id': 'VR-002', 'condition': 'Only registered users can submit notes.', 'handling': 'Return a clear validation message and prevent invalid processing.'}",
+            "500 when an unexpected server error occurs"
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/api/item-notes",
+          "request_body": [
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Text input for note content (max 500 characters)."
+            },
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Item identifier (e.g., item ID)."
+            }
+          ],
+          "response": "ItemNotesSuccessResponse",
+          "error_cases": [
+            "400 when required request fields are missing or invalid",
+            "{'source_id': 'VR-001', 'condition': 'Note content must not exceed 500 characters.', 'handling': 'Return a clear validation message and prevent invalid processing.'}",
+            "{'source_id': 'VR-002', 'condition': 'Only registered users can submit notes.', 'handling': 'Return a clear validation message and prevent invalid processing.'}",
+            "500 when an unexpected server error occurs"
+          ]
+        }
+      ],
+      "models": [
+        {
+          "name": "Item NotesDataEntity1",
+          "file": "models/ItemNotesDataEntity1.ts",
+          "fields": [
+            {
+              "name": "noteContent",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "string",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "max500Characters",
+              "type": "String",
+              "constraints": ""
+            }
+          ]
+        },
+        {
+          "name": "Item NotesDataEntity2",
+          "file": "models/ItemNotesDataEntity2.ts",
+          "fields": [
+            {
+              "name": "authorID",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "linkedToUser",
+              "type": "String",
+              "constraints": ""
+            }
+          ]
+        },
+        {
+          "name": "Item NotesDataEntity3",
+          "file": "models/ItemNotesDataEntity3.ts",
+          "fields": [
+            {
+              "name": "timestampOfCreation",
+              "type": "String",
+              "constraints": ""
+            }
+          ]
+        },
+        {
+          "name": "Item NotesDataEntity4",
+          "file": "models/ItemNotesDataEntity4.ts",
+          "fields": [
+            {
+              "name": "itemID",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "foreignKey",
+              "type": "String",
+              "constraints": ""
+            }
+          ]
+        }
+      ]
+    },
+    "frontend": {
+      "pages": [
+        {
+          "path": "app/item-notes/page.tsx",
+          "route": "/item-notes",
+          "purpose": "Main page for the Item Notes feature. UI expectations: A text input field for adding a note.; A section displaying all notes for an item, sorted newest first.; Note content should be displayed with author and timestamp.",
+          "uses_components": []
+        }
+      ],
+      "components_to_reuse": [],
+      "services": [
+        {
+          "path": "lib/api/itemNotes.ts",
+          "functions": [
+            {
+              "name": "getItemNotes",
+              "calls_endpoint": "GET /api/item-notes"
+            },
+            {
+              "name": "getItemNotes",
+              "calls_endpoint": "GET /api/item-notes"
+            }
+          ]
+        }
+      ],
+      "routing": {
+        "new_routes": [
+          {
+            "path": "/item-notes",
+            "component": "ItemNotesPage"
+          }
+        ],
+        "nav_links": [
+          {
+            "to": "/item-notes",
+            "label": "Item Notes"
+          }
+        ]
+      }
+    },
+    "implementation_order": [
+      "Create the Mongoose model(s): models/ItemNotesDataEntity1.ts, models/ItemNotesDataEntity2.ts, models/ItemNotesDataEntity3.ts, models/ItemNotesDataEntity4.ts",
+      "Create app/api/item-notes/route.ts implementing /api/item-notes, /api/item-notes, validating required request fields before use (400 on missing/malformed) -- it is automatically live the instant the file exists, no separate mount step needed.",
+      "Create lib/api/itemNotes.ts with one function per endpoint.",
+      "Create app/item-notes/page.tsx (a Client Component, `\"use client\"` as its first line), reusing approved UI/UX components where available instead of re-authoring their markup.",
+      "Register a real <Link href=\"/item-notes\"> in app/page.tsx at the FEATURE_LINKS markers -- a page with no link to it is not complete."
+    ],
+    "constraints": [
+      "The Next.js App Router scaffold already exists and works -- never recreate app/layout.tsx, next.config.mjs, tsconfig.json, or lib/mongodb.ts.",
+      "A Route Handler (route.ts) is live the instant it exists -- there is no router to mount it on, unlike an Express app.js.",
+      "Register new pages by adding a real <Link href=\"...\"> in app/page.tsx (FEATURE_LINKS markers) -- an unreachable page is not done.",
+      "Every Mongoose model file must use the `mongoose.models.X || mongoose.model(...)` guard to avoid OverwriteModelError.",
+      "Reuse approved UI/UX components verbatim (via read_ui_component) instead of re-authoring their markup."
+    ]
+  },
+  "traceability_matrix": [
+    {
+      "source_id": "FR-001",
+      "source_type": "FR",
+      "architecture_plan_section": "Design Views / Detailed Design Decisions",
+      "design_element": "Users can add a short text note to a catalog item and view every note left on that item, newest first.",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "AC-001",
+      "source_type": "AC",
+      "architecture_plan_section": "Behavior View / Error Handling View",
+      "design_element": "A user can successfully submit a note for an item and see it appear in the list.",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "AC-002",
+      "source_type": "AC",
+      "architecture_plan_section": "Behavior View / Error Handling View",
+      "design_element": "Notes are displayed in descending order of creation date.",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "AC-003",
+      "source_type": "AC",
+      "architecture_plan_section": "Behavior View / Error Handling View",
+      "design_element": "The system prevents submission of notes exceeding 500 characters.",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "VR-001",
+      "source_type": "VR",
+      "architecture_plan_section": "Interface View / Data View / Error Handling View",
+      "design_element": "Note content must not exceed 500 characters.",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "VR-002",
+      "source_type": "VR",
+      "architecture_plan_section": "Interface View / Data View / Error Handling View",
+      "design_element": "Only registered users can submit notes.",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "NFR-001",
+      "source_type": "NFR",
+      "architecture_plan_section": "Quality Attributes View",
+      "design_element": "The system shall support up to 100 notes per item.",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "NFR-002",
+      "source_type": "NFR",
+      "architecture_plan_section": "Quality Attributes View",
+      "design_element": "The system shall ensure that note content is sanitized to prevent XSS attacks.",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "CONSTRAINT-001",
+      "source_type": "Constraint",
+      "architecture_plan_section": "Design Considerations / Architecture Overview",
+      "design_element": "Notes must be stored in a relational database with proper indexing on item_id and created_at.",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "RISK-001",
+      "source_type": "Risk",
+      "architecture_plan_section": "Design Considerations / Security and Authorization View",
+      "design_element": "Potential performance degradation with large numbers of notes per item.",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "RISK-002",
+      "source_type": "Risk",
+      "architecture_plan_section": "Design Considerations / Security and Authorization View",
+      "design_element": "Security risk from unsanitized note content.",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "DEPENDENCY-001",
+      "source_type": "Dependency",
+      "architecture_plan_section": "Design Context / Logical View",
+      "design_element": "User authentication system.",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "DEPENDENCY-002",
+      "source_type": "Dependency",
+      "architecture_plan_section": "Design Context / Logical View",
+      "design_element": "Item catalog service.",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "DATA-001",
+      "source_type": "Data",
+      "architecture_plan_section": "Data View",
+      "design_element": "Note content (string, max 500 characters).",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "DATA-002",
+      "source_type": "Data",
+      "architecture_plan_section": "Data View",
+      "design_element": "Author ID (linked to user).",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "DATA-003",
+      "source_type": "Data",
+      "architecture_plan_section": "Data View",
+      "design_element": "Timestamp of creation.",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "DATA-004",
+      "source_type": "Data",
+      "architecture_plan_section": "Data View",
+      "design_element": "Item ID (foreign key).",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "API-001",
+      "source_type": "API",
+      "architecture_plan_section": "Interface View",
+      "design_element": "POST /api/items/{itemId}/notes",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "API-002",
+      "source_type": "API",
+      "architecture_plan_section": "Interface View",
+      "design_element": "GET /api/items/{itemId}/notes",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "UI-001",
+      "source_type": "UI",
+      "architecture_plan_section": "Context View / Logical View",
+      "design_element": "A text input field for adding a note.",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "UI-002",
+      "source_type": "UI",
+      "architecture_plan_section": "Context View / Logical View",
+      "design_element": "A section displaying all notes for an item, sorted newest first.",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "UI-003",
+      "source_type": "UI",
+      "architecture_plan_section": "Context View / Logical View",
+      "design_element": "Note content should be displayed with author and timestamp.",
+      "coverage_status": "covered"
+    }
+  ],
+  "assumptions": [
+    "UI expectations were inferred from functional requirements.",
+    "API endpoints were inferred based on CRUD actions for notes on items.",
+    "User authentication is handled by the application's existing auth layer."
+  ],
+  "constraints": [
+    "Notes must be stored in a relational database with proper indexing on item_id and created_at."
+  ],
+  "risks": [
+    {
+      "description": "Potential performance degradation with large numbers of notes per item."
+    },
+    {
+      "description": "Security risk from unsanitized note content."
+    }
+  ],
+  "dependencies": [
+    "User authentication system.",
+    "Item catalog service."
+  ],
+  "revision_metadata": null,
+  "human_approval_note": "This Architecture Plan must be reviewed and approved before the UI/UX Agent or Coder Agent starts. AUTOMATIC VALIDATION FAILED even on the deterministic SRS-derived fallback -- review carefully before approving: Technical component used as actor: Item Catalog Service."
+}

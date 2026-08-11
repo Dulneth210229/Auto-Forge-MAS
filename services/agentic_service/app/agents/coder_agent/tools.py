@@ -38,13 +38,54 @@ from app.services.workspace_service import workspace_service
 ALLOWED_SHELL_COMMANDS = {"npm", "npx", "node"}
 ALLOWED_GIT_SUBCOMMANDS = {"status", "diff"}
 
-SEARCH_EXCLUDED_DIRS = {".git", "node_modules"}
+SEARCH_EXCLUDED_DIRS = {".git", "node_modules", ".next"}
 SEARCH_MAX_RESULTS = 200
 SEARCH_MAX_FILE_BYTES = 2_000_000  # skip huge/binary-ish files
 
 
 class PathEscapesWorkspaceError(Exception):
     """Raised internally when a tool argument would resolve outside the workspace root."""
+
+
+def search_workspace_content(
+    workspace_root: Path, pattern: re.Pattern, max_results: int = SEARCH_MAX_RESULTS
+) -> list[str]:
+    """
+    Walk workspace_root for lines matching `pattern`, returning "path:line:content"
+    strings (like ripgrep), capped at max_results. Shared by the search_code tool
+    (build_coder_tools, below) and CoderAgent._find_keyword_hint_files (agent.py's
+    Tier 1b keyword-hint pre-retrieval, called directly as a plain function -- not
+    through the LangChain @tool wrapper, since it runs before any LLM call) so the
+    walking/exclusion logic has exactly one source of truth.
+    """
+    matches: list[str] = []
+
+    for file_path in workspace_root.rglob("*"):
+        if any(part in SEARCH_EXCLUDED_DIRS for part in file_path.parts):
+            continue
+
+        if not file_path.is_file():
+            continue
+
+        try:
+            if file_path.stat().st_size > SEARCH_MAX_FILE_BYTES:
+                continue
+
+            text = file_path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+
+        relative_path = file_path.relative_to(workspace_root)
+
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            if pattern.search(line):
+                matches.append(f"{relative_path}:{line_number}:{line.strip()}")
+
+                if len(matches) >= max_results:
+                    matches.append(f"... truncated at {max_results} matches ...")
+                    return matches
+
+    return matches
 
 
 def _resolve_within(workspace_root: Path, path: str) -> Path:
@@ -214,32 +255,7 @@ def build_coder_tools(
         except re.error:
             pattern = re.compile(re.escape(query))
 
-        matches: list[str] = []
-
-        for file_path in workspace_root.rglob("*"):
-            if any(part in SEARCH_EXCLUDED_DIRS for part in file_path.parts):
-                continue
-
-            if not file_path.is_file():
-                continue
-
-            try:
-                if file_path.stat().st_size > SEARCH_MAX_FILE_BYTES:
-                    continue
-
-                text = file_path.read_text(encoding="utf-8")
-            except (UnicodeDecodeError, OSError):
-                continue
-
-            relative_path = file_path.relative_to(workspace_root)
-
-            for line_number, line in enumerate(text.splitlines(), start=1):
-                if pattern.search(line):
-                    matches.append(f"{relative_path}:{line_number}:{line.strip()}")
-
-                    if len(matches) >= SEARCH_MAX_RESULTS:
-                        matches.append(f"... truncated at {SEARCH_MAX_RESULTS} matches ...")
-                        return "\n".join(matches)
+        matches = search_workspace_content(workspace_root, pattern)
 
         if not matches:
             return f"No matches found for: {query}"
@@ -298,9 +314,13 @@ def build_coder_tools(
     @tool
     def check_syntax(path: str) -> str:
         """
-        Run a fast syntax check on a single .js/.jsx file you just wrote or
-        patched, without the cost of a full install/build. Use this right
-        after write_file/apply_patch on any .js/.jsx file, before moving on.
+        Run a fast syntax check on a single .js/.jsx/.ts/.tsx file you just
+        wrote or patched, without the cost of a full install/build. Use this
+        right after write_file/apply_patch on any such file, before moving
+        on. This is syntax-only, not type-checking -- real type errors are
+        still caught by `next build` at the end (a separate `tsc --noEmit`
+        gate here would double the slowest step in the loop for marginal
+        extra coverage).
         """
         try:
             target = _resolve_within(workspace_root, path)
@@ -311,19 +331,29 @@ def build_coder_tools(
             return f"File not found: {path}"
 
         suffix = target.suffix.lower()
-        if suffix not in {".js", ".jsx", ".mjs", ".cjs"}:
-            return f"check_syntax only supports .js/.jsx/.mjs/.cjs files, got: {path}"
+        if suffix not in {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}:
+            return f"check_syntax only supports .js/.jsx/.mjs/.cjs/.ts/.tsx files, got: {path}"
 
         relative_path = target.relative_to(workspace_root).as_posix()
-        is_jsx = suffix == ".jsx"
 
-        if is_jsx:
+        # .ts and .tsx need DIFFERENT @babel/parser plugin sets -- combining
+        # 'jsx' with 'typescript' on a plain .ts file breaks parsing of
+        # `<T>expr` type-assertion syntax (ambiguous with JSX), a real Babel
+        # limitation, not a guess. Plain .js/.mjs/.cjs get Node's own
+        # --check instead (no Babel needed at all for those).
+        plugins_by_suffix = {
+            ".jsx": "['jsx']",
+            ".ts": "['typescript']",
+            ".tsx": "['jsx', 'typescript']",
+        }
+
+        if suffix in plugins_by_suffix:
             check_script = (
                 "const fs = require('fs');"
                 "const { parse } = require('@babel/parser');"
                 f"const code = fs.readFileSync('{relative_path}', 'utf-8');"
                 "try {"
-                "  parse(code, { sourceType: 'module', plugins: ['jsx'] });"
+                f"  parse(code, {{ sourceType: 'module', plugins: {plugins_by_suffix[suffix]} }});"
                 "  console.log('SYNTAX_OK');"
                 "} catch (error) {"
                 "  console.error('SYNTAX_ERROR: ' + error.message);"
@@ -381,9 +411,9 @@ def build_revision_planning_tools(
     nested tool-call schema this codebase hasn't already proven works.
 
     Also returns a `check_component_styling` tool (style_checker.py):
-    directly reports which .jsx files under client/src/pages and
-    client/src/components currently use Tailwind classes, raw inline
-    styles, or neither -- confirmed necessary directly, not speculatively:
+    directly reports which .tsx files under app/ and components/ currently
+    use Tailwind classes, raw inline styles, or neither -- confirmed
+    necessary directly, not speculatively:
     a real exploration run correctly found Tailwind was already configured
     project-wide but still converged on the wrong fix (editing index.css)
     because manually finding "which file has NO className" via list_dir/
@@ -414,7 +444,7 @@ def build_revision_planning_tools(
         results = _check_component_styling(workspace_root)
 
         if not results:
-            return "No .jsx files found under client/src/pages or client/src/components."
+            return "No .tsx files found under app/ or components/."
 
         return "\n".join(f"{item['path']}: {item['status']}" for item in results)
 

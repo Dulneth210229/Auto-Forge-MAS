@@ -7,7 +7,11 @@ import CopyButton from "../common/CopyButton";
 // non-streamable step (diagram generation, PlantUML rendering) is still actually progressing and
 // not stuck. Returns null (render nothing) until at least 1s has elapsed, matching this file's
 // existing "don't show a counter at 0" convention.
-function useElapsedLabel(startedAt) {
+// Exported so other chat components (CoderAgentChat, ArchitectureAgentChat) can show a real
+// ticking timer for their own long, token-free phases instead of each re-deriving a static,
+// render-time-only label -- see those components' own comments for why a static label reads as a
+// hung/broken UI during a genuinely long wait.
+export function useElapsedLabel(startedAt) {
   const [, forceTick] = useState(0);
 
   useEffect(() => {

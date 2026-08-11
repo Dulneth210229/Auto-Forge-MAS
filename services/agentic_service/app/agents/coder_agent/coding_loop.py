@@ -48,6 +48,7 @@ def build_task_message(
     code_plan_json: dict[str, Any],
     prior_failure_output: str | None = None,
     already_touched: dict[str, list[str]] | None = None,
+    original_request: str | None = None,
 ) -> str:
     """
     Format the validated plan (+ optional prior verification failure, for a
@@ -59,12 +60,31 @@ def build_task_message(
     starts with zero memory of the previous one, see CoderAgent._code_with_retries)
     doesn't have to re-read/re-derive what's already correct, and knows not
     to redo it.
+
+    original_request, when given, is the human's own literal words (the
+    human_comment/revision_comment the plan was generated FROM) -- shown
+    ahead of the plan so the coding loop can sanity-check the plan's
+    rationale against what was actually asked, instead of blindly executing
+    a possibly-misparsed plan step. The plan is still the authoritative HOW;
+    this is a cross-check, not a replacement for it.
     """
     sections = [
         "Implement the following pre-approved, pre-validated code plan.",
-        "",
-        json.dumps(code_plan_json, indent=2, default=str),
     ]
+
+    if original_request:
+        sections.extend(
+            [
+                "",
+                "Original human request (the plan below is HOW to satisfy this -- if a plan "
+                "item's rationale seems to contradict this original request, trust the "
+                "original request and flag the discrepancy in your final summary rather than "
+                "blindly executing it):",
+                original_request,
+            ]
+        )
+
+    sections.extend(["", json.dumps(code_plan_json, indent=2, default=str)])
 
     if already_touched:
         touched_paths = sorted(

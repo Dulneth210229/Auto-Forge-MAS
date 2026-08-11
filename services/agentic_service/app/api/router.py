@@ -16,6 +16,7 @@ from app.api.routes import (
     agents,
     llm_settings,
     knowledge,
+    preview,
 )
 
 api_router = APIRouter()
@@ -28,3 +29,4 @@ api_router.include_router(approvals.router)
 api_router.include_router(agents.router)
 api_router.include_router(llm_settings.router)
 api_router.include_router(knowledge.router)
+api_router.include_router(preview.router)

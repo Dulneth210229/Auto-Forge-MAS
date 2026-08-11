@@ -15,8 +15,10 @@ export function useDomainAgentFlow(featureId) {
 
   const [runStreamedText, setRunStreamedText] = useState("");
   const [runStreamStarted, setRunStreamStarted] = useState(false);
+  const [runStreamError, setRunStreamError] = useState(null);
   const [revisionStreamedText, setRevisionStreamedText] = useState("");
   const [revisionStreamStarted, setRevisionStreamStarted] = useState(false);
+  const [revisionStreamError, setRevisionStreamError] = useState(null);
 
   const runAbortRef = useRef(null);
   const reviseAbortRef = useRef(null);
@@ -56,6 +58,12 @@ export function useDomainAgentFlow(featureId) {
           if (event.type === "token") {
             setRunStreamStarted(true);
             setRunStreamedText((current) => current + event.text);
+          } else if (event.type === "error") {
+            // The backend route always converts an uncaught exception into a real
+            // {"type": "error"} NDJSON line before the stream ends -- but the streamed request's
+            // own promise still resolves normally for it (only a genuine network/HTTP failure
+            // rejects), so without this branch a real backend crash was completely invisible.
+            setRunStreamError(event.message);
           }
         },
         controller.signal
@@ -67,6 +75,7 @@ export function useDomainAgentFlow(featureId) {
   function handleRunStream(payload) {
     setRunStreamedText("");
     setRunStreamStarted(false);
+    setRunStreamError(null);
     return runStream.mutateAsync(payload);
   }
 
@@ -85,6 +94,8 @@ export function useDomainAgentFlow(featureId) {
           if (event.type === "token") {
             setRevisionStreamStarted(true);
             setRevisionStreamedText((current) => current + event.text);
+          } else if (event.type === "error") {
+            setRevisionStreamError(event.message);
           }
         },
         controller.signal
@@ -96,6 +107,7 @@ export function useDomainAgentFlow(featureId) {
   function handleReviseStream(payload) {
     setRevisionStreamedText("");
     setRevisionStreamStarted(false);
+    setRevisionStreamError(null);
     return reviseStream.mutateAsync(payload);
   }
 
@@ -109,10 +121,12 @@ export function useDomainAgentFlow(featureId) {
     stopRunStream,
     runStreamedText,
     runStreamStarted,
+    runStreamError,
     reviseStream,
     handleReviseStream,
     stopReviseStream,
     revisionStreamedText,
     revisionStreamStarted,
+    revisionStreamError,
   };
 }

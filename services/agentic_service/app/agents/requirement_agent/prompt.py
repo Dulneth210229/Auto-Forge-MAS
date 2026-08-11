@@ -35,6 +35,26 @@ Rules:
   functional_requirements the same way. In both cases, note in assumptions that these were
   inferred rather than specified by the human. If the human DID specify either field, use exactly
   what they gave instead of inferring.
+- The SAME "never leave it empty, infer from context" rule applies to EVERY section of this SRS,
+  not just api_expectations/ui_expectations: user_stories, user_roles, scope, out_of_scope,
+  constraints, risks, dependencies, assumptions, validation_rules, non_functional_requirements,
+  input_requirements, and output_requirements must ALL have at least one real, concrete entry.
+  In particular: user_stories must have at least one entry per role in user_roles (or per role
+  you can reasonably infer from functional_requirements/business_goal if user_roles itself is
+  also empty) -- each story's goal and benefit must be grounded in what functional_requirements
+  actually says that role does, never a generic "As a user, I want to use this feature" filler.
+  constraints should reflect target_stack/architectural_style plus anything functional_requirements
+  implies. risks and dependencies should name real, feature-specific concerns when the SRS's own
+  content genuinely suggests one (e.g. "large datasets" implies a performance risk, "third-party
+  service" implies a dependency) -- if truly nothing is implied, say so honestly in assumptions
+  rather than inventing a generic entry. As with api_expectations/ui_expectations: if the human
+  DID specify a field, use exactly what they gave; only infer where they left something blank.
+- scope, out_of_scope, user_roles, input_requirements, output_requirements, ui_expectations,
+  api_expectations, data_requirements, constraints, assumptions, risks, and dependencies are each
+  a plain list of STRINGS -- every entry must be a bare string like "name (string, required)",
+  never an object with "id"/"description" keys. Only functional_requirements,
+  non_functional_requirements, acceptance_criteria, validation_rules, and user_stories use that
+  {"id", "description", ...} object shape -- do not carry that pattern over to any other field.
 
 Required JSON structure:
 {
@@ -146,7 +166,9 @@ Return ONLY this JSON shape, no markdown, no code fences, no explanation:
         precisely",
       "value": "for add/modify/set: the new text/description to add or replace with",
       "role": "only for user_stories add: the role this story is for",
-      "priority": "only for functional_requirements add: Must Have / Should Have / Could Have"
+      "benefit": "only for user_stories add: the concrete value/benefit this story delivers",
+      "priority": "only for functional_requirements add: Must Have / Should Have / Could Have",
+      "category": "only for non_functional_requirements add: e.g. Performance, Security, Usability"
     }
   ]
 }
@@ -154,6 +176,27 @@ Return ONLY this JSON shape, no markdown, no code fences, no explanation:
 Rules:
 - One operation per distinct change the human asked for. Most revision comments need exactly one
   operation.
+- This applies to EVERY section of the SRS equally -- functional/non-functional requirements,
+  acceptance criteria, validation rules, user stories, scope, out-of-scope, user roles, input/
+  output requirements, UI/API expectations, data requirements, constraints, assumptions, risks,
+  dependencies, and the scalar business_goal/architectural_style/target_stack. None of these are
+  special-cased; the same reasoning below applies no matter which field the human names.
+- A request naming a section that is EMPTY, or phrased in the PLURAL ("add user stories", "the
+  acceptance criteria are missing", "fill in the data requirements", "list our constraints"), is
+  asking for MULTIPLE concrete items -- one per real, distinct thing that section should contain.
+  Each such item is itself "a distinct change" per the rule above: emit one "add" operation per
+  item, grounded in this feature's own functional_requirements/business_goal/scope/user_roles
+  shown below, not one vague placeholder. Two worked examples, deliberately different field
+  shapes: "add user stories" for a feature whose functional_requirements describe an Admin
+  creating items and a Customer viewing them should produce one "add" operation for the Admin
+  story and a separate one for the Customer story, not one generic "As a user, I want to use this
+  feature" story. "List our constraints" for a feature whose SRS already names Next.js and a
+  specific auth requirement elsewhere should produce one "add" operation on constraints per real
+  constraint implied by the rest of the document (e.g. "Must use Next.js", "Must enforce JWT
+  authentication on every endpoint"), not one vague "follow best practices" entry.
+- Do not manufacture items beyond what the comment and the SRS's existing content genuinely imply
+  -- if a plural/broad request only clearly implies one or two real items, emit only that many.
+  Padding a section to look thorough is exactly as wrong as leaving it under-filled.
 - For "remove" or "modify", "target" MUST refer to something that actually exists in the SRS shown
   to you -- copy its id or exact text, don't paraphrase it. If you can't find what the human is
   asking to change in the existing SRS, do not invent an operation -- explain that in

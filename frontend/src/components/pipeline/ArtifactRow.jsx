@@ -2,7 +2,7 @@ import { useState } from "react";
 import StatusBadge from "../common/StatusBadge";
 import ErrorBanner from "../common/ErrorBanner";
 import ConfirmDialog from "../common/ConfirmDialog";
-import { ARTIFACT_TYPE_LABELS } from "../../lib/artifactTypeMeta";
+import { ARTIFACT_TYPE_LABELS, NON_APPROVABLE_ARTIFACT_TYPES } from "../../lib/artifactTypeMeta";
 import { useApprovalMutation } from "../../hooks/useApprovalMutation";
 import { useDeleteArtifact } from "../../hooks/useArtifacts";
 
@@ -45,7 +45,12 @@ export default function ArtifactRow({
     setRevisionComment("");
   }
 
-  const showInlineApproval = Boolean(featureId) && artifact.approval_status === "pending";
+  // Shared signal for both "no approve/reject controls" (since there's no real decision to make
+  // on this artifact) and "visually highlight this row" (it's the one artifact worth a human's
+  // attention here, e.g. Setup Instructions on the Coder stage) -- both target the same set of
+  // display-only artifact types, so one derived boolean covers both.
+  const isNonApprovableType = NON_APPROVABLE_ARTIFACT_TYPES.includes(artifact.artifact_type);
+  const showInlineApproval = Boolean(featureId) && artifact.approval_status === "pending" && !isNonApprovableType;
   // Approved artifacts are permanent history (matches the backend's own refusal to delete them) --
   // only an unapproved (pending/rejected/revision_requested) version can ever be removed.
   const canDelete = artifact.approval_status !== "approved";
@@ -54,7 +59,13 @@ export default function ArtifactRow({
   const canSelectActive = showActiveSelector && artifact.approval_status === "approved";
 
   return (
-    <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded p-3">
+    <div
+      className={`rounded p-3 ${
+        isNonApprovableType
+          ? "bg-accent-50 dark:bg-accent-500/10 border border-accent-200 dark:border-accent-500/30"
+          : "bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800"
+      }`}
+    >
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           {canSelectActive && (
@@ -77,7 +88,7 @@ export default function ArtifactRow({
           )}
         </div>
         <div className="flex items-center gap-2">
-          <StatusBadge status={artifact.approval_status} />
+          {!isNonApprovableType && <StatusBadge status={artifact.approval_status} />}
           <button onClick={() => onView(artifact)} className="text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 text-sm font-semibold">
             View
           </button>

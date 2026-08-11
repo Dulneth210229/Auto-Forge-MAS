@@ -1,0 +1,21 @@
+{
+  "colors": {},
+  "typography": {},
+  "spacing": {},
+  "components": {
+    "ItemNotesList": {
+      "props": [
+        "noteItems"
+      ],
+      "introduced_by_feature": "Item Notes"
+    },
+    "NoteInputField": {
+      "props": [
+        "maxLength",
+        "required"
+      ],
+      "introduced_by_feature": "Item Notes"
+    }
+  },
+  "tokens": {}
+}

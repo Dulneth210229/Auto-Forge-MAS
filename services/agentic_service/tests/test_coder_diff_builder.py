@@ -89,7 +89,7 @@ def test_build_requirement_code_map_includes_unplanned_file():
 def test_build_setup_instructions_with_deps_and_env_vars():
     markdown = build_setup_instructions_markdown(CODE_PLAN)
 
-    assert "npm run install:all" in markdown
+    assert "npm install" in markdown
     assert "npm run dev" in markdown
     assert "`bcrypt`" in markdown
     assert "`jsonwebtoken`" in markdown
@@ -102,7 +102,7 @@ def test_build_setup_instructions_empty_case():
     # The run instructions are always present -- there's always a working
     # scaffold to run, regardless of whether this specific feature added
     # anything new.
-    assert "npm run install:all" in markdown
+    assert "npm install" in markdown
     assert "npm run dev" in markdown
     assert "New dependencies added by this feature" not in markdown
     assert "Required environment variables" not in markdown

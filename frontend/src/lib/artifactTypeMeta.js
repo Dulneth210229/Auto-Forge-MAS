@@ -65,6 +65,13 @@ export const STAGE_GATING_ARTIFACT_TYPE = Object.fromEntries(
   Object.entries(STAGE_GATING_ARTIFACT).map(([stage, { type }]) => [stage, type])
 );
 
+// A display-only artifact type (shown so a human can read/download it) that is never itself a
+// real approval decision -- setup_instructions is generated alongside the Coder Agent's real
+// gating artifact (code_diff) but isn't what a human is actually accepting; that's the generated
+// code itself, gated via STAGE_GATING_ARTIFACT.coder. ArtifactRow checks this before offering
+// inline Approve/Request-Revision/Reject on a row.
+export const NON_APPROVABLE_ARTIFACT_TYPES = ["setup_instructions"];
+
 // artifact_type -> dedicated document viewer key, for JSON content that should render as a real
 // formatted document rather than a raw tree. SrsDocumentViewer covers both srs and enhanced_srs
 // (they share one shape); sds is Architecture Plan's legacy type name (same shape as

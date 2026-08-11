@@ -1,0 +1,702 @@
+# Merge Report: Item Notes
+
+**Verification:** PASSED
+**Coding attempts used:** 1
+
+## Verification steps
+- **next.config.mjs integrity**: passed
+- **npm install**: passed
+- **next build**: passed
+- **server boot (next start + /api/health)**: passed
+- **npm run test (root)**: skipped
+- **endpoint route coverage**: passed
+- **page reachability**: passed
+- **home page render**: passed
+- **feature page render**: info
+  ```
+  All 1 feature page(s) rendered cleanly:
+  - /item-notes: /item-notes responded with HTTP 200 and no JS errors.
+  ```
+- **placeholder-stub scan**: info
+  ```
+  Found possible placeholder/stub logic (does not fail verification, review before approving):
+  - app/item-notes/page.tsx:12: const [itemId] = useState("example-item-id"); // This would come from the URL in a real app
+  ```
+
+## Files changed
+### Added
+- `app/api/item-notes/route.ts`
+- `app/item-notes/page.tsx`
+- `components/Footer.css`
+- `components/Footer.tsx`
+- `components/ItemNotesList.jsx`
+- `components/Navbar.css`
+- `components/Navbar.tsx`
+- `components/NoteInputField.jsx`
+- `lib/api/itemNotes.ts`
+- `models/ItemNote.ts`
+- `next.config.mjs`
+- `package-lock.json`
+### Modified
+- `app/layout.tsx`
+- `app/page.tsx`
+### Deleted
+- `next.config.ts`
+
+## Full diff (truncated)
+```diff
+diff --git a/app/api/item-notes/route.ts b/app/api/item-notes/route.ts
+new file mode 100644
+index 0000000..429b385
+--- /dev/null
++++ b/app/api/item-notes/route.ts
+@@ -0,0 +1,68 @@
++import { NextResponse } from "next/server";
++import { connectToDatabase } from "@/lib/mongodb";
++import ItemNote from "@/models/ItemNote";
++
++export const dynamic = "force-dynamic";
++
++export async function GET(request: Request) {
++  const { searchParams } = new URL(request.url);
++  const itemId = searchParams.get("itemId");
++
++  if (!itemId) {
++    return NextResponse.json(
++      { error: "itemId query parameter is required" },
++      { status: 400 }
++    );
++  }
++
++  try {
++    await connectToDatabase();
++    const notes = await ItemNote.find({ itemId })
++      .sort({ createdAt: -1 })
++      .lean();
++
++    return NextResponse.json(notes);
++  } catch (error) {
++    console.error("Error fetching item notes:", error);
++    return NextResponse.json(
++      { error: "Failed to fetch item notes" },
++      { status: 500 }
++    );
++  }
++}
++
++export async function POST(request: Request) {
++  const { itemId, content, authorId } = await request.json();
++
++  if (!itemId || !content || !authorId) {
++    return NextResponse.json(
++      { error: "itemId, content, and authorId are required" },
++      { status: 400 }
++    );
++  }
++
++  if (content.length > 500) {
++    return NextResponse.json(
++      { error: "Content must be 500 characters or less" },
++      { status: 400 }
++    );
++  }
++
++  try {
++    await connectToDatabase();
++    const newNote = new ItemNote({
++      itemId,
++      content,
++      authorId
++    });
++    await newNote.save();
++
++    return NextResponse.json(newNote, { status: 201 });
++  } catch (error) {
++    console.error("Error creating item note:", error);
++    return NextResponse.json(
++      { error: "Failed to create item note" },
++      { status: 500 }
++    );
++  }
++}
+\ No newline at end of file
+diff --git a/app/item-notes/page.tsx b/app/item-notes/page.tsx
+new file mode 100644
+index 0000000..6ec3dc9
+--- /dev/null
++++ b/app/item-notes/page.tsx
+@@ -0,0 +1,70 @@
++"use client";
++
++import { useState, useEffect } from "react";
++import { listItemNotes, createItemNote } from "@/lib/api/itemNotes";
++import ItemNotesList from "@/components/ItemNotesList";
++import NoteInputField from "@/components/NoteInputField";
++
++export default function ItemNotesPage() {
++  const [notes, setNotes] = useState<any[]>([]);
++  const [loading, setLoading] = useState(true);
++  const [error, setError] = useState<string | null>(null);
++  const [itemId] = useState("example-item-id"); // This would come from the URL in a real app
++
++  const fetchNotes = async () => {
++    try {
++      setLoading(true);
++      const data = await listItemNotes(itemId);
++      setNotes(data);
++      setError(null);
++    } catch (err) {
++      setError(err instanceof Error ? err.message : String(err));
++    } finally {
++      setLoading(false);
++    }
++  };
++
++  const handleCreateNote = async (content: string) => {
++    try {
++      const newNote = await createItemNote(itemId, content);
++      setNotes(prev => [newNote, ...prev]);
++    } catch (err) {
++      setError(err instanceof Error ? err.message : String(err));
++    }
++  };
++
++  useEffect(() => {
++    fetchNotes();
++  }, []);
++
++  if (loading) {
++    return <div className="flex justify-center items-center h-screen">Loading...</div>;
++  }
++
++  if (error) {
++    return <div className="flex justify-center items-center h-screen text-red-500">Error: {error}</div>;
++  }
++
++  return (
++    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 py-12 px-4 sm:px-6 lg:px-8">
++      <div className="max-w-3xl mx-auto">
++        <h1 className="text-4xl font-bold text-center text-gray-800 mb-10 mt-6 bg-white py-4 rounded-lg shadow-md">Item Notes</h1>
++        
++        <div className="mb-10">
++          <NoteInputField 
++            maxLength={500} 
++            required={true} 
++            onSubmit={handleCreateNote}
++          />
++        </div>
++        
++        <div>
++          <ItemNotesList 
++            noteItems={notes} 
++            state={notes.length > 0 ? 'success' : 'idle'} 
++          />
++        </div>
++      </div>
++    </div>
++  );
++}
+\ No newline at end of file
+diff --git a/app/layout.tsx b/app/layout.tsx
+index 4fbf3c9..f71000e 100644
+--- a/app/layout.tsx
++++ b/app/layout.tsx
+@@ -1,5 +1,7 @@
+ import type { Metadata } from "next";
+ import "./globals.css";
++import Navbar from "@/components/Navbar";
++import Footer from "@/components/Footer";
+ 
+ export const metadata: Metadata = {
+   title: "Auto-Forge Generated App",
+@@ -13,7 +15,11 @@ export default function RootLayout({
+ }>) {
+   return (
+     <html lang="en">
+-      <body>{children}</body>
++      <body>
++        <Navbar />
++        <main>{children}</main>
++        <Footer />
++      </body>
+     </html>
+   );
+ }
+diff --git a/app/page.tsx b/app/page.tsx
+index 2c8ea46..ea2b205 100644
+--- a/app/page.tsx
++++ b/app/page.tsx
+@@ -1,3 +1,5 @@
++import Link from "next/link";
++
+ export default function HomePage() {
+   return (
+     <div style={{ padding: "2rem", fontFamily: "sans-serif" }}>
+@@ -6,6 +8,7 @@ export default function HomePage() {
+       <nav>
+         <ul>
+           {/* FEATURE_LINKS_START */}
++          <li><Link href="/item-notes">Item Notes</Link></li>
+           {/* FEATURE_LINKS_END */}
+         </ul>
+       </nav>
+diff --git a/components/Footer.css b/components/Footer.css
+new file mode 100644
+index 0000000..a0c935f
+--- /dev/null
++++ b/components/Footer.css
+@@ -0,0 +1,17 @@
++.footer {
++  background-color: #333;
++  color: #fff;
++  text-align: center;
++  padding: 1rem 0;
++  margin-top: auto;
++}
++
++.footer-container {
++  max-width: 1200px;
++  margin: 0 auto;
++  padding: 0 2rem;
++}
++
++.footer-text {
++  margin: 0;
++}
+\ No newline at end of file
+diff --git a/components/Footer.tsx b/components/Footer.tsx
+new file mode 100644
+index 0000000..2833aaa
+--- /dev/null
++++ b/components/Footer.tsx
+@@ -0,0 +1,15 @@
++"use client";
++
++import "./Footer.css";
++
++export default function Footer() {
++  return (
++    <footer className="footer">
++      <div className="footer-container">
++        <p className="footer-text">
++          &copy; {new Date().getFullYear()} Auto-Forge Generated App. All rights reserved.
++        </p>
++      </div>
++    </footer>
++  );
++}
+\ No newline at end of file
+diff --git a/components/ItemNotesList.jsx b/components/ItemNotesList.jsx
+new file mode 100644
+index 0000000..bcb3122
+--- /dev/null
++++ b/components/ItemNotesList.jsx
+@@ -0,0 +1,84 @@
++"use client";
++
++export default function ItemNotesList(props) {
++  const { noteItems } = props;
++
++  if (noteItems === undefined || noteItems.length === 0) {
++    return (
++      <div className="flex justify-center p-8">
++        <div className="bg-white rounded-lg shadow-md p-6 max-w-md w-full text-center">
++          <svg className="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
++            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
++          </svg>
++          <h3 className="mt-2 text-lg font-medium text-gray-900">No notes available</h3>
++          <p className="mt-1 text-gray-500">Get started by adding a note.</p>
++        </div>
++      </div>
++    );
++  }
++
++  if (props.state === 'loading') {
++    return (
++      <div className="flex justify-center p-8">
++        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-indigo-500"></div>
++      </div>
++    );
++  }
++
++  if (props.state === 'error') {
++    return (
++      <div className="flex justify-center p-8">
++        <div className="bg-red-50 border-l-4 border-red-500 p-4 rounded-lg max-w-md w-full">
++          <div className="flex">
++            <div className="flex-shrink-0">
++              <svg className="h-5 w-5 text-red-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
++                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
++              </svg>
++            </div>
++            <div className="ml-3">
++              <p className="text-sm text-red-700">
++                Error occurred while loading notes.
++              </p>
++            </div>
++          </div>
++        </div>
++      </div>
++    );
++  }
++
++  if (props.state === 'success') {
++    return (
++      <ul className="list-none flex flex-col gap-4">
++        {noteItems.map((item) => (
++          <li key={item.id} className="bg-white p-6 rounded-xl shadow-lg hover:shadow-xl transition-shadow duration-300">
++            <div className="flex items-start">
++              <div className="flex-1">
++                <p className="text-gray-800 leading-relaxed">{item.content}</p>
++              </div>
++              <div className="text-xs text-gray-500 whitespace-nowrap ml-4">
++                {new Date(item.createdAt).toLocaleDateString()}
++              </div>
++            </div>
++          </li>
++        ))}
++      </ul>
++    );
++  }
++
++  return (
++    <ul className="list-none flex flex-col gap-4">
++      {noteItems.map((item) => (
++        <li key={item.id} className="bg-white p-6 rounded-xl shadow-lg hover:shadow-xl transition-shadow duration-300">
++          <div className="flex items-start">
++            <div className="flex-1">
++              <p className="text-gray-800 leading-relaxed">{item.content}</p>
++            </div>
++            <div className="text-xs text-gray-500 whitespace-nowrap ml-4">
++              {new Date(item.createdAt).toLocaleDateString()}
++            </div>
++          </div>
++        </li>
++      ))}
++    </ul>
++  );
++}
+\ No newline at end of file
+diff --git a/components/Navbar.css b/components/Navbar.css
+new file mode 100644
+index 0000000..39395a6
+--- /dev/null
++++ b/components/Navbar.css
+@@ -0,0 +1,42 @@
++.navbar {
++  background-color: #333;
++  padding: 1rem 0;
++  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
++}
++
++.navbar-container {
++  max-width: 1200px;
++  margin: 0 auto;
++  display: flex;
++  justify-content: space-between;
++  align-items: center;
++  padding: 0 2rem;
++}
++
++.navbar-logo {
++  color: #fff;
++  font-size: 1.5rem;
++  font-weight: bold;
++  text-decoration: none;
++}
++
++.navbar-menu {
++  display: flex;
++  list-style: none;
++  margin: 0;
++  padding: 0;
++}
++
++.navbar-item {
++  margin: 0 1rem;
++}
++
++.navbar-link {
++  color: #fff;
++  text-decoration: none;
++  transition: color 0.3s ease;
++}
++
++.navbar-link:hover {
++  color: #f0f0f0;
++}
+\ No newline at end of file
+diff --git a/components/Navbar.tsx b/components/Navbar.tsx
+new file mode 100644
+index 0000000..95a979a
+--- /dev/null
++++ b/components/Navbar.tsx
+@@ -0,0 +1,28 @@
++"use client";
++
++import Link from "next/link";
++import "./Navbar.css";
++
++export default function Navbar() {
++  return (
++    <nav className="navbar">
++      <div className="navbar-container">
++        <Link href="/" className="navbar-logo">
++          Auto-Forge App
++        </Link>
++        <ul className="navbar-menu">
++          <li className="navbar-item">
++            <Link href="/" className="navbar-link">
++              Home
++            </Link>
++          </li>
++          <li className="navbar-item">
++            <Link href="/item-notes" className="navbar-link">
++              Item Notes
++            </Link>
++          </li>
++        </ul>
++      </div>
++    </nav>
++  );
++}
+\ No newline at end of file
+diff --git a/components/NoteInputField.jsx b/components/NoteInputField.jsx
+new file mode 100644
+index 0000000..9ad0893
+--- /dev/null
++++ b/components/NoteInputField.jsx
+@@ -0,0 +1,93 @@
++"use client";
++
++import React, { useState } from "react";
++
++export default function NoteInputField(props) {
++  const [state, setState] = useState({
++    idle: { text: '', error: '' },
++    loading: { text: '', error: '' },
++    error: { text: '', error: 'Error adding note' },
++    success: { text: '', error: '' }
++  });
++
++  const handleInputChange = (e) => {
++    setState({ idle: { text: e.target.value, error: '' } });
++  };
++
++  const handleSubmit = (e) => {
++    e.preventDefault();
++    if (props.onSubmit && state.idle.text.trim()) {
++      props.onSubmit(state.idle.text.trim());
++    }
++  };
++
++  if (props.state === 'loading') {
++    return (
++      <div className="flex justify-center items-center py-8">
++        <div className="animate-spin rounded-full h-10 w-10 border-t-2 border-b-2 border-indigo-500"></div>
++      </div>
++    );
++  } else if (props.state === 'error') {
++    return (
++      <div className="flex justify-center items-center py-8">
++        <div className="bg-red-50 border-l-4 border-red-500 p-4 rounded-lg max-w-md w-full">
++          <div className="flex">
++            <div className="flex-shrink-0">
++              <svg className="h-5 w-5 text-red-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
++                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
++              </svg>
++            </div>
++            <div className="ml-3">
++              <p className="text-sm text-red-700">
++                {state.error.text}
++              </p>
++            </div>
++          </div>
++        </div>
++      </div>
++    );
++  } else if (props.state === 'success') {
++    return (
++      <div className="flex justify-center items-center py-8">
++        <div className="bg-green-50 border-l-4 border-green-500 p-4 rounded-lg max-w-md w-full">
++          <div className="flex">
++            <div className="flex-shrink-0">
++              <svg className="h-5 w-5 text-green-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
++                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
++              </svg>
++            </div>
++            <div className="ml-3">
++              <p className="text-sm text-green-700">
++                Note added successfully!
++              </p>
++            </div>
++          </div>
++        </div>
++      </div>
++    );
++  }
++
++  return (
++    <div className="py-6">
++      <form onSubmit={handleSubmit} className="w-full max-w-2xl mx-auto">
++        <div className="flex flex-col sm:flex-row gap-2">
++          <input
++            type="text"
++            maxLength={props.maxLength}
++            required={props.required}
++            value={state.idle.text}
++            onChange={handleInputChange}
++            placeholder="Add a note..."
++            className="flex-1 px-4 py-3 text-gray-700 bg-white border border-gray-300 rounded-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 shadow-sm transition duration-200"
++          />
++          <button
++            type="submit"
++            className="px-6 py-3 bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-medium rounded-lg hover:from-indigo-700 hover:to-purple-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 shadow-md transition duration-200"
++          >
++            Add Note
++          </button>
++        </div>
++      </form>
++    </div>
++  );
++}
+\ No newline at end of file
+diff --git a/lib/api/itemNotes.ts b/lib/api/itemNotes.ts
+new file mode 100644
+index 0000000..63c3727
+--- /dev/null
++++ b/lib/api/itemNotes.ts
+@@ -0,0 +1,21 @@
++export async function listItemNotes(itemId: string) {
++  const response = await fetch(`/api/item-notes?itemId=${itemId}`);
++  if (!response.ok) {
++    throw new Error("Failed to fetch item notes");
++  }
++  return response.json();
++}
++
++export async function createItemNote(itemId: string, content: string) {
++  const response = await fetch("/api/item-notes", {
++    method: "POST",
++    headers: {
++      "Content-Type": "application/json",
++    },
++    body: JSON.stringify({ itemId, content }),
++  });
++  if (!response.ok) {
++    throw new Error("Failed to create item note");
++  }
++  return response.json();
++}
+\ No newline at end of file
+diff --git a/models/ItemNote.ts b/models/ItemNote.ts
+new file mode 100644
+index 0000000..65c4c0f
+--- /dev/null
++++ b/models/ItemNote.ts
+@@ -0,0 +1,10 @@
++import mongoose, { Schema } from "mongoose";
++
++const itemNoteSchema = new Schema({
++  itemId: { type: String, required: true },
++  content: { type: String, required: true, maxlength: 500 },
++  authorId: { type: String, required: true },
++  createdAt: { type: Date, default: Date.now }
++});
++
++export default mongoose.models.ItemNote || mongoose.model("ItemNote", itemNoteSchema);
+\ No newline at end of file
+diff --git a/next.config.mjs b/next.config.mjs
+new file mode 100644
+index 0000000..671c0ed
+--- /dev/null
++++ b/next.config.mjs
+@@ -0,0 +1,4 @@
++/** @type {import('next').NextConfig} */
++const nextConfig = {};
++
++export default nextConfig;
+diff --git a/next.config.ts b/next.config.ts
+deleted file mode 100644
+index 6d94fc0..0000000
+--- a/next.config.ts
++++ /dev/null
+@@ -1,5 +0,0 @@
+-import type { NextConfig } from "next";
+-
+-const nextConfig: NextConfig = {};
+-
+-export default nextConfig;
+diff --git a/package-lock.json b/package-lock.json
+new file mode 100644
+index 0000000..c4fbfcf
+--- /dev/null
++++ b/package-lock.json
+@@ -0,0 +1,5625 @@
++{
++  "name": "auto-forge-generated-app",
++  "lockfileVersion": 3,
++  "requires": true,
++  "packages": {
++    "": {
++      "name": "auto-forge-generated-app",
++      "dependencies": {
++        "mongoose": "8.5.0",
++        "next": "14.2.5",
++        "react": "18.3.1",
++        "react-dom": "18.3.1"
++      },
++      "devDependencies": {
++        "@types/node": "20.14.15",
++        "@types/react": "18.3.3",
++        "@types/react-dom": "18.3.0",
++        "eslint": "8.57.0",
++        "eslint-config-next": "14.2.5",
++        "typescript": "5.5.4"
++      }
++    },
++    "node_modules/@emnapi/core": {
++      "version": "1.10.0",
++      "resolved": "https://registry.npmjs.org/@emnapi/core/-/core-1.10.0.tgz",
++      "integrity": "sha512-yq6OkJ4p82CAfPl0u9mQebQHKPJkY7WrIuk205cTYnYe+k2Z8YBh11FrbRG/H6ihirqcacOgl2BIO8oyMQLeXw==",
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "@emnapi/wasi-threads": "1.2.1",
++        "tslib": "^2.4.0"
++      }
++    },
++    "node_modules/@emnapi/runtime": {
++      "version": "1.10.0",
++      "resolved": "https://registry.npmjs.org/@emnapi/runtime/-/runtime-1.10.0.tgz",
++      "integrity": "sha512-ewvYlk86xUoGI0zQRNq/mC+16R1QeDlKQy21Ki3oSYXNgLb45GV1P6A0M+/s6nyCuNDqe5VpaY84BzXGwVbwFA==",
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "tslib": "^2.4.0"
++      }
++    },
++    "node_modules/@emnapi/wasi-threads": {
++      "version": "1.2.1",
++      "resolved": "https://registry.npmjs.org/@emnapi/wasi-threads/-/wasi-threads-1.2.1.tgz",
++      "integrity": "sha512-uTII7OYF+/Mes/MrcIOYp5yOtSMLBWSIoLPpcgwipoiKbli6k322tcoFsxoIIxPDqW01SQGAgko4EzZi2BNv2w==",
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "tslib": "^2.4.0"
++      }
++    },
++    "node_modules/@eslint-community/eslint-utils": {
++      "version": "4.10.1",
++      "resolved": "https://registry.npmjs.org/@eslint-community/eslint-utils/-/eslint-utils-4.10.1.tgz",
++      "integrity": "sha512-cuadcxVFE8sDK6iWJbs8Sn0av2Nrh2QSGQhVlBW9AaAHqHwjWsZHT8LJ4hFGPh7ASBV2deFdM7H/DPjulmh8rg==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "eslint-visitor-keys": "^3.4.3"
++      },
++      "engines"
+```
