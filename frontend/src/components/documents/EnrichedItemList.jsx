@@ -2,8 +2,10 @@ import { useState } from "react";
 import { PencilIcon } from "../pipeline/RequirementConversationParts";
 
 // Renders SRS requirement-like arrays (functional_requirements, non_functional_requirements,
-// acceptance_criteria, validation_rules) as cards instead of a generic table -- specifically so
-// Domain Agent enrichment is visually obvious, not buried in a raw field. Real Enhanced SRS data
+// acceptance_criteria, validation_rules, user_stories) as cards instead of a generic table --
+// specifically so Domain Agent enrichment is visually obvious, not buried in a raw field.
+// user_stories is the one shape that differs ({id, role, goal, benefit}, no "description") --
+// see primaryText() below. Real Enhanced SRS data
 // marks its own changes: an item with modified_by_domain_agent=true carries the pre-enrichment
 // original_description alongside the enriched one; an item with origin="domain_agent" is a whole
 // new item the Domain Agent added that never existed in the plain SRS. Color convention matches
@@ -39,12 +41,20 @@ const CRITICAL_NON_EMPTY_FIELDS = new Set([
   "functional_requirements", "non_functional_requirements", "acceptance_criteria",
 ]);
 
+// user_stories items are shaped {id, role, goal, benefit} -- every other enrichable section
+// (FR/NFR/AC/VR) is {id, description, ...}. Without this, a user_stories card had no
+// item.description to show and rendered visually empty (only its ID badge showed).
+function primaryText(item, field) {
+  return field === "user_stories" ? item.goal : item.description;
+}
+
 function ItemCard({ item, field, canEdit, canRemove, onEdit }) {
   const [isEditing, setIsEditing] = useState(false);
-  const [draft, setDraft] = useState(item.description || "");
+  const [draft, setDraft] = useState(primaryText(item, field) || "");
 
   const isNew = item.origin === "domain_agent";
   const isModified = Boolean(item.modified_by_domain_agent);
+  const isUserStory = field === "user_stories";
 
   const colorClasses = isNew
     ? "border-green-200 dark:border-green-500/30 bg-green-50 dark:bg-green-500/10"
@@ -57,7 +67,9 @@ function ItemCard({ item, field, canEdit, canRemove, onEdit }) {
   function handleSave() {
     const trimmed = draft.trim();
     setIsEditing(false);
-    if (!trimmed || trimmed === item.description) return;
+    if (!trimmed || trimmed === primaryText(item, field)) return;
+    // _apply_user_story_operation (revision_patcher.py) treats "value" as the story's goal for
+    // both add and modify -- role/benefit keep their existing values on a modify.
     onEdit({ action: "modify", field, target: item.id, value: trimmed });
   }
 
@@ -75,7 +87,7 @@ function ItemCard({ item, field, canEdit, canRemove, onEdit }) {
           <button
             type="button"
             onClick={() => {
-              setDraft(item.description || "");
+              setDraft(primaryText(item, field) || "");
               setIsEditing(false);
             }}
             className="text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 font-semibold px-2 py-1"
@@ -121,7 +133,15 @@ function ItemCard({ item, field, canEdit, canRemove, onEdit }) {
       {isModified && item.original_description && (
         <p className="text-xs text-gray-400 dark:text-gray-500 line-through mb-0.5">{item.original_description}</p>
       )}
-      <p className="text-sm text-gray-800 dark:text-gray-200">{item.description}</p>
+      {isUserStory ? (
+        <p className="text-sm text-gray-800 dark:text-gray-200">
+          As a <span className="font-semibold">{item.role || "user"}</span>, I want to{" "}
+          <span className="font-semibold">{item.goal || "use the feature"}</span>, so that{" "}
+          {item.benefit || "achieve the business goal"}.
+        </p>
+      ) : (
+        <p className="text-sm text-gray-800 dark:text-gray-200">{item.description}</p>
+      )}
 
       <Citation citation={item.domain_citation} />
 
@@ -179,7 +199,7 @@ function AddItemCard({ field, onEdit }) {
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
         autoFocus
-        placeholder="Describe the new entry..."
+        placeholder={field === "user_stories" ? "What does the user want to do? (e.g. filter items by category)" : "Describe the new entry..."}
         rows={2}
         className="w-full text-sm bg-white dark:bg-gray-900 border border-accent-400 dark:border-accent-500 rounded-md p-2 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-accent-500 resize-none"
       />
