@@ -2,67 +2,29 @@
 UI/UX Agent preview renderer.
 
 Purpose:
-Render one page's generated components into a PNG screenshot for human
-review. Mirrors plantuml_service's idiom (deterministic file-in/bytes-out,
-raise RuntimeError on failure) -- same pattern, new content type.
+Render one page's already-assembled, self-contained HTML document (see page_html_builder.py) into
+a PNG screenshot for the "Page Previews" thumbnail gallery. Mirrors plantuml_service's idiom
+(deterministic file-in/bytes-out, raise RuntimeError on failure) -- same pattern, new content
+type.
 
-Rendering approach:
-A static HTML shell mounts the *exact* generated .jsx source (the same text
-that gets saved as the approvable artifact) using vendored UMD builds of
-React, ReactDOM, and Babel standalone, plus the vendored Tailwind JIT script
--- all read from local files, no network access at render time. This gives a
-pixel-faithful render of the literal component source a human approves,
-without the cost/fragility of spinning up a per-component Vite dev server
-(node_modules install, port management, readiness polling) just to produce a
-review screenshot.
+Simplified render path: this used to mount live JSX via vendored React/ReactDOM/Babel-standalone
+(~2.6MB of vendored JS, plus a Babel-transform-then-React-mount step that could itself fail). A
+page is now a plain, already-fully-formed HTML document, so this only ever has to screenshot
+already-painted HTML/CSS -- Playwright's most basic and reliable capability, and a real
+reliability win on top of being simpler. This is now a secondary, best-effort artifact -- the
+PRIMARY preview is the raw HTML itself, rendered live via <iframe srcDoc> in the frontend, which
+needs no browser-automation step at all.
 
-Playwright's sync API is used here (like a plain function), and the async
-UIUXAgent calls it via asyncio.to_thread -- the sync API cannot run inside an
-already-running asyncio event loop.
+Playwright's sync API is used here (like a plain function), and the async UIUXAgent calls it via
+asyncio.to_thread -- the sync API cannot run inside an already-running asyncio event loop.
 """
 
 from __future__ import annotations
 
-import json
-import re
 import tempfile
 from pathlib import Path
-from typing import Any
 
 from playwright.sync_api import sync_playwright
-
-VENDOR_DIR = Path(__file__).parent / "vendor"
-
-HTML_TEMPLATE = """<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<script src="{react_src}"></script>
-<script src="{react_dom_src}"></script>
-<script src="{babel_src}"></script>
-<script src="{tailwind_src}"></script>
-</head>
-<body>
-<div id="root" class="bg-white"></div>
-<script type="text/babel">
-const {{ useState, useEffect, useMemo, useCallback, useRef, useContext, useReducer }} = React;
-
-{component_definitions}
-
-function __Page() {{
-  return (
-    <div>
-{component_mounts}
-    </div>
-  );
-}}
-
-const __root = ReactDOM.createRoot(document.getElementById('root'));
-__root.render(<__Page />);
-</script>
-</body>
-</html>
-"""
 
 
 class PreviewRenderError(RuntimeError):
@@ -71,25 +33,24 @@ class PreviewRenderError(RuntimeError):
 
 class UIUXPreviewRenderer:
     """
-    Renders a page's components into a single PNG.
+    Renders an already-assembled page HTML document into a single PNG.
     """
 
-    def render_page_png(self, components: list[dict[str, Any]]) -> bytes:
+    def render_page_png(self, page_html: str) -> bytes:
         """
-        components: list of {"name": str, "jsx_code": str, "mock_props": dict}
-        for every component on one page, in the order they should appear.
+        page_html: the full, self-contained HTML document for one page (see
+        page_html_builder.UIUXPageHtmlBuilder.build) -- the exact same content saved as the
+        UI_PAGE_HTML artifact.
 
         Returns PNG bytes. Raises PreviewRenderError on failure.
         """
 
-        if not components:
-            raise PreviewRenderError("Cannot render a page with zero components.")
-
-        html = self._build_html(components)
+        if not page_html or not page_html.strip():
+            raise PreviewRenderError("Cannot render an empty page document.")
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             html_path = Path(tmp_dir) / "preview.html"
-            html_path.write_text(html, encoding="utf-8")
+            html_path.write_text(page_html, encoding="utf-8")
 
             try:
                 with sync_playwright() as playwright:
@@ -97,17 +58,12 @@ class UIUXPreviewRenderer:
                     try:
                         page = browser.new_page(viewport={"width": 900, "height": 700})
 
-                        # Real testing showed content that renders correctly and quickly in
-                        # isolation still occasionally hit Playwright's 30s default action
-                        # timeout ("element is not visible") when run as part of the real
-                        # pipeline -- Ollama/MongoDB/LangGraph all competing for CPU on modest
-                        # hardware starves the browser of the cycles it needs to finish layout,
-                        # not a rendering defect in the content itself. A generous default
-                        # timeout gives it that headroom instead of failing prematurely under
-                        # load. Note: passing timeout= directly to .screenshot() below does NOT
-                        # reliably override Playwright's default in this version -- confirmed by
-                        # direct testing (a "timeout=8000" call still took the full ~30s) -- only
-                        # page.set_default_timeout() actually changes the wait duration.
+                        # Same generous-timeout precedent already established for this agent's
+                        # rendering: real testing showed content that renders correctly and
+                        # quickly in isolation can still hit Playwright's default action timeout
+                        # under real pipeline CPU contention (Ollama/MongoDB/LangGraph all
+                        # competing for cycles) -- kept even though this render path is now much
+                        # simpler, since the contention cause is unrelated to what's rendered.
                         page.set_default_timeout(90000)
 
                         console_errors: list[str] = []
@@ -118,64 +74,22 @@ class UIUXPreviewRenderer:
                         page.on("pageerror", lambda exc: console_errors.append(f"pageerror: {exc}"))
 
                         page.goto(html_path.as_uri())
-                        page.wait_for_timeout(800)  # allow Babel transform + Tailwind JIT to settle
+                        page.wait_for_timeout(300)  # allow Tailwind's Play-CDN class scan to settle
 
-                        root_locator = page.locator("#root")
-                        if root_locator.count() == 0 or not root_locator.first.inner_html().strip():
+                        body_locator = page.locator("body")
+                        if body_locator.count() == 0 or not body_locator.first.inner_html().strip():
                             raise PreviewRenderError(
-                                "Preview root rendered empty. "
+                                "Preview body rendered empty. "
                                 f"Browser console errors: {console_errors}"
                             )
 
-                        return root_locator.first.screenshot()
+                        return page.screenshot(full_page=True)
                     finally:
                         browser.close()
             except PreviewRenderError:
                 raise
             except Exception as error:
                 raise PreviewRenderError(f"Playwright preview rendering failed: {error}") from error
-
-    def _build_html(self, components: list[dict[str, Any]]) -> str:
-        component_definitions = []
-        component_mounts = []
-
-        for index, component in enumerate(components):
-            jsx_code = self._strip_export_default(component["jsx_code"])
-            component_name = component["name"]
-            mock_props = component.get("mock_props", {})
-            mount_var = f"__mockProps{index}"
-
-            component_definitions.append(jsx_code)
-            component_definitions.append(
-                f"const {mount_var} = {json.dumps(mock_props)};"
-            )
-            component_mounts.append(f"      <{component_name} {{...{mount_var}}} />")
-
-        return HTML_TEMPLATE.format(
-            react_src=self._vendor_uri("react.production.min.js"),
-            react_dom_src=self._vendor_uri("react-dom.production.min.js"),
-            babel_src=self._vendor_uri("babel.min.js"),
-            tailwind_src=self._vendor_uri("tailwindcss.js"),
-            component_definitions="\n".join(component_definitions),
-            component_mounts="\n".join(component_mounts),
-        )
-
-    def _strip_export_default(self, jsx_code: str) -> str:
-        """
-        The saved artifact uses `export default function X(props) {...}` (real
-        ES module syntax, correct for the file the Coder Agent will later
-        consume). The preview harness has no module loader, so only the
-        export syntax is stripped here -- the component logic is untouched.
-        """
-        return re.sub(r"^\s*export\s+default\s+", "", jsx_code, count=1)
-
-    def _vendor_uri(self, filename: str) -> str:
-        path = VENDOR_DIR / filename
-
-        if not path.exists():
-            raise PreviewRenderError(f"Vendored preview asset not found: {path}")
-
-        return path.resolve().as_uri()
 
 
 uiux_preview_renderer = UIUXPreviewRenderer()

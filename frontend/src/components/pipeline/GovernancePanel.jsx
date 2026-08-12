@@ -9,9 +9,10 @@ import LoadingSpinner from "../common/LoadingSpinner";
 const APPROVAL_WARNINGS = {
   uiux: (
     <>
-      Approving this metadata does <strong>not</strong> approve the individual components -- each
-      must be approved separately (see the "UI/UX components awaiting review" section), or Coder
-      Agent will regenerate it from scratch instead of reusing it.
+      Approving this Preview Screenshot approves the underlying UI metadata, integration
+      manifest, and every component/page design of this version <strong>together</strong> --
+      Coder Agent will treat all of them as approved reference material to build from. Rejecting
+      or requesting revision applies to all of them the same way.
     </>
   ),
   coder: (

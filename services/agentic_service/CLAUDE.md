@@ -4524,6 +4524,527 @@ milestone — that file is scratch, **this file is the durable one**.
       model choice; it does not make a mismatched model fast. `llama3:latest` remains the
       documented, actually-fast choice for this machine.
 
+60. **Architecture Agent: zoomable diagrams, a genuinely structured Architecture Plan view, and a
+    single approval gate covering the Plan + its 3 diagrams together.** Three direct user
+    requests. Investigated via 3 parallel Explore agents + 1 Plan agent, then personally
+    re-verified the 4 most load-bearing files directly before implementing. Full plan:
+    `C:\Users\ASUS\.claude\plans\soft-petting-star.md` at time of writing.
+    - **Zoom**: new `react-zoom-pan-pinch` dependency (`^4.0.4`) + new
+      `frontend/src/components/common/ZoomableImage.jsx` (generic `src`/`alt`/`className` wrapper
+      around `TransformWrapper`/`TransformComponent`, reusable later for the UI/UX Agent's page
+      previews though not wired in there now) -- only `ArchitectureDiagramsGallery.jsx`'s existing
+      lightbox (click-to-enlarge) gained zoom; the inline 480px thumbnail stays a plain,
+      non-zoomable `ImageViewer`. `Modal.jsx` gained an optional `bodyClassName` prop (default
+      unchanged `overflow-y-auto`) so only the diagram lightbox opts into `overflow-hidden`,
+      preventing the modal's own scroll from fighting drag-to-pan -- none of Modal's ~10 other
+      callers were touched.
+    - **Structured Architecture Plan view**: `ArchitecturePlanDocumentViewer.jsx` rewritten to
+      follow the same pattern `SrsDocumentViewer.jsx` already established -- an explicit section
+      order (mirrors `markdown_builder.py`'s own already-decided 17-section human-reading order),
+      field-shape-aware layout, `DocumentValue` kept only as the fallback. Found and fixed real,
+      previously-silent gaps, not just cosmetic messiness: `document_control` and
+      `requirement_interpretation` were rendered in the Markdown output but not AT ALL in the
+      React viewer; `validation_plan` and `coder_implementation_tasks` were both already listed
+      in `KNOWN_TOP_KEYS` (meaning excluded from the generic fallback loop) but had no actual
+      rendering block, so they silently showed nothing; `implementation_plan`'s bespoke block only
+      rendered 4 of its 8 real sub-fields, silently dropping `backend.endpoints`, `backend.models`,
+      `frontend.routing`, `frontend.components_to_reuse` -- exactly the "AI-executable blueprint"
+      content this schema exists for. New `SubSectionList`/`MetadataGrid` helper components (loop
+      over an object's own keys rather than hardcoding sub-field names, so a shape drift in real
+      LLM/fallback output degrades gracefully instead of silently dropping a field) power
+      Requirement Interpretation, Validation Plan, Document Control, and the "Design Views
+      (Additional)" catch-all for `context_view`/`logical_view`/`behavior_view` (the 3 sub-views
+      with no dedicated Markdown section of their own). Read-only only -- no inline editing was
+      added, matching the explicit scope boundary (this component has no `featureId`/`editable`
+      props, unlike `SrsDocumentViewer`, and none should be added here).
+    - **Single approval gate**: per direct user request, the 3 diagram types (6 artifact rows --
+      PUML+PNG each) no longer have an independent approval decision at all -- approving,
+      rejecting, or requesting revision on the Architecture Plan cascades the exact same decision
+      to them (and to the Plan's own other format, JSON<->Markdown) automatically. New
+      `ARCHITECTURE_SIBLING_DIAGRAM_TYPES` constant + `ApprovalService._cascade_architecture_plan_decision`
+      (`approval_service.py`) -- joins by same `feature_id` + same `version` (confirmed invariant:
+      `_save_architecture_artifacts` computes ONE version via `get_next_version` and reuses it for
+      all 8 rows of a single run/revise call), self-gates on artifact_type so it can be called
+      unconditionally, writes a synthetic `store.approvals` record per cascaded sibling with
+      `approved_by: "system:architecture_plan_cascade"` (never the human's own name -- an honest
+      signal this wasn't an independent click, matching this project's "report, don't
+      misrepresent" convention) so nothing is a silent gap in `list_feature_approvals`. Also added
+      `ArtifactType.ARCHITECTURE_PLAN` to `EXCLUSIVE_VERSIONED_ARTIFACT_TYPES` (confirmed with the
+      user first, since it wasn't explicitly requested but is a natural consistency extension
+      matching SRS/Enhanced SRS's existing discipline) -- the existing exclusivity revert loop now
+      also calls the new cascade helper (with `status=PENDING`) when it reverts an older
+      Architecture Plan version, so that old version's own diagrams revert in step instead of
+      going out of sync with its now-pending plan. Frontend: `ResultTab.jsx`'s existing
+      `UNLISTED_ARTIFACT_TYPES` array (already the mechanism hiding `domain_improvements` etc.)
+      gained the 3 diagram types -- removes them from both "All Artifacts" and `GovernancePanel`'s
+      "Stage Artifacts" (fed the same already-filtered prop, confirmed no separate query exists).
+      `ArchitectureDiagramsGallery.jsx` gained a "Download PUML source" link per diagram (a new
+      TEXT-format lookup alongside the existing PNG one) so removing diagrams from the generic
+      artifact list didn't lose the ability to download the raw `.puml` source.
+    - Tests: `tests/test_approval_architecture_cascade.py` (new, 7 -- approving Plan JSON cascades
+      to its Markdown sibling + all 6 diagram rows of the same version; reject and
+      revision_requested cascade the same way (parametrized, three-way propagation); a different
+      version's siblings are completely untouched; cascaded siblings get an honest synthetic
+      approval record while the Plan's own record stays correctly human-attributed; approving a
+      NEW Plan version reverts the OLD version's plan AND its own diagrams; the cascade never
+      bleeds into unrelated artifact_types). Full suite: **495 passed** (up from 488). `npm run
+      build`: clean.
+    - **Real, live verification, not just synthetic tests** -- the real TaskFlow "Task Search"
+      feature (`feature_244e26d1`, 5 real Architecture Plan versions with real diagrams from
+      earlier sessions' work, all still pending going into this verification): confirmed via
+      screenshot that a real wheel-zoom gesture inside the lightbox dramatically magnified a real
+      diagram (the on-screen +/-/1:1 controls also visible); confirmed via screenshots that the
+      rewritten document view renders real generated content for every previously-missing section
+      (Document Control's key/value grid, Requirement Interpretation's AC table, Frontend
+      Routing's new-routes/nav-links tables, Coder Implementation Tasks' full table, API &
+      Interface Plan's endpoint table) against this real feature's real v5 plan; confirmed via the
+      real `POST /artifacts/{id}/approval` endpoint that approving v5's Plan JSON cascaded
+      `approved` to all 7 real siblings in one call, and that a follow-up approval of v4's Plan
+      correctly reverted all 8 of v5's rows back to `pending` (cross-version exclusivity, now
+      covering Architecture Plan) while v4's own 8 rows became `approved` -- verified the exact
+      synthetic-vs-human approval record distinction directly (v4's own record: `approved_by:
+      "human_user"`; a cascaded diagram's record: `approved_by: "system:architecture_plan_cascade"`,
+      honest reviewer_comment). Confirmed via a final screenshot that "All Artifacts" correctly
+      shows only the 5 Plan-version rows (zero diagram rows, per Task 3's frontend removal) with
+      v4 now showing "Approved" (no action buttons, matching the existing `approveLocked`
+      convention) and every other version retaining its own independent Approve/Reject/
+      Request-Revision controls. This real state (v4 approved, v5 reverted to pending) was left in
+      place afterward as genuine, informative verification evidence, matching this project's own
+      established convention -- not reverted or cleaned up.
+
+61. **Architecture Plan approval now auto-continues into UI/UX Agent, same popup pattern as
+    Requirement->Domain and Domain->Architecture.** Direct user request: approving the Architecture
+    Plan should show a confirmation popup offering to start UI/UX Agent automatically, and
+    confirming should switch the chat to UI/UX Agent and start it generating immediately. Scope
+    confirmed with the user as minimal: reuse UI/UX Agent's existing non-streaming `POST /uiux/run`
+    call -- no new streaming backend route, no dedicated chat component (Domain/Architecture Agent
+    have those; UI/UX Agent doesn't, and building one is a separate, bigger task not done here).
+    Investigated via 2 parallel Explore agents + 1 Plan agent, then personally re-verified every
+    critical file directly before implementing.
+    - **The one real design problem**: `ResultTab.jsx` needs to *trigger* the UI/UX run
+      (`useRunUiux(featureId).mutate({})`, matching how Domain Agent's own auto-start already
+      works), but `ChatPanel.jsx` already has its OWN, separate `useRunUiux(featureId)` call for
+      the composer's manual-run path. React Query's `useMutation` doesn't dedupe by call site the
+      way `useQuery` dedupes by `queryKey` -- two separate calls are two independent mutations
+      with independently-tracked pending state. Triggering the auto-run from `ResultTab` would
+      have started a real backend generation with **no visible feedback anywhere**, since
+      `ChatPanel`'s own instance would never see it as pending.
+    - **Fix**: new `frontend/src/components/workspace/UiuxAgentFlowContext.jsx` -- a small shared
+      context wrapping exactly one `useRunUiux(featureId)` instance, mirroring
+      `DomainAgentFlowContext.jsx`'s provider/consumer shape but much lighter (no streaming state
+      to manage, just one mutation object). Nested into `ProjectWorkspacePage.jsx`'s existing
+      provider stack (between `ArchitectureAgentFlowProvider` and `CoderAgentFlowProvider`). Both
+      `ResultTab.jsx` (trigger) and `ChatPanel.jsx` (composer's pending/Stop-button state, swapped
+      from its own local `useRunUiux` call to the shared context) now observe the same mutation.
+    - **`ResultTab.jsx`**: `APPROVE_CONTINUATION_BY_STAGE` gained an `architecture` entry
+      (`nextAgent: "uiux", autoRun: true`), matching the domain entry's tone/shape.
+      `handleConfirmedApprove`'s `autoRun` branch now dispatches on `approveContinuation.nextAgent`
+      -- `"architecture"` still calls `handleRunArchitectureStream` (a real stream); `"uiux"` calls
+      `runUiux.mutate({})` (a plain, non-streaming, fire-and-forget mutation -- UI/UX Agent has no
+      streaming route). The existing generating-view ternary chain
+      (`isDomainGenerating`/`isArchitectureGenerating`/`isCoderGenerating` -> `LiveGenerationView`)
+      gained an `isUiuxGenerating` branch reusing `LiveGenerationView`'s already-existing
+      `isFinalizing` mode (spinner + label + live elapsed timer, no token box -- the same shape
+      already used for Architecture's non-streamable diagram-generation tail) with
+      `phaseStartedAt={runUiux.submittedAt || null}` (`submittedAt` is a real, standard React
+      Query mutation field, confirmed present since `useAgentMutation` returns `{ ...mutation,
+      stop: ... }` unmodified). No new component needed.
+    - **No backend changes**: `UIUXAgentRunRequest` already makes every field optional, so
+      `runUiux.mutate({})` -> `POST /uiux/run` with an empty body is already a valid,
+      real-run-triggering request. `uiux_agent.run()`'s prerequisites (approved SRS + approved
+      Architecture Plan) are reliably already satisfied the moment this new transition fires,
+      since Architecture Plan approval is itself gated behind SRS approval in the pipeline
+      sequence -- safe to always attempt with no extra guarding.
+    - No automated frontend test suite exists in this repo (per every prior item's own note) --
+      `npm run build` clean; verified live only.
+    - **Real, live verification, not synthetic** -- the real TaskFlow "Task Search" feature
+      (`feature_244e26d1`, already carrying real Architecture Plan history from item 60's own
+      verification): rejected the then-approved v4 Plan via the API to unlock v5 (item 40's
+      `approveLocked` UI correctly disables Approve on a pending version while another is
+      approved -- confirmed hitting this for real while setting up the test, not a bug), then
+      drove the real popup flow through an actual browser: clicking Approve on v5 showed the
+      popup reading "Approve this Architecture Plan and start UI/UX Agent? Approving v5 makes it
+      the Architecture Plan this feature uses going forward... UI/UX Agent will start
+      automatically and generate page-level UI metadata, component code, and preview screenshots
+      -- watch it live in the Result panel." -- confirmed via screenshot, word-for-word as
+      designed. Clicking "Approve & Continue" correctly switched the agent pill to "UI/UX"
+      (confirmed via `page.get_by_role(...)`, not just a visual guess). **A real, honest test-
+      methodology gotcha hit while verifying**: the first attempt closed the Playwright browser
+      right after confirming, which aborted the in-flight, not-awaited `runUiux.mutate({})`
+      request before the backend could complete it (the same "closing the browser cancels an
+      in-flight request" class of gotcha already documented elsewhere in this file for other
+      streaming/mutation flows) -- confirmed via the API afterward showing zero `ui_*` artifacts
+      had been created. Not a bug in the implementation (the approval + navigation had already
+      genuinely completed by then); re-triggered the exact same route directly
+      (`POST /uiux/run` with `{}`, identical to what the UI's own click sends) and let it run to
+      completion in the background instead. Result: a real, complete UI/UX Agent run --
+      `ui_metadata` (JSON+Markdown), `ui_integration_manifest`, 2 `ui_component_code` artifacts,
+      and a real `ui_preview_screenshot` PNG -- confirmed via a final screenshot showing the
+      actual chat feed ("Started · UI/UX (no comment provided)" -> "UI/UX Agent: Produced UI
+      Metadata, UI Integration Manifest, Component Code, Preview Screenshot (v1)") and the Result
+      panel's real "Page Previews (1)" thumbnail (a genuinely rendered Task Search page with a
+      search input and example task cards). This real state (Architecture Plan v4 rejected, v5
+      approved, real UI/UX v1 artifacts pending review) was left in place afterward as genuine
+      verification evidence, matching this project's established convention.
+
+62. **Architecture Agent: reliable, explicit revision of ANY part of the plan via chat, mirroring
+    the Requirement Agent's own proven fix.** Direct user request: the human must be able to
+    explicitly add, edit, or remove anything on the generated Architecture Plan by prompting the
+    Architecture Agent in chat, "just like the requirement agent or ChatGPT/Claude." Investigated
+    via 2 parallel Explore agents + 1 Plan agent, then personally re-verified the two real
+    revision call sites directly -- confirmed a real, serious bug, not a UX polish item: both
+    `_revise_architecture_plan_output` and `revise_stream` asked the LLM to retype the ENTIRE
+    `architecture_plan_json` object in one shot (`ARCHITECTURE_REVISION_SYSTEM_PROMPT` literally
+    said "Return the full revised architecture_plan_json object only"). On any parse/validation
+    failure, both fell through to `_fallback_revise_architecture_plan_json`, which clones the
+    existing plan and changes only `revision_metadata`/one generic coder task/
+    `human_approval_note` -- every substantive section left byte-for-byte unchanged. A real,
+    already-generated sample (`task_search_architecture_plan_v5.json`) was itself proof this
+    happened in practice: its own `revision_metadata.fallback_used: true` showed a real past
+    revision request was silently dropped this exact way -- structurally identical to the bug
+    already found and fixed for the Requirement Agent (items 35/57).
+    - **The fix**: adapted the Requirement Agent's proven pattern (a small "operations" plan + a
+      deterministic Python patcher) but generalized for the Architecture Plan's much more deeply
+      nested schema (17 top-level keys, some 2-3 levels deep, e.g.
+      `implementation_plan.backend.endpoints`) via **dotted-path targeting + runtime-shape
+      detection**, rather than the SRS patcher's flat field-name-based dispatch. New file
+      `app/agents/architecture_agent/revision_patcher.py`: `_resolve_path(root, dotted_path)`
+      walks a dotted path, returning `(value, parent, key)` or a `_MISSING` sentinel if any
+      segment doesn't exist (never auto-creates a missing section -- a genuinely missing path
+      means the LLM named something that isn't there, reported as unmatched, never guessed).
+      `apply_architecture_revision_operations(plan, operations)` dispatches by the **runtime
+      type** found at the resolved path: list-of-strings (add/remove/modify by exact-then-
+      substring text match), list-of-dicts (add/remove/modify via a 3-tier matching cascade --
+      exact identifying-key match -> exact text match -> substring containment checked against
+      EVERY field's text, not just one identity field, so a distinctive quote from any part of an
+      item, e.g. a file's `purpose` text and not just its `path`, can still find it; `add` with a
+      bare string value gets wrapped into a dict via `_infer_wrap_key`, a majority-vote over
+      existing sibling keys), nested-dict (set/modify-only shallow merge; add/remove rejected with
+      a steering message toward a specific nested list path), and scalar (set/modify, treated as
+      synonyms, matching the same fix item 57 already made for the SRS patcher). Every operation
+      wrapped in its own try/except so one bad operation never breaks the rest; `applied`/
+      `unmatched` always both returned as human-readable strings -- never a silent no-op.
+      **Structural safety property**: since this dispatch never deletes a top-level or
+      `design_views` dict KEY (only list items by index, or scalar/dict VALUES), every key
+      `REQUIRED_ARCHITECTURE_PLAN_KEYS`/`REQUIRED_DESIGN_VIEW_KEYS` requires stays present after
+      patching, by construction -- no separate "did we break required structure" check needed.
+    - **Prompt** (`prompt.py`): rewrote `ARCHITECTURE_REVISION_SYSTEM_PROMPT`/
+      `build_architecture_plan_revision_prompt`, mirroring `REQUIREMENT_REVISION_SYSTEM_PROMPT`'s
+      proven structure -- explicit "you are NOT retyping the whole plan" framing, the operations
+      schema with real anchor paths (`assumptions`/`constraints`/`risks`/`dependencies`,
+      `document_control.target_stack`, `feature_overview.*`,
+      `design_views.interface_view.api_endpoints`, `design_views.data_view.data_entities`,
+      `implementation_plan.backend.*`, `implementation_plan.frontend.*`,
+      `implementation_plan.implementation_order`/`constraints`, `coder_implementation_tasks`,
+      `traceability_matrix`), the same anti-padding rule (a plural/empty-section request means
+      multiple real, distinct items -- one add per genuinely-implied item, never manufactured
+      beyond what's implied), the same target-quoting rule, plus one new rule for this schema's
+      added complexity ("add on an object-list field needs a full object shaped like its
+      siblings, not a bare string -- unless the field's items are plain strings").
+    - **Wiring -- both real call sites**, per this project's own hard-learned lesson (a fix
+      landing in only one of `revise_stream`/`_revise_architecture_plan_output` silently never
+      reaches the one the frontend uses): new `_parse_architecture_revision_plan`/
+      `_apply_architecture_revision_plan` (mirroring `RequirementAgent`'s
+      `_parse_revision_plan`/`_apply_revision_plan` exactly -- `_apply_architecture_revision_plan`
+      sets `revision_metadata` with `applied_changes`/`unmatched_operations`, and appends
+      unmatched notes plus a zero-operations honest note to the plan's own `assumptions` array)
+      wired into both methods, replacing only the "how do we get `revised_architecture_plan_json`"
+      block in each. New ladder: LLM call (already had item 59's transport-failure guard, kept)
+      -> parse the small plan (deliberately NOT the full-document
+      `_parse_and_validate_architecture_plan_json`, which stays unchanged and unused by revision
+      going forward) -> apply via the patcher -> on a PARSE failure specifically, one JSON-repair
+      retry -> if that also fails, fall through to the existing, unchanged
+      `_fallback_revise_architecture_plan_json` (now a much rarer true last resort). The
+      diagram-regeneration/validation/build tail (`_ensure_implementation_plan` ->
+      `_complete_usecase_model` -> `_complete_diagram_models(attempt_agentic=False)` -> the
+      existing tolerant `_validate_full_output` try/except -> markdown/PUML build -> save) is
+      confirmed unchanged and already fully agnostic to how the revised dict was produced -- a
+      surgical change, not a rewrite. For `revise_stream`, the streamed tokens are now the small
+      operations plan instead of the whole document -- a real UX improvement on its own (a human
+      sees a short, readable plan typing in, not an 800-line JSON dump).
+    - Tests: `tests/test_architecture_revision_patcher.py` (new, 23 -- no-LLM, hand-built
+      real-shaped fixture: `_resolve_path` top-level/nested/missing-segment; string-list
+      add/remove/modify with exact/substring matching and unmatched-is-reported; object-list add
+      with a full dict value; object-list add with a bare string value confirming
+      `_infer_wrap_key`; object-list remove/modify by name/substring-of-a-non-identity-field
+      (`purpose`), confirming partial-dict modify only overwrites given fields; scalar set/modify
+      equivalence; dict-leaf set/modify merge vs. add/remove correctly rejected; malformed
+      operations skipped not raised; a full-plan smoke test applying several operations across
+      different shapes confirming every required top-level/design-view key survives; original
+      plan never mutated in place). `tests/test_architecture_agent_revision_ladder.py` (new, 4 --
+      a valid operations plan applies via the patcher with every OTHER section of the plan left
+      genuinely untouched, proving this is a patch not a retype; a parse failure falls through to
+      the JSON-repair rung which then succeeds; both attempts failing falls back to the unchanged
+      `_fallback_revise_architecture_plan_json`; `revise_stream` streams the small operations plan
+      and the resulting artifact reflects the applied change). Full suite: **522 passed** (up
+      from 495).
+    - **Real, found-during-testing design refinement**: the first version of `_find_matching_index`
+      only ever substring-matched against a SINGLE identity field per item (e.g. just a file's
+      `path`), so a target quoting a different field (e.g. a file's `purpose` text) never matched
+      even though it was a perfectly reasonable thing for the LLM to quote -- caught by this
+      session's own test for exactly that case. Fixed by adding `_item_full_text` (joins every
+      field's text, used only for the substring-containment tier, not the stricter exact-match
+      tiers) so a distinctive quote from ANY field can still find its item.
+    - **Live verification against the real TaskFlow "Task Search" feature** (`feature_244e26d1`,
+      already carrying real Architecture Plan history including a real past
+      `fallback_used: true` version -- direct evidence of the bug this fixes): restarted context
+      confirmed live via the already-running `--reload` backend, drove a real revision through
+      `POST /architecture/revise/stream` with the comment "Add a constraint that search must be
+      rate-limited to 10 requests per minute" against the real, approved v5 plan. Confirmed: the
+      streamed tokens were a small ~68-line JSON operations plan (not an 800-line document);
+      the saved v6 artifact's `revision_metadata.applied_changes` reads exactly `"Added to
+      implementation_plan.constraints: Search must be rate-limited to 10 requests per minute"`
+      and `unmatched_operations: []` -- direct proof the request was actually applied, not
+      silently dropped; every untouched section (both original `constraints` entries, both
+      backend endpoints, both data entities, the scaffold-awareness implementation_plan
+      constraints, all 3 assumptions) survived with full, non-degraded content; and all 8 v6
+      artifacts (Plan JSON+Markdown + 6 diagram files) saved successfully, confirming diagrams
+      still regenerate correctly from the patched plan. This real v6 state (pending human review)
+      is left in place afterward as genuine verification evidence, matching this project's own
+      established convention.
+
+63. **UI/UX Agent rewritten to generate HTML + Tailwind CSS (not React/JSX), with an instant
+    server-less live preview, and its output repositioned as a VISUAL REFERENCE for the Coder
+    Agent instead of literal code to import -- fixing a real, confirmed "empty UI" bug as a
+    structural side effect of the architecture change, not a separate patch.** Direct user
+    request, 5 parts: generate UI in HTML+Tailwind; preview it "like the Coder Agent" (a real,
+    interactive-feeling Output-panel preview); Coder Agent must use UI/UX output as a visual
+    reference, not literal reuse; fix a reported bug -- an **empty** page image for "Item Listing
+    (CRUD)" in "Sample E-commerce"; the UI must be accurate and visually strong, grounded in the
+    Architecture Agent's real output.
+    - **Root-caused the empty-UI bug directly, not by guessing**: downloaded and viewed the real
+      screenshot artifact -- it showed literally "Unknown state." and "No data available."
+      Reading the actual generated JSX confirmed why: `ItemListingTable.jsx`/`ItemDetailsModal.jsx`
+      only implemented explicit branches for `props.state === 'loading'/'error'/'success'`,
+      falling back to a generic placeholder for anything else -- and the page's declared `states`
+      metadata was `["idle","loading","error","success"]`, with "idle" never implemented by
+      either component. Whatever `mock_props` ended up selected for the page-level preview
+      evidently picked a state outside `{loading,error,success}`. A second, related bug was also
+      confirmed in the same real artifacts: every component's `"props": {"propName": "short
+      description of the prop"}` was the LITERAL, unfilled placeholder text shown as an example
+      in the prompt's own JSON-shape sample, echoed back verbatim (the same "model anchors on the
+      shown JSON shape" anti-pattern already fixed elsewhere in this codebase, e.g. items 55/32).
+    - **The architectural fix structurally eliminates the whole bug class**: switching to static
+      HTML + Tailwind with ONE canonical, always-fully-populated view baked directly into the
+      markup removes state-branching from generated output entirely -- there is no unhandled
+      branch left to fall into, because there is no branch at all.
+    - **New content model**: components remain the reusable unit (preserves real cross-feature
+      reuse, e.g. `LoginForm` across Login/Signup) but are authored as a single self-contained
+      HTML fragment with realistic, fully-populated example content baked in, grounded in the
+      Architecture Plan's real `design_views.data_view` entity fields. Page assembly is a NEW,
+      deterministic (no-LLM) step (`page_html_builder.py`) -- pure string concatenation wrapping
+      a page's ordered fragments in a full `<!DOCTYPE html>` document with a default shell
+      (`<body class="min-h-screen bg-gray-50">` + a centered `<main>`); this step can never fail
+      or hallucinate, which is precisely what guarantees every page always renders something
+      complete. `props: {"propName": "..."}` renamed to `content_elements: ["..."]` (a list of
+      real content descriptions) -- breaks the placeholder-echo anchor bug by removing the exact
+      key/shape being copied. New `metadata_validator.py` check rejects any `content_elements`
+      entry that's empty or a literal echo of the prompt's own example text. `states` stays in
+      the schema (still a cheap, useful structural check) but is demoted to informational-only --
+      it tells the Coder Agent which real interactive states the eventual working app needs,
+      while the static reference always shows the one fully-populated "success" view.
+    - **New quality gate + bounded repair, replacing the old render-failure repair loop**:
+      `component_generator.detect_placeholder_content` (a cheap, deterministic phrase-based
+      check -- "no data available", "unknown state", "lorem ipsum", etc.) runs on every generated
+      fragment; `UIUXAgent._generate_component_with_quality_gate` retries up to
+      `MAX_CONTENT_QUALITY_REPAIR_ATTEMPTS = 2` with the exact violation fed back, then raises
+      `ComponentGenerationError` if it still fails -- an artifact a human reviews and the Coder
+      Agent later reads as a reference must never silently contain a placeholder/empty state.
+    - **Rendering simplified, not just changed**: `preview_renderer.py` now screenshots an
+      already-assembled HTML document instead of mounting live JSX via Babel + React -- the
+      `react.production.min.js`/`react-dom.production.min.js`/`babel.min.js` vendor files
+      (~2.6MB) and all JSX-mounting logic were deleted from this path entirely (and from disk).
+      This PNG remains a secondary, best-effort artifact (feeds the existing "Page Previews"
+      thumbnail gallery, unchanged) -- the PRIMARY preview is now the raw HTML itself.
+    - **"Preview like the Coder Agent" was deliberately NOT built as a Docker dev server**:
+      static HTML+Tailwind has zero server-rendering/data-fetching/build-step surface area --
+      nothing a container would give a static document that a browser can't already do by
+      parsing a self-contained HTML string. Confirmed via direct reading that `GET
+      /artifacts/{id}/content` already serves any non-JSON/PNG format as raw text with **zero
+      backend changes needed**, and `ArtifactFormat.HTML` already existed in `enums.py`, defined
+      but unused anywhere -- clearly reserved for exactly this. New `ArtifactType.UI_PAGE_HTML`
+      (new enum member, not a repurposed unused `UI_DESIGN` -- avoids a silent collision with
+      whatever that may have been reserved for) is the assembled full-page artifact; the Tailwind
+      Play-CDN vendor script (confirmed via direct inspection: a self-scanning IIFE, no companion
+      block needed) is inlined by file content directly into each page's `<head>`, making every
+      page artifact fully self-contained/downloadable/portable with zero network dependency.
+    - **Frontend**: real, confirmed-by-reading finding -- `OutputPanel.jsx`'s "Preview" tab had
+      **no stage gating at all** before this change (`selectedAgent` was already destructured but
+      never used for this branch; clicking Preview always showed the Coder Agent's Docker
+      `PreviewPanel` regardless of stage) -- fixed with one small additive branch
+      (`selectedAgent === "uiux" ? <UiuxPreviewPanel/> : <PreviewPanel/>`), not new gating
+      infrastructure. New `UiuxPreviewPanel.jsx`: a page selector (mirrors the existing PNG
+      gallery's `latestByFile`-style dedupe) + `<iframe srcDoc={content}>` fetched via the
+      already-generic `useArtifactContent` hook -- no new backend route needed. `UiMetadataViewer.jsx`
+      updated for the `content_elements` list shape (was rendering `props` as a dict of key:value
+      rows -- would have crashed/shown nothing on the new list shape). `artifactTypeMeta.js`
+      gained the new type/stage entries and an `"html"` `pickViewer` branch.
+    - **Coder Agent: visual reference, not literal reuse.** Renamed `read_ui_component` ->
+      `read_ui_component_design`; added new `read_ui_page_design(page_id_or_route)` for full-page
+      layout context. **Two real format filters silently break reuse if missed** (confirmed by
+      reading both): `tools.py`'s `_find_approved_component_artifact` and `agent.py`'s
+      `_load_existing_approved_component` (UI/UX Agent's own cross-feature reuse-by-name lookup)
+      both hard-coded `ArtifactFormat.CODE` -- fixed to `HTML` in both; missing either doesn't
+      crash, it just silently falls through to "no approved component found, generating a fresh
+      one instead" (a quiet capability loss, not a loud failure). **6 real locations in
+      `coder_agent/prompt.py`** rewritten to a consistent "visual reference -- read it, then
+      write real TSX that faithfully matches it; never `dangerouslySetInnerHTML`" framing (2 were
+      found only by a Plan agent's direct-read validation pass, beyond the 2 I'd already found
+      personally: the prop-wiring completeness rule, and the integration-manifest context text
+      injected into the shared planner/coding prompt). Also found and fixed while sweeping every
+      remaining `read_ui_component`/`props` reference project-wide: a `_TOOL_ACTIVITY_LABELS`
+      dict entry in `coder_agent/agent.py` (would have silently stopped showing a friendly label
+      for this tool call in the live activity feed), a literal instruction string inside
+      Architecture Agent's own deterministic fallback `implementation_plan` builder (would have
+      told the Coder Agent the OLD "reuse verbatim via read_ui_component" instruction inside a
+      real generated Architecture Plan), and several doc-comment-only references. `integration_manifest_builder.py`'s
+      `expected_props` -> `content_elements`. `apply_design_system_patch`'s `"props":
+      list((component.get("props") or {}).keys())` was a confirmed **real crash** waiting to
+      happen (`AttributeError` -- `content_elements` is a list, not a dict) the moment a
+      non-reused component under the new schema got approved; fixed to `"content_elements":
+      component.get("content_elements") or []`. `_placeholder_mock_props` deleted outright (fully
+      dead code -- no mock_props concept survives under the new design).
+    - Tests: `tests/test_uiux_page_html_builder.py` (new, 6 -- deterministic assembly, fragment
+      order, empty-fragment skipping, inlined-not-referenced Tailwind script, page_id fallback,
+      never fails on its input), `tests/test_uiux_component_generator.py` (new, 8 -- single-marker
+      parse, the exact real placeholder phrases confirmed in the broken artifacts correctly
+      flagged, Lorem Ipsum flagged, real content allowed through), `tests/
+      test_uiux_agent_quality_gate.py` (new, 3 -- passes-first-try/gets-repaired/exhausts-repair-
+      and-raises, mocked component_generator, no real LLM), `tests/test_uiux_metadata_validator.py`
+      (+5 -- empty/missing `content_elements` fails, the exact real placeholder-echo string fails
+      with "placeholder" in the error, real content passes; 2 pre-existing tests' fixtures updated
+      for the new field), `tests/test_uiux_component_reuse.py` (rewritten for HTML/`.html` fixtures,
+      the 2 dead `_placeholder_mock_props` tests deleted), `tests/test_uiux_integration_manifest_builder.py`
+      (golden fixture rewritten for `content_elements`), `tests/test_coder_tools.py` (renamed +2,
+      +2 new `read_ui_page_design` tests), `tests/test_coder_prompt.py` (1 stale substring-lock
+      test rewritten to match the new prompt wording, preserving its original intent). Full suite:
+      **578 passed** (up from 522), only 5 pre-existing Docker-daemon-unavailable tests deselected
+      (confirmed via direct `docker ps` -- environmental, unrelated to this change).
+      `npm run build` clean.
+    - **Real, live verification against the exact reported feature** (`feature_94701501` "Item
+      Listing (CRUD)" in `proj_34e07440` "Sample E-commerce"): a real run initially hit a
+      `ReadTimeout` -- root-caused to `uiux_agent`'s live per-agent LLM override being set to
+      `qwen3-coder:latest` (a 30.5B model that doesn't fit this machine's 6GB GPU, the same
+      already-documented VRAM-mismatch class as items 49-51) -- confirmed directly via `ollama ps`
+      showing only ~3.8GB of the model's ~22GB actually in VRAM. Temporarily switched the
+      override to `llama3:latest` for the run (same "switch, verify, restore exactly" precedent
+      as items 49-51), which completed successfully. **Direct inspection of the real output**:
+      the assembled page HTML contains genuinely populated content ("Item Name $12.99 Quantity: 5
+      Category: Electronics", "Another Item $9.99 Quantity: 3 Category: Clothing", a real Item
+      Details panel, real "Page 1 of 5" pagination) with zero occurrences of "unknown state"/"no
+      data available" anywhere in 409KB of real HTML; `content_elements` in the new metadata
+      shows real, specific values ("item name", "price", "quantity", "category") with no
+      placeholder echo. **Confirmed live in an actual browser** (Playwright, not just curl):
+      navigated to the real feature's UI/UX stage, clicked the new Preview tab, and the iframe
+      rendered the exact same real content instantly (screenshot confirmed: a styled Item List
+      card grid, Item Details panel, Previous/Next pagination -- no Docker, no build step,
+      the "All Artifacts" list correctly showing new "Component Design"/"Page Design" labeled
+      rows, each independently approvable per the existing convention). Approved the new v2
+      metadata + 3 components + page HTML through the real API, then **directly exercised the
+      real, unmocked Coder Agent lookup functions** (`_find_approved_component_artifact`,
+      `_find_approved_page_html_artifact`) against this real data in a live Python session --
+      all 3 components and the page found correctly by name/route, real HTML content read back
+      verbatim -- proving the full generation-to-consumption chain end-to-end, not just each half
+      in isolation. Restored `uiux_agent`'s LLM override back to `qwen3-coder:latest` exactly
+      afterward. This real v2 state (5 artifacts approved, metadata/manifest/markdown/screenshot
+      still pending) is left in place as genuine verification evidence, matching this project's
+      own established convention.
+
+64. **UI/UX Agent follow-up: single-artifact approval (Preview Screenshot only), real image
+    placeholders instead of broken `<img>` tags, and consistent, deliberate color usage.** Direct
+    follow-up to item 63, based on the user's own screenshot of the real generated output. Four
+    asks: (1) hide every UI/UX artifact from human approval except the Preview Screenshot; (2) the
+    screenshot showed broken-image icons with visible `alt` text ("Item Image") -- fix at the
+    source; (3) "accurate and nice UI" (folded into #4); (4) more deliberate, consistent color.
+    - **Approval cascade, mirroring item 60's Architecture Plan cascade exactly, anchored on
+      `UI_PREVIEW_SCREENSHOT` instead of `ARCHITECTURE_PLAN`**: investigated by reading
+      `approval_service.py`/`graph_orchestrator_service.py`/`deriveStageStatus.js`/
+      `ArtifactList.jsx`/`ResultTab.jsx`/`GovernancePanel.jsx` directly (an Explore agent stalled
+      twice, abandoned in favor of direct reading). Key confirmed facts: `graph_orchestrator_
+      service.resume()` is completely artifact-agnostic (only needs `feature_id` + a status
+      string) -- switching which artifact type gates a stage needs zero graph changes.
+      `apply_design_system_patch`'s trigger check WAS artifact-type-specific though (fired only
+      when `UI_METADATA` was the artifact directly approved) -- widened to also fire on
+      `UI_PREVIEW_SCREENSHOT`, since the method already resolves `UI_METADATA` by version
+      internally regardless of what triggered it. New `UIUX_SIBLING_ARTIFACT_TYPES`/
+      `_is_uiux_screenshot_type`/`_cascade_uiux_screenshot_decision` (mirrors `_cascade_
+      architecture_plan_decision` exactly -- same synthetic `approved_by:
+      "system:uiux_screenshot_cascade"` convention, same never-raises contract).
+      `UI_PREVIEW_SCREENSHOT` added to `EXCLUSIVE_VERSIONED_ARTIFACT_TYPES` (only one version ever
+      "the approved one," matching `ARCHITECTURE_PLAN`'s own reasoning) with the matching
+      revert-cascades-too branch. Frontend: `ResultTab.jsx`'s `UNLISTED_ARTIFACT_TYPES` gained
+      `ui_metadata`/`ui_integration_manifest`/`ui_component_code`/`ui_page_html`;
+      `artifactTypeMeta.js`'s `STAGE_GATING_ARTIFACT.uiux` repointed to `ui_preview_screenshot` --
+      confirmed no other frontend logic needed to change, since `resolveGatingArtifact`/
+      `approveLocked`/`ArtifactRow` are all already generic over whatever `STAGE_GATING_ARTIFACT`
+      names. **Found a real, already-stale warning while reading `GovernancePanel.jsx`**:
+      `APPROVAL_WARNINGS.uiux` referenced a "UI/UX components awaiting review" section already
+      retired per item 31 -- rewritten to accurately describe the new cascade.
+    - **Image placeholders**: root-caused directly to `HTML_COMPONENT_GENERATOR_SYSTEM_PROMPT`
+      rule 6 ("`alt` text on every `<img>`"), which never forbade a fake external URL like
+      `https://example.com/item-image.jpg` that can never resolve. Rewritten to forbid `<img
+      src="...">` entirely for mock content and instead use a decorative placeholder box (a
+      `<div>` with fixed size/`bg-gray-200`/`rounded-lg` + a centered inline SVG "photo" icon,
+      given as a literal copy-adaptable example in the prompt, matching this prompt's own
+      established style of concrete examples over abstract instructions).
+    - **Consistent color, not just "more color"**: real risk identified and designed around --
+      N independent per-component LLM calls on the same page could each pick a different accent
+      color. Fixed by deciding `color_theme` ONCE at the metadata-generation step (new top-level
+      `ui_metadata_json.color_theme` field, e.g. `"indigo"`) and threading it explicitly through
+      every subsequent component-generation call (`agent.py` -> `component_generator.generate` ->
+      `build_component_generator_user_prompt`), rather than hoping independent calls agree --
+      mirrors this project's own established "decide once, thread deterministically" philosophy
+      (the same reason `page_html_builder.py` exists as one deterministic assembly step). Defaults
+      to `"indigo"` if the model omits the field -- deliberately no new validator/repair-loop
+      surface for something this low-stakes. `HTML_COMPONENT_GENERATOR_SYSTEM_PROMPT` rule 4
+      rewritten with concrete Tailwind guidance: the accent color for primary buttons/links/active
+      states; semantic (non-accent) colors for price/success (green)/destructive (red)/warning
+      (amber); real card backgrounds+shadow+rounded-corners so sections read as distinct blocks;
+      colored badges/chips for status/category content.
+    - Tests: `tests/test_approval_uiux_cascade.py` (new, 9 -- mirrors `test_approval_architecture_
+      cascade.py`'s exact structure: approving the screenshot cascades to metadata/manifest/
+      components/page-html of the same version; reject/revision_requested cascade the same way; a
+      different version untouched; a SECOND screenshot of the same version (multi-page case) also
+      cascades; cascaded siblings get the honest synthetic `approved_by`; approving a new
+      screenshot version reverts the old version's screenshot AND its whole cascade; never bleeds
+      into unrelated types; `apply_design_system_patch` fires from the widened trigger). Full
+      suite: **587 passed** (up from 578), zero regressions. `npm run build` clean.
+    - **Real, live verification against the same real feature** (`feature_94701501` "Item Listing
+      (CRUD)" in `proj_34e07440` "Sample E-commerce"): a real v3 generation run initially hit the
+      SAME reliability ladder's final rung 3 times in a row (`UI/UX Agent could not produce valid
+      ui_metadata_json after one repair attempt: pages must be a non-empty list`) -- root-caused,
+      NOT to this session's own changes, by directly reproducing it: a standalone script using the
+      plain SRS succeeded twice; the SAME script using the feature's real, approved Enhanced SRS
+      (which the real API path uses by default, `use_enhanced_srs_if_available=True`) reproduced
+      the exact failure -- a genuinely larger/more complex prompt this local model
+      (`llama3:latest`) is less reliable against, an already-existing characteristic unrelated to
+      this session's prompt-text additions. Worked around for verification purposes by passing
+      `use_enhanced_srs_if_available: false` (a real, pre-existing request field), which completed
+      cleanly. **Direct proof of every fix**: the real v3 metadata correctly included
+      `"color_theme": "indigo"`; a direct, isolated real-LLM generation of the "Item Details"
+      component (the exact one whose OLD version had the reported broken image) produced a
+      decorative placeholder box with the literal example SVG (zero `<img>`, zero
+      `example.com`), `text-indigo-600` used consistently for both the heading and a category
+      badge, `text-green-600` for the price (semantic, not accent), and real
+      `bg-white shadow-sm rounded-lg` card styling -- confirming all three prompt-level fixes work
+      together in one real generation. Approved the real v3 Preview Screenshot through the real
+      API and confirmed via direct store inspection that all 6 v3 artifacts (metadata JSON+MD,
+      manifest, component, page-html, screenshot) flipped to `approved`, with the screenshot's own
+      record honestly attributed to the real caller and every cascaded sibling correctly stamped
+      `system:uiux_screenshot_cascade`; confirmed `design_system.json` was patched with the new
+      "Pagination" component using the correct `content_elements` list shape (not the old
+      dict-`.keys()` crash). **Confirmed live in an actual browser**: "All Artifacts" for this
+      stage now shows exactly 3 rows, all "Preview Screenshot" (v1/v2/v3) -- zero metadata/
+      manifest/component/page-design rows -- with v3 correctly locked as "Approved" (no action
+      buttons) and v1/v2 still independently Pending/actionable; the version selector correctly
+      reads "v3 -- approved"; the "Page Previews" gallery incidentally shows a real, visible
+      before/after (v1's original broken "Unknown state."/"No data available" thumbnail, left in
+      place as historical evidence, right next to the clean v2/v3 thumbnails). Restored
+      `uiux_agent`'s LLM override back to `qwen3-coder:latest` exactly afterward (same
+      "temporarily switch, verify, restore exactly" precedent as items 49-51/63). This real v3
+      state (approved, cascaded) is left in place as genuine verification evidence, matching this
+      project's own established convention.
+
 ## Where to look
 
 - Full build spec (read this first, in order, before any new milestone): `instructions .md`

@@ -9,33 +9,26 @@ title Task Search Class Diagram
 
 class "TaskSearchController" as CLS_CONTROLLER <<control>> {
   +getApiTaskSearch(request): Response
-  +getApiTaskSearch(request): Response
 }
 
 class "TaskSearchService" as CLS_SERVICE <<service>> {
-  +searchTasksByKeywordIn(input): Result
+  +usersCanSearchTasksBy(input): Result
 }
 
 class "TaskSearchRequest" as CLS_REQUEST_001 <<dto>> {
-  +field: String
+  +query: String
 }
 
 class "TaskSearchSuccessResponse" as CLS_RESPONSE_001 <<dto>> {
-  +field: String
+  +results: Array
 }
 
 class "TaskSearchErrorResponse" as CLS_RESPONSE_002 <<dto>> {
-  +field: String
+  +results: Array
 }
 
-class "TaskSearchDataEntity1" as CLS_ENTITY_001 <<entity>> {
-  +taskTitleAndDescriptionFiel: String
-  +dsMustBeIndexedForSearch: String
-}
-
-class "TaskSearchDataEntity2" as CLS_ENTITY_002 <<entity>> {
-  +taskIDAndDetailPageURLMus: String
-  +tBeIncludedInSearchResults: String
+class "TaskSearchResult" as CLS_ENTITY_001 <<entity>> {
+  +representsAMatchedTask: String
 }
 
 class "TaskSearchRepository" as CLS_REPOSITORY <<repository>> {
@@ -48,7 +41,6 @@ CLS_CONTROLLER ..> CLS_REQUEST_001 : accepts
 CLS_CONTROLLER ..> CLS_RESPONSE_001 : returns
 CLS_CONTROLLER ..> CLS_RESPONSE_002 : returns
 CLS_SERVICE ..> CLS_REPOSITORY : uses
-CLS_REPOSITORY --> CLS_ENTITY_001 : manages
-CLS_REPOSITORY --> CLS_ENTITY_002 : manages
+CLS_REPOSITORY "1" --> "0..*" CLS_ENTITY_001 : manages
 
 @enduml

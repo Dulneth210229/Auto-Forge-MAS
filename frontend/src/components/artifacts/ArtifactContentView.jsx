@@ -61,6 +61,7 @@ export default function ArtifactContentView({ artifact, domainImprovementsArtifa
           {viewer === "domain-improvements-document" && <DomainImprovementsViewer data={data?.content_json} />}
           {viewer === "ui-metadata-document" && <UiMetadataViewer data={data?.content_json} />}
           {viewer === "code" && <CodeViewer content={data?.content || ""} />}
+          {viewer === "html" && <CodeViewer content={data?.content || ""} language="html" />}
           {viewer === "raw" && <pre className="text-xs whitespace-pre-wrap text-gray-800 dark:text-gray-200">{data?.content}</pre>}
         </>
       )}

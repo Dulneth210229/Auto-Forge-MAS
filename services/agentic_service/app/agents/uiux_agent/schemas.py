@@ -33,14 +33,19 @@ class UIUXAgentOutput(BaseModel):
         against the approved SRS.
 
     component_files:
-        component name -> generated .jsx source text.
+        component name -> generated HTML fragment source text.
+
+    page_html_files:
+        page_id -> the fully-assembled, self-contained HTML document for that page (see
+        page_html_builder.py) -- this is what a human previews live via <iframe srcDoc> and what
+        the Coder Agent reads as a full-page visual reference.
 
     page_screenshots:
-        page_id -> PNG bytes (one screenshot per page, all of that page's
-        components rendered together).
+        page_id -> PNG bytes (one best-effort screenshot per page, for the "Page Previews"
+        thumbnail gallery only -- secondary to page_html_files, never blocking).
 
     integration_manifest_json:
-        Deterministic route/nav/prop manifest for the future Coder Agent.
+        Deterministic route/nav/content manifest for the future Coder Agent.
 
     ui_design_markdown:
         Human-readable summary for the approval reviewer.
@@ -51,6 +56,7 @@ class UIUXAgentOutput(BaseModel):
 
     ui_metadata_json: dict
     component_files: dict[str, str] = {}
+    page_html_files: dict[str, str] = {}
     page_screenshots: dict[str, bytes] = {}
     integration_manifest_json: dict = {}
     ui_design_markdown: str = ""

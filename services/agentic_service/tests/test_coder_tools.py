@@ -140,15 +140,15 @@ def test_read_project_manifest_returns_default(project_and_tools):
     assert '"routes": []' in result
 
 
-def test_read_ui_component_not_found(project_and_tools):
-    result = project_and_tools["tools"]["read_ui_component"].invoke({"component_name": "NoSuchComponent"})
-    assert "No approved UI component found" in result
+def test_read_ui_component_design_not_found(project_and_tools):
+    result = project_and_tools["tools"]["read_ui_component_design"].invoke({"component_name": "NoSuchComponent"})
+    assert "No approved UI component design found" in result
 
 
-def test_read_ui_component_found(project_and_tools, tmp_path):
+def test_read_ui_component_design_found(project_and_tools, tmp_path):
     feature_id = project_and_tools["feature_id"]
-    fake_component_path = tmp_path / "SomeButton_v1.jsx"
-    fake_component_path.write_text("export default function SomeButton() { return null; }", encoding="utf-8")
+    fake_component_path = tmp_path / "SomeButton_v1.html"
+    fake_component_path.write_text('<button class="bg-accent-600 text-white px-3 py-2 rounded">Click me</button>', encoding="utf-8")
 
     artifact_id = generate_id("artifact")
     store.artifacts[artifact_id] = {
@@ -157,15 +157,43 @@ def test_read_ui_component_found(project_and_tools, tmp_path):
         "feature_id": feature_id,
         "agent_name": "uiux_agent",
         "artifact_type": "ui_component_code",
-        "artifact_format": "code",
+        "artifact_format": "html",
         "file_path": str(fake_component_path),
         "version": 1,
         "approval_status": "approved",
         "created_at": datetime.now(timezone.utc),
     }
 
-    result = project_and_tools["tools"]["read_ui_component"].invoke({"component_name": "SomeButton"})
-    assert "export default function SomeButton" in result
+    result = project_and_tools["tools"]["read_ui_component_design"].invoke({"component_name": "SomeButton"})
+    assert "Click me" in result
+
+
+def test_read_ui_page_design_not_found(project_and_tools):
+    result = project_and_tools["tools"]["read_ui_page_design"].invoke({"page_id_or_route": "no-such-page"})
+    assert "No approved UI page design found" in result
+
+
+def test_read_ui_page_design_found(project_and_tools, tmp_path):
+    feature_id = project_and_tools["feature_id"]
+    fake_page_path = tmp_path / "item_listing_page_page_v1.html"
+    fake_page_path.write_text("<!DOCTYPE html><html><body><h1>Item Listing</h1></body></html>", encoding="utf-8")
+
+    artifact_id = generate_id("artifact")
+    store.artifacts[artifact_id] = {
+        "artifact_id": artifact_id,
+        "project_id": project_and_tools["project_id"],
+        "feature_id": feature_id,
+        "agent_name": "uiux_agent",
+        "artifact_type": "ui_page_html",
+        "artifact_format": "html",
+        "file_path": str(fake_page_path),
+        "version": 1,
+        "approval_status": "approved",
+        "created_at": datetime.now(timezone.utc),
+    }
+
+    result = project_and_tools["tools"]["read_ui_page_design"].invoke({"page_id_or_route": "item-listing-page"})
+    assert "Item Listing" in result
 
 
 @pytest.mark.parametrize(

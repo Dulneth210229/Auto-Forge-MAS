@@ -23,8 +23,12 @@ def test_prompt_requires_request_body_validation():
     assert "status: 400" in CODER_AGENT_SYSTEM_PROMPT
 
 
-def test_prompt_requires_wiring_every_prop_a_reused_component_needs():
-    assert "pass every prop its logic depends on" in CODER_AGENT_SYSTEM_PROMPT
+def test_prompt_requires_real_data_wiring_for_a_ui_ux_design_reference():
+    # UI/UX output is now an HTML+Tailwind visual reference (not a literal component to import
+    # with props to pass through) -- the prompt must still require real props/state/data-wiring
+    # when the Coder Agent re-implements it as TSX.
+    assert "props, state, and real data-wiring" in CODER_AGENT_SYSTEM_PROMPT
+    assert "dangerouslySetInnerHTML" in CODER_AGENT_SYSTEM_PROMPT
 
 
 def test_prompt_requires_syntax_check_and_gap_check_tools():

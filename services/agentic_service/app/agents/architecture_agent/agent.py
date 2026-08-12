@@ -50,6 +50,7 @@ from langchain.agents import create_agent
 from langgraph.errors import GraphRecursionError
 
 from app.agents.architecture_agent.markdown_builder import ArchitecturePlanMarkdownBuilder
+from app.agents.architecture_agent.revision_patcher import apply_architecture_revision_operations
 from app.agents.architecture_agent.prompt import (
     ARCHITECTURE_AGENT_AGENTIC_SYSTEM_PROMPT,
     ARCHITECTURE_AGENT_SYSTEM_PROMPT,
@@ -1757,21 +1758,62 @@ class ArchitectureAgent:
 
         raw_output = "".join(raw_chunks)
 
+        # Same reliability ladder as _revise_architecture_plan_output (see its own comment): the
+        # streamed tokens are now the small {"revision_summary", "operations"} plan, not the whole
+        # document -- a real UX improvement on its own, since a human sees a short, readable plan
+        # typing in rather than an 800-line JSON dump.
         try:
-            revised_architecture_plan_json = self._parse_and_validate_architecture_plan_json(raw_output)
-
-        except Exception as error:
-            logger.warning(
-                "Streamed LLM Architecture Plan revision failed. Using fallback revision. Error=%s", error
-            )
-
-            revised_architecture_plan_json = self._fallback_revise_architecture_plan_json(
+            plan = self._parse_architecture_revision_plan(raw_output)
+            revised_architecture_plan_json = self._apply_architecture_revision_plan(
                 existing_architecture_plan_json=existing_architecture_plan_json,
+                plan=plan,
                 revision_comment=request.revision_comment,
                 revised_by=request.revised_by,
-                reason=str(error),
             )
-            raw_output = json.dumps(revised_architecture_plan_json, indent=2, default=str)
+            raw_output = json.dumps(plan, indent=2, default=str)
+
+        except Exception as first_error:
+            logger.warning(
+                "Streamed Architecture Plan revision plan parsing failed, attempting JSON repair. "
+                "Error=%s", first_error,
+            )
+
+            repair_prompt = build_json_repair_prompt(raw_output)
+            try:
+                repaired_output = await provider.invoke_agent([
+                    {"role": "system", "content": JSON_REPAIR_PROMPT},
+                    {"role": "user", "content": repair_prompt},
+                ])
+            except Exception as repair_call_error:
+                logger.warning(
+                    "Streamed Architecture Plan revision JSON repair call itself failed (not "
+                    "just its output) for feature_id=%s: %s", feature_id, repair_call_error,
+                )
+                repaired_output = ""
+
+            try:
+                plan = self._parse_architecture_revision_plan(repaired_output)
+                revised_architecture_plan_json = self._apply_architecture_revision_plan(
+                    existing_architecture_plan_json=existing_architecture_plan_json,
+                    plan=plan,
+                    revision_comment=request.revision_comment,
+                    revised_by=request.revised_by,
+                )
+                raw_output = json.dumps(plan, indent=2, default=str)
+
+            except Exception as second_error:
+                logger.warning(
+                    "Streamed Architecture Plan revision JSON repair failed. Using fallback "
+                    "revision. Error=%s", second_error,
+                )
+
+                revised_architecture_plan_json = self._fallback_revise_architecture_plan_json(
+                    existing_architecture_plan_json=existing_architecture_plan_json,
+                    revision_comment=request.revision_comment,
+                    revised_by=request.revised_by,
+                    reason=str(second_error),
+                )
+                raw_output = json.dumps(revised_architecture_plan_json, indent=2, default=str)
 
         self._ensure_implementation_plan(
             revised_architecture_plan_json,
@@ -1913,19 +1955,63 @@ class ArchitectureAgent:
             )
             raw_output = ""
 
+        # Reliability ladder: parse the small {"revision_summary", "operations"} plan (never a
+        # full-document retype -- see ARCHITECTURE_REVISION_SYSTEM_PROMPT's own rationale) and
+        # apply it deterministically via revision_patcher. A PARSE failure specifically gets one
+        # JSON-repair retry; only if that also fails does this fall through to the existing,
+        # unchanged _fallback_revise_architecture_plan_json (now a much rarer true last resort).
         try:
-            revised_architecture_plan_json = self._parse_and_validate_architecture_plan_json(raw_output)
-
-        except Exception as error:
-            logger.warning("LLM Architecture Plan revision failed. Using fallback revision. Error=%s", error)
-
-            revised_architecture_plan_json = self._fallback_revise_architecture_plan_json(
+            plan = self._parse_architecture_revision_plan(raw_output)
+            revised_architecture_plan_json = self._apply_architecture_revision_plan(
                 existing_architecture_plan_json=existing_architecture_plan_json,
+                plan=plan,
                 revision_comment=revision_comment,
                 revised_by=revised_by,
-                reason=str(error),
             )
-            raw_output = json.dumps(revised_architecture_plan_json, indent=2, default=str)
+            raw_output = json.dumps(plan, indent=2, default=str)
+
+        except Exception as first_error:
+            logger.warning(
+                "Architecture Plan revision plan parsing failed, attempting JSON repair. Error=%s",
+                first_error,
+            )
+
+            repair_prompt = build_json_repair_prompt(raw_output)
+            try:
+                repaired_output = await provider.invoke_agent([
+                    {"role": "system", "content": JSON_REPAIR_PROMPT},
+                    {"role": "user", "content": repair_prompt},
+                ])
+            except Exception as repair_call_error:
+                logger.warning(
+                    "Architecture Plan revision JSON repair call itself failed (not just its "
+                    "output) for feature_id=%s: %s", feature.get("feature_id"), repair_call_error,
+                )
+                repaired_output = ""
+
+            try:
+                plan = self._parse_architecture_revision_plan(repaired_output)
+                revised_architecture_plan_json = self._apply_architecture_revision_plan(
+                    existing_architecture_plan_json=existing_architecture_plan_json,
+                    plan=plan,
+                    revision_comment=revision_comment,
+                    revised_by=revised_by,
+                )
+                raw_output = json.dumps(plan, indent=2, default=str)
+
+            except Exception as second_error:
+                logger.warning(
+                    "Architecture Plan revision JSON repair failed. Using fallback revision. "
+                    "Error=%s", second_error,
+                )
+
+                revised_architecture_plan_json = self._fallback_revise_architecture_plan_json(
+                    existing_architecture_plan_json=existing_architecture_plan_json,
+                    revision_comment=revision_comment,
+                    revised_by=revised_by,
+                    reason=str(second_error),
+                )
+                raw_output = json.dumps(revised_architecture_plan_json, indent=2, default=str)
 
         # A revision of a legacy (pre-implementation_plan) plan must not fail
         # downstream validation just because the original never had one --
@@ -2026,6 +2112,61 @@ class ArchitectureAgent:
         self._ensure_keys(design_views, self.REQUIRED_DESIGN_VIEW_KEYS)
 
         return parsed
+
+    def _parse_architecture_revision_plan(self, raw_output: str) -> dict:
+        """
+        Parse the small {"revision_summary", "operations"} shape a revision call now returns (see
+        ARCHITECTURE_REVISION_SYSTEM_PROMPT) -- deliberately NOT
+        _parse_and_validate_architecture_plan_json's full-document REQUIRED_ARCHITECTURE_PLAN_KEYS
+        check, since a revision call no longer returns a full Architecture Plan document.
+        """
+        parsed = self._extract_json_object(raw_output)
+        if not isinstance(parsed, dict):
+            raise ValueError("Revision plan output was not a JSON object.")
+        operations = parsed.get("operations", [])
+        if not isinstance(operations, list):
+            raise ValueError("Revision plan 'operations' field must be a list.")
+        return {"revision_summary": parsed.get("revision_summary", ""), "operations": operations}
+
+    def _apply_architecture_revision_plan(
+        self,
+        existing_architecture_plan_json: dict,
+        plan: dict,
+        revision_comment: str,
+        revised_by: str,
+    ) -> dict:
+        """
+        Deterministically apply a parsed revision plan's operations to the existing Architecture
+        Plan (see revision_patcher.apply_architecture_revision_operations). Any operation the
+        patcher couldn't confidently match, and the case where the LLM proposed zero operations at
+        all, are surfaced directly in the revised plan's own `assumptions` array -- so a human
+        reviewer sees explicitly when a requested change did NOT happen, instead of it silently
+        failing to happen at all.
+        """
+        operations = plan.get("operations", [])
+        patched, applied, unmatched = apply_architecture_revision_operations(
+            existing_architecture_plan_json, operations
+        )
+        patched["revision_metadata"] = {
+            "revision_type": "architecture_plan_revision",
+            "revision_comment": revision_comment,
+            "revised_by": revised_by,
+            "revision_summary": plan.get("revision_summary", ""),
+            "applied_changes": applied,
+            "unmatched_operations": unmatched,
+        }
+        assumptions = patched.get("assumptions", [])
+        if not isinstance(assumptions, list):
+            assumptions = []
+        for note in unmatched:
+            assumptions.append(f"Revision could not be fully applied -- {note}")
+        if not operations:
+            assumptions.append(
+                f"No Architecture Plan changes were made for revision comment: {revision_comment!r} -- "
+                f"agent's response: {plan.get('revision_summary') or '(no summary given)'}"
+            )
+        patched["assumptions"] = assumptions
+        return patched
 
     def _fallback_revise_architecture_plan_json(
         self,
@@ -2795,8 +2936,10 @@ class ArchitectureAgent:
                 "markers) -- an unreachable page is not done.",
                 "Every Mongoose model file must use the `mongoose.models.X || mongoose.model(...)` "
                 "guard to avoid OverwriteModelError.",
-                "Reuse approved UI/UX components verbatim (via read_ui_component) instead of "
-                "re-authoring their markup.",
+                "Approved UI/UX output is a visual reference, not code to import -- use "
+                "read_ui_component_design/read_ui_page_design to see the approved HTML+Tailwind "
+                "design, then write real TSX that faithfully matches its structure/classes/"
+                "content.",
             ],
         }
 

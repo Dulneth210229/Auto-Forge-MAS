@@ -2,34 +2,53 @@
 UI/UX Agent component generator.
 
 Purpose:
-- Generate one React component at a time (JSX + Tailwind + mock props),
-  scoped per-component rather than one giant call for the whole feature --
-  smaller, more reliable generations, and a single broken component can be
-  retried without regenerating everything else (per the build plan).
+- Generate one static HTML + Tailwind CSS fragment at a time, scoped per-component rather than
+  one giant call for the whole feature -- smaller, more reliable generations, and a single broken
+  component can be retried without regenerating everything else (per the build plan).
 
-Output format is a delimited text format, not JSON: embedding a multi-line
-JSX code block inside a JSON string is a common source of escaping failures
-with LLMs (unescaped newlines/quotes). Splitting on plain text markers avoids
-that failure mode entirely.
+Output format: plain HTML, not React/JSX -- a single self-contained fragment with realistic,
+fully-populated example content baked directly into the markup. There is no more mock_props/props
+concept: content lives directly in the markup, so there is nothing left to select a wrong render
+state from (this is the structural fix for a real, confirmed bug -- a page previously rendered
+"Unknown state."/"No data available" because the LLM-authored JSX only handled 3 of 4 declared
+states and the preview picked the unhandled one; static HTML has no state branches to fall into).
+
+Output format is still a delimited text marker, not JSON: embedding a multi-line HTML code block
+inside a JSON string is a common source of escaping failures with LLMs (unescaped newlines/
+quotes). A plain text marker avoids that failure mode entirely -- simpler than before, since there
+is no longer a second JSON payload (mock_props) to parse alongside the code.
 """
 
 from __future__ import annotations
 
-import json
 import re
 from typing import Any
 
 from app.agents.uiux_agent.prompt import (
-    COMPONENT_GENERATOR_SYSTEM_PROMPT,
+    HTML_COMPONENT_GENERATOR_SYSTEM_PROMPT,
+    build_component_format_repair_prompt,
     build_component_generator_user_prompt,
-    build_component_render_repair_prompt,
-    build_component_repair_prompt,
+    build_component_quality_repair_prompt,
 )
 from app.core.enums import AgentName
 from app.services.llm_provider_service import llm_provider_service
 
-MOCK_PROPS_MARKER = "---MOCK_PROPS_JSON---"
-JSX_CODE_MARKER = "---JSX_CODE---"
+HTML_CODE_MARKER = "---HTML_CODE---"
+
+# Real, confirmed failure mode (Sample E-commerce / Item Listing feature): a generated fragment
+# rendering nothing but a generic "no data"/"unknown state" message instead of real content.
+# Checked case-insensitively against the fragment's rendered text content.
+PLACEHOLDER_CONTENT_PHRASES = [
+    "no data available",
+    "unknown state",
+    "loading...",
+    "error occurred",
+    "coming soon",
+    "lorem ipsum",
+    "to be implemented",
+    "todo",
+    "placeholder",
+]
 
 
 class ComponentGenerationError(Exception):
@@ -38,7 +57,7 @@ class ComponentGenerationError(Exception):
 
 class UIUXComponentGenerator:
     """
-    Generates one component's JSX source + mock props.
+    Generates one component's HTML fragment source.
     """
 
     async def generate(
@@ -51,9 +70,15 @@ class UIUXComponentGenerator:
         design_system_json: dict,
         ui_preferences: dict,
         human_comment: str | None,
+        color_theme: str = "indigo",
     ) -> tuple[dict[str, Any], str]:
         """
-        Returns ({"jsx_code": str, "mock_props": dict}, raw_llm_output).
+        Returns ({"html_code": str}, raw_llm_output).
+
+        color_theme: the ONE Tailwind color family chosen once per feature (ui_metadata_json's
+        own "color_theme" field, see agent.py) -- threaded through so every component on every
+        page of this feature agrees on the same accent color, rather than each independent LLM
+        call picking its own.
         """
 
         provider = llm_provider_service.get_provider(agent_name=AgentName.UIUX.value)
@@ -67,11 +92,12 @@ class UIUXComponentGenerator:
             design_system_json=design_system_json,
             ui_preferences=ui_preferences,
             human_comment=human_comment,
+            color_theme=color_theme,
         )
 
         raw_output = await provider.invoke_agent(
             [
-                {"role": "system", "content": COMPONENT_GENERATOR_SYSTEM_PROMPT},
+                {"role": "system", "content": HTML_COMPONENT_GENERATOR_SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
             ]
         )
@@ -83,8 +109,8 @@ class UIUXComponentGenerator:
 
         repaired_output = await provider.invoke_agent(
             [
-                {"role": "system", "content": COMPONENT_GENERATOR_SYSTEM_PROMPT},
-                {"role": "user", "content": build_component_repair_prompt(raw_output)},
+                {"role": "system", "content": HTML_COMPONENT_GENERATOR_SYSTEM_PROMPT},
+                {"role": "user", "content": build_component_format_repair_prompt(raw_output)},
             ]
         )
 
@@ -97,51 +123,62 @@ class UIUXComponentGenerator:
                 f"format after one repair attempt: {error}"
             ) from error
 
-    async def repair_for_render_error(
-        self, jsx_code: str, mock_props: dict[str, Any], render_error: str
-    ) -> tuple[dict[str, Any], str]:
+    async def repair(self, html_code: str, issue_description: str) -> tuple[dict[str, Any], str]:
         """
-        One targeted repair attempt for JSX that parsed fine but crashed during the real
-        Playwright preview render (e.g. a ReferenceError for an undefined sub-component name)
-        -- distinct from generate()'s own format-only repair, which never sees the browser.
+        One targeted repair attempt for a fragment that parsed fine but has a real problem --
+        either it crashed during the actual Playwright preview render, or it failed the
+        content-quality gate (empty/placeholder content instead of a real, populated view).
+        Distinct from generate()'s own format-only repair, which never sees either of those.
         """
 
         provider = llm_provider_service.get_provider(agent_name=AgentName.UIUX.value)
-        repair_prompt = build_component_render_repair_prompt(jsx_code, mock_props, render_error)
+        repair_prompt = build_component_quality_repair_prompt(html_code, issue_description)
 
         repaired_output = await provider.invoke_agent(
             [
-                {"role": "system", "content": COMPONENT_GENERATOR_SYSTEM_PROMPT},
+                {"role": "system", "content": HTML_COMPONENT_GENERATOR_SYSTEM_PROMPT},
                 {"role": "user", "content": repair_prompt},
             ]
         )
 
         return self._parse(repaired_output), repaired_output
 
+    def detect_placeholder_content(self, html_code: str) -> str | None:
+        """
+        Cheap, deterministic quality gate: returns a human-readable violation description if the
+        fragment is empty/whitespace-only or contains an obvious generic-placeholder phrase
+        instead of real content, else None. This is what catches the real bug class at the
+        source, before a human ever sees a broken preview.
+        """
+
+        stripped = html_code.strip()
+        if not stripped:
+            return "The fragment is empty."
+
+        lowered = stripped.lower()
+        for phrase in PLACEHOLDER_CONTENT_PHRASES:
+            if phrase in lowered:
+                return (
+                    f"The fragment contains the placeholder/generic phrase {phrase!r} instead of "
+                    "real, populated example content."
+                )
+
+        return None
+
     def _parse(self, text: str) -> dict[str, Any]:
-        if MOCK_PROPS_MARKER not in text or JSX_CODE_MARKER not in text:
-            raise ValueError(
-                f"Output missing required markers {MOCK_PROPS_MARKER} / {JSX_CODE_MARKER}."
-            )
+        if HTML_CODE_MARKER not in text:
+            raise ValueError(f"Output missing required marker {HTML_CODE_MARKER}.")
 
-        props_section = text.split(MOCK_PROPS_MARKER, 1)[1].split(JSX_CODE_MARKER, 1)[0].strip()
-        jsx_section = text.split(JSX_CODE_MARKER, 1)[1].strip()
+        html_section = text.split(HTML_CODE_MARKER, 1)[1].strip()
 
-        jsx_section = re.sub(r"^```(?:jsx|javascript|js)?\s*", "", jsx_section, flags=re.IGNORECASE)
-        jsx_section = re.sub(r"\s*```$", "", jsx_section)
+        html_section = re.sub(r"^```(?:html)?\s*", "", html_section, flags=re.IGNORECASE)
+        html_section = re.sub(r"\s*```$", "", html_section)
+        html_section = html_section.strip()
 
-        try:
-            mock_props = json.loads(props_section)
-        except json.JSONDecodeError as error:
-            raise ValueError(f"MOCK_PROPS_JSON section is not valid JSON: {error}") from error
+        if not html_section:
+            raise ValueError("HTML_CODE section must not be empty.")
 
-        if not isinstance(mock_props, dict):
-            raise ValueError("MOCK_PROPS_JSON section must be a JSON object.")
-
-        if "export default" not in jsx_section:
-            raise ValueError("JSX_CODE section must contain 'export default function ComponentName(...)'.")
-
-        return {"jsx_code": jsx_section, "mock_props": mock_props}
+        return {"html_code": html_section}
 
 
 uiux_component_generator = UIUXComponentGenerator()

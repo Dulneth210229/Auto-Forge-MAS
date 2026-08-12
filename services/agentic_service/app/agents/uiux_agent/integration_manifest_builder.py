@@ -4,8 +4,10 @@ UI/UX Agent integration manifest builder.
 Purpose:
 Build a deterministic manifest describing how each generated page/component
 should be wired into the persistent frontend app -- route path, nav entry,
-component names, expected props. This is consumed by the future Coder Agent,
-not by the human reviewer.
+component names, real content each one displays. This is consumed by the
+Coder Agent as VISUAL REFERENCE context (alongside the HTML fragments/pages
+themselves, via read_ui_component_design/read_ui_page_design), not by the
+human reviewer.
 
 Why deterministic (no LLM):
 Everything needed is already present in ui_metadata_json. The UI/UX Agent
@@ -40,7 +42,7 @@ class UIUXIntegrationManifestBuilder:
                             "reused_from_design_system": component.get(
                                 "reused_from_design_system", False
                             ),
-                            "expected_props": list((component.get("props") or {}).keys()),
+                            "content_elements": component.get("content_elements") or [],
                         }
                         for component in components
                     ],

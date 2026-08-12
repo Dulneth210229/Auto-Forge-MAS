@@ -11,6 +11,7 @@ import EmptyOutputPanel from "../components/workspace/EmptyOutputPanel";
 import { RequirementConversationFlowProvider } from "../components/workspace/RequirementConversationFlowContext";
 import { DomainAgentFlowProvider } from "../components/workspace/DomainAgentFlowContext";
 import { ArchitectureAgentFlowProvider } from "../components/workspace/ArchitectureAgentFlowContext";
+import { UiuxAgentFlowProvider } from "../components/workspace/UiuxAgentFlowContext";
 import { CoderAgentFlowProvider } from "../components/workspace/CoderAgentFlowContext";
 import ChatPanel from "../components/chat/ChatPanel";
 import OutputPanel from "../components/output/OutputPanel";
@@ -28,22 +29,24 @@ function WorkspaceBody({ projectId }) {
     <RequirementConversationFlowProvider featureId={selectedFeatureId}>
       <DomainAgentFlowProvider featureId={selectedFeatureId}>
         <ArchitectureAgentFlowProvider featureId={selectedFeatureId}>
-          <CoderAgentFlowProvider featureId={selectedFeatureId}>
-            <div className="h-full">
-              <ResizableWorkspace
-                left={<FeatureListPanel projectId={projectId} />}
-                middle={
-                  selectedFeatureId ? (
-                    <ChatPanel featureId={selectedFeatureId} />
-                  ) : (
-                    <EmptyChatPanel projectId={projectId} />
-                  )
-                }
-                right={selectedFeatureId ? <OutputPanel featureId={selectedFeatureId} /> : <EmptyOutputPanel />}
-              />
-              <ArtifactViewerModal artifact={viewingArtifact} onClose={() => viewArtifact(null)} />
-            </div>
-          </CoderAgentFlowProvider>
+          <UiuxAgentFlowProvider featureId={selectedFeatureId}>
+            <CoderAgentFlowProvider featureId={selectedFeatureId}>
+              <div className="h-full">
+                <ResizableWorkspace
+                  left={<FeatureListPanel projectId={projectId} />}
+                  middle={
+                    selectedFeatureId ? (
+                      <ChatPanel featureId={selectedFeatureId} />
+                    ) : (
+                      <EmptyChatPanel projectId={projectId} />
+                    )
+                  }
+                  right={selectedFeatureId ? <OutputPanel featureId={selectedFeatureId} /> : <EmptyOutputPanel />}
+                />
+                <ArtifactViewerModal artifact={viewingArtifact} onClose={() => viewArtifact(null)} />
+              </div>
+            </CoderAgentFlowProvider>
+          </UiuxAgentFlowProvider>
         </ArchitectureAgentFlowProvider>
       </DomainAgentFlowProvider>
     </RequirementConversationFlowProvider>

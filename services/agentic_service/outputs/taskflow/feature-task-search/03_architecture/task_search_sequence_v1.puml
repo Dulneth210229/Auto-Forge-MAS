@@ -11,7 +11,7 @@ boundary "TaskSearchBoundary" as BOUNDARY_001
 control "TaskSearchController" as CONTROL_001
 control "TaskSearchService" as CONTROL_002
 entity "TaskSearchRepository" as ENTITY_001
-database "TaskSearchDataEntity1" as DATABASE_001
+database "TaskSearchResult" as DATABASE_001
 
 ACTOR_001 -> BOUNDARY_001: Submit Task Search request
 BOUNDARY_001 -> CONTROL_001: GET /api/task-search(TaskSearchRequest)
@@ -26,11 +26,6 @@ CONTROL_002 -> CONTROL_002: Apply feature validation rules
 CONTROL_002 --> CONTROL_001: Return TaskSearchSuccessResponse
 CONTROL_001 --> BOUNDARY_001: Send TaskSearchSuccessResponse
 BOUNDARY_001 --> ACTOR_001: Show success result
-end
-opt Optional or alternative user flow
-ACTOR_001 -> BOUNDARY_001: Select alternative feature action
-BOUNDARY_001 -> CONTROL_001: GET /api/task-search(TaskSearchRequest)
-CONTROL_001 --> BOUNDARY_001: Return alternative flow response
 end
 
 @enduml

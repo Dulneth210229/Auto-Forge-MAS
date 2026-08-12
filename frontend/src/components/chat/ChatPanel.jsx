@@ -7,7 +7,7 @@ import { GATED_STAGES, STAGE_LABELS } from "../../lib/pipelineStages";
 import { buildAgentTimeline } from "../../lib/buildAgentTimeline";
 import { SUGGESTION_CHIPS } from "../../lib/suggestionChips";
 import { useWorkspaceSelection } from "../workspace/WorkspaceSelectionContext";
-import { useRunUiux } from "../../hooks/useAgentMutations";
+import { useUiuxAgentFlowContext } from "../workspace/UiuxAgentFlowContext";
 import ChatBubble from "./ChatBubble";
 import ChatComposerBox from "./ChatComposerBox";
 import RequirementConversationChat from "./RequirementConversationChat";
@@ -100,7 +100,10 @@ export default function ChatPanel({ featureId }) {
 
   const [comment, setComment] = useState("");
 
-  const runUiux = useRunUiux(featureId);
+  // Shared with ResultTab (see UiuxAgentFlowContext's own docstring) so an auto-started run
+  // (right after Architecture Plan approval) is visible here as pending too, not just wherever it
+  // was triggered from.
+  const { runUiux } = useUiuxAgentFlowContext();
 
   const runMutationsByStage = { uiux: runUiux };
   const reviseMutationsByStage = {};

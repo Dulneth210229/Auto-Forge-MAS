@@ -6,15 +6,22 @@ Pipeline:
    Architecture Plan, and the project's design system.
 2. Generate ui_metadata_json (one-shot LLM call via metadata_modeler.py).
 3. Validate SRS coverage (metadata_validator.py) -- fail loudly on gaps.
-4. Generate each component's JSX + mock props (component_generator.py),
-   scoped per-component so a single broken component can be retried alone.
-5. Render one PNG screenshot per page (preview_renderer.py, Playwright).
-6. Save all artifacts: ui_metadata_json, one .jsx per component, one PNG per
-   page, ui_design_markdown, and the integration manifest for the Coder Agent.
-7. Update design_system.json with any new tokens/components -- gated on human
+4. Generate each component's HTML + Tailwind fragment (component_generator.py), scoped
+   per-component so a single broken component can be retried alone. Every fragment passes a
+   deterministic content-quality gate (real, populated content -- never an empty/placeholder
+   message) before it's accepted, with a bounded, targeted repair loop if it doesn't.
+5. Deterministically assemble each page's component fragments into one full, self-contained
+   HTML document (page_html_builder.py -- pure string concatenation, cannot fail) -- this is
+   the artifact a human previews live and the Coder Agent later reads as a visual reference.
+6. Best-effort: render one PNG screenshot per assembled page (preview_renderer.py, Playwright)
+   for the "Page Previews" thumbnail gallery -- secondary, never blocking.
+7. Save all artifacts: ui_metadata_json, one .html fragment per component, one full-page .html
+   document per page, one PNG per page (if it rendered), ui_design_markdown, and the
+   integration manifest for the Coder Agent.
+8. Update design_system.json with any new tokens/components -- gated on human
    approval (see apply_design_system_patch, invoked from approval_service.py)
    so a rejected run never pollutes the shared design system.
-8. Human approval gate happens outside this class (existing approval flow).
+9. Human approval gate happens outside this class (existing approval flow).
 
 See services/agentic_service/instructions .md section 4 for the full plan.
 """
@@ -27,12 +34,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app.agents.uiux_agent.component_generator import UIUXComponentGenerator
+from app.agents.uiux_agent.component_generator import ComponentGenerationError, UIUXComponentGenerator
 from app.agents.uiux_agent.design_system_service import uiux_design_system_service
 from app.agents.uiux_agent.integration_manifest_builder import uiux_integration_manifest_builder
 from app.agents.uiux_agent.markdown_builder import uiux_markdown_builder
 from app.agents.uiux_agent.metadata_modeler import UIUXMetadataModeler
 from app.agents.uiux_agent.metadata_validator import UIMetadataValidationError, UIMetadataValidator
+from app.agents.uiux_agent.page_html_builder import uiux_page_html_builder
 from app.agents.uiux_agent.preview_renderer import PreviewRenderError, uiux_preview_renderer
 from app.agents.uiux_agent.schemas import UIUXAgentInput, UIUXAgentOutput
 from app.core.enums import AgentName, ApprovalStatus, ArtifactFormat, ArtifactType
@@ -60,11 +68,13 @@ class UIUXAgent:
     # more headroom than 2 attempts to let it actually finish converging.
     MAX_VALIDATION_REPAIR_ATTEMPTS = 4
 
-    # Same reasoning as above, applied to preview-render failures (see _render_pages): real
-    # testing showed a repair can trade one render error for a different one (a fix for a
-    # ReferenceError introduced a JSX syntax error instead), so it can take more than one
-    # round to actually converge on working code.
-    MAX_RENDER_REPAIR_ATTEMPTS = 3
+    # Bounded, targeted repair for a component fragment that fails the deterministic
+    # content-quality gate (component_generator.detect_placeholder_content) -- e.g. it rendered
+    # a generic "no data"/"unknown state" message instead of real, populated content. Smaller
+    # than the old render-failure repair loop this replaces: a phrase-based check gives the model
+    # a precise, unambiguous violation to fix (not a flaky browser error), so fewer rounds should
+    # be needed to converge.
+    MAX_CONTENT_QUALITY_REPAIR_ATTEMPTS = 2
 
     def __init__(self):
         self.metadata_modeler = UIUXMetadataModeler()
@@ -141,11 +151,13 @@ class UIUXAgent:
 
         ui_metadata_json, raw_llm_output = await self._generate_and_validate_metadata(agent_input)
 
-        component_files, page_render_data = await self._generate_components(
+        component_files, page_component_order = await self._generate_components(
             agent_input, ui_metadata_json
         )
 
-        page_screenshots = await self._render_pages(component_files, page_render_data)
+        page_html_files, page_screenshots = await self._assemble_and_render_pages(
+            ui_metadata_json, component_files, page_component_order
+        )
 
         integration_manifest_json = uiux_integration_manifest_builder.build(ui_metadata_json)
         ui_design_markdown = uiux_markdown_builder.build(
@@ -157,6 +169,7 @@ class UIUXAgent:
         output = UIUXAgentOutput(
             ui_metadata_json=ui_metadata_json,
             component_files=component_files,
+            page_html_files=page_html_files,
             page_screenshots=page_screenshots,
             integration_manifest_json=integration_manifest_json,
             ui_design_markdown=ui_design_markdown,
@@ -217,12 +230,21 @@ class UIUXAgent:
 
     async def _generate_components(
         self, agent_input: UIUXAgentInput, ui_metadata_json: dict[str, Any]
-    ) -> tuple[dict[str, str], dict[str, list[dict[str, Any]]]]:
+    ) -> tuple[dict[str, str], dict[str, list[str]]]:
         """
-        Generate every component's JSX + mock props, one LLM call per
-        component. Returns:
-            component_files: component name -> jsx source text
-            page_render_data: page_id -> [{"name", "jsx_code", "mock_props"}]
+        Generate every component's HTML fragment, one LLM call per component. A freshly
+        generated fragment that fails the deterministic content-quality gate
+        (component_generator.detect_placeholder_content) gets up to
+        MAX_CONTENT_QUALITY_REPAIR_ATTEMPTS targeted repairs, the exact violation fed back each
+        time -- this is what structurally prevents the real, confirmed "Unknown state."/"No data
+        available" bug class from ever reaching a saved artifact (see component_generator.py's
+        module docstring for the full root-cause story this replaces).
+
+        Returns:
+            component_files: component name -> HTML fragment source text
+            page_component_order: page_id -> [component_name, ...] in the same order
+                ui_metadata_json.pages[].components already lists them (the order page assembly
+                renders them in).
         """
 
         data_entities = (
@@ -230,31 +252,31 @@ class UIUXAgent:
             .get("data_view", {})
             .get("data_entities", [])
         )
+        # Chosen ONCE by the metadata step (see UIUX_METADATA_SYSTEM_PROMPT rule 10), not
+        # re-decided per component -- this is what keeps every component on every page of this
+        # feature visually consistent instead of each independent LLM call picking its own accent
+        # color. "indigo" is a safe, reasonable default if the model ever omits the field --
+        # deliberately not a validator/repair-loop concern, since a missing color_theme is
+        # cosmetic, not a correctness failure.
+        color_theme = ui_metadata_json.get("color_theme") or "indigo"
 
         component_files: dict[str, str] = {}
-        page_render_data: dict[str, list[dict[str, Any]]] = {}
+        page_component_order: dict[str, list[str]] = {}
 
         for page in ui_metadata_json.get("pages", []):
-            rendered_components = []
+            ordered_names: list[str] = []
 
             for component_metadata in page.get("components", []) or []:
                 component_name = component_metadata["name"]
+                ordered_names.append(component_name)
 
                 if component_metadata.get("reused_from_design_system"):
-                    reused_jsx = self._load_existing_approved_component(
+                    reused_html = self._load_existing_approved_component(
                         agent_input.project["project_id"], component_name
                     )
 
-                    if reused_jsx is not None:
-                        component_files[component_name] = reused_jsx
-                        rendered_components.append(
-                            {
-                                "name": component_name,
-                                "jsx_code": reused_jsx,
-                                "mock_props": self._placeholder_mock_props(component_metadata),
-                                "reused": True,
-                            }
-                        )
+                    if reused_html is not None:
+                        component_files[component_name] = reused_html
                         continue
 
                     logger.warning(
@@ -264,139 +286,126 @@ class UIUXAgent:
                         component_name,
                     )
 
-                generated, _raw = await self.component_generator.generate(
-                    project=agent_input.project,
-                    feature=agent_input.feature,
-                    page_metadata=page,
-                    component_metadata=component_metadata,
-                    data_entities=data_entities,
-                    design_system_json=agent_input.design_system_json,
-                    ui_preferences=agent_input.ui_preferences,
-                    human_comment=agent_input.human_comment,
+                component_files[component_name] = await self._generate_component_with_quality_gate(
+                    agent_input, page, component_metadata, data_entities, color_theme
                 )
 
-                component_files[component_name] = generated["jsx_code"]
-                rendered_components.append(
-                    {
-                        "name": component_name,
-                        "jsx_code": generated["jsx_code"],
-                        "mock_props": generated["mock_props"],
-                        "reused": False,
-                    }
-                )
+            page_component_order[page["page_id"]] = ordered_names
 
-            page_render_data[page["page_id"]] = rendered_components
+        return component_files, page_component_order
 
-        return component_files, page_render_data
-
-    async def _render_pages(
-        self, component_files: dict[str, str], page_render_data: dict[str, list[dict[str, Any]]]
-    ) -> dict[str, bytes]:
+    async def _generate_component_with_quality_gate(
+        self,
+        agent_input: UIUXAgentInput,
+        page: dict[str, Any],
+        component_metadata: dict[str, Any],
+        data_entities: list,
+        color_theme: str = "indigo",
+    ) -> str:
         """
-        Render one PNG per page. Playwright's sync API is used inside
-        preview_renderer.py, so it is called via asyncio.to_thread here --
-        it cannot run inside this already-running event loop.
-
-        On a real browser render failure (e.g. a ReferenceError from JSX that parsed fine but
-        is not actually self-contained), attempts up to MAX_RENDER_REPAIR_ATTEMPTS targeted
-        repairs: regenerate every freshly-generated (non-reused) component on that page with
-        the concrete browser error fed back, then retry the render. Bounded, not unlimited --
-        real testing showed a repair can itself introduce a *different* error (e.g. fixing a
-        ReferenceError by rewriting the component introduced a JSX syntax error), so one repair
-        attempt is not always enough. component_files is mutated in place so whichever attempt's
-        JSX is what actually gets saved as the artifact.
-
-        If every attempt still fails, the page's screenshot is skipped (logged as an error) --
-        not fatal for the whole run. Unlike ui_metadata_json (which the Architecture/Coder Agent
-        pipeline actually depends on), a PNG preview is a human-review convenience only; nothing
-        downstream reads it. Real testing surfaced a render failure ("element is not visible")
-        that reproduces only inside the live graph-invoked pipeline and not in direct,
-        content-identical isolation tests (same JSX, same asyncio.to_thread call pattern,
-        increasing the timeout from 30s to 90s made no difference) -- a deeper Playwright/
-        threading interaction under the graph's execution context that a code-level component
-        fix cannot address. Blocking the entire UI/UX Agent run (and therefore the whole
-        pipeline) on a screenshot is the wrong tradeoff.
+        Generate one component's HTML fragment, then enforce the content-quality gate with a
+        bounded, targeted repair loop. Raises ComponentGenerationError (same "fail loudly rather
+        than save something known-broken" philosophy already used by metadata validation, see
+        _generate_and_validate_metadata) if the violation survives every repair attempt --
+        an artifact a human reviews and the Coder Agent later reads as a visual reference must
+        never silently contain a placeholder/empty state.
         """
 
-        page_screenshots: dict[str, bytes] = {}
+        generated, _raw = await self.component_generator.generate(
+            project=agent_input.project,
+            feature=agent_input.feature,
+            page_metadata=page,
+            component_metadata=component_metadata,
+            data_entities=data_entities,
+            design_system_json=agent_input.design_system_json,
+            ui_preferences=agent_input.ui_preferences,
+            human_comment=agent_input.human_comment,
+            color_theme=color_theme,
+        )
+        html_code = generated["html_code"]
+        component_name = component_metadata.get("name", "unknown")
 
-        for page_id, components in page_render_data.items():
-            last_error: PreviewRenderError | None = None
+        for attempt in range(1, self.MAX_CONTENT_QUALITY_REPAIR_ATTEMPTS + 1):
+            violation = self.component_generator.detect_placeholder_content(html_code)
+            if violation is None:
+                return html_code
 
-            for attempt in range(self.MAX_RENDER_REPAIR_ATTEMPTS + 1):
-                try:
-                    if attempt > 0:
-                        components = await self._repair_page_components(components, str(last_error))
+            logger.warning(
+                "Component '%s' failed the content quality gate (repair attempt %s/%s): %s",
+                component_name, attempt, self.MAX_CONTENT_QUALITY_REPAIR_ATTEMPTS, violation,
+            )
+            repaired, _raw = await self.component_generator.repair(html_code, violation)
+            html_code = repaired["html_code"]
 
-                        for component in components:
-                            component_files[component["name"]] = component["jsx_code"]
-
-                        page_render_data[page_id] = components
-
-                    page_screenshots[page_id] = await asyncio.to_thread(
-                        uiux_preview_renderer.render_page_png, components
-                    )
-                    last_error = None
-                    break
-
-                except PreviewRenderError as error:
-                    last_error = error
-
-                    if attempt == 0:
-                        logger.warning(
-                            "Preview render failed for page_id=%s (initial attempt): %s",
-                            page_id, error
-                        )
-                    else:
-                        logger.warning(
-                            "Preview render failed for page_id=%s (repair attempt %s/%s): %s",
-                            page_id, attempt, self.MAX_RENDER_REPAIR_ATTEMPTS, error
-                        )
-
-            if last_error is not None:
-                logger.error(
-                    "Preview render permanently failed for page_id=%s after %s attempts -- "
-                    "skipping its screenshot, continuing without it: %s",
-                    page_id, self.MAX_RENDER_REPAIR_ATTEMPTS + 1, last_error
-                )
-
-        return page_screenshots
-
-    async def _repair_page_components(
-        self, components: list[dict[str, Any]], render_error: str
-    ) -> list[dict[str, Any]]:
-        """
-        Regenerate every freshly-generated component on a page whose preview render failed,
-        feeding back the real browser error. Reused (already human-approved) components are
-        left untouched -- regenerating proven-good code on the assumption it might be the
-        culprit would be a regression risk, not a fix.
-        """
-
-        repaired = []
-
-        for component in components:
-            if component.get("reused"):
-                repaired.append(component)
-                continue
-
-            fixed, _raw = await self.component_generator.repair_for_render_error(
-                jsx_code=component["jsx_code"],
-                mock_props=component["mock_props"],
-                render_error=render_error,
+        final_violation = self.component_generator.detect_placeholder_content(html_code)
+        if final_violation:
+            raise ComponentGenerationError(
+                f"Component '{component_name}' still fails the content quality gate after "
+                f"{self.MAX_CONTENT_QUALITY_REPAIR_ATTEMPTS} repair attempts: {final_violation}"
             )
 
-            repaired.append({
-                "name": component["name"],
-                "jsx_code": fixed["jsx_code"],
-                "mock_props": fixed["mock_props"],
-                "reused": False,
-            })
+        return html_code
 
-        return repaired
+    async def _assemble_and_render_pages(
+        self,
+        ui_metadata_json: dict[str, Any],
+        component_files: dict[str, str],
+        page_component_order: dict[str, list[str]],
+    ) -> tuple[dict[str, str], dict[str, bytes]]:
+        """
+        Deterministically assemble each page's ordered component fragments into one full,
+        self-contained HTML document (page_html_builder -- pure string concatenation, cannot
+        fail) -- this is the artifact a human previews live and the Coder Agent later reads as a
+        visual reference. Then attempt a best-effort PNG screenshot of it for the "Page Previews"
+        thumbnail gallery. Playwright's sync API is used inside preview_renderer.py, so it is
+        called via asyncio.to_thread here -- it cannot run inside this already-running event loop.
+
+        Unlike the old JSX-mounting render path, a screenshot failure here has nothing left to
+        repair: the content-quality gate in _generate_components already guarantees real,
+        populated content before this step ever runs, so a render failure at this point would be
+        an environmental/Playwright issue, not a content problem a regeneration could fix. It is
+        simply skipped and logged (not fatal to the run) if it happens.
+
+        IMPORTANT, changed from this render path's earlier design: ui_preview_screenshot is now
+        the HUMAN'S SOLE APPROVAL SURFACE for the uiux stage (per direct user request --
+        ui_metadata/ui_integration_manifest/ui_component_code/ui_page_html are no longer
+        independently listed or approvable; approving a Preview Screenshot cascades the same
+        decision to all of them, see approval_service.py's _cascade_uiux_screenshot_decision). It
+        is NOT a pure "nothing downstream reads it" convenience artifact anymore -- if every page's
+        screenshot render fails for a run, the human has nothing to approve and the stage cannot
+        progress. This is treated as a low-likelihood, accepted risk (plain HTML/CSS screenshotting
+        is far more reliable than the old JSX+Babel+React mount it replaced), not engineered
+        around further in this pass -- worth revisiting if it's ever observed to actually happen.
+        """
+
+        page_metadata_by_id = {page["page_id"]: page for page in ui_metadata_json.get("pages", [])}
+
+        page_html_files: dict[str, str] = {}
+        page_screenshots: dict[str, bytes] = {}
+
+        for page_id, component_names in page_component_order.items():
+            page_metadata = page_metadata_by_id.get(page_id, {"page_id": page_id})
+            fragments = [component_files[name] for name in component_names if name in component_files]
+
+            page_html = uiux_page_html_builder.build(page_metadata, fragments)
+            page_html_files[page_id] = page_html
+
+            try:
+                page_screenshots[page_id] = await asyncio.to_thread(
+                    uiux_preview_renderer.render_page_png, page_html
+                )
+            except PreviewRenderError as error:
+                logger.error(
+                    "Preview screenshot failed for page_id=%s -- skipping its thumbnail, "
+                    "continuing without it (the live HTML preview is unaffected): %s",
+                    page_id, error,
+                )
+
+        return page_html_files, page_screenshots
 
     def _load_existing_approved_component(self, project_id: str, component_name: str) -> str | None:
         """
-        Look up an already-approved component .jsx file from ANY feature in
+        Look up an already-approved component .html fragment from ANY feature in
         this project (not just the current one) by name, and return its
         exact content verbatim.
 
@@ -421,7 +430,7 @@ class UIUXAgent:
                 ArtifactType.UI_COMPONENT_CODE.value,
             ]:
                 continue
-            if artifact.get("artifact_format") not in [ArtifactFormat.CODE, ArtifactFormat.CODE.value]:
+            if artifact.get("artifact_format") not in [ArtifactFormat.HTML, ArtifactFormat.HTML.value]:
                 continue
             if artifact.get("approval_status") not in [
                 ApprovalStatus.APPROVED,
@@ -438,19 +447,6 @@ class UIUXAgent:
 
         latest = max(matching, key=lambda item: item.get("version", 1))
         return Path(latest["file_path"]).read_text(encoding="utf-8")
-
-    def _placeholder_mock_props(self, component_metadata: dict[str, Any]) -> dict[str, Any]:
-        """
-        Build simple mock props for previewing a reused component. There is
-        no component_generator call for a reused component (no LLM involved,
-        by design), so there is no generated mock_props either -- use the
-        prop descriptions already present in ui_metadata_json as readable
-        placeholder values instead.
-        """
-        return {
-            name: str(description)
-            for name, description in (component_metadata.get("props") or {}).items()
-        }
 
     def _save_artifacts(self, project: dict, feature: dict, output: UIUXAgentOutput) -> list[str]:
         """
@@ -501,19 +497,33 @@ class UIUXAgent:
         )
         artifact_ids.append(markdown_artifact.artifact_id)
 
-        for component_name, jsx_code in output.component_files.items():
+        for component_name, html_code in output.component_files.items():
             component_slug = self._slug(component_name)
             component_artifact = artifact_service.save_text_artifact(
                 project=project,
                 feature=feature,
                 agent_name=AgentName.UIUX,
                 artifact_type=ArtifactType.UI_COMPONENT_CODE,
-                artifact_format=ArtifactFormat.CODE,
-                filename=f"{feature_slug}_{component_slug}_v{{version}}.jsx",
-                content=jsx_code,
+                artifact_format=ArtifactFormat.HTML,
+                filename=f"{feature_slug}_{component_slug}_v{{version}}.html",
+                content=html_code,
                 version_override=version,
             )
             artifact_ids.append(component_artifact.artifact_id)
+
+        for page_id, page_html in output.page_html_files.items():
+            page_slug = self._slug(page_id)
+            page_html_artifact = artifact_service.save_text_artifact(
+                project=project,
+                feature=feature,
+                agent_name=AgentName.UIUX,
+                artifact_type=ArtifactType.UI_PAGE_HTML,
+                artifact_format=ArtifactFormat.HTML,
+                filename=f"{feature_slug}_{page_slug}_page_v{{version}}.html",
+                content=page_html,
+                version_override=version,
+            )
+            artifact_ids.append(page_html_artifact.artifact_id)
 
         for page_id, png_bytes in output.page_screenshots.items():
             page_slug = self._slug(page_id)
@@ -584,7 +594,7 @@ class UIUXAgent:
                     continue
 
                 design_system_json["components"][name] = {
-                    "props": list((component.get("props") or {}).keys()),
+                    "content_elements": component.get("content_elements") or [],
                     "introduced_by_feature": feature["feature_name"],
                 }
                 new_component_count += 1

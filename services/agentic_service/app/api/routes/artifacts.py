@@ -21,6 +21,7 @@ _DOWNLOAD_MEDIA_TYPES = {
     ArtifactFormat.PNG: "image/png",
     ArtifactFormat.JSON: "application/json",
     ArtifactFormat.MARKDOWN: "text/markdown",
+    ArtifactFormat.HTML: "text/html",
 }
 
 router = APIRouter(tags=["Artifacts"])

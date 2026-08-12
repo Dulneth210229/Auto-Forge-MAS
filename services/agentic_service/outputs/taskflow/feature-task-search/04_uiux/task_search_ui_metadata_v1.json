@@ -1,0 +1,53 @@
+{
+  "pages": [
+    {
+      "page_id": "task-search-page",
+      "name": "Task Search Page",
+      "route": "/task/search",
+      "actors": [
+        "Registered User"
+      ],
+      "covers_requirements": [
+        "FR-001",
+        "US-001",
+        "AC-001"
+      ],
+      "layout_regions": [
+        "header",
+        "main",
+        "footer"
+      ],
+      "components": [
+        {
+          "name": "SearchBar",
+          "reused_from_design_system": true,
+          "new_component_justification": "",
+          "covers_ui_expectations": [
+            "Search bar component at the top of the task list view"
+          ],
+          "props": {
+            "placeholder": "Enter keyword"
+          }
+        },
+        {
+          "name": "TaskList",
+          "reused_from_design_system": false,
+          "new_component_justification": "No existing component fits for displaying tasks with links to detail pages",
+          "covers_ui_expectations": [
+            "Clear visual indication of matched tasks"
+          ],
+          "props": {
+            "tasks": []
+          }
+        }
+      ],
+      "states": [
+        "idle",
+        "loading",
+        "error",
+        "success"
+      ]
+    }
+  ],
+  "notes": ""
+}
