@@ -75,14 +75,20 @@ Architecture Plan rules:
   frontend.services (path, functions mapping to endpoints), frontend.routing
   (new_routes, nav_links), implementation_order (ordered concrete steps), and
   constraints.
-- implementation_plan file paths must follow the project scaffold conventions exactly:
-  backend routers at server/src/routes/<feature>.routes.js (mounted by modifying
-  server/src/app.js at its // FEATURE_ROUTES_END marker), Mongoose models at
-  server/src/models/<Entity>.js, pages at client/src/pages/<Name>Page.jsx, API service
-  modules at client/src/services/<name>Service.js, and page routes/nav links registered
-  in client/src/App.jsx (which has FEATURE_LINKS markers inside HomePage).
+- implementation_plan file paths must follow the project scaffold conventions exactly
+  (Next.js App Router + TypeScript): backend Route Handlers at
+  app/api/<resource>/route.ts (a collection endpoint, e.g. GET/POST /api/tasks) and
+  app/api/<resource>/[id]/route.ts (an item endpoint, e.g. GET/PUT/DELETE
+  /api/tasks/:id) -- ALWAYS two separate files, never combined in one, since Next.js
+  routes by folder path. Mongoose models at models/<Entity>.ts. Pages at
+  app/<route>/page.tsx (a dynamic segment like /tasks/:taskId becomes the folder
+  app/tasks/[taskId]/page.tsx). API client modules at lib/api/<name>.ts. Page routes are
+  automatically live the instant page.tsx/route.ts exists (Next.js's file-based routing
+  has no separate "mount the router" step) -- but a page still needs a real
+  `<Link href="...">` registered inside app/page.tsx's FEATURE_LINKS markers to be
+  reachable by a human, so every new page's implementation_order must include that.
 - Never plan to create or rewrite the existing scaffold files themselves
-  (server/src/server.js, client/src/main.jsx, client/vite.config.js, client/index.html).
+  (app/layout.tsx, next.config.mjs, tsconfig.json, lib/mongodb.ts).
 - Every Functional Requirement must be covered in traceability_matrix and implementation tasks.
 - Every Acceptance Criterion must be covered in behavior_view, error_handling_view, interface_view, or implementation tasks.
 - Every Validation Rule must be covered in data_view, interface_view, error_handling_view, validation_plan, or implementation tasks.
@@ -259,7 +265,7 @@ The JSON must have exactly this top-level structure:
     "implementation_plan": {
       "backend": {
         "files": [
-          {"path": "server/src/routes/<feature>.routes.js", "action": "create",
+          {"path": "app/api/<resource>/route.ts", "action": "create",
            "purpose": "", "implements_endpoints": ["/api/..."]}
         ],
         "endpoints": [
@@ -268,18 +274,18 @@ The JSON must have exactly this top-level structure:
            "response": "", "error_cases": ["400 when ...", "404 when ..."]}
         ],
         "models": [
-          {"name": "", "file": "server/src/models/<Entity>.js",
+          {"name": "", "file": "models/<Entity>.ts",
            "fields": [{"name": "", "type": "", "constraints": ""}]}
         ]
       },
       "frontend": {
         "pages": [
-          {"path": "client/src/pages/<Name>Page.jsx", "route": "/...",
+          {"path": "app/<route>/page.tsx", "route": "/...",
            "purpose": "", "uses_components": []}
         ],
         "components_to_reuse": [],
         "services": [
-          {"path": "client/src/services/<name>Service.js",
+          {"path": "lib/api/<name>.ts",
            "functions": [{"name": "", "calls_endpoint": "POST /api/..."}]}
         ],
         "routing": {"new_routes": [], "nav_links": []}
@@ -538,7 +544,7 @@ Important Architecture Plan instructions:
 
 Important use case instructions:
 - For usecase_specification_json, extract actors from SRS user_roles and real external systems only.
-- Do not create actors from Database, API, Controller, MongoDB, React, Node, JWT, Server, Backend, Frontend, UI pages, or forms.
+- Do not create actors from Database, API, Controller, MongoDB, React, Node, JWT, Server, Backend, Frontend, UI pages, forms, Next.js, App Router, Server Component, or Route Handler.
 - Produce exactly one "main" use_cases entry: the real feature goal, never the feature name restated.
 - Produce "included" entries only for genuinely separate, reusable, mandatory user-observable
   steps -- never split one action into parallel micro-steps (e.g. one "Validate Credentials", not
@@ -547,7 +553,7 @@ Important use case instructions:
 - Every entry needs real related_requirements (FR-xxx/AC-xxx/VR-xxx ids) -- accurate, not guessed.
 - Merge any two entries that describe the same real behaviour under different names before
   finishing -- do not submit near-duplicate use cases.
-- Do not put constraints, NFRs, risks, architecture style, MERN stack, MVC, database design, API design, or security notes into the use case diagram.
+- Do not put constraints, NFRs, risks, architecture style, target stack (MERN, Next.js, etc.), MVC, database design, API design, or security notes into the use case diagram.
 - Do not add UML notes. Constraints, NFRs, risks, and security rules must stay inside the Architecture Plan only.
 - Every use case name must be a clean, action-oriented verb phrase, 2-5 words, with no leftover
   sentence-fragment words (a/an/the/this/that/their/can/given/when/then, etc.) -- read each name
@@ -840,7 +846,7 @@ Class Diagram Specification Rules:
 - Every class/relationship needs accurate related_requirements where
   applicable.
 - Do not create classes for NFRs, risks, constraints, architecture style,
-  MVC/MERN stack notes, or use-case names -- those are not structural
+  MVC/target-stack notes (MERN, Next.js, etc.), or use-case names -- those are not structural
   design elements.
 - Call validate_class_draft before submitting. If it reports errors, fix
   them and validate again. Submit only once validation passes or you are

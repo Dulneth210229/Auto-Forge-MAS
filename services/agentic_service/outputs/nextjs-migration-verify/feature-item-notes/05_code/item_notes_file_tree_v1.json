@@ -1,0 +1,15 @@
+{
+  "added": [
+    "app/api/item-notes/route.ts",
+    "app/item-notes/page.tsx",
+    "components/ItemNotesList.jsx",
+    "components/NoteInputField.jsx",
+    "lib/api/itemNotes.ts",
+    "models/ItemNote.ts",
+    "next.config.mjs"
+  ],
+  "modified": [
+    "app/page.tsx"
+  ],
+  "deleted": []
+}

@@ -135,3 +135,6 @@ docker
 
 # Added for M2: UI/UX Agent preview rendering
 playwright
+
+# Added for per-project domain knowledge document upload (multipart/form-data parsing)
+python-multipart==0.0.32

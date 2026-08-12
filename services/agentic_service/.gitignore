@@ -12,4 +12,8 @@ data/processed/*
 # never be committed into this repo).
 workspaces/
 
+# Generated Domain Agent vector store (ChromaDB binary data, rebuilt by
+# scripts/ingest_domain_knowledge.py from knowledge_base/ source files).
+vector_db/
+
 .pytest_cache/

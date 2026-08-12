@@ -28,13 +28,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from app.core.config import settings
 from app.core.enums import ApprovalStatus, AgentName, ArtifactType, ArtifactFormat
 from app.schemas.artifact_schema import ArtifactResponse
 from app.services.in_memory_store import store
 from app.utils.file_manager import ensure_directory, write_text_file, write_json_file
 from app.utils.id_generator import generate_id
+from app.utils.logger import get_logger
 from app.utils.slugify import slugify
+
+logger = get_logger(__name__)
 
 
 class ArtifactService:
@@ -147,13 +152,19 @@ class ArtifactService:
         artifact_type: ArtifactType,
         filename: str,
         data: dict[str, Any],
-        version_override: int | None = None
+        version_override: int | None = None,
+        summary: str | None = None,
     ) -> ArtifactResponse:
         """
         Save a JSON artifact and register metadata.
 
         version_override lets this JSON file share the same version
         as the related Markdown artifact.
+
+        summary, when given, is a short human-readable description of this
+        artifact's content (e.g. a CODE_PLAN's own "summary" field) --
+        stored alongside the artifact record so the frontend chat can show
+        real, model-generated text instead of a generic placeholder.
         """
         version = version_override or self.get_next_version(
             feature_id=feature["feature_id"],
@@ -177,8 +188,24 @@ class ArtifactService:
             artifact_type=artifact_type,
             artifact_format=ArtifactFormat.JSON,
             file_path=saved_path,
-            version=version
+            version=version,
+            summary=summary,
         )
+
+    def _hydrate_artifact_response(self, artifact: dict[str, Any]) -> ArtifactResponse:
+        """
+        Build an ArtifactResponse, computing size_bytes from the file on disk (never stored --
+        the file is the source of truth, and this stays correct even if a file changes size for
+        any reason). None if the file is missing rather than raising -- purely cosmetic, so a
+        missing file should degrade gracefully, not break the whole list.
+        """
+        size_bytes = None
+        try:
+            size_bytes = Path(artifact["file_path"]).stat().st_size
+        except OSError:
+            pass
+
+        return ArtifactResponse(**artifact, size_bytes=size_bytes)
 
     def _register_artifact(
         self,
@@ -188,7 +215,8 @@ class ArtifactService:
         artifact_type: ArtifactType,
         artifact_format: ArtifactFormat,
         file_path: str,
-        version: int
+        version: int,
+        summary: str | None = None,
     ) -> ArtifactResponse:
         """
         Create artifact metadata and store it in the temporary in-memory store.
@@ -207,21 +235,38 @@ class ArtifactService:
             "version": version,
             "approval_status": ApprovalStatus.PENDING,
             "created_at": created_at,
+            "summary": summary,
         }
 
         store.artifacts[artifact_id] = artifact
 
-        return ArtifactResponse(**artifact)
+        return self._hydrate_artifact_response(artifact)
 
     def list_feature_artifacts(self, feature_id: str) -> list[ArtifactResponse]:
         """
         Return all artifacts generated for a feature.
+
+        Skips (and logs a warning for) any individual record that fails to validate against
+        ArtifactResponse -- e.g. a legacy artifact_type value no longer in the ArtifactType enum
+        (confirmed real case: old qa_agent "test_cases" records predating QA Agent being
+        simplified to a stub) -- rather than letting one such record break this list for every
+        other, perfectly valid artifact belonging to the same feature.
         """
-        return [
-            ArtifactResponse(**artifact)
-            for artifact in store.artifacts.values()
-            if artifact["feature_id"] == feature_id
-        ]
+        results = []
+
+        for artifact in store.artifacts.values():
+            if artifact["feature_id"] != feature_id:
+                continue
+
+            try:
+                results.append(self._hydrate_artifact_response(artifact))
+            except ValidationError as error:
+                logger.warning(
+                    "Skipping unparseable artifact %s for feature_id=%s: %s",
+                    artifact.get("artifact_id"), feature_id, error,
+                )
+
+        return results
 
     def list_project_artifacts(
         self,
@@ -265,7 +310,152 @@ class ArtifactService:
         if not artifact:
             return None
 
-        return ArtifactResponse(**artifact)
+        return self._hydrate_artifact_response(artifact)
+
+    @staticmethod
+    def _artifact_matches(artifact: dict, feature_id: str, artifact_type: str, artifact_format: str | None) -> bool:
+        if artifact.get("feature_id") != feature_id:
+            return False
+        stored_type = artifact.get("artifact_type")
+        if stored_type != artifact_type and getattr(stored_type, "value", stored_type) != artifact_type:
+            return False
+        if artifact_format is not None:
+            stored_format = artifact.get("artifact_format")
+            if stored_format != artifact_format and getattr(stored_format, "value", stored_format) != artifact_format:
+                return False
+        return True
+
+    def get_selected_or_latest_approved_artifact(
+        self, feature_id: str, artifact_type: str, artifact_format: str | None = None
+    ) -> dict | None:
+        """
+        Return the artifact a human has explicitly pinned (via set_active_artifact_selection) for
+        this (feature_id, artifact_type), if one is set and still valid -- otherwise the latest
+        APPROVED version by version number, which is the default every stage's own private
+        "_find_latest_approved_*" duplicate (Architecture/Domain/UI-UX/Coder Agent) already used
+        before this existed. A stale selection (e.g. pointing at a since-deleted artifact) falls
+        through to that same default rather than raising -- pinning a version is meant to be a
+        soft override, never a way to permanently break the pipeline if that version goes away.
+        """
+
+        feature = store.features.get(feature_id)
+        selection_id = (feature.get("active_artifact_selection") or {}).get(artifact_type) if feature else None
+
+        if selection_id:
+            selected = store.artifacts.get(selection_id)
+            if (
+                selected
+                and self._artifact_matches(selected, feature_id, artifact_type, artifact_format)
+                and selected.get("approval_status") in (ApprovalStatus.APPROVED, ApprovalStatus.APPROVED.value)
+            ):
+                return selected
+
+        candidates = [
+            artifact
+            for artifact in store.artifacts.values()
+            if self._artifact_matches(artifact, feature_id, artifact_type, artifact_format)
+            and artifact.get("approval_status") in (ApprovalStatus.APPROVED, ApprovalStatus.APPROVED.value)
+        ]
+
+        if not candidates:
+            return None
+
+        return max(candidates, key=lambda item: item.get("version", 1))
+
+    def set_active_artifact_selection(self, feature_id: str, artifact_type: str, artifact_id: str) -> None:
+        """
+        Pin one APPROVED artifact as the version that feeds the next pipeline stage for this
+        (feature, artifact_type) -- e.g. which of several approved SRS versions the Domain Agent
+        should read, when a human wants an earlier approved version rather than always the latest.
+
+        Raises ValueError (route layer maps this to 400) if the artifact doesn't exist, doesn't
+        belong to this feature, isn't of the given type, or isn't APPROVED -- only approved
+        versions are meaningful choices here; a pending/rejected one was never going to feed the
+        next stage anyway.
+        """
+
+        feature = store.features.get(feature_id)
+        if not feature:
+            raise ValueError(f"Feature not found: {feature_id}")
+
+        artifact = store.artifacts.get(artifact_id)
+        if not artifact:
+            raise ValueError(f"Artifact not found: {artifact_id}")
+
+        if not self._artifact_matches(artifact, feature_id, artifact_type, artifact_format=None):
+            raise ValueError(
+                f"Artifact {artifact_id} does not belong to this feature or is not of type '{artifact_type}'."
+            )
+
+        if artifact.get("approval_status") not in (ApprovalStatus.APPROVED, ApprovalStatus.APPROVED.value):
+            raise ValueError("Only an approved artifact version can be selected for the pipeline.")
+
+        selection = dict(feature.get("active_artifact_selection") or {})
+        selection[artifact_type] = artifact_id
+
+        updated_feature = dict(feature)
+        updated_feature["active_artifact_selection"] = selection
+        store.features[feature_id] = updated_feature
+
+    def delete_artifact(self, artifact_id: str) -> None:
+        """
+        Permanently remove one artifact VERSION -- e.g. an unapproved SRS/architecture-plan/etc.
+        version a human decides they don't want cluttering the version history.
+
+        Raises ValueError (the route layer maps this to 400) for: unknown artifact, OR an
+        artifact whose VERSION has any sibling (same feature_id/artifact_type/version) already
+        APPROVED -- approved artifacts are load-bearing history (what a human actually signed off
+        on, what downstream agents/graph state may already reference) and must never be
+        deletable, only superseded by a new version. Checking the whole version (not just this
+        one artifact_id) matters because every gating artifact_type saves a JSON+Markdown pair at
+        one shared version, and the two halves can be approved independently -- calling this
+        directly on the still-pending half of an already-approved pair must be refused too, or it
+        would silently orphan the approved half's sibling out from under it.
+
+        Cascades to every OTHER sibling in the same version once the check above clears (i.e.
+        every sibling in the pair is confirmed non-approved) -- the frontend's version list dedupes
+        a JSON+Markdown pair into a single row (see frontend/src/lib/artifactTypeMeta.js's
+        dedupeArtifactVersions), so deleting only the one artifact_id behind that row would leave
+        its sibling format still in the database, which would then simply reappear as the same
+        "version" the human just deleted on the next list refresh.
+
+        Deleting each file on disk is best-effort: a missing/already-gone file just gets logged,
+        never raised, since the Mongo record is the part that actually matters for "is this still
+        in the version list."
+        """
+
+        artifact = store.artifacts.get(artifact_id)
+
+        if not artifact:
+            raise ValueError(f"Artifact not found: {artifact_id}")
+
+        siblings = [
+            sibling
+            for sibling in store.artifacts.values()
+            if sibling["artifact_id"] != artifact_id
+            and sibling.get("feature_id") == artifact.get("feature_id")
+            and sibling.get("artifact_type") == artifact.get("artifact_type")
+            and sibling.get("version") == artifact.get("version")
+        ]
+
+        version_group = [artifact, *siblings]
+        if any(
+            record.get("approval_status") in (ApprovalStatus.APPROVED, ApprovalStatus.APPROVED.value)
+            for record in version_group
+        ):
+            raise ValueError(
+                "Cannot delete an approved artifact -- it's part of this feature's approved "
+                "history. Only pending, rejected, or revision-requested versions can be deleted."
+            )
+
+        for record in version_group:
+            try:
+                Path(record["file_path"]).unlink(missing_ok=True)
+            except OSError as error:
+                logger.warning("Failed to delete artifact file for %s: %s", record["artifact_id"], error)
+
+            store.artifacts.collection.delete_one({"artifact_id": record["artifact_id"]})
+
     def save_binary_artifact(
         self,
         project: dict[str, Any],
@@ -354,7 +544,7 @@ class ArtifactService:
             return None
 
         latest = max(matching_artifacts, key=lambda item: item["version"])
-        return ArtifactResponse(**latest)
+        return self._hydrate_artifact_response(latest)
 
     def read_artifact_content(self, artifact_id: str) -> str:
         """
@@ -418,5 +608,20 @@ class ArtifactService:
             file_path=str(file_path),
             version=version,
         )
+
+    def read_artifact_binary(self, artifact_id: str) -> bytes:
+        """
+        Read artifact file content as raw bytes (PNG diagrams/screenshots).
+
+        Sibling of read_artifact_content -- used by the artifact content-serving
+        API route so the frontend can display images directly.
+        """
+        artifact = store.artifacts.get(artifact_id)
+
+        if not artifact:
+            raise ValueError(f"Artifact not found: {artifact_id}")
+
+        with open(artifact["file_path"], "rb") as file:
+            return file.read()
 
 artifact_service = ArtifactService()

@@ -59,12 +59,12 @@ def test_tool_set_excludes_write_capable_tools(project_and_tools):
 
 def test_read_only_tools_still_work_against_the_real_scaffold(project_and_tools):
     result = project_and_tools["tools"]["list_dir"].invoke({"path": "."})
-    assert "[dir]  client" in result
-    assert "[dir]  server" in result
+    assert "[dir]  app" in result
+    assert "[dir]  lib" in result
 
 
 def test_submit_code_plan_captures_its_argument(project_and_tools):
-    plan_json = '{"files": [{"path": "a.jsx", "action": "modify", "rationale": "r", "maps_to": []}]}'
+    plan_json = '{"files": [{"path": "a.tsx", "action": "modify", "rationale": "r", "maps_to": []}]}'
 
     result = project_and_tools["tools"]["submit_code_plan"].invoke({"plan_json": plan_json})
 
@@ -73,7 +73,8 @@ def test_submit_code_plan_captures_its_argument(project_and_tools):
 
 
 def test_check_component_styling_reports_on_the_real_workspace(project_and_tools):
-    # The fresh scaffold has no client/src/pages or client/src/components dir
-    # yet, so this should report cleanly rather than erroring.
+    # The fresh Next.js scaffold already has app/page.tsx (unlike the old
+    # MERN scaffold, which had no client/src/pages until a feature added
+    # one) -- it should be reported, not treated as "nothing to scan".
     result = project_and_tools["tools"]["check_component_styling"].invoke({})
-    assert "No .jsx files found" in result
+    assert "app/page.tsx" in result

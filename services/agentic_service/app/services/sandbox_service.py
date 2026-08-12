@@ -33,6 +33,19 @@ from app.services.workspace_service import workspace_service
 SANDBOX_IMAGE = "autoforge-coder-sandbox:latest"
 DEFAULT_TIMEOUT_SECONDS = 120
 
+# `next build`'s bundling + full TypeScript typecheck routinely exceeds the
+# Vite-era 1g default -- a Docker OOM kill surfaces as an undiagnosable bare
+# exit 137 with no clear signal it was a memory limit, not a real build
+# failure. Raised for both run_command and start_background_service; either
+# can be asked to run `next build`/`next start`.
+DEFAULT_MEM_LIMIT = "2g"
+
+# Container label key used to tag every long-running preview container
+# (preview_service.py) so an orphan sweep (e.g. after a --reload restart
+# drops the in-memory preview registry) can find and clean them up by
+# listing containers with this label instead of relying on in-process state.
+PREVIEW_CONTAINER_LABEL = "autoforge.preview.feature_id"
+
 
 class SandboxService:
     """
@@ -48,6 +61,7 @@ class SandboxService:
         command: str,
         cwd: str = ".",
         timeout: int = DEFAULT_TIMEOUT_SECONDS,
+        mem_limit: str = DEFAULT_MEM_LIMIT,
     ) -> dict[str, Any]:
         """
         Run `command` inside a fresh container with the project's workspace
@@ -78,7 +92,7 @@ class SandboxService:
                 command=["sh", "-c", command],
                 working_dir=working_dir,
                 volumes={str(Path(repo_path).resolve()): {"bind": "/workspace", "mode": "rw"}},
-                mem_limit="1g",
+                mem_limit=mem_limit,
                 detach=True,
             )
 
@@ -119,15 +133,22 @@ class SandboxService:
         command: str,
         cwd: str,
         container_port: int,
+        mem_limit: str = DEFAULT_MEM_LIMIT,
+        labels: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """
         Start `command` in a detached container that keeps running (unlike
         run_command, which waits for the command to exit) with
         `container_port` published to an available host port. For
-        long-running processes like `vite preview` that never exit on
-        their own -- e.g. the Coder Agent's runtime-render check, which
-        needs an actually-running server for Playwright (on the host) to
-        navigate to.
+        long-running processes like `next start`/`vite preview` that never
+        exit on their own -- e.g. the Coder Agent's runtime-render check and
+        the live preview feature, both of which need an actually-running
+        server for Playwright/a human's browser to navigate to.
+
+        `labels` (e.g. {PREVIEW_CONTAINER_LABEL: feature_id}) tags the
+        container so a caller (preview_service's orphan sweep) can find and
+        clean up containers left behind by a process restart, without
+        needing its own in-memory registry to have survived.
 
         Returns {"container": <docker Container>, "host_port": int}. The
         caller must call stop_background_service(container) when done --
@@ -155,8 +176,9 @@ class SandboxService:
                 command=["sh", "-c", command],
                 working_dir=working_dir,
                 volumes={str(Path(repo_path).resolve()): {"bind": "/workspace", "mode": "rw"}},
-                mem_limit="1g",
+                mem_limit=mem_limit,
                 ports={f"{container_port}/tcp": None},  # None = let Docker assign a free host port
+                labels=labels or {},
                 detach=True,
             )
         except DockerException as error:
@@ -204,6 +226,20 @@ class SandboxService:
                 container.remove(force=True)
             except DockerException:
                 pass
+
+    def find_containers_by_label(self, label_key: str) -> list[Any]:
+        """
+        List every container (running or not) carrying `label_key`, for an
+        orphan sweep (preview_service's startup cleanup) that must find
+        containers left behind by a prior process's in-memory registry
+        having been dropped (e.g. a `--reload` restart) -- returns an empty
+        list, never raises, if Docker itself is unreachable.
+        """
+        try:
+            client = docker.from_env()
+            return client.containers.list(all=True, filters={"label": label_key})
+        except DockerException:
+            return []
 
 
 sandbox_service = SandboxService()

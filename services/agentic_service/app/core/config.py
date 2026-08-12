@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     LLM_TIMEOUT_SECONDS: int = 320
     LLM_STREAMING_ENABLED: bool = True
 
-    # Root folder for persistent per-project git repositories (the actual generated MERN app).
+    # Root folder for persistent per-project git repositories (the actual generated Next.js app).
     WORKSPACE_DIR: str = "workspaces"
 
     # MongoDB connection URI.
@@ -95,6 +95,9 @@ class Settings(BaseSettings):
 
     # Number of chunks retrieved for each Domain Agent run.
     DOMAIN_TOP_K: int = 6
+
+    # Maximum size (bytes) accepted for a per-project domain knowledge document upload.
+    DOMAIN_MAX_UPLOAD_BYTES: int = 20 * 1024 * 1024
 
     model_config = SettingsConfigDict(
         env_file=str(ENV_FILE_PATH),

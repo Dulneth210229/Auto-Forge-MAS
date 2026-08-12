@@ -45,8 +45,8 @@ class RequirementBAInput(BaseModel):
     )
 
     target_stack: str | None = Field(
-        default="MERN",
-        example="MERN",
+        default="Next.js",
+        example="Next.js",
         description="Technology stack for the generated application."
     )
 
@@ -131,7 +131,7 @@ class RequirementBAInput(BaseModel):
     constraints: list[str] = Field(
         default_factory=list,
         example=[
-            "Use MERN stack",
+            "Use Next.js with TypeScript",
             "Use JWT authentication"
         ],
         description="Technical or business constraints."
@@ -224,4 +224,39 @@ class RequirementAgentReviseRequest(BaseModel):
     revised_by: str = Field(
         default="human_user",
         example="human_user"
+    )
+
+
+class SrsFieldEditOperation(BaseModel):
+    """
+    One deterministic, no-LLM edit to a single SRS field -- the exact same operation shape
+    apply_revision_operations (revision_patcher.py) already accepts from the LLM-mediated
+    revise flow. The field-by-field inline-edit UI is simply another producer of this shape.
+    """
+
+    action: str = Field(..., example="modify", description="One of: add, remove, modify, set.")
+    field: str = Field(..., example="functional_requirements")
+    target: str | None = Field(
+        default=None,
+        example="FR-002",
+        description="For remove/modify: the item's id (ID-tagged fields) or exact current text "
+                    "(plain-string fields) to find.",
+    )
+    value: str | None = Field(default=None, example="Updated requirement text.")
+    role: str | None = Field(default=None, description="user_stories modify/add only.")
+    benefit: str | None = Field(default=None, description="user_stories modify/add only.")
+    priority: str | None = Field(default=None, description="functional_requirements add only.")
+
+
+class RequirementAgentFieldEditRequest(BaseModel):
+    """Request body for a direct, no-LLM field edit to the latest SRS."""
+
+    operations: list[SrsFieldEditOperation] = Field(..., min_length=1)
+    edited_by: str = Field(default="human_user", example="human_user")
+    base_artifact_id: str | None = Field(
+        default=None,
+        description="The SRS JSON artifact_id the edit UI loaded when the human started "
+                    "editing -- used to detect a stale-version conflict (e.g. a concurrent "
+                    "LLM revision landed in between). Optional so direct API callers can skip "
+                    "the check if they don't care about it.",
     )

@@ -388,6 +388,20 @@ class MongoLLMSettingsProxy(MutableMapping):
 
         return cleaned or {}
 
+    def get_document(self) -> dict[str, Any]:
+        """
+        Read the whole settings document in exactly one round-trip.
+
+        Prefer this over repeated `store.llm_settings["field"]` accesses when a caller needs
+        several fields -- each `__getitem__` call below independently re-fetches the *entire*
+        document (there is no per-instance caching), so reading N fields one at a time costs N
+        round-trips. This mattered concretely: computing every agent's effective LLM settings
+        (5 agents x ~6 fields, plus the global settings) previously took ~30+ separate
+        `find_one` calls against MongoDB Atlas (a real, non-local cluster with real per-call
+        network latency) -- observed taking 5+ seconds for what should be one cheap read.
+        """
+        return self._get_document()
+
     def __getitem__(self, key: str) -> Any:
         """
         Support:
@@ -469,6 +483,8 @@ class MongoStore:
         artifacts
         approvals
         llm_settings
+        stage_events
+        requirement_conversations
     """
 
     def __init__(self):
@@ -502,6 +518,34 @@ class MongoStore:
 
         self.llm_settings = MongoLLMSettingsProxy(
             collection=self.database["llm_settings"],
+        )
+
+        # One record per human-initiated run()/revise() request -- the "ask" half of the
+        # frontend's per-stage activity timeline (see approvals for the "reviewer decision"
+        # half; the artifact's own created_at is the "agent responded" half). Recorded at the
+        # API route layer (app/api/routes/agents.py), not deep in each agent, since that's the
+        # one place every request's human_comment/revision_comment is already available
+        # uniformly, before any agent-specific processing.
+        self.stage_events = MongoCollectionProxy(
+            collection=self.database["stage_events"],
+            id_field="event_id",
+        )
+
+        # One document per feature_id, upserted in place each conversational turn -- NOT
+        # versioned like artifacts, since a single in-progress turn is not a reviewable output
+        # on its own (unlike every other artifact type). Requirement Agent's conversational
+        # gap-filling loop reads/writes this directly; see conversation_engine.py.
+        self.requirement_conversations = MongoCollectionProxy(
+            collection=self.database["requirement_conversations"],
+            id_field="feature_id",
+        )
+
+        # One record per uploaded per-project domain knowledge document (see
+        # knowledge_document_service.py) -- the raw file lives on disk and its chunks live in
+        # Chroma; this is just the metadata (filename, status, chunk_count) the UI lists/manages.
+        self.knowledge_documents = MongoCollectionProxy(
+            collection=self.database["knowledge_documents"],
+            id_field="document_id",
         )
 
         self._create_indexes()
@@ -561,6 +605,29 @@ class MongoStore:
             unique=True,
         )
 
+        self.database["stage_events"].create_index(
+            [("event_id", ASCENDING)],
+            unique=True,
+        )
+
+        self.database["stage_events"].create_index(
+            [("feature_id", ASCENDING)]
+        )
+
+        self.database["requirement_conversations"].create_index(
+            [("feature_id", ASCENDING)],
+            unique=True,
+        )
+
+        self.database["knowledge_documents"].create_index(
+            [("document_id", ASCENDING)],
+            unique=True,
+        )
+
+        self.database["knowledge_documents"].create_index(
+            [("project_id", ASCENDING)]
+        )
+
     def reset(self) -> None:
         """
         Clear project-related data from MongoDB.
@@ -574,6 +641,9 @@ class MongoStore:
         self.features.clear()
         self.artifacts.clear()
         self.approvals.clear()
+        self.stage_events.clear()
+        self.requirement_conversations.clear()
+        self.knowledge_documents.clear()
 
     def close(self) -> None:
         """

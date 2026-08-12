@@ -32,8 +32,8 @@ from app.agents.uiux_agent.design_system_service import uiux_design_system_servi
 from app.agents.uiux_agent.integration_manifest_builder import uiux_integration_manifest_builder
 from app.agents.uiux_agent.markdown_builder import uiux_markdown_builder
 from app.agents.uiux_agent.metadata_modeler import UIUXMetadataModeler
-from app.agents.uiux_agent.metadata_validator import UIMetadataValidator
-from app.agents.uiux_agent.preview_renderer import uiux_preview_renderer
+from app.agents.uiux_agent.metadata_validator import UIMetadataValidationError, UIMetadataValidator
+from app.agents.uiux_agent.preview_renderer import PreviewRenderError, uiux_preview_renderer
 from app.agents.uiux_agent.schemas import UIUXAgentInput, UIUXAgentOutput
 from app.core.enums import AgentName, ApprovalStatus, ArtifactFormat, ArtifactType
 from app.schemas.uiux_schema import UIUXAgentRunRequest
@@ -50,6 +50,21 @@ class UIUXAgent:
     """
     Main UI/UX Agent class.
     """
+
+    # Slightly more headroom than Requirement/Domain/Architecture Agent's usual "one repair
+    # attempt" -- UI/UX Agent has no deterministic fallback rung by design (see module
+    # docstring: a guessed-at UI plan is worse than none), so it gets more real LLM attempts
+    # before failing loudly instead of a synthetic fallback to fall back to. Real testing
+    # against llama3:latest showed the missing-requirement-ID error genuinely shrinking each
+    # repair round (6 missing -> 4 -> 1), i.e. real convergence, not flailing -- worth a bit
+    # more headroom than 2 attempts to let it actually finish converging.
+    MAX_VALIDATION_REPAIR_ATTEMPTS = 4
+
+    # Same reasoning as above, applied to preview-render failures (see _render_pages): real
+    # testing showed a repair can trade one render error for a different one (a fix for a
+    # ReferenceError introduced a JSX syntax error instead), so it can take more than one
+    # round to actually converge on working code.
+    MAX_RENDER_REPAIR_ATTEMPTS = 3
 
     def __init__(self):
         self.metadata_modeler = UIUXMetadataModeler()
@@ -130,7 +145,7 @@ class UIUXAgent:
             agent_input, ui_metadata_json
         )
 
-        page_screenshots = await self._render_pages(page_render_data)
+        page_screenshots = await self._render_pages(component_files, page_render_data)
 
         integration_manifest_json = uiux_integration_manifest_builder.build(ui_metadata_json)
         ui_design_markdown = uiux_markdown_builder.build(
@@ -173,9 +188,32 @@ class UIUXAgent:
         )
 
         srs_for_validation = agent_input.enhanced_srs_json or agent_input.srs_json
-        self.metadata_validator.validate(srs_for_validation, ui_metadata_json)
 
-        return ui_metadata_json, raw_llm_output
+        last_error: UIMetadataValidationError | None = None
+
+        for attempt in range(1, self.MAX_VALIDATION_REPAIR_ATTEMPTS + 2):  # +1 initial, +1 inclusive range
+            try:
+                self.metadata_validator.validate(srs_for_validation, ui_metadata_json)
+                return ui_metadata_json, raw_llm_output
+
+            except UIMetadataValidationError as error:
+                last_error = error
+
+                if attempt > self.MAX_VALIDATION_REPAIR_ATTEMPTS:
+                    break
+
+                logger.warning(
+                    "UI metadata validation failed (repair attempt %s/%s): %s",
+                    attempt, self.MAX_VALIDATION_REPAIR_ATTEMPTS, error
+                )
+
+                ui_metadata_json, raw_llm_output = await self.metadata_modeler.repair_for_validation(
+                    raw_llm_output, str(error)
+                )
+
+        # No fallback here by design (see module docstring) -- once repair attempts are
+        # exhausted, fail loudly rather than proceed with a guessed-at UI plan.
+        raise last_error
 
     async def _generate_components(
         self, agent_input: UIUXAgentInput, ui_metadata_json: dict[str, Any]
@@ -214,6 +252,7 @@ class UIUXAgent:
                                 "name": component_name,
                                 "jsx_code": reused_jsx,
                                 "mock_props": self._placeholder_mock_props(component_metadata),
+                                "reused": True,
                             }
                         )
                         continue
@@ -242,6 +281,7 @@ class UIUXAgent:
                         "name": component_name,
                         "jsx_code": generated["jsx_code"],
                         "mock_props": generated["mock_props"],
+                        "reused": False,
                     }
                 )
 
@@ -250,22 +290,109 @@ class UIUXAgent:
         return component_files, page_render_data
 
     async def _render_pages(
-        self, page_render_data: dict[str, list[dict[str, Any]]]
+        self, component_files: dict[str, str], page_render_data: dict[str, list[dict[str, Any]]]
     ) -> dict[str, bytes]:
         """
         Render one PNG per page. Playwright's sync API is used inside
         preview_renderer.py, so it is called via asyncio.to_thread here --
         it cannot run inside this already-running event loop.
+
+        On a real browser render failure (e.g. a ReferenceError from JSX that parsed fine but
+        is not actually self-contained), attempts up to MAX_RENDER_REPAIR_ATTEMPTS targeted
+        repairs: regenerate every freshly-generated (non-reused) component on that page with
+        the concrete browser error fed back, then retry the render. Bounded, not unlimited --
+        real testing showed a repair can itself introduce a *different* error (e.g. fixing a
+        ReferenceError by rewriting the component introduced a JSX syntax error), so one repair
+        attempt is not always enough. component_files is mutated in place so whichever attempt's
+        JSX is what actually gets saved as the artifact.
+
+        If every attempt still fails, the page's screenshot is skipped (logged as an error) --
+        not fatal for the whole run. Unlike ui_metadata_json (which the Architecture/Coder Agent
+        pipeline actually depends on), a PNG preview is a human-review convenience only; nothing
+        downstream reads it. Real testing surfaced a render failure ("element is not visible")
+        that reproduces only inside the live graph-invoked pipeline and not in direct,
+        content-identical isolation tests (same JSX, same asyncio.to_thread call pattern,
+        increasing the timeout from 30s to 90s made no difference) -- a deeper Playwright/
+        threading interaction under the graph's execution context that a code-level component
+        fix cannot address. Blocking the entire UI/UX Agent run (and therefore the whole
+        pipeline) on a screenshot is the wrong tradeoff.
         """
 
         page_screenshots: dict[str, bytes] = {}
 
         for page_id, components in page_render_data.items():
-            page_screenshots[page_id] = await asyncio.to_thread(
-                uiux_preview_renderer.render_page_png, components
-            )
+            last_error: PreviewRenderError | None = None
+
+            for attempt in range(self.MAX_RENDER_REPAIR_ATTEMPTS + 1):
+                try:
+                    if attempt > 0:
+                        components = await self._repair_page_components(components, str(last_error))
+
+                        for component in components:
+                            component_files[component["name"]] = component["jsx_code"]
+
+                        page_render_data[page_id] = components
+
+                    page_screenshots[page_id] = await asyncio.to_thread(
+                        uiux_preview_renderer.render_page_png, components
+                    )
+                    last_error = None
+                    break
+
+                except PreviewRenderError as error:
+                    last_error = error
+
+                    if attempt == 0:
+                        logger.warning(
+                            "Preview render failed for page_id=%s (initial attempt): %s",
+                            page_id, error
+                        )
+                    else:
+                        logger.warning(
+                            "Preview render failed for page_id=%s (repair attempt %s/%s): %s",
+                            page_id, attempt, self.MAX_RENDER_REPAIR_ATTEMPTS, error
+                        )
+
+            if last_error is not None:
+                logger.error(
+                    "Preview render permanently failed for page_id=%s after %s attempts -- "
+                    "skipping its screenshot, continuing without it: %s",
+                    page_id, self.MAX_RENDER_REPAIR_ATTEMPTS + 1, last_error
+                )
 
         return page_screenshots
+
+    async def _repair_page_components(
+        self, components: list[dict[str, Any]], render_error: str
+    ) -> list[dict[str, Any]]:
+        """
+        Regenerate every freshly-generated component on a page whose preview render failed,
+        feeding back the real browser error. Reused (already human-approved) components are
+        left untouched -- regenerating proven-good code on the assumption it might be the
+        culprit would be a regression risk, not a fix.
+        """
+
+        repaired = []
+
+        for component in components:
+            if component.get("reused"):
+                repaired.append(component)
+                continue
+
+            fixed, _raw = await self.component_generator.repair_for_render_error(
+                jsx_code=component["jsx_code"],
+                mock_props=component["mock_props"],
+                render_error=render_error,
+            )
+
+            repaired.append({
+                "name": component["name"],
+                "jsx_code": fixed["jsx_code"],
+                "mock_props": fixed["mock_props"],
+                "reused": False,
+            })
+
+        return repaired
 
     def _load_existing_approved_component(self, project_id: str, component_name: str) -> str | None:
         """

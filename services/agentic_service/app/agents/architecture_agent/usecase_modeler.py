@@ -34,7 +34,8 @@ class ArchitectureUseCaseModeler:
         "api", "endpoint", "controller", "server", "backend", "frontend",
         "react", "node", "express", "jwt", "token", "library", "middleware",
         "component", "page", "form", "repository", "schema", "model",
-        "service layer",
+        "service layer", "next.js", "nextjs", "typescript", "server component",
+        "route handler", "app router",
     ]
 
     OPTIONAL_WORDS = [

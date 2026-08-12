@@ -1,0 +1,38 @@
+{
+  "pages": [
+    {
+      "page_id": "item-management-page",
+      "route": "/item-management",
+      "nav_entry": "Item Management",
+      "components": [
+        {
+          "name": "item-list",
+          "reused_from_design_system": false,
+          "expected_props": []
+        },
+        {
+          "name": "create-item-form",
+          "reused_from_design_system": false,
+          "expected_props": []
+        },
+        {
+          "name": "update-item-form",
+          "reused_from_design_system": false,
+          "expected_props": []
+        }
+      ],
+      "actors": [
+        "Admin"
+      ],
+      "covers_requirements": [
+        "FR-001",
+        "US-001",
+        "AC-001",
+        "AC-003",
+        "US-002",
+        "US-003",
+        "US-004"
+      ]
+    }
+  ]
+}

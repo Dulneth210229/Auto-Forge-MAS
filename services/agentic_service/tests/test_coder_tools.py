@@ -61,8 +61,8 @@ def project_and_tools():
 
 def test_list_dir_shows_initial_scaffold(project_and_tools):
     result = project_and_tools["tools"]["list_dir"].invoke({"path": "."})
-    assert "[dir]  client" in result
-    assert "[dir]  server" in result
+    assert "[dir]  app" in result
+    assert "[dir]  lib" in result
     assert ".gitignore" in result
 
 
@@ -73,10 +73,10 @@ def test_list_dir_missing_path(project_and_tools):
 
 def test_write_then_read_file(project_and_tools):
     tools = project_and_tools["tools"]
-    write_result = tools["write_file"].invoke({"path": "server/hello.js", "content": "console.log(1);"})
+    write_result = tools["write_file"].invoke({"path": "lib/hello.ts", "content": "console.log(1);"})
     assert "Wrote" in write_result
 
-    read_result = tools["read_file"].invoke({"path": "server/hello.js"})
+    read_result = tools["read_file"].invoke({"path": "lib/hello.ts"})
     assert read_result == "console.log(1);"
 
 
@@ -87,29 +87,29 @@ def test_read_file_not_found(project_and_tools):
 
 def test_apply_patch_success(project_and_tools):
     tools = project_and_tools["tools"]
-    tools["write_file"].invoke({"path": "server/a.js", "content": "const x = 1;"})
+    tools["write_file"].invoke({"path": "lib/a.ts", "content": "const x = 1;"})
 
-    result = tools["apply_patch"].invoke({"path": "server/a.js", "find": "x = 1", "replace": "x = 2"})
+    result = tools["apply_patch"].invoke({"path": "lib/a.ts", "find": "x = 1", "replace": "x = 2"})
     assert "Patched" in result
-    assert tools["read_file"].invoke({"path": "server/a.js"}) == "const x = 2;"
+    assert tools["read_file"].invoke({"path": "lib/a.ts"}) == "const x = 2;"
 
 
 def test_apply_patch_no_match(project_and_tools):
     tools = project_and_tools["tools"]
-    tools["write_file"].invoke({"path": "server/a.js", "content": "const x = 1;"})
+    tools["write_file"].invoke({"path": "lib/a.ts", "content": "const x = 1;"})
 
-    result = tools["apply_patch"].invoke({"path": "server/a.js", "find": "not present", "replace": "y"})
+    result = tools["apply_patch"].invoke({"path": "lib/a.ts", "find": "not present", "replace": "y"})
     assert "not found" in result.lower()
-    assert tools["read_file"].invoke({"path": "server/a.js"}) == "const x = 1;"  # unchanged
+    assert tools["read_file"].invoke({"path": "lib/a.ts"}) == "const x = 1;"  # unchanged
 
 
 def test_apply_patch_multiple_matches(project_and_tools):
     tools = project_and_tools["tools"]
-    tools["write_file"].invoke({"path": "server/a.js", "content": "x; x;"})
+    tools["write_file"].invoke({"path": "lib/a.ts", "content": "x; x;"})
 
-    result = tools["apply_patch"].invoke({"path": "server/a.js", "find": "x;", "replace": "y;"})
+    result = tools["apply_patch"].invoke({"path": "lib/a.ts", "find": "x;", "replace": "y;"})
     assert "matched 2 times" in result
-    assert tools["read_file"].invoke({"path": "server/a.js"}) == "x; x;"  # unchanged
+    assert tools["read_file"].invoke({"path": "lib/a.ts"}) == "x; x;"  # unchanged
 
 
 @pytest.mark.parametrize(
@@ -124,10 +124,10 @@ def test_path_traversal_is_rejected(project_and_tools, escaping_path):
 
 def test_search_code_finds_match(project_and_tools):
     tools = project_and_tools["tools"]
-    tools["write_file"].invoke({"path": "server/auth.js", "content": "function login() { return true; }"})
+    tools["write_file"].invoke({"path": "lib/auth.ts", "content": "function login() { return true; }"})
 
     result = tools["search_code"].invoke({"query": "function login"})
-    assert "server" in result and "auth.js" in result and "1" in result
+    assert "lib" in result and "auth.ts" in result and "1" in result
 
 
 def test_search_code_no_match(project_and_tools):
@@ -223,7 +223,7 @@ def project_and_tools_with_plan():
     code_plan_json = {
         "files": [
             {
-                "path": "server/src/routes/widget.routes.js",
+                "path": "app/api/widgets/route.ts",
                 "action": "create",
                 "rationale": "Widget endpoint.",
                 "maps_to": ["/api/widgets"],
@@ -245,14 +245,14 @@ def project_and_tools_with_plan():
 
 def test_list_unimplemented_planned_files_reports_gap_before_writing(project_and_tools_with_plan):
     result = project_and_tools_with_plan["tools"]["list_unimplemented_planned_files"].invoke({})
-    assert "server/src/routes/widget.routes.js" in result
+    assert "app/api/widgets/route.ts" in result
     assert "NOT been touched" in result
 
 
 def test_list_unimplemented_planned_files_clears_after_writing(project_and_tools_with_plan):
     tools = project_and_tools_with_plan["tools"]
     tools["write_file"].invoke(
-        {"path": "server/src/routes/widget.routes.js", "content": "module.exports = {};"}
+        {"path": "app/api/widgets/route.ts", "content": "export async function GET() { return Response.json([]); }"}
     )
 
     result = tools["list_unimplemented_planned_files"].invoke({})
@@ -266,17 +266,17 @@ def test_list_unimplemented_planned_files_without_plan_reports_nothing_to_check(
 
 def test_check_syntax_valid_js(project_and_tools):
     tools = project_and_tools["tools"]
-    tools["write_file"].invoke({"path": "server/valid.js", "content": "const x = 1;\nmodule.exports = x;"})
+    tools["write_file"].invoke({"path": "lib/valid.js", "content": "const x = 1;\nmodule.exports = x;"})
 
-    result = tools["check_syntax"].invoke({"path": "server/valid.js"})
+    result = tools["check_syntax"].invoke({"path": "lib/valid.js"})
     assert "syntax OK" in result
 
 
 def test_check_syntax_invalid_js(project_and_tools):
     tools = project_and_tools["tools"]
-    tools["write_file"].invoke({"path": "server/broken.js", "content": "const x = ;"})
+    tools["write_file"].invoke({"path": "lib/broken.js", "content": "const x = ;"})
 
-    result = tools["check_syntax"].invoke({"path": "server/broken.js"})
+    result = tools["check_syntax"].invoke({"path": "lib/broken.js"})
     assert "syntax error" in result
 
 
@@ -284,28 +284,69 @@ def test_check_syntax_valid_jsx(project_and_tools):
     tools = project_and_tools["tools"]
     tools["write_file"].invoke(
         {
-            "path": "client/src/Widget.jsx",
+            "path": "components/Widget.jsx",
             "content": "export default function Widget() { return <div>hi</div>; }",
         }
     )
 
-    result = tools["check_syntax"].invoke({"path": "client/src/Widget.jsx"})
+    result = tools["check_syntax"].invoke({"path": "components/Widget.jsx"})
     assert "syntax OK" in result
 
 
 def test_check_syntax_invalid_jsx(project_and_tools):
     tools = project_and_tools["tools"]
     tools["write_file"].invoke(
-        {"path": "client/src/Broken.jsx", "content": "export default function Broken() { return <div; }"}
+        {"path": "components/Broken.jsx", "content": "export default function Broken() { return <div; }"}
     )
 
-    result = tools["check_syntax"].invoke({"path": "client/src/Broken.jsx"})
+    result = tools["check_syntax"].invoke({"path": "components/Broken.jsx"})
+    assert "syntax error" in result
+
+
+def test_check_syntax_valid_ts(project_and_tools):
+    tools = project_and_tools["tools"]
+    tools["write_file"].invoke(
+        {"path": "lib/valid.ts", "content": "export function add(a: number, b: number): number { return a + b; }"}
+    )
+
+    result = tools["check_syntax"].invoke({"path": "lib/valid.ts"})
+    assert "syntax OK" in result
+
+
+def test_check_syntax_invalid_ts(project_and_tools):
+    tools = project_and_tools["tools"]
+    tools["write_file"].invoke({"path": "lib/broken.ts", "content": "const x: number = ;"})
+
+    result = tools["check_syntax"].invoke({"path": "lib/broken.ts"})
+    assert "syntax error" in result
+
+
+def test_check_syntax_valid_tsx(project_and_tools):
+    tools = project_and_tools["tools"]
+    tools["write_file"].invoke(
+        {
+            "path": "components/Widget.tsx",
+            "content": "export default function Widget(): JSX.Element { return <div>hi</div>; }",
+        }
+    )
+
+    result = tools["check_syntax"].invoke({"path": "components/Widget.tsx"})
+    assert "syntax OK" in result
+
+
+def test_check_syntax_invalid_tsx(project_and_tools):
+    tools = project_and_tools["tools"]
+    tools["write_file"].invoke(
+        {"path": "components/Broken.tsx", "content": "export default function Broken() { return <div; }"}
+    )
+
+    result = tools["check_syntax"].invoke({"path": "components/Broken.tsx"})
     assert "syntax error" in result
 
 
 def test_check_syntax_rejects_unsupported_extension(project_and_tools):
     tools = project_and_tools["tools"]
-    tools["write_file"].invoke({"path": "server/notes.txt", "content": "hello"})
+    tools["write_file"].invoke({"path": "lib/notes.txt", "content": "hello"})
 
-    result = tools["check_syntax"].invoke({"path": "server/notes.txt"})
+    result = tools["check_syntax"].invoke({"path": "lib/notes.txt"})
     assert "only supports" in result

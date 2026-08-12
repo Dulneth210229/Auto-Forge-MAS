@@ -96,6 +96,20 @@ class UIUXPreviewRenderer:
                     browser = playwright.chromium.launch()
                     try:
                         page = browser.new_page(viewport={"width": 900, "height": 700})
+
+                        # Real testing showed content that renders correctly and quickly in
+                        # isolation still occasionally hit Playwright's 30s default action
+                        # timeout ("element is not visible") when run as part of the real
+                        # pipeline -- Ollama/MongoDB/LangGraph all competing for CPU on modest
+                        # hardware starves the browser of the cycles it needs to finish layout,
+                        # not a rendering defect in the content itself. A generous default
+                        # timeout gives it that headroom instead of failing prematurely under
+                        # load. Note: passing timeout= directly to .screenshot() below does NOT
+                        # reliably override Playwright's default in this version -- confirmed by
+                        # direct testing (a "timeout=8000" call still took the full ~30s) -- only
+                        # page.set_default_timeout() actually changes the wait duration.
+                        page.set_default_timeout(90000)
+
                         console_errors: list[str] = []
                         page.on(
                             "console",

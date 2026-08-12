@@ -79,14 +79,15 @@ def build_setup_instructions_markdown(code_plan_json: dict[str, Any]) -> str:
         "",
         "## Run the app",
         "",
-        "This project has a working Express server (`server/`) and a Vite+React "
-        "client (`client/`) scaffolded from the start -- these commands work for "
-        "every feature, not just this one.",
+        "This project is a working Next.js (App Router + TypeScript) app scaffolded "
+        "from the start -- these commands work for every feature, not just this one.",
         "",
         "```bash",
-        "npm run install:all   # installs server/ and client/ dependencies",
-        "cp server/.env.example server/.env   # first time only -- fill in real values",
-        "npm run dev           # boots the Express API (port 5000) and the Vite dev server (port 5173)",
+        "npm install",
+        "cp .env.example .env.local   # first time only -- fill in real values",
+        "npm run build && npm start   # production build + boot (port 3000)",
+        "# or, for local development:",
+        "npm run dev                  # boots the Next.js dev server (port 3000)",
         "```",
         "",
     ]
@@ -118,6 +119,7 @@ def build_merge_report_markdown(
     diff: dict[str, Any],
     verify_result: dict[str, Any],
     coding_attempts_used: int,
+    real_database_configured: bool = False,
 ) -> str:
     lines = [f"# Merge Report: {feature_name}", ""]
 
@@ -125,6 +127,19 @@ def build_merge_report_markdown(
     lines.append(f"**Verification:** {status_line}")
     lines.append(f"**Coding attempts used:** {coding_attempts_used}")
     lines.append("")
+
+    if real_database_configured:
+        # Honest, visible side effect of the mock-data-until-real-DB feature: once a human
+        # provides a real MongoDB URI via chat, it's written to .env.local, which verify()'s own
+        # sandbox containers mount too (same workspace directory the preview container uses) --
+        # so this verification ran against a REAL database, not the guarded null-skip every prior
+        # run got. Real, but not risk-free (network-dependent flakiness, a mount-time page write
+        # touching real data) -- surfaced here rather than silently accepted.
+        lines.append(
+            "> **This verification ran against a REAL, human-provided database connection**, "
+            "not the default seed-data fallback -- review any data writes accordingly."
+        )
+        lines.append("")
 
     lines.append("## Verification steps")
     for step in verify_result["steps"]:

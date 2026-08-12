@@ -46,3 +46,11 @@ class ArtifactResponse(BaseModel):
     version: int
     approval_status: ApprovalStatus
     created_at: datetime
+    # Computed from the file on disk at read time (not stored) -- None if the file is missing.
+    # Purely cosmetic (shown next to each artifact in the frontend), never used for any decision.
+    size_bytes: int | None = None
+    # A short human-readable description of what this artifact's content actually says (e.g. a
+    # CODE_PLAN artifact's own "summary" field) -- optional, stored alongside the artifact record.
+    # Lets the frontend chat surface real, model-generated text instead of a generic
+    # "Produced X (vN)" placeholder. None for artifact types that don't set one.
+    summary: str | None = None

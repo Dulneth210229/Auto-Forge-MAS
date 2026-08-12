@@ -5,16 +5,29 @@ Each project gets exactly one persistent Git repository on disk:
 
     workspaces/{project_slug}/repo/
 
-This is the real, growing MERN codebase the Coder Agent will edit feature by
-feature. Git already gives us branching, diffing, and rollback for source code
-specifically, so we use it directly instead of reinventing version tracking on
-top of the artifact versioning system used for documents/diagrams.
+This is the real, growing Next.js (App Router + TypeScript) codebase the
+Coder Agent will edit feature by feature. Git already gives us branching,
+diffing, and rollback for source code specifically, so we use it directly
+instead of reinventing version tracking on top of the artifact versioning
+system used for documents/diagrams.
 
 Every feature is developed on its own branch (feature/{feature_slug}) and only
 merged into main after human approval.
+
+Stack history: this project originally generated a MERN (Express `server/` +
+Vite/React `client/`) scaffold. It was migrated to Next.js (see CLAUDE.md,
+"MERN -> Next.js migration") -- new projects now get the Next.js scaffold
+below. Two real, already-existing projects predate the migration and are
+genuinely MERN; `_detect_stack` recognizes an existing MERN repo by its
+`server/src/app.js` and leaves it completely frozen on the legacy scaffold
+(see the MERN_* constants and `_backfill_mern_scaffold*` methods below) rather
+than attempting an in-place migration -- there is no code path that writes
+Next.js files into a repo already on the MERN convention, or vice versa.
 """
 
+import io
 import json
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +42,326 @@ logger = get_logger(__name__)
 
 MAIN_BRANCH = "main"
 
-SCAFFOLD_GITIGNORE = """\
+# ---------------------------------------------------------------------------
+# Next.js (App Router + TypeScript) scaffold -- the current default for every
+# newly-created project.
+#
+# Next/React/TypeScript versions are pinned to an EXACT release (no `^`/
+# `latest`) rather than a range: the `params`/`searchParams` contract on page
+# components and Route Handlers is a plain object in Next 14 and a Promise
+# requiring `await` in Next 15+ -- a breaking change the Coder Agent's own
+# prompt is written against one specific contract for. Next 14 (the
+# synchronous contract) was chosen deliberately as the simpler of the two for
+# a local, occasionally-unreliable model to get right.
+# ---------------------------------------------------------------------------
+
+NEXTJS_GITIGNORE = """\
+node_modules/
+.next/
+.env
+.env*.local
+*.tsbuildinfo
+next-env.d.ts
+"""
+
+NEXTJS_PACKAGE_JSON = """\
+{
+  "name": "auto-forge-generated-app",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "next": "14.2.5",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "mongoose": "8.5.0"
+  },
+  "devDependencies": {
+    "typescript": "5.5.4",
+    "@types/node": "20.14.15",
+    "@types/react": "18.3.3",
+    "@types/react-dom": "18.3.0",
+    "eslint": "8.57.0",
+    "eslint-config-next": "14.2.5",
+    "tailwindcss": "3.4.7",
+    "postcss": "8.4.40",
+    "autoprefixer": "10.4.19"
+  }
+}
+"""
+
+# Content-based globs, not just app/components -- covers every directory a
+# feature might reasonably add className usage to, matching the convention
+# most Next.js/Tailwind starters ship with.
+NEXTJS_TAILWIND_CONFIG = """\
+/** @type {import('tailwindcss').Config} */
+module.exports = {
+  content: [
+    "./app/**/*.{js,ts,jsx,tsx,mdx}",
+    "./components/**/*.{js,ts,jsx,tsx,mdx}",
+  ],
+  theme: {
+    extend: {},
+  },
+  plugins: [],
+};
+"""
+
+# `.mjs` specifically, not `.js` -- this project's own history already hit a
+# real build failure once from a CommonJS postcss.config.js colliding with
+# package.json's Next.js-implied module resolution (see the workspace
+# scaffold gotchas in CLAUDE.md); `.mjs` forces ESM regardless of
+# package.json's own "type" field, the same lesson next.config.mjs already
+# encodes for this project's config files.
+NEXTJS_POSTCSS_CONFIG = """\
+/** @type {import('postcss-load-config').Config} */
+const config = {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+};
+
+export default config;
+"""
+
+NEXTJS_ESLINTRC_JSON = """\
+{
+  "extends": "next/core-web-vitals"
+}
+"""
+
+NEXTJS_TSCONFIG_JSON = """\
+{
+  "compilerOptions": {
+    "target": "ES2017",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "plugins": [{ "name": "next" }],
+    "paths": { "@/*": ["./*"] }
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  "exclude": ["node_modules"]
+}
+"""
+
+# Next.js 14 (pinned above) does NOT support next.config.ts -- TypeScript
+# config file support was only added in Next.js 15. Using next.config.mjs
+# (plain JS, ESM via the .mjs extension regardless of package.json's own
+# "type" field) is the correct convention for this pinned version -- a real,
+# confirmed build failure otherwise ("Configuring Next.js via
+# 'next.config.ts' is not supported. Please replace the file with
+# 'next.config.js' or 'next.config.mjs'.").
+NEXTJS_NEXT_CONFIG = """\
+/** @type {import('next').NextConfig} */
+const nextConfig = {};
+
+export default nextConfig;
+"""
+
+NEXTJS_APP_LAYOUT = """\
+import type { Metadata } from "next";
+import "./globals.css";
+import PreviewRouteAnnouncer from "@/components/PreviewRouteAnnouncer";
+
+export const metadata: Metadata = {
+  title: "Auto-Forge Generated App",
+  description: "Generated by Auto-Forge MAS",
+};
+
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  return (
+    <html lang="en">
+      <body>
+        <PreviewRouteAnnouncer />
+        {children}
+      </body>
+    </html>
+  );
+}
+"""
+
+# Announces the current route to a parent window (the AutoForge frontend's Live Preview panel,
+# when this app happens to be running inside its preview iframe) via postMessage -- the iframe's
+# origin is always different from the frontend's own origin (a dynamically Docker-assigned host
+# port), so the parent cannot read iframe.contentWindow.location directly; postMessage is the
+# only mechanism that works across that boundary. "*" targetOrigin is deliberate here: the
+# payload is just a pathname (never sensitive), and this app only ever runs on the human's own
+# machine -- the parent-side listener is what actually enforces an origin check on receipt (see
+# PreviewPanel.jsx). Harmless when NOT running inside a preview iframe (window.parent === window
+# in that case, so this just messages the app's own window with nothing listening).
+NEXTJS_PREVIEW_ROUTE_ANNOUNCER = """\
+"use client";
+
+import { useEffect } from "react";
+import { usePathname } from "next/navigation";
+
+export default function PreviewRouteAnnouncer() {
+  const pathname = usePathname();
+
+  useEffect(() => {
+    window.parent.postMessage({ type: "autoforge-preview-route", path: pathname }, "*");
+  }, [pathname]);
+
+  return null;
+}
+"""
+
+NEXTJS_APP_PAGE = """\
+export default function HomePage() {
+  return (
+    <div style={{ padding: "2rem", fontFamily: "sans-serif" }}>
+      <h1>Auto-Forge Generated App</h1>
+      <p>Feature pages are registered as links below.</p>
+      <nav>
+        <ul>
+          {/* FEATURE_LINKS_START */}
+          {/* FEATURE_LINKS_END */}
+        </ul>
+      </nav>
+    </div>
+  );
+}
+"""
+
+# Frozen, exact content of NEXTJS_APP_PAGE at scaffold introduction -- kept as
+# a placeholder for a future fingerprint-based upgrade path, mirroring the
+# MERN scaffold's own _LEGACY_*_V1 precedent, should app/page.tsx ever need a
+# backward-compatible upgrade the way CLIENT_APP_JSX did. Not used yet: the
+# Next.js scaffold has had no upgrades since its introduction.
+_LEGACY_NEXTJS_APP_PAGE_V1 = NEXTJS_APP_PAGE
+
+NEXTJS_APP_GLOBALS_CSS = """\
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+"""
+
+NEXTJS_HEALTH_ROUTE = """\
+import { NextResponse } from "next/server";
+
+export const dynamic = "force-dynamic";
+
+export async function GET() {
+  return NextResponse.json({ status: "ok" });
+}
+"""
+
+NEXTJS_LIB_MONGODB = """\
+import mongoose from "mongoose";
+
+const MONGODB_URI = process.env.MONGODB_URI;
+
+type MongooseCache = {
+  conn: typeof mongoose | null;
+  promise: Promise<typeof mongoose> | null;
+};
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __mongooseCache: MongooseCache | undefined;
+}
+
+const cache: MongooseCache = global.__mongooseCache ?? { conn: null, promise: null };
+global.__mongooseCache = cache;
+
+/**
+ * Guarded, cached connection helper -- returns null (with a warning) when
+ * MONGODB_URI is unset instead of throwing, since sandbox containers never
+ * see host env vars and an unguarded connect would fail every `next build`/
+ * `next start` boot check. Await this inside a Route Handler; never call it
+ * at module top level.
+ */
+export async function connectToDatabase(): Promise<typeof mongoose | null> {
+  if (!MONGODB_URI) {
+    console.warn("MONGODB_URI is not set -- skipping database connection.");
+    return null;
+  }
+
+  if (cache.conn) {
+    return cache.conn;
+  }
+
+  if (!cache.promise) {
+    cache.promise = mongoose.connect(MONGODB_URI);
+  }
+
+  cache.conn = await cache.promise;
+  return cache.conn;
+}
+"""
+
+NEXTJS_ENV_EXAMPLE = """\
+MONGODB_URI=mongodb://localhost:27017/auto-forge-generated-app
+"""
+
+NEXTJS_SEED_DATA = """\
+// Shared seed/mock data for every DB-backed entity in this app -- imported by
+// a Route Handler whenever connectToDatabase() returns null (no real
+// database configured yet), so a live preview always shows a realistic,
+// populated application instead of an empty or error state. Each feature's
+// Coder Agent run adds its own `export const seed<Entity> = [...]` block
+// below, matching that entity's real Mongoose schema fields. Never invent a
+// second, inconsistent set of inline mock values in a route handler --
+// always import from here.
+//
+// SEED_DATA_START
+// SEED_DATA_END
+"""
+
+# path (relative to repo root) -> content. Anything already on disk is left
+# untouched -- this is a backfill for what's missing, never an overwrite of
+# whatever a feature branch/coding loop has since added on top.
+NEXTJS_SCAFFOLD_FILES: dict[str, str] = {
+    "package.json": NEXTJS_PACKAGE_JSON,
+    ".eslintrc.json": NEXTJS_ESLINTRC_JSON,
+    "tsconfig.json": NEXTJS_TSCONFIG_JSON,
+    "next.config.mjs": NEXTJS_NEXT_CONFIG,
+    "tailwind.config.js": NEXTJS_TAILWIND_CONFIG,
+    "postcss.config.mjs": NEXTJS_POSTCSS_CONFIG,
+    "app/layout.tsx": NEXTJS_APP_LAYOUT,
+    "components/PreviewRouteAnnouncer.tsx": NEXTJS_PREVIEW_ROUTE_ANNOUNCER,
+    "app/page.tsx": NEXTJS_APP_PAGE,
+    "app/globals.css": NEXTJS_APP_GLOBALS_CSS,
+    "app/api/health/route.ts": NEXTJS_HEALTH_ROUTE,
+    "lib/mongodb.ts": NEXTJS_LIB_MONGODB,
+    "lib/seedData.ts": NEXTJS_SEED_DATA,
+    ".env.example": NEXTJS_ENV_EXAMPLE,
+}
+
+
+# ---------------------------------------------------------------------------
+# Legacy MERN (Express `server/` + Vite/React `client/`) scaffold -- kept,
+# unchanged in content, so the two real pre-migration projects
+# (e-commerce-platform, taskflow) stay reproducible and frozen on their
+# original convention. Never written into a repo `_detect_stack` identifies
+# as Next.js, and never mixed with the Next.js scaffold above.
+# ---------------------------------------------------------------------------
+
+MERN_GITIGNORE = """\
 node_modules/
 .env
 dist/
@@ -37,7 +369,7 @@ build/
 *.log
 """
 
-ROOT_PACKAGE_JSON = """\
+MERN_ROOT_PACKAGE_JSON = """\
 {
   "name": "auto-forge-generated-app",
   "private": true,
@@ -52,7 +384,7 @@ ROOT_PACKAGE_JSON = """\
 }
 """
 
-SERVER_PACKAGE_JSON = """\
+MERN_SERVER_PACKAGE_JSON = """\
 {
   "name": "auto-forge-server",
   "private": true,
@@ -75,7 +407,7 @@ SERVER_PACKAGE_JSON = """\
 }
 """
 
-SERVER_APP_JS = """\
+MERN_SERVER_APP_JS = """\
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
@@ -111,7 +443,7 @@ app.use((err, req, res, next) => {
 module.exports = app;
 """
 
-SERVER_SERVER_JS = """\
+MERN_SERVER_SERVER_JS = """\
 require("dotenv").config();
 const mongoose = require("mongoose");
 const app = require("./app");
@@ -139,7 +471,7 @@ async function start() {
 start();
 """
 
-# Frozen, exact content of SERVER_APP_JS/SERVER_SERVER_JS before the
+# Frozen, exact content of MERN_SERVER_APP_JS/MERN_SERVER_SERVER_JS before the
 # helmet/rate-limit/mongoose.connect/error-handler upgrade above -- used by
 # _upgrade_server_app_js/_upgrade_server_server_js to detect a file that is
 # provably still the untouched original scaffold (safe to replace wholesale)
@@ -172,13 +504,13 @@ app.listen(PORT, () => {
 });
 """
 
-SERVER_ENV_EXAMPLE = """\
+MERN_SERVER_ENV_EXAMPLE = """\
 PORT=5000
 MONGODB_URI=mongodb://localhost:27017/auto-forge-generated-app
 JWT_SECRET=change-me
 """
 
-CLIENT_PACKAGE_JSON = """\
+MERN_CLIENT_PACKAGE_JSON = """\
 {
   "name": "auto-forge-client",
   "private": true,
@@ -200,7 +532,7 @@ CLIENT_PACKAGE_JSON = """\
 }
 """
 
-CLIENT_VITE_CONFIG = """\
+MERN_CLIENT_VITE_CONFIG = """\
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
@@ -212,7 +544,7 @@ export default defineConfig({
 });
 """
 
-CLIENT_INDEX_HTML = """\
+MERN_CLIENT_INDEX_HTML = """\
 <!doctype html>
 <html lang="en">
   <head>
@@ -227,7 +559,7 @@ CLIENT_INDEX_HTML = """\
 </html>
 """
 
-CLIENT_MAIN_JSX = """\
+MERN_CLIENT_MAIN_JSX = """\
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
@@ -243,7 +575,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
 );
 """
 
-CLIENT_APP_JSX = """\
+MERN_CLIENT_APP_JSX = """\
 import React from "react";
 import { Routes, Route, Link } from "react-router-dom";
 
@@ -271,7 +603,7 @@ export default function App() {
 }
 """
 
-# Frozen, exact content of CLIENT_APP_JSX before the FEATURE_LINKS marker
+# Frozen, exact content of MERN_CLIENT_APP_JSX before the FEATURE_LINKS marker
 # upgrade above -- used by _upgrade_client_app_jsx to detect a file that is
 # provably still the untouched original scaffold (safe to replace wholesale)
 # versus one a feature has since customized (needs targeted insertion instead).
@@ -298,27 +630,25 @@ export default function App() {
 }
 """
 
-CLIENT_INDEX_CSS = """\
+MERN_CLIENT_INDEX_CSS = """\
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 """
 
-# path (relative to repo root) -> content. Anything already on disk is left
-# untouched -- this is a backfill for what's missing, never an overwrite of
-# whatever a feature branch/coding loop has since added on top.
-SCAFFOLD_FILES: dict[str, str] = {
-    "server/package.json": SERVER_PACKAGE_JSON,
-    "server/src/app.js": SERVER_APP_JS,
-    "server/src/server.js": SERVER_SERVER_JS,
-    "server/.env.example": SERVER_ENV_EXAMPLE,
-    "client/package.json": CLIENT_PACKAGE_JSON,
-    "client/vite.config.js": CLIENT_VITE_CONFIG,
-    "client/index.html": CLIENT_INDEX_HTML,
-    "client/src/main.jsx": CLIENT_MAIN_JSX,
-    "client/src/App.jsx": CLIENT_APP_JSX,
-    "client/src/index.css": CLIENT_INDEX_CSS,
+# path (relative to repo root) -> content, for the legacy MERN scaffold only.
+MERN_SCAFFOLD_FILES: dict[str, str] = {
+    "server/package.json": MERN_SERVER_PACKAGE_JSON,
+    "server/src/app.js": MERN_SERVER_APP_JS,
+    "server/src/server.js": MERN_SERVER_SERVER_JS,
+    "server/.env.example": MERN_SERVER_ENV_EXAMPLE,
+    "client/package.json": MERN_CLIENT_PACKAGE_JSON,
+    "client/vite.config.js": MERN_CLIENT_VITE_CONFIG,
+    "client/index.html": MERN_CLIENT_INDEX_HTML,
+    "client/src/main.jsx": MERN_CLIENT_MAIN_JSX,
+    "client/src/App.jsx": MERN_CLIENT_APP_JSX,
+    "client/src/index.css": MERN_CLIENT_INDEX_CSS,
 }
 
 
@@ -353,47 +683,299 @@ class WorkspaceService:
         """
         return self._repo_path(project_id)
 
+    def write_env_local(self, project_id: str, values: dict[str, str]) -> bool:
+        """
+        Merge `values` into `.env.local` at the workspace root, creating the
+        file if absent and preserving any key not present in `values`.
+
+        This is the only realistic way a human-provided value (e.g. a real
+        MongoDB URI) can ever reach a generated app's runtime: sandbox/preview
+        containers never see host env vars, and Docker has no mechanism to
+        inject an env var into an already-running container -- so this must
+        be a file the container picks up on its NEXT start (preview_service's
+        stop+restart, or the next `next build`/`next start` inside verify()).
+
+        A plain filesystem operation, not a git one -- `.env.local` is always
+        gitignored by the scaffold (see NEXTJS_GITIGNORE), so writing here
+        never needs to worry about which branch is currently checked out
+        (untracked files survive a `git checkout` unaffected). Calls
+        ensure_project_repo() first so this also works before any Coder Agent
+        run has ever created the workspace (e.g. a URI arriving on the very
+        first message to a brand-new feature).
+
+        Returns True iff something on disk actually changed.
+        """
+        self.ensure_project_repo(project_id)
+        repo_path = self._repo_path(project_id)
+        env_path = repo_path / ".env.local"
+
+        existing = self.read_env_local(project_id)
+
+        if env_path.exists() and all(existing.get(key) == value for key, value in values.items()):
+            return False
+
+        merged = {**existing, **values}
+        env_path.write_text(
+            "\n".join(f"{key}={value}" for key, value in merged.items()) + "\n", encoding="utf-8"
+        )
+        return True
+
+    def read_env_local(self, project_id: str) -> dict[str, str]:
+        """Read `.env.local` at the workspace root, if present. Returns {} if absent."""
+        env_path = self._repo_path(project_id) / ".env.local"
+        if not env_path.exists():
+            return {}
+
+        values: dict[str, str] = {}
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            values[key.strip()] = value.strip()
+        return values
+
     def _feature_branch_name(self, feature_id: str) -> str:
         return f"feature/{self._feature_slug(feature_id)}"
 
+    def _detect_stack(self, repo_path: Path) -> str:
+        """
+        Identify which generated-app convention this repo's working tree
+        already follows, so ensure_project_repo backfills the RIGHT scaffold
+        instead of writing a Next.js tree alongside an existing MERN one (or
+        vice versa). Two pre-existing real projects (e-commerce-platform,
+        taskflow) are genuinely MERN and must stay frozen on that convention
+        forever, never partially migrated.
+
+        Returns "nextjs" or "mern". A repo with neither marker present (e.g.
+        a fresh git init with nothing committed yet) is treated as "nextjs",
+        since that's the current default going forward.
+        """
+        if (repo_path / "server" / "src" / "app.js").exists():
+            return "mern"
+
+        return "nextjs"
+
     def ensure_project_repo(self, project_id: str) -> Repo:
         """
-        Return the project's Git repo, initializing and scaffolding it on first
-        use. Also backfills any missing runnable-scaffold files (Express
-        server, Vite+React client) into an already-existing repo -- see
-        _backfill_scaffold for why this matters even for repos created before
-        the scaffold existed -- and backfills scaffold *upgrades* (security
-        middleware, DB connection bootstrap, error handling) into a repo
-        scaffolded before those existed -- see _backfill_scaffold_upgrades.
+        Return the project's Git repo, initializing and scaffolding it on
+        first use with the current default (Next.js App Router +
+        TypeScript). Also backfills any missing scaffold files into an
+        already-existing repo, using whichever convention (_detect_stack)
+        that repo is already on -- a legacy MERN repo only ever gets MERN
+        backfills (see _backfill_mern_scaffold/_backfill_mern_scaffold_
+        upgrades), never Next.js files, and vice versa.
         """
         repo_path = self._repo_path(project_id)
 
         if (repo_path / ".git").exists():
             repo = Repo(repo_path)
-            self._backfill_scaffold(repo, repo_path)
-            self._backfill_scaffold_upgrades(repo, repo_path)
+            stack = self._detect_stack(repo_path)
+
+            if stack == "mern":
+                self._backfill_mern_scaffold(repo, repo_path)
+                self._backfill_mern_scaffold_upgrades(repo, repo_path)
+            else:
+                self._backfill_nextjs_scaffold(repo, repo_path)
+                self._backfill_nextjs_scaffold_upgrades(repo, repo_path)
+
             return repo
 
         repo_path.mkdir(parents=True, exist_ok=True)
         repo = Repo.init(repo_path, initial_branch=MAIN_BRANCH)
 
-        (repo_path / ".gitignore").write_text(SCAFFOLD_GITIGNORE, encoding="utf-8")
-        (repo_path / "package.json").write_text(ROOT_PACKAGE_JSON, encoding="utf-8")
+        (repo_path / ".gitignore").write_text(NEXTJS_GITIGNORE, encoding="utf-8")
 
-        for relative_path, content in SCAFFOLD_FILES.items():
+        for relative_path, content in NEXTJS_SCAFFOLD_FILES.items():
             file_path = repo_path / relative_path
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content, encoding="utf-8")
 
-        repo.index.add([".gitignore", "package.json", *SCAFFOLD_FILES.keys()])
-        repo.index.commit("Initial project scaffold: runnable Express server + Vite/React client")
+        repo.index.add([".gitignore", *NEXTJS_SCAFFOLD_FILES.keys()])
+        repo.index.commit("Initial project scaffold: Next.js App Router + TypeScript + MongoDB")
 
         return repo
 
-    def _backfill_scaffold(self, repo: Repo, repo_path: Path) -> None:
+    def _backfill_nextjs_scaffold(self, repo: Repo, repo_path: Path) -> None:
         """
-        Add any scaffold file that's missing from the currently checked-out
-        branch's working tree, without touching anything already there.
+        Add any Next.js scaffold file that's missing from the currently
+        checked-out branch's working tree, without touching anything already
+        there -- the Next.js-scaffold counterpart of _backfill_mern_scaffold,
+        for a repo _detect_stack has already identified as "nextjs".
+
+        Deliberately does NOT force a checkout to main first: it commits onto
+        whatever branch is currently active, matching the MERN backfill's own
+        established rationale (see _backfill_mern_scaffold).
+
+        Also removes a stale `next.config.ts` left over from before the
+        Next.js scaffold's config file was renamed to `next.config.mjs`
+        (Next.js 14, which this project is pinned to, does not support
+        `next.config.ts` at all -- TypeScript config file support was only
+        added in Next.js 15 -- and its mere PRESENCE breaks `next build`
+        with a hard error regardless of `next.config.mjs` also existing;
+        confirmed directly against a real pre-rename repo). A brand-new
+        project never has this file, so this is a one-time cleanup for a
+        repo scaffolded before that rename, not something every backfill
+        call needs to worry about going forward.
+        """
+        stale_ts_config = repo_path / "next.config.ts"
+        removed_stale_config = stale_ts_config.exists()
+        if removed_stale_config:
+            stale_ts_config.unlink()
+
+        missing = {
+            relative_path: content
+            for relative_path, content in NEXTJS_SCAFFOLD_FILES.items()
+            if not (repo_path / relative_path).exists()
+        }
+
+        if not missing and not removed_stale_config:
+            return
+
+        for relative_path, content in missing.items():
+            file_path = repo_path / relative_path
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(content, encoding="utf-8")
+
+        gitignore_path = repo_path / ".gitignore"
+        changed_paths = list(missing.keys())
+        if not gitignore_path.exists():
+            gitignore_path.write_text(NEXTJS_GITIGNORE, encoding="utf-8")
+            changed_paths.append(".gitignore")
+
+        if changed_paths:
+            repo.index.add(changed_paths)
+        if removed_stale_config:
+            try:
+                repo.index.remove(["next.config.ts"])
+            except Exception:
+                pass  # not tracked (e.g. an untracked stray file) -- nothing to stage
+
+        repo.index.commit("Backfill missing Next.js scaffold files")
+
+    def _backfill_nextjs_scaffold_upgrades(self, repo: Repo, repo_path: Path) -> None:
+        """
+        Upgrade an already-scaffolded Next.js repo with scaffold changes
+        introduced after that repo was first created:
+        - Tailwind CSS, which the original Next.js scaffold shipped without
+          -- every generated page's Tailwind utility classNames were inert,
+          unprocessed class-name soup with zero visual effect until this
+          upgrade lands.
+        - PreviewRouteAnnouncer, which the original app/layout.tsx never
+          mounted -- without it, the frontend's Live Preview panel can never
+          learn which route the human is actually looking at inside the
+          preview iframe (a genuinely cross-origin iframe -- the parent
+          cannot read iframe.contentWindow.location directly), so the
+          displayed URL never updates past the initial base URL.
+
+        `tailwind.config.js`/`postcss.config.mjs`/`components/
+        PreviewRouteAnnouncer.tsx` are all handled by _backfill_nextjs_
+        scaffold's own missing-file check (NEXTJS_SCAFFOLD_FILES already
+        lists them) -- this method only handles EXISTING files a fresh
+        backfill can't touch without clobbering feature-specific
+        customization: package.json (merge, never overwrite -- see
+        _merge_package_json), globals.css (append the three @tailwind
+        directives only if not already present), and app/layout.tsx (insert
+        the announcer's import + mount only if not already present, via a
+        stable marker check + anchored insertion -- never a wholesale
+        replace, since unlike globals.css, layout.tsx is a real, plausible
+        target for a feature's own future customization, e.g. an added
+        provider).
+        """
+        changed_paths: list[str] = []
+        upgrade_descriptions: list[str] = []
+
+        package_json_path = repo_path / "package.json"
+        if package_json_path.exists() and self._merge_package_json(
+            package_json_path,
+            dev_dependencies={
+                "tailwindcss": "3.4.7",
+                "postcss": "8.4.40",
+                "autoprefixer": "10.4.19",
+            },
+        ):
+            changed_paths.append("package.json")
+            upgrade_descriptions.append("Tailwind CSS")
+
+        globals_css_path = repo_path / "app" / "globals.css"
+        if globals_css_path.exists() and self._upgrade_globals_css_for_tailwind(globals_css_path):
+            changed_paths.append("app/globals.css")
+            if "Tailwind CSS" not in upgrade_descriptions:
+                upgrade_descriptions.append("Tailwind CSS")
+
+        layout_path = repo_path / "app" / "layout.tsx"
+        if layout_path.exists() and self._upgrade_layout_for_preview_route_announcer(layout_path):
+            changed_paths.append("app/layout.tsx")
+            upgrade_descriptions.append("live preview route tracking")
+
+        if not changed_paths:
+            return
+
+        repo.index.add(changed_paths)
+        repo.index.commit(f"Backfill scaffold upgrades: {', '.join(upgrade_descriptions)}")
+
+    def _upgrade_globals_css_for_tailwind(self, globals_css_path: Path) -> bool:
+        """
+        Prepend the three @tailwind directives to an existing globals.css
+        that predates this scaffold upgrade, leaving every other line (any
+        feature-added custom CSS) exactly where it is. A no-op, returning
+        False, if the directives are already present.
+        """
+        content = globals_css_path.read_text(encoding="utf-8")
+        if "@tailwind" in content:
+            return False
+
+        globals_css_path.write_text(
+            "@tailwind base;\n@tailwind components;\n@tailwind utilities;\n\n" + content,
+            encoding="utf-8",
+        )
+        return True
+
+    def _upgrade_layout_for_preview_route_announcer(self, layout_path: Path) -> bool:
+        """
+        Insert PreviewRouteAnnouncer's import + mount into an existing app/layout.tsx that
+        predates this feature, without touching anything else a feature may have already added
+        to the layout (a provider, extra metadata, etc.).
+
+        Requires BOTH anchors (the globals.css import line, and the literal
+        `<body>{children}</body>` line) to be present and does nothing at all if either is
+        missing -- deliberately strict, since inserting the mount without its matching import
+        (or vice versa) would produce a real build error rather than a silently-incomplete
+        upgrade. No-ops (with a logged warning) rather than corrupting the file.
+        """
+        content = layout_path.read_text(encoding="utf-8")
+        if "PreviewRouteAnnouncer" in content:
+            return False
+
+        import_anchor = 'import "./globals.css";'
+        body_anchor = "<body>{children}</body>"
+        if import_anchor not in content or body_anchor not in content:
+            logger.warning(
+                "Could not backfill PreviewRouteAnnouncer into %s -- expected anchor(s) not "
+                "found (the file has likely already been customized past recognition). "
+                "Skipping.",
+                layout_path,
+            )
+            return False
+
+        updated = content.replace(
+            import_anchor,
+            f'{import_anchor}\nimport PreviewRouteAnnouncer from "@/components/PreviewRouteAnnouncer";',
+            1,
+        )
+        updated = updated.replace(
+            body_anchor,
+            "<body>\n        <PreviewRouteAnnouncer />\n        {children}\n      </body>",
+            1,
+        )
+        layout_path.write_text(updated, encoding="utf-8")
+        return True
+
+    def _backfill_mern_scaffold(self, repo: Repo, repo_path: Path) -> None:
+        """
+        Add any legacy MERN scaffold file that's missing from the currently
+        checked-out branch's working tree, without touching anything already
+        there.
 
         This exists because a project's repo may have been created before
         this scaffold was introduced (or before a given scaffold file was
@@ -411,7 +993,7 @@ class WorkspaceService:
         """
         missing = {
             relative_path: content
-            for relative_path, content in SCAFFOLD_FILES.items()
+            for relative_path, content in MERN_SCAFFOLD_FILES.items()
             if not (repo_path / relative_path).exists()
         }
 
@@ -422,7 +1004,7 @@ class WorkspaceService:
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content, encoding="utf-8")
 
-        if self._backfill_root_package_json(repo_path):
+        if self._backfill_mern_root_package_json(repo_path):
             changed_paths.append("package.json")
 
         if not changed_paths:
@@ -431,16 +1013,17 @@ class WorkspaceService:
         repo.index.add(changed_paths)
         repo.index.commit("Backfill missing runnable-scaffold files")
 
-    def _backfill_root_package_json(self, repo_path: Path) -> bool:
+    def _backfill_mern_root_package_json(self, repo_path: Path) -> bool:
         """
         Merge the root install:all/dev/build scripts and the concurrently
         devDependency into an existing root package.json, without touching
         any dependencies a pre-scaffold project may have declared there.
 
-        This is separate from SCAFFOLD_FILES because the root package.json
-        isn't a create-if-missing file -- ensure_project_repo guarantees it
-        always exists, so the only thing that can be missing here is its
-        scripts (e.g. a repo created before this scaffold existed at all).
+        This is separate from MERN_SCAFFOLD_FILES because the root
+        package.json isn't a create-if-missing file -- ensure_project_repo
+        guarantees it always exists, so the only thing that can be missing
+        here is its scripts (e.g. a repo created before this scaffold
+        existed at all).
         """
         return self._merge_package_json(
             repo_path / "package.json",
@@ -469,7 +1052,8 @@ class WorkspaceService:
         feature has already customized, unlike the fingerprint-based
         wholesale-replace path used for app.js/server.js (a dependency list
         has no equivalent notion of "this line must come before that line,"
-        so a plain dict merge is always safe here).
+        so a plain dict merge is always safe here). Stack-agnostic -- usable
+        for either the MERN or Next.js scaffold's package.json.
         """
         try:
             data = json.loads(package_json_path.read_text(encoding="utf-8"))
@@ -498,15 +1082,16 @@ class WorkspaceService:
         package_json_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
         return True
 
-    def _backfill_scaffold_upgrades(self, repo: Repo, repo_path: Path) -> None:
+    def _backfill_mern_scaffold_upgrades(self, repo: Repo, repo_path: Path) -> None:
         """
-        Upgrade an already-scaffolded repo with security/DB/error-handling
-        middleware added to the scaffold template after that repo was first
-        created, without clobbering feature-specific customization already
-        layered on top (e.g. a real feature's router mounted into app.js).
+        Upgrade an already-scaffolded legacy MERN repo with security/DB/
+        error-handling middleware added to the scaffold template after that
+        repo was first created, without clobbering feature-specific
+        customization already layered on top (e.g. a real feature's router
+        mounted into app.js).
 
-        Unlike _backfill_scaffold (pure file-existence check), the files
-        touched here already exist in any repo scaffolded before this
+        Unlike _backfill_mern_scaffold (pure file-existence check), the
+        files touched here already exist in any repo scaffolded before this
         upgrade shipped, so "missing" never fires. Uses content
         fingerprinting instead: a file that still matches its own frozen
         legacy template exactly is provably untouched and gets replaced
@@ -559,7 +1144,7 @@ class WorkspaceService:
         content = path.read_text(encoding="utf-8")
 
         if content == _LEGACY_SERVER_APP_JS_V1:
-            path.write_text(SERVER_APP_JS, encoding="utf-8")
+            path.write_text(MERN_SERVER_APP_JS, encoding="utf-8")
             return True
 
         if "const app = express();" not in content or "module.exports = app;" not in content:
@@ -631,7 +1216,7 @@ class WorkspaceService:
         content = path.read_text(encoding="utf-8")
 
         if content == _LEGACY_SERVER_SERVER_JS_V1:
-            path.write_text(SERVER_SERVER_JS, encoding="utf-8")
+            path.write_text(MERN_SERVER_SERVER_JS, encoding="utf-8")
             return True
 
         if "mongoose.connect" in content:
@@ -667,7 +1252,7 @@ class WorkspaceService:
         content = path.read_text(encoding="utf-8")
 
         if content == _LEGACY_CLIENT_APP_JSX_V1:
-            path.write_text(CLIENT_APP_JSX, encoding="utf-8")
+            path.write_text(MERN_CLIENT_APP_JSX, encoding="utf-8")
             return True
 
         if "FEATURE_LINKS_START" in content:
@@ -678,8 +1263,8 @@ class WorkspaceService:
             logger.warning(
                 "client/src/App.jsx's HomePage has diverged too far from the scaffold "
                 "template to safely add a navigation anchor -- skipping. Add a "
-                "// FEATURE_LINKS_START / // FEATURE_LINKS_END marker pair inside HomePage "
-                "manually if this project needs one."
+                "{/* FEATURE_LINKS_START */} / {/* FEATURE_LINKS_END */} marker pair inside "
+                "HomePage manually if this project needs one."
             )
             return False
 
@@ -795,11 +1380,13 @@ class WorkspaceService:
 
         return {**self._parse_name_status(name_status), "diff_text": diff_text}
 
-    def get_touched_files(self, project_id: str, feature_id: str) -> dict[str, list[str]]:
+    def get_touched_files(
+        self, project_id: str, feature_id: str, since: str = MAIN_BRANCH
+    ) -> dict[str, list[str]]:
         """
         Return {"added": [...], "modified": [...], "deleted": [...]} comparing
         the feature branch's CURRENT WORKING TREE (including uncommitted,
-        even still-untracked changes) against main's tip.
+        even still-untracked changes) against `since` (main's tip by default).
 
         Unlike diff_against_main's committed-history-only triple-dot
         comparison, this is accurate mid-coding-loop, before commit_changes
@@ -807,11 +1394,29 @@ class WorkspaceService:
         during an agentic attempt (list_unimplemented_planned_files),
         not only after the loop has already finished.
 
+        `since` matters because comparing against `main` unconditionally is
+        only correct for a file's FIRST-EVER revision. Once any earlier
+        revision has touched a file, it permanently differs from `main`
+        forever after -- so a caller that wants to know "did THIS attempt/
+        revision touch this file" must pass the SHA the current attempt
+        actually started from, or every attempt after the first will look
+        like it touched every previously-touched file even if it changed
+        nothing at all (confirmed root cause of a real false "verification
+        passed" on a no-op revision).
+
         Stages everything first (git add -A) so a brand-new file the coding
         loop just wrote via write_file, still untracked, is correctly seen
         as "added" -- a plain `git diff <ref>` silently ignores untracked
         files entirely. This mirrors exactly what commit_changes will do
         moments later regardless, so it introduces no new inconsistency.
+
+        NOT read-only: the `git add -A` above is a real, persistent side
+        effect on the repo's index (it stays staged after this call returns,
+        regardless of whether the caller ends up committing). This matters
+        because this method is also the implementation behind
+        list_unimplemented_planned_files, a tool exposed to the model as a
+        "self-check" -- do not assume a future caller of this method (or that
+        tool) leaves the working tree/index untouched.
         """
         repo = self.ensure_project_repo(project_id)
         branch_name = self._feature_branch_name(feature_id)
@@ -822,7 +1427,7 @@ class WorkspaceService:
         if repo.is_dirty(untracked_files=True):
             repo.git.add(A=True)
 
-        name_status = repo.git.diff("--cached", MAIN_BRANCH, "--name-status")
+        name_status = repo.git.diff("--cached", since, "--name-status")
         return self._parse_name_status(name_status)
 
     def _parse_name_status(self, name_status: str) -> dict[str, list[str]]:
@@ -871,6 +1476,46 @@ class WorkspaceService:
 
         if branch_name in [head.name for head in repo.heads]:
             repo.git.branch("-D", branch_name)
+
+    def export_zip(self, project_id: str, ref: str) -> bytes:
+        """
+        Zip a git ref's tree (committed content only -- uncommitted working-tree changes are
+        never included) into an in-memory archive, excluding .git itself.
+
+        Reads directly from the commit's tree object (repo.commit(ref).tree.traverse()) rather
+        than checking the ref out first -- this can be called regardless of whatever branch is
+        currently checked out, with no risk of disturbing it (e.g. a coding loop that might be
+        mid-run on a different branch at the same time).
+        """
+        repo = self.ensure_project_repo(project_id)
+
+        try:
+            commit = repo.commit(ref)
+        except Exception as error:
+            raise ValueError(f"No such ref '{ref}' in this project's repo.") from error
+
+        buffer = io.BytesIO()
+
+        with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for item in commit.tree.traverse():
+                if item.type != "blob":
+                    continue
+
+                archive.writestr(item.path, item.data_stream.read())
+
+        return buffer.getvalue()
+
+    def export_feature_code_zip(self, project_id: str, feature_id: str) -> bytes:
+        """
+        Zip a feature's own code -- its branch if it still exists (pre-merge/pre-approval, so a
+        reviewer can try the code locally before deciding), otherwise falls back to `main` (the
+        branch is deleted once merged, per merge_feature_branch).
+        """
+        repo = self.ensure_project_repo(project_id)
+        branch_name = self._feature_branch_name(feature_id)
+        ref = branch_name if branch_name in [head.name for head in repo.heads] else MAIN_BRANCH
+
+        return self.export_zip(project_id, ref)
 
 
 workspace_service = WorkspaceService()

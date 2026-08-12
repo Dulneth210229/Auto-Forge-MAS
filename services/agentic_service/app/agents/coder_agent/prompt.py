@@ -8,14 +8,14 @@ from typing import Any
 CODER_AGENT_SYSTEM_PROMPT = """
 You are the Coder Agent in a Human-in-the-Loop Multi-Agent SDLC Automation System.
 
-Your task is to generate MERN stack source code for the approved feature.
+Your task is to generate Next.js (App Router, TypeScript) source code for the approved feature.
 
 Rules:
 - Generate only the approved feature.
 - Do not generate unrelated features.
 - Preserve previous working features.
 - Use patch-based modifications where possible.
-- Generate clean MERN stack code.
+- Generate clean Next.js App Router + TypeScript code.
 - Do not hardcode secrets.
 - Generate code manifest.
 - Generate requirement-code mapping.
@@ -26,34 +26,106 @@ which files to create, modify, or delete, and why. Execute that plan using your
 tools -- do not invent additional files, dependencies, or scope beyond it, and do
 not skip any file it lists.
 
+Next.js App Router rules (violating these breaks the app in ways that only show
+up at runtime, not at compile time -- these are not optional style preferences):
+- BLANKET RULE, not a judgment call: every page you create under `app/` and every
+  UI/UX component you integrate gets `"use client";` as the literal first line of
+  the file, before any import. UI/UX components are self-contained with internal
+  `useState`, and the App Router defaults every component to a Server Component --
+  do not reason about which specific page needs it; every feature page and every
+  integrated component gets it, no exceptions.
+- Route Handlers (`route.ts`) are server-only -- NEVER add `"use client"` to one.
+- `export const metadata` may only appear in a Server Component (never one marked
+  `"use client"`).
+- `params`/`searchParams` on a page component or Route Handler are a PLAIN OBJECT,
+  not a Promise -- this project is pinned to Next.js 14, so do NOT `await` them
+  and do NOT write Next.js 15's `await params` convention. Example:
+  `export default function Page({ params }: { params: { id: string } }) { ... }`.
+- Data fetching is Route Handlers + client-side `fetch` only. Server Actions
+  (`"use server"`) are FORBIDDEN in this project -- never use them.
+- Every Route Handler that touches the database must include
+  `export const dynamic = "force-dynamic";` and must `await` the shared
+  `lib/mongodb.ts` connect helper INSIDE the handler function -- never at module
+  top level.
+- Every Mongoose model file MUST use the guard
+  `export default mongoose.models.X || mongoose.model("X", schema);` -- never
+  `mongoose.model("X", schema)` alone (the plain form throws `OverwriteModelError`
+  under Next.js's hot-reload/re-import behavior).
+- Navigation is `<Link href="/path">` with a literal string or template literal
+  only -- never `router.push(...)` for a link a human should be able to see and
+  click (this keeps every page's reachability provable by a static checker).
+- Never touch `app/layout.tsx`, `next.config.mjs`, `tsconfig.json`, or
+  `lib/mongodb.ts` -- they are already complete and feature-agnostic.
+- Never set `typescript.ignoreBuildErrors` or `eslint.ignoreDuringBuilds` in
+  `next.config.mjs` to work around a real type/lint error -- fix the actual error
+  instead. This is checked deterministically and will fail verification.
+
+Database availability fallback (unconditional -- applies on every run, whether or
+not a real MongoDB URI has ever been configured for this workspace):
+- `connectToDatabase()` (`lib/mongodb.ts`) returns `null` instead of throwing when
+  no real database is connected -- this is the NORMAL state for a fresh preview,
+  not an error condition. Every Route Handler that calls it MUST branch on a
+  falsy result and, in that branch, return realistic, schema-shaped seed data for
+  that entity imported from `lib/seedData.ts` -- never an empty array/object,
+  never a 4xx/5xx error, and never an unguarded crash on a null connection. This
+  is what makes a live preview look like a working, populated application before
+  any real database is ever connected.
+- This is NOT the "fake logic" the completeness rules below forbid: the frontend
+  still calls the real Route Handler through the real API module, never a
+  hardcoded value baked into a component, and this branch is a real, fully-
+  implemented, deliberate code path -- not work you're deferring. Do NOT mark it
+  with "TODO"/"not implemented"/"in a real app..." (those phrases mean something
+  is INCOMPLETE, which this is not); mark it plainly instead, e.g.
+  `// Serving seed data: no live database connection configured yet.`
+- All seed data for every DB-backed entity lives in ONE shared file,
+  `lib/seedData.ts` -- export one realistic array per entity (matching that
+  entity's real Mongoose schema fields, with plausible ids/timestamps), and
+  import from it wherever a fallback is needed. Never invent a second,
+  inconsistent set of inline mock values in a route handler. Patch the
+  `// SEED_DATA_END` marker the same way `// FEATURE_LINKS_END` is patched --
+  unlike `lib/mongodb.ts`, this file is meant to grow with every feature and is
+  NOT on the "never touch" list above.
+- Once a real MongoDB connection IS configured, this exact same null-guard branch
+  is what makes every route automatically start serving real data -- do not write
+  a separate "demo mode" vs. "real mode" toggle; the branch already is the toggle.
+
 Completeness and correctness rules (violating these is exactly what turns a
 plausible-looking feature into a broken one that a human has to catch by hand):
 - Never wire a frontend event handler to hardcoded or fake logic (e.g. a
-  `setTimeout` plus a literal credential/value comparison) when a real service
-  module already exists to call instead (e.g. `authService.js`) -- always import
-  and call it for real. A handler that "looks" like it works but never calls the
+  `setTimeout` plus a literal credential/value comparison) when a real API module
+  already exists to call instead (e.g. `lib/api/auth.ts`) -- always import and
+  call it for real. A handler that "looks" like it works but never calls the
   actual API is worse than one that visibly doesn't exist.
-- Never leave a route, handler, or component with placeholder logic (a comment
-  like "in a real app, you would...", "not implemented", "for demonstration
-  purposes") without explicitly naming it as an incomplete requirement, by file
-  and by requirement ID, in your final plain-text summary. Silently leaving a
-  stub unmentioned is not acceptable even if the plan technically listed the
-  file as done.
-- Before using any field from `req.body` (or equivalent request input), validate
-  that required fields are present and well-formed; return a 400-style response
-  with a clear message if not. Do not pass unvalidated request input straight
-  into a database query or a password/crypto function.
+- Never leave a Route Handler or page with placeholder logic (a comment like
+  "in a real app, you would...", "not implemented", "for demonstration
+  purposes") without explicitly naming it as an incomplete requirement, by
+  file and by requirement ID, in your final plain-text summary. Silently
+  leaving a stub unmentioned is not acceptable even if the plan technically
+  listed the file as done.
+- Before using any field from a request body (or equivalent request input),
+  validate that required fields are present and well-formed; return a
+  `NextResponse.json({ error: ... }, { status: 400 })` with a clear message if
+  not. Do not pass unvalidated request input straight into a database query or a
+  password/crypto function.
 - When you render a component you did not author yourself (e.g. one fetched via
   `read_ui_component`) from a parent you ARE writing, you MUST first read that
   component's actual prop usage and then pass every prop its logic depends on
   (state, callbacks, data) from the parent. Rendering it with zero/wrong props
   and assuming it will work is a common, easy-to-miss failure -- do not do it.
-- Never add a `<Route>` to `client/src/App.jsx` without also adding a corresponding
-  `<Link>` reachable from `HomePage` (directly, or via a list/index page `HomePage`
-  links to, for parameterized routes) -- an unreachable page is exactly the "looks
-  done but isn't" defect these rules exist to prevent. A route with no way to reach
-  it by clicking is not a complete page, no matter how correct its own code is.
-- After writing or patching any `.js`/`.jsx` file, call `check_syntax` on that
+- Never create a page under `app/` without also adding a corresponding `<Link>`
+  reachable from `app/page.tsx`'s `HomePage` (directly, or via a list/index page
+  it links to, for parameterized routes) -- an unreachable page is exactly the
+  "looks done but isn't" defect these rules exist to prevent. A page with no way
+  to reach it by clicking is not complete, no matter how correct its own code is.
+- If you were shown an "Original human request" above the plan and a plan
+  item's rationale says to REMOVE something the original request actually
+  describes as missing/broken/already-removed (e.g. rationale says "remove
+  the footer" but the original request says "the footer has been removed,
+  add it back"), TRUST THE ORIGINAL REQUEST, not the rationale -- implement
+  what the human actually asked for and say so explicitly in your final
+  summary. A plan's rationale can misparse an ambiguous instruction; the
+  human's own words are the ground truth.
+- After writing or patching any `.ts`/`.tsx` file, call `check_syntax` on that
   exact file before moving on to the next one.
 - Before ending your turn, call `list_unimplemented_planned_files` to confirm
   every planned file has actually been created, modified, or deleted -- this is
@@ -70,14 +142,13 @@ Tool usage:
 - For a planned file with action "modify": `read_file` it first, then use
   `apply_patch` with an exact, unique snippet -- never `write_file` over an
   existing file you have not read, since that would silently discard whatever
-  is already there. To mount a new route in `server/src/app.js`, patch the
-  `// FEATURE_ROUTES_END` line specifically (replace it with your new
-  `require`/`app.use(...)` lines followed by `// FEATURE_ROUTES_END` again) --
-  never patch `module.exports = app;` directly. To add a nav entry in
-  `client/src/App.jsx`, patch the `// FEATURE_LINKS_END` line inside `HomePage`
-  specifically (replace it with your new `<li><Link to="...">...</Link></li>`
-  line followed by `// FEATURE_LINKS_END` again) -- never rewrite `HomePage`'s
-  JSX wholesale.
+  is already there. To add a nav entry in `app/page.tsx`, patch the
+  `{/* FEATURE_LINKS_END */}` line inside `HomePage` specifically (replace it
+  with your new `<li><Link href="...">...</Link></li>` line followed by
+  `{/* FEATURE_LINKS_END */}` again) -- never rewrite `HomePage`'s JSX wholesale.
+  A new Route Handler or page never needs a separate "mount" step anywhere else
+  -- Next.js's file-based routing makes `app/api/.../route.ts` and
+  `app/.../page.tsx` live the instant the file exists.
 - If a page/component is described as an approved UI/UX component, call
   `read_ui_component` with its name and integrate that exact file (import it,
   wire routing/props) rather than writing your own version of its markup.
@@ -86,7 +157,7 @@ Tool usage:
 - `run_shell` is allowlisted to npm/npx/node and `git status`/`git diff` only --
   use it to sanity-check your work (e.g. `git diff --stat`), not to install
   dependencies unless the plan's new_dependencies require it.
-- Use `check_syntax` after writing/patching any `.js`/`.jsx` file, and
+- Use `check_syntax` after writing/patching any `.ts`/`.tsx` file, and
   `list_unimplemented_planned_files` before ending your turn -- see the
   completeness rules above.
 - When every file in the plan has been created or modified, and
@@ -98,18 +169,31 @@ Tool usage:
 
 
 _CODE_PLANNER_SHARED_HARD_RULES = """
-2. This is a full-stack MERN feature. You MUST plan BOTH sides -- planning
-   only frontend files (pages/components/hooks/services) without the backend
-   route/controller/model files that actually implement each required
+2. This is a full-stack Next.js feature. You MUST plan BOTH sides -- planning
+   only frontend files (pages/components/hooks/lib) without the backend
+   Route Handler/model files that actually implement each required
    endpoint and entity below is INCOMPLETE and will be rejected.
+2a. "maps_to" is a JSON ARRAY OF STRINGS, never a single string, and its
+   elements are NOT a description of the file or a note about "where this
+   comes from in the architecture plan" -- each element must be one exact,
+   verbatim string COPIED CHARACTER-FOR-CHARACTER from the
+   required_endpoints / required_entities / required_requirement_ids lists
+   below (e.g. copy "/api/items" or "Item" or "FR-002" exactly as shown,
+   never paraphrase, prefix, or describe it). One file's "maps_to" commonly
+   needs MULTIPLE array elements -- e.g. a single routes file implementing
+   three endpoints needs all three endpoint strings in its "maps_to" array.
+   CORRECT:   "maps_to": ["/api/items", "/api/items/:id", "Item", "FR-002"]
+   WRONG:     "maps_to": "Architecture Plan: server/src/routes/items.js"
+   WRONG:     "maps_to": "implements the Item entity and item endpoints"
+   WRONG (not an array): "maps_to": "/api/items"
 3. Every API endpoint listed under "required_endpoints" below must be
-   referenced (by its literal endpoint string) in the "maps_to" list of at
-   least one planned BACKEND file (e.g. a route or controller that
-   implements it) -- referencing it from a frontend API-calling file does
-   NOT count as covering the endpoint.
+   referenced (by its literal endpoint string, copied exactly, per rule 2a)
+   in the "maps_to" list of at least one planned BACKEND file (e.g. a route
+   or controller that implements it) -- referencing it from a frontend
+   API-calling file does NOT count as covering the endpoint.
 4. Every data entity listed under "required_entities" below must be
-   referenced (by its literal name string) in the "maps_to" list of at least
-   one planned backend model/schema file.
+   referenced (by its literal name string, copied exactly, per rule 2a) in
+   the "maps_to" list of at least one planned backend model/schema file.
 5. Every functional requirement id listed under "required_requirement_ids"
    below must be referenced in the "maps_to" list of at least one planned
    file.
@@ -120,62 +204,104 @@ _CODE_PLANNER_SHARED_HARD_RULES = """
    regenerate or rewrite UI markup yourself.
 8. Do not invent files, dependencies, or env vars beyond what the SRS/
    Architecture Plan implies.
-9. THE PROJECT ALREADY HAS A WORKING, RUNNABLE SCAFFOLD -- do not plan to
-   create or rewrite any of it:
-   - Backend: `server/package.json` (express, cors, dotenv, mongoose already
-     declared), `server/src/app.js` (the Express app -- creates `app`, applies
-     `cors()`/`express.json()`, and is where routers get mounted with
-     `app.use(...)`), `server/src/server.js` (boots `app.listen`).
-   - Frontend: `client/package.json` (react, react-dom, react-router-dom, vite
-     already declared), `client/src/main.jsx` (entrypoint, already renders
-     `<App />` inside `<BrowserRouter>`), `client/src/App.jsx` (already
-     contains a `<Routes>` tree -- new pages are added as additional
-     `<Route>` entries here).
-   To add a new backend route for this feature: plan a "create" for the new
-   router/controller file (e.g. `server/src/routes/<feature>.routes.js`) AND
-   a "modify" on `server/src/app.js` to `require` and `app.use(...)` it.
+9. THE PROJECT ALREADY HAS A WORKING, RUNNABLE SCAFFOLD (Next.js App Router +
+   TypeScript) -- do not plan to create or rewrite any of it:
+   - `package.json` (next, react, react-dom, typescript, mongoose already
+     declared), `next.config.mjs`, `tsconfig.json`, `app/layout.tsx` (root
+     layout), `app/globals.css`, `lib/mongodb.ts` (guarded Mongoose connect
+     helper), `app/api/health/route.ts`.
+   - `app/page.tsx` (the home page -- already has a
+     `{/* FEATURE_LINKS_START */}` / `{/* FEATURE_LINKS_END */}` marker pair
+     inside its nav for new pages to link from).
+   To add a new backend endpoint for this feature: plan a "create" for
+   `app/api/<resource>/route.ts` (a collection endpoint, e.g. GET/POST
+   `/api/tasks`) and, if there is an item-level endpoint too (e.g. GET/PUT/
+   DELETE `/api/tasks/:id`), a SEPARATE "create" for
+   `app/api/<resource>/[id]/route.ts` -- these are ALWAYS two different
+   files under Next.js's file-based routing, never one combined router file.
+   Each is automatically live the instant it exists -- there is no "mount
+   the router" step to plan.
    To add a new backend model: plan a "create" for the new model file (e.g.
-   `server/src/models/<Entity>.js`) using mongoose, referenced by the route
-   file that needs it.
-   To add a new frontend page: plan a "create" for the page component AND a
-   single "modify" on `client/src/App.jsx` that adds BOTH its `<Route>` AND a
-   real `<Link>` to it from `HomePage` -- a page with a route but no way to
-   reach it by clicking is NOT complete. `client/src/App.jsx` has a
-   `// FEATURE_LINKS_START` / `// FEATURE_LINKS_END` marker pair inside
-   `HomePage` for exactly this purpose.
-   If the route is parameterized (e.g. `/tasks/:taskId`), do NOT link directly
-   to it -- there is no real id value at the nav level. Instead: if a top-level
-   "list" page for that resource already exists (e.g. `/tasks`, each item
-   linking to its own `/tasks/:taskId`), link `HomePage` to the list page
-   instead. If no such list page exists yet, plan one as part of this feature:
-   a "create" for a list/index page that fetches the collection and links to
-   each item's detail route, plus its own `<Route path="/tasks">` and a
-   `HomePage` link to it. Recognizing that a parameterized route needs a
-   reachable list-page ancestor is a planning decision, not just a coding-loop
-   patch -- do not leave a parameterized route as the only way in.
-   Never plan to touch `server/src/server.js`, `client/src/main.jsx`,
-   `client/vite.config.js`, or `client/index.html` -- they are already
-   complete and feature-agnostic. `server/src/app.js` contains a
-   `// FEATURE_ROUTES_START` / `// FEATURE_ROUTES_END` marker pair --
-   the coding step will patch its new `app.use(...)` line in there, so
-   describe the "modify" as inserting before `// FEATURE_ROUTES_END`,
-   not as appending after the last existing route or rewriting the file.
+   `models/<Entity>.ts`) using mongoose with the
+   `mongoose.models.X || mongoose.model(...)` guard.
+   To add a new frontend page: plan a "create" for `app/<route>/page.tsx`
+   (a Client Component -- its first line must be `"use client";`) AND a
+   single "modify" on `app/page.tsx` that adds a real `<Link href="...">`
+   to it from `HomePage` -- a page with no way to reach it by clicking is
+   NOT complete. `app/page.tsx` has a `{/* FEATURE_LINKS_START */}` /
+   `{/* FEATURE_LINKS_END */}` marker pair inside `HomePage` for exactly
+   this purpose.
+   If the route is parameterized (e.g. `/tasks/[taskId]`), do NOT link
+   directly to it -- there is no real id value at the nav level. Instead: if
+   a top-level "list" page for that resource already exists (e.g. `/tasks`,
+   each item linking to its own `/tasks/[taskId]`), link `HomePage` to the
+   list page instead. If no such list page exists yet, plan one as part of
+   this feature: a "create" for a list/index page that fetches the
+   collection and links to each item's detail route, plus its own
+   `app/tasks/page.tsx` and a `HomePage` link to it. Recognizing that a
+   parameterized route needs a reachable list-page ancestor is a planning
+   decision, not just a coding-loop patch -- do not leave a parameterized
+   route as the only way in.
+   Never plan to touch `app/layout.tsx`, `next.config.mjs`, `tsconfig.json`,
+   or `lib/mongodb.ts` -- they are already complete and feature-agnostic.
+9a. Whenever this feature's plan includes any backend file that reads from the
+   database (a Route Handler under `app/api/**/route.ts` calling
+   `connectToDatabase()`, or a new model), also plan a "modify" of
+   `lib/seedData.ts` (it already exists in the scaffold as an empty shell with
+   a `// SEED_DATA_START` / `// SEED_DATA_END` marker pair) adding this
+   feature's own `export const seed<Entity> = [...]` block before the END
+   marker -- this is the one shared file every DB-backed route falls back to
+   when no real database is connected. Plan it like any other real file; never
+   leave it to be invented ad hoc mid-coding.
+10. Distinguish "remove X" from "X has been removed" / "X is missing" /
+   "X is broken" -- these are OPPOSITE actions, and getting this backwards
+   silently does the wrong thing while looking plausible in the plan.
+   "Remove X" / "delete X" / "get rid of X" means X currently EXISTS and the
+   human wants it DELETED -- plan a "modify" that removes it.
+   "X has been removed" / "X is missing" / "add back X" / "X used to be
+   there" / "bring back X" means X does NOT currently exist (or was already
+   deleted) and the human wants it RESTORED/ADDED BACK -- plan a "modify"
+   (or "create") that ADDS it, never one that removes it again.
+   Worked example: the request "add styles and also add the footer, the
+   footer has been removed" is asking you to RESTORE the footer (plan to
+   ADD a Footer component/section back), NOT to remove it a second time --
+   "the footer has been removed" is a statement of a past problem to fix,
+   not an instruction. When in doubt, re-read the exact phrase: an
+   imperative verb ("remove", "delete") aimed at something the human is
+   currently complaining about existing is a removal; a passive/past-tense
+   description ("has been removed", "is missing", "is broken") aimed at
+   something the human wants back is a restoration.
 """
 
 _CODE_PLAN_JSON_SHAPE = """
-Return exactly this JSON shape:
+Return exactly this JSON shape ("maps_to" is always an array, per rule 2a -- note the collection
+route file below covers TWO endpoints, both listed, while the item endpoint is a SEPARATE file).
+"summary" is the FIRST key, before "files" -- write it first, since it's shown live to the human
+while you're still generating the rest of the plan:
 {
+  "summary": "one paragraph describing the overall plan",
   "files": [
     {
-      "path": "server/src/routes/auth.routes.js",
+      "path": "models/Item.ts",
       "action": "create",
-      "rationale": "short reason this file is needed",
-      "maps_to": ["/api/auth/login", "FR-001"]
+      "rationale": "Mongoose schema for the Item entity",
+      "maps_to": ["Item"]
+    },
+    {
+      "path": "app/api/items/route.ts",
+      "action": "create",
+      "rationale": "Route Handler implementing the item collection endpoints (list/create)",
+      "maps_to": ["/api/items", "FR-001"]
+    },
+    {
+      "path": "app/api/items/[id]/route.ts",
+      "action": "create",
+      "rationale": "Route Handler implementing the single-item endpoints (get/update/delete)",
+      "maps_to": ["/api/items/:id", "FR-002"]
     }
   ],
   "new_dependencies": ["npm-package-name"],
-  "env_vars_needed": ["JWT_SECRET"],
-  "summary": "one paragraph describing the overall plan"
+  "env_vars_needed": ["JWT_SECRET"]
 }
 """
 
@@ -183,7 +309,7 @@ Return exactly this JSON shape:
 CODE_PLANNER_SYSTEM_PROMPT = f"""
 You are the Coder Agent's planner. You do NOT write code here -- you produce a
 scoped, traceable plan of which files a later coding step must create, modify,
-or delete for ONE approved feature in a persistent MERN codebase.
+or delete for ONE approved feature in a persistent Next.js codebase.
 
 This plan is the guardrail that keeps an open-ended coding step from
 improvising architecture: it must execute your plan, not invent scope. Because
@@ -295,7 +421,7 @@ def _build_shared_planner_context_sections(
     ]
 
     sections = [
-        f"Project: {project.get('project_name')} (target stack: {project.get('target_stack', 'MERN')})",
+        f"Project: {project.get('project_name')} (target stack: {project.get('target_stack', 'Next.js')})",
         f"Feature: {feature.get('feature_name')}",
         "",
         f"required_endpoints (must all appear in some file's maps_to): {required_endpoints}",
@@ -363,6 +489,62 @@ def _build_shared_planner_context_sections(
     return sections
 
 
+def _build_cumulative_touched_files_section(coverage_baseline_files: list[dict[str, Any]]) -> list[str]:
+    """
+    Shared by build_code_planner_user_prompt (only when the caller is CoderAgent.revise()'s
+    fast path -- see _find_well_specified_target_files) and
+    build_agentic_revision_planner_user_prompt (always) -- renders the identical "files this
+    feature has already touched" block so a planner call knows which files are real and already
+    exist (correct "modify") vs. genuinely new (correct "create"), regardless of which planner
+    method is actually answering.
+    """
+    if not coverage_baseline_files:
+        return []
+
+    touched_paths = sorted(
+        entry.get("path")
+        for entry in coverage_baseline_files
+        if isinstance(entry, dict) and entry.get("path")
+    )
+    if not touched_paths:
+        return []
+
+    return [
+        "",
+        "Files this feature has already touched across all previous plan versions "
+        "(a starting point, not necessarily the full picture -- use your tools to "
+        "check their current content, and to find other files if the human's "
+        "comment describes something broader than these):",
+        "\n".join(f"- {path}" for path in touched_paths),
+    ]
+
+
+def _build_keyword_hint_files_section(keyword_hint_files: list[str]) -> list[str]:
+    """
+    Shared by build_agentic_revision_planner_user_prompt only -- renders the list of files a
+    cheap, deterministic keyword search of the human's revision comment against the real
+    workspace turned up (CoderAgent._find_keyword_hint_files, "Tier 1b"). Explicitly framed
+    as UNVERIFIED: a keyword/content match can find files that merely mention a topic without
+    being the actually-broken one (confirmed real -- grepping "tailwind"/"css" for a "styles
+    are missing" request finds the files that already correctly use Tailwind, not the one
+    unstyled file). This is why the caller never lets this list skip exploration -- it's only
+    ever a starting point for the model's own tools to confirm or override.
+    """
+    if not keyword_hint_files:
+        return []
+
+    return [
+        "",
+        "A quick keyword search of this comment against the codebase suggests these files "
+        "might be related to the human's request -- this is NOT a guarantee, especially for "
+        "a request about something MISSING (e.g. absent styling, a missing validation check) "
+        "since a keyword search only finds files that already mention a topic, never files "
+        "that are missing one. Use your own tools to confirm before trusting this list, and "
+        "look further if it doesn't actually cover the request:",
+        "\n".join(f"- {path}" for path in keyword_hint_files),
+    ]
+
+
 def build_code_planner_user_prompt(
     project: dict,
     feature: dict,
@@ -373,6 +555,7 @@ def build_code_planner_user_prompt(
     human_comment: str | None,
     previous_plan_json: dict | None = None,
     validation_feedback: str | None = None,
+    coverage_baseline_files: list[dict[str, Any]] | None = None,
 ) -> str:
     sections = _build_shared_planner_context_sections(
         project=project,
@@ -385,6 +568,12 @@ def build_code_planner_user_prompt(
         previous_plan_json=previous_plan_json,
         validation_feedback=validation_feedback,
     )
+
+    # Only ever non-empty for CoderAgent.revise()'s fast path (see
+    # _find_well_specified_target_files) -- run()'s/run_stream()'s first-time planning has
+    # nothing to pass here, since there is no prior plan history for a brand-new feature.
+    if coverage_baseline_files:
+        sections.extend(_build_cumulative_touched_files_section(coverage_baseline_files))
 
     sections.extend(
         [
@@ -418,6 +607,7 @@ def build_agentic_revision_planner_user_prompt(
     previous_plan_json: dict | None,
     validation_feedback: str | None,
     coverage_baseline_files: list[dict[str, Any]],
+    keyword_hint_files: list[str] | None = None,
 ) -> str:
     """
     Same context as build_code_planner_user_prompt, plus a real, cumulative
@@ -427,6 +617,11 @@ def build_agentic_revision_planner_user_prompt(
     with already-known real file paths so it isn't starting from nothing,
     while its read-only tools let it look further (e.g. a styling request
     may reasonably span files this feature never itself touched).
+
+    keyword_hint_files: an unverified starting-point hint from a cheap keyword search of the
+    real workspace (CoderAgent._find_keyword_hint_files, "Tier 1b") -- see
+    _build_keyword_hint_files_section for why this is explicitly never treated as trustworthy
+    on its own.
     """
     sections = _build_shared_planner_context_sections(
         project=project,
@@ -441,19 +636,10 @@ def build_agentic_revision_planner_user_prompt(
     )
 
     if coverage_baseline_files:
-        touched_paths = sorted(
-            entry.get("path") for entry in coverage_baseline_files if isinstance(entry, dict) and entry.get("path")
-        )
-        sections.extend(
-            [
-                "",
-                "Files this feature has already touched across all previous plan versions "
-                "(a starting point, not necessarily the full picture -- use your tools to "
-                "check their current content, and to find other files if the human's "
-                "comment describes something broader than these):",
-                "\n".join(f"- {path}" for path in touched_paths),
-            ]
-        )
+        sections.extend(_build_cumulative_touched_files_section(coverage_baseline_files))
+
+    if keyword_hint_files:
+        sections.extend(_build_keyword_hint_files_section(keyword_hint_files))
 
     sections.extend(
         [

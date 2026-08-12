@@ -1,0 +1,32 @@
+{
+  "files": [
+    {
+      "path": "app/api/item-notes/[id]/route.ts",
+      "action": "create",
+      "description": "Route Handler implementing the single-item endpoints (update/delete) for item notes",
+      "maps_to": [
+        "/api/item-notes/:id",
+        "FR-001"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "lib/api/itemNotes.ts",
+      "action": "modify",
+      "description": "Add functions for updating and deleting item notes to the API service",
+      "maps_to": [
+        "FR-001"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "app/item-notes/page.tsx",
+      "action": "modify",
+      "description": "Update the frontend to clear the input field after successfully adding a note",
+      "maps_to": [
+        "FR-001"
+      ],
+      "actually_touched": true
+    }
+  ]
+}

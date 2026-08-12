@@ -27,7 +27,7 @@ class ArchitectureAgentRunRequest(BaseModel):
 
     architecture_notes: str | None = Field(
         default=None,
-        example="Use MVC style and keep the feature simple for MERN implementation."
+        example="Use MVC style and keep the feature simple for a Next.js implementation."
     )
 
     human_comment: str | None = Field(

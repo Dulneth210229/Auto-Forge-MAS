@@ -14,11 +14,32 @@ Why:
 - Avoids repeating configuration code in every agent.
 """
 
+import httpx
+
 from app.providers.base_provider import BaseLLMProvider
 from app.providers.ollama_provider import OllamaProvider
 from app.providers.openai_provider import OpenAIProvider
-from app.schemas.llm_schema import LLMSettings, LLMSettingsUpdateRequest
+from app.schemas.llm_schema import (
+    AgentLLMOverrideUpdateRequest,
+    AgentLLMSettingsResponse,
+    LLMSettings,
+    LLMSettingsUpdateRequest,
+    OllamaAvailableModel,
+    OllamaRunningModel,
+    OllamaStatusResponse,
+)
 from app.services.in_memory_store import store
+
+# Every agent that can have its own LLM override configured through the UI. Security/QA/
+# Deployment are still stubs with no real LLM call to configure, so they're excluded here --
+# same reasoning the frontend already uses to grey them out as "not yet implemented."
+OVERRIDABLE_AGENTS = [
+    "requirement_agent",
+    "domain_agent",
+    "architecture_agent",
+    "uiux_agent",
+    "coder_agent",
+]
 
 
 class LLMProviderService:
@@ -39,21 +60,22 @@ class LLMProviderService:
         Do not return the real API key.
         Only return whether the key is configured.
         """
-        current = store.llm_settings
+        return self._build_settings_response(store.llm_settings.get_document())
 
-        api_key_reference = None
-        if current.get("api_key"):
-            api_key_reference = "API_KEY_CONFIGURED"
-
+    def _build_settings_response(self, document: dict) -> LLMSettings:
+        """
+        Same as get_settings(), but from an already-fetched document -- avoids a second
+        round-trip when a caller (e.g. list_agent_overrides) already has one in hand.
+        """
         return LLMSettings(
-            provider=current["provider"],
-            model=current["model"],
-            base_url=current["base_url"],
-            api_key_reference=api_key_reference,
-            temperature=current["temperature"],
-            max_tokens=current["max_tokens"],
-            streaming_enabled=current["streaming_enabled"],
-            timeout_seconds=current["timeout_seconds"],
+            provider=document["provider"],
+            model=document["model"],
+            base_url=document["base_url"],
+            api_key_reference="API_KEY_CONFIGURED" if document.get("api_key") else None,
+            temperature=document["temperature"],
+            max_tokens=document["max_tokens"],
+            streaming_enabled=document["streaming_enabled"],
+            timeout_seconds=document["timeout_seconds"],
         )
 
     def update_settings(self, request: LLMSettingsUpdateRequest) -> LLMSettings:
@@ -100,11 +122,35 @@ class LLMProviderService:
 
         return self.get_settings()
 
-    def get_provider(self) -> BaseLLMProvider:
+    def _resolve_effective_settings(self, document: dict, agent_name: str | None) -> dict:
         """
-        Create and return the currently selected provider instance.
+        Merge a per-agent override (if any) onto the global defaults -- pure, no I/O; `document`
+        must already be a fetched `store.llm_settings.get_document()` result.
+
+        `base_url`/`api_key` are intentionally never overridable per-agent -- every provider this
+        app talks to (Ollama daemon, OpenAI-compatible endpoint) is one shared connection, and
+        per-agent overrides only ever need to change WHICH model/provider/generation parameters
+        are used, not where to connect.
         """
-        current = store.llm_settings
+        override = document.get("agent_overrides", {}).get(agent_name, {}) if agent_name else {}
+
+        merged = dict(document)
+        for field in ("provider", "model", "temperature", "max_tokens", "timeout_seconds"):
+            if override.get(field) is not None:
+                merged[field] = override[field]
+
+        return merged
+
+    def get_provider(self, agent_name: str | None = None) -> BaseLLMProvider:
+        """
+        Create and return the provider instance for the given agent.
+
+        If the agent has a configured override (see agent_overrides in store.llm_settings), its
+        provider/model/generation-parameter fields take priority over the global defaults.
+        `agent_name` is optional so existing callers with no specific agent (e.g. the LLM Settings
+        "test" endpoint, which is testing the global config itself) keep working unchanged.
+        """
+        current = self._resolve_effective_settings(store.llm_settings.get_document(), agent_name)
 
         provider_name = current["provider"]
 
@@ -128,6 +174,157 @@ class LLMProviderService:
             )
 
         raise ValueError(f"Unsupported LLM provider: {provider_name}")
+
+    async def list_ollama_models(self) -> list[str]:
+        """
+        List the model names currently available on the Ollama server configured in
+        LLMSettings.base_url (i.e. the same server get_provider() would actually talk to for an
+        "ollama" agent -- read from the live, user-configurable settings document, not a
+        hardcoded default, so this always reflects whatever the LLM Settings page currently has
+        set). Used by the chat model-picker so the frontend can offer a real, current list
+        instead of a free-text field.
+        """
+        base_url = store.llm_settings.get_document()["base_url"]
+
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(f"{base_url}/api/tags")
+
+        response.raise_for_status()
+        data = response.json()
+
+        return [model["name"] for model in data.get("models", []) if model.get("name")]
+
+    async def get_ollama_status(self) -> OllamaStatusResponse:
+        """
+        Live status of the configured Ollama server: whether it's actually reachable right now,
+        which models are locally available (GET /api/tags), and -- the part no other endpoint in
+        this service surfaces -- which models are actually loaded into memory right now and how
+        much of each sits in VRAM vs. CPU (GET /api/ps). Never raises: a connection failure is
+        reported as `reachable=False` with the error text, so the UI can render a clear
+        disconnected state instead of a 500.
+        """
+        base_url = store.llm_settings.get_document()["base_url"]
+
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                tags_response = await client.get(f"{base_url}/api/tags")
+                tags_response.raise_for_status()
+                ps_response = await client.get(f"{base_url}/api/ps")
+                ps_response.raise_for_status()
+        except httpx.HTTPError as error:
+            return OllamaStatusResponse(reachable=False, base_url=base_url, error=str(error))
+
+        available = [
+            OllamaAvailableModel(
+                name=model["name"],
+                size_bytes=model.get("size", 0),
+                modified_at=model.get("modified_at"),
+            )
+            for model in tags_response.json().get("models", [])
+            if model.get("name")
+        ]
+
+        running = []
+        for model in ps_response.json().get("models", []):
+            if not model.get("name"):
+                continue
+            size_bytes = model.get("size", 0)
+            size_vram_bytes = model.get("size_vram", 0)
+            vram_percent = round((size_vram_bytes / size_bytes) * 100, 1) if size_bytes else 0.0
+            running.append(
+                OllamaRunningModel(
+                    name=model["name"],
+                    size_bytes=size_bytes,
+                    size_vram_bytes=size_vram_bytes,
+                    vram_percent=vram_percent,
+                    expires_at=model.get("expires_at"),
+                )
+            )
+
+        return OllamaStatusResponse(
+            reachable=True, base_url=base_url, available_models=available, running_models=running
+        )
+
+    def _agent_response(self, document: dict, global_settings: LLMSettings, agent_name: str) -> AgentLLMSettingsResponse:
+        effective = self._resolve_effective_settings(document, agent_name)
+        is_override = any(
+            effective[field] != getattr(global_settings, field)
+            for field in ("provider", "model", "temperature", "max_tokens", "timeout_seconds")
+        )
+        return AgentLLMSettingsResponse(
+            agent_name=agent_name,
+            provider=effective["provider"],
+            model=effective["model"],
+            temperature=effective["temperature"],
+            max_tokens=effective["max_tokens"],
+            timeout_seconds=effective["timeout_seconds"],
+            is_override=is_override,
+        )
+
+    def list_agent_overrides(self) -> list[AgentLLMSettingsResponse]:
+        """
+        Return every overridable agent's effective settings, and whether each is currently
+        using a custom override or just the global default.
+
+        Fetches the settings document exactly once and reuses it for every agent -- computing
+        this used to cost 30+ separate MongoDB round-trips (each `store.llm_settings["field"]`
+        access independently re-fetches the whole document; 5 agents x ~6 fields + the global
+        settings), observed taking 5+ seconds against the real (non-local) MongoDB Atlas cluster
+        this app uses. One fetch for all 5 agents combined is the actual fix.
+        """
+        document = store.llm_settings.get_document()
+        global_settings = self._build_settings_response(document)
+
+        return [self._agent_response(document, global_settings, agent_name) for agent_name in OVERRIDABLE_AGENTS]
+
+    def set_agent_override(
+        self, agent_name: str, request: AgentLLMOverrideUpdateRequest
+    ) -> AgentLLMSettingsResponse:
+        """
+        Set (merge into) one agent's override. Only fields provided are changed; fields already
+        set on a prior override and not mentioned here are left as they were.
+        """
+        if agent_name not in OVERRIDABLE_AGENTS:
+            raise ValueError(
+                f"'{agent_name}' has no configurable LLM -- must be one of {OVERRIDABLE_AGENTS}"
+            )
+
+        if request.provider is not None and request.provider.lower() not in self.SUPPORTED_PROVIDERS:
+            raise ValueError(
+                f"Unsupported provider '{request.provider}'. Supported providers: {self.SUPPORTED_PROVIDERS}"
+            )
+
+        document = store.llm_settings.get_document()
+        all_overrides = dict(document.get("agent_overrides", {}))
+        current_override = dict(all_overrides.get(agent_name, {}))
+
+        for field in ("provider", "model", "temperature", "max_tokens", "timeout_seconds"):
+            value = getattr(request, field)
+            if value is not None:
+                current_override[field] = value.lower() if field == "provider" else value
+
+        all_overrides[agent_name] = current_override
+        store.llm_settings["agent_overrides"] = all_overrides
+        document["agent_overrides"] = all_overrides
+
+        return self._agent_response(document, self._build_settings_response(document), agent_name)
+
+    def clear_agent_override(self, agent_name: str) -> AgentLLMSettingsResponse:
+        """
+        Remove an agent's override entirely, reverting it to the global default.
+        """
+        if agent_name not in OVERRIDABLE_AGENTS:
+            raise ValueError(
+                f"'{agent_name}' has no configurable LLM -- must be one of {OVERRIDABLE_AGENTS}"
+            )
+
+        document = store.llm_settings.get_document()
+        all_overrides = dict(document.get("agent_overrides", {}))
+        all_overrides.pop(agent_name, None)
+        store.llm_settings["agent_overrides"] = all_overrides
+        document["agent_overrides"] = all_overrides
+
+        return self._agent_response(document, self._build_settings_response(document), agent_name)
 
 
 llm_provider_service = LLMProviderService()

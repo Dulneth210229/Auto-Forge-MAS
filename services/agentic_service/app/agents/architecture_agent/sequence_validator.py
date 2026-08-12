@@ -31,6 +31,8 @@ class SequenceDiagramValidator:
     NON_MESSAGE_TERMS = [
         "performance", "response time", "responsive ui", "mern stack", "mvc",
         "architecture style", "design tradeoff", "risk mitigation", "nfr",
+        "next.js", "nextjs", "typescript", "server component", "route handler",
+        "app router",
     ]
 
     STOPWORDS = {

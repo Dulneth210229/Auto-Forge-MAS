@@ -36,13 +36,24 @@ class UIMetadataValidator:
 
         errors.extend(self._validate_structure(ui_metadata_json))
 
-        if not errors:
+        # Coverage checks only need pages to be a non-empty list of dicts to run safely (they
+        # call .get() on each page) -- a page-level content gap like missing "states" doesn't
+        # make coverage checks unsafe to run, so it must not suppress them. Reporting every
+        # real error in one pass matters because a repair attempt only gets one shot: if this
+        # gate were "no structural errors at all", a model that both omits "states" AND misses
+        # requirement coverage would only ever be told about one problem per attempt, never both.
+        if self._is_safe_for_coverage_checks(ui_metadata_json):
             errors.extend(self._validate_actor_coverage(srs_json, ui_metadata_json))
             errors.extend(self._validate_ui_expectation_coverage(srs_json, ui_metadata_json))
             errors.extend(self._validate_requirement_id_coverage(srs_json, ui_metadata_json))
 
         if errors:
             raise UIMetadataValidationError("; ".join(errors))
+
+    def _is_safe_for_coverage_checks(self, ui_metadata_json: dict[str, Any]) -> bool:
+        pages = ui_metadata_json.get("pages")
+
+        return isinstance(pages, list) and bool(pages) and all(isinstance(page, dict) for page in pages)
 
     def _validate_structure(self, ui_metadata_json: dict[str, Any]) -> list[str]:
         pages = ui_metadata_json.get("pages")
