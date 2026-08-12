@@ -1,0 +1,70 @@
+{
+  "project_id": "proj_34e07440",
+  "feature_id": "feature_94701501",
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 7,
+    "total_findings": 7
+  },
+  "status": "PASS",
+  "findings": [
+    {
+      "title": "LLM Review Failed",
+      "description": "model 'qwen3-coder:latest' not found (status code: 404)",
+      "severity": "Low",
+      "line": 0,
+      "cwe": "N/A",
+      "recommendation": "Check the configured LLM provider or model."
+    },
+    {
+      "title": "LLM Review Failed",
+      "description": "model 'qwen3-coder:latest' not found (status code: 404)",
+      "severity": "Low",
+      "line": 0,
+      "cwe": "N/A",
+      "recommendation": "Check the configured LLM provider or model."
+    },
+    {
+      "title": "LLM Review Failed",
+      "description": "model 'qwen3-coder:latest' not found (status code: 404)",
+      "severity": "Low",
+      "line": 0,
+      "cwe": "N/A",
+      "recommendation": "Check the configured LLM provider or model."
+    },
+    {
+      "title": "LLM Review Failed",
+      "description": "model 'qwen3-coder:latest' not found (status code: 404)",
+      "severity": "Low",
+      "line": 0,
+      "cwe": "N/A",
+      "recommendation": "Check the configured LLM provider or model."
+    },
+    {
+      "title": "LLM Review Failed",
+      "description": "model 'qwen3-coder:latest' not found (status code: 404)",
+      "severity": "Low",
+      "line": 0,
+      "cwe": "N/A",
+      "recommendation": "Check the configured LLM provider or model."
+    },
+    {
+      "title": "LLM Review Failed",
+      "description": "model 'qwen3-coder:latest' not found (status code: 404)",
+      "severity": "Low",
+      "line": 0,
+      "cwe": "N/A",
+      "recommendation": "Check the configured LLM provider or model."
+    },
+    {
+      "title": "LLM Review Failed",
+      "description": "model 'qwen3-coder:latest' not found (status code: 404)",
+      "severity": "Low",
+      "line": 0,
+      "cwe": "N/A",
+      "recommendation": "Check the configured LLM provider or model."
+    }
+  ]
+}

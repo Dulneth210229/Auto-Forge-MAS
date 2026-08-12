@@ -1,0 +1,92 @@
+{
+  "feature_id": "feature_94701501",
+  "summary": {
+    "total_tests": 0,
+    "passed": 0,
+    "failed": 0,
+    "skipped": 0,
+    "pass_rate": 0.0,
+    "status": "GENERATED"
+  },
+  "findings": [
+    {
+      "title": "Test Generation Failed",
+      "description": "LLM test generation failed: model 'qwen3-coder:latest' not found (status code: 404)",
+      "severity": "High",
+      "file": "D:\\4th year\\RP\\Auto-Forge-MAS\\services\\agentic_service\\workspaces\\sample-e-commerce\\repo\\app\\api\\health\\route.ts",
+      "line": null,
+      "recommendation": "Review the source file and regenerate the test.",
+      "confidence": 1.0
+    },
+    {
+      "title": "Test Generation Failed",
+      "description": "LLM test generation failed: model 'qwen3-coder:latest' not found (status code: 404)",
+      "severity": "High",
+      "file": "D:\\4th year\\RP\\Auto-Forge-MAS\\services\\agentic_service\\workspaces\\sample-e-commerce\\repo\\app\\layout.tsx",
+      "line": null,
+      "recommendation": "Review the source file and regenerate the test.",
+      "confidence": 1.0
+    },
+    {
+      "title": "Test Generation Failed",
+      "description": "LLM test generation failed: model 'qwen3-coder:latest' not found (status code: 404)",
+      "severity": "High",
+      "file": "D:\\4th year\\RP\\Auto-Forge-MAS\\services\\agentic_service\\workspaces\\sample-e-commerce\\repo\\app\\page.tsx",
+      "line": null,
+      "recommendation": "Review the source file and regenerate the test.",
+      "confidence": 1.0
+    },
+    {
+      "title": "Test Generation Failed",
+      "description": "LLM test generation failed: model 'qwen3-coder:latest' not found (status code: 404)",
+      "severity": "High",
+      "file": "D:\\4th year\\RP\\Auto-Forge-MAS\\services\\agentic_service\\workspaces\\sample-e-commerce\\repo\\components\\PreviewRouteAnnouncer.tsx",
+      "line": null,
+      "recommendation": "Review the source file and regenerate the test.",
+      "confidence": 1.0
+    },
+    {
+      "title": "Test Generation Failed",
+      "description": "LLM test generation failed: model 'qwen3-coder:latest' not found (status code: 404)",
+      "severity": "High",
+      "file": "D:\\4th year\\RP\\Auto-Forge-MAS\\services\\agentic_service\\workspaces\\sample-e-commerce\\repo\\lib\\mongodb.ts",
+      "line": null,
+      "recommendation": "Review the source file and regenerate the test.",
+      "confidence": 1.0
+    },
+    {
+      "title": "Test Generation Failed",
+      "description": "LLM test generation failed: model 'qwen3-coder:latest' not found (status code: 404)",
+      "severity": "High",
+      "file": "D:\\4th year\\RP\\Auto-Forge-MAS\\services\\agentic_service\\workspaces\\sample-e-commerce\\repo\\lib\\seedData.ts",
+      "line": null,
+      "recommendation": "Review the source file and regenerate the test.",
+      "confidence": 1.0
+    },
+    {
+      "title": "Test Generation Failed",
+      "description": "LLM test generation failed: model 'qwen3-coder:latest' not found (status code: 404)",
+      "severity": "High",
+      "file": "D:\\4th year\\RP\\Auto-Forge-MAS\\services\\agentic_service\\workspaces\\sample-e-commerce\\repo\\tailwind.config.js",
+      "line": null,
+      "recommendation": "Review the source file and regenerate the test.",
+      "confidence": 1.0
+    },
+    {
+      "title": "Generated Tests Not Executed",
+      "description": "Test files were successfully generated, but no supported execution framework was available.",
+      "severity": "Low",
+      "file": null,
+      "line": null,
+      "recommendation": "Execute the generated tests using the appropriate test framework (pytest or Jest).",
+      "confidence": 1.0
+    }
+  ],
+  "metrics": {
+    "generated_test_files": 7,
+    "generation_time_seconds": 0.624226699990686,
+    "execution_time_seconds": 0.0,
+    "total_duration_seconds": 0.624226699990686
+  },
+  "generated_at": "2026-08-12T10:30:36.909475"
+}
