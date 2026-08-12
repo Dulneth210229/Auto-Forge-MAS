@@ -8,45 +8,29 @@ hide empty members
 title Task Comments Class Diagram
 
 class "TaskCommentsController" as CLS_CONTROLLER <<control>> {
-  +getApiTaskComments(request): Response
-  +getApiTaskComments(request): Response
-  +getApiTaskComments(request): Response
+  +postApiTaskComments(request): Response
 }
 
 class "TaskCommentsService" as CLS_SERVICE <<service>> {
-  +aUserCanAddA(input): Result
-  +aUserCanViewAll(input): Result
-  +deleteTheirOwnComment(input): Result
-  +recordWhoPostedEachComment(input): Result
+  +usersCanAddAComment(input): Result
 }
 
 class "TaskCommentsRequest" as CLS_REQUEST_001 <<dto>> {
-  +field: String
+  +text: String
 }
 
 class "TaskCommentsSuccessResponse" as CLS_RESPONSE_001 <<dto>> {
-  +field: String
+  +comment: Object
 }
 
 class "TaskCommentsErrorResponse" as CLS_RESPONSE_002 <<dto>> {
-  +listOfCommentsWithAuthor: String
-  +confirmationOfSuccessfulCommentCreation: String
+  +comment: Object
 }
 
-class "TaskCommentsDataEntity1" as CLS_ENTITY_001 <<entity>> {
-  +commentText: String
-}
-
-class "TaskCommentsDataEntity2" as CLS_ENTITY_002 <<entity>> {
-  +authorUserId: String
-}
-
-class "TaskCommentsDataEntity3" as CLS_ENTITY_003 <<entity>> {
+class "Comment" as CLS_ENTITY_001 <<entity>> {
+  +storesCommentText: String
+  +author: String
   +taskId: String
-}
-
-class "TaskCommentsDataEntity4" as CLS_ENTITY_004 <<entity>> {
-  +createdTimestamp: String
 }
 
 class "TaskCommentsRepository" as CLS_REPOSITORY <<repository>> {
@@ -59,9 +43,6 @@ CLS_CONTROLLER ..> CLS_REQUEST_001 : accepts
 CLS_CONTROLLER ..> CLS_RESPONSE_001 : returns
 CLS_CONTROLLER ..> CLS_RESPONSE_002 : returns
 CLS_SERVICE ..> CLS_REPOSITORY : uses
-CLS_REPOSITORY --> CLS_ENTITY_001 : manages
-CLS_REPOSITORY --> CLS_ENTITY_002 : manages
-CLS_REPOSITORY --> CLS_ENTITY_003 : manages
-CLS_REPOSITORY --> CLS_ENTITY_004 : manages
+CLS_REPOSITORY "1" --> "0..*" CLS_ENTITY_001 : manages
 
 @enduml

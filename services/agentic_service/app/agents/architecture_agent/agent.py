@@ -470,10 +470,21 @@ class ArchitectureAgent:
             logger.warning("Streamed Architecture output validation failed: %s", first_error)
 
             repair_prompt = build_json_repair_prompt(raw_output)
-            repaired_output = await provider.invoke_agent([
-                {"role": "system", "content": JSON_REPAIR_PROMPT},
-                {"role": "user", "content": repair_prompt},
-            ])
+            # A transport/timeout failure from this call itself (e.g. an httpx.ReadTimeout, whose
+            # str() is frequently empty) must be treated exactly like an unparseable repair
+            # response -- never left to propagate uncaught, or the whole request crashes with a
+            # blank error message instead of falling through to the deterministic fallback below.
+            try:
+                repaired_output = await provider.invoke_agent([
+                    {"role": "system", "content": JSON_REPAIR_PROMPT},
+                    {"role": "user", "content": repair_prompt},
+                ])
+            except Exception as repair_call_error:
+                logger.warning(
+                    "Streamed Architecture JSON repair call itself failed (not just its output) "
+                    "for feature_id=%s: %s", feature_id, repair_call_error,
+                )
+                repaired_output = ""
 
             try:
                 parsed = self._parse_and_validate_output(repaired_output, srs_for_generation, feature_name)
@@ -603,16 +614,27 @@ class ArchitectureAgent:
             project_manifest_json=agent_input.project_manifest_json,
         )
 
-        raw_output = await provider.invoke_agent([
-            {
-                "role": "system",
-                "content": ARCHITECTURE_AGENT_SYSTEM_PROMPT
-            },
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ])
+        # A transport/timeout failure from invoke_agent() itself (e.g. an httpx.ReadTimeout, whose
+        # str() is frequently empty) must be treated exactly like an unparseable response -- never
+        # left to propagate uncaught, or this whole rung crashes with a blank error message instead
+        # of falling through to repair/fallback like every other failure mode already does.
+        try:
+            raw_output = await provider.invoke_agent([
+                {
+                    "role": "system",
+                    "content": ARCHITECTURE_AGENT_SYSTEM_PROMPT
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ])
+        except Exception as invoke_error:
+            logger.warning(
+                "Architecture single-shot generation call itself failed (not just its output) "
+                "for feature_id=%s: %s", agent_input.feature.get("feature_id"), invoke_error,
+            )
+            raw_output = ""
 
         try:
             parsed = self._parse_and_validate_output(raw_output, srs_for_generation, feature_name)
@@ -625,16 +647,23 @@ class ArchitectureAgent:
 
             repair_prompt = build_json_repair_prompt(raw_output)
 
-            repaired_output = await provider.invoke_agent([
-                {
-                    "role": "system",
-                    "content": JSON_REPAIR_PROMPT
-                },
-                {
-                    "role": "user",
-                    "content": repair_prompt
-                }
-            ])
+            try:
+                repaired_output = await provider.invoke_agent([
+                    {
+                        "role": "system",
+                        "content": JSON_REPAIR_PROMPT
+                    },
+                    {
+                        "role": "user",
+                        "content": repair_prompt
+                    }
+                ])
+            except Exception as repair_call_error:
+                logger.warning(
+                    "Architecture JSON repair call itself failed (not just its output) for "
+                    "feature_id=%s: %s", agent_input.feature.get("feature_id"), repair_call_error,
+                )
+                repaired_output = ""
 
             try:
                 parsed = self._parse_and_validate_output(repaired_output, srs_for_generation, feature_name)
@@ -1862,16 +1891,27 @@ class ArchitectureAgent:
             revised_by=revised_by,
         )
 
-        raw_output = await provider.invoke_agent([
-            {
-                "role": "system",
-                "content": ARCHITECTURE_REVISION_SYSTEM_PROMPT
-            },
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ])
+        # A transport/timeout failure from this call itself (e.g. an httpx.ReadTimeout, whose
+        # str() is frequently empty) must be treated exactly like an unparseable response -- never
+        # left to propagate uncaught, or this whole revision crashes with a blank error message
+        # instead of falling through to _fallback_revise_architecture_plan_json below.
+        try:
+            raw_output = await provider.invoke_agent([
+                {
+                    "role": "system",
+                    "content": ARCHITECTURE_REVISION_SYSTEM_PROMPT
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ])
+        except Exception as invoke_error:
+            logger.warning(
+                "Architecture Plan revision generation call itself failed (not just its output) "
+                "for feature_id=%s: %s", feature.get("feature_id"), invoke_error,
+            )
+            raw_output = ""
 
         try:
             revised_architecture_plan_json = self._parse_and_validate_architecture_plan_json(raw_output)

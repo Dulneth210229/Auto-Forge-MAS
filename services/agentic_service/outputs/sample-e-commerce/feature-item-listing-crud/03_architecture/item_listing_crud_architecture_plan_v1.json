@@ -1,0 +1,2624 @@
+{
+  "document_control": {
+    "document_title": "Architecture Plan: Item Listing (CRUD)",
+    "document_type": "Feature Architecture Plan",
+    "project_id": "proj_34e07440",
+    "project_name": "Sample E-commerce",
+    "project_type": "E-commerce",
+    "feature_id": "feature_94701501",
+    "feature_name": "Item Listing (CRUD)",
+    "target_stack": "Next.js",
+    "architecture_style": "modular",
+    "version": "v1",
+    "generated_by": "Architecture Agent",
+    "input_artifacts": [
+      "Approved SRS JSON",
+      "Approved Enhanced SRS JSON if available"
+    ],
+    "approval_status": "pending"
+  },
+  "feature_overview": {
+    "business_goal": "Let admins fully manage the item catalog end to end, with support for bulk operations in the future.",
+    "scope": [
+      "Create, Read, Update, and Delete items in the catalog",
+      "Display items in a paginated list with sorting and filtering",
+      "Support server-side search and filtering for performance",
+      "Provide UI for item creation, editing, and deletion with confirmation",
+      "Ensure API endpoints are RESTful and return appropriate HTTP status codes"
+    ],
+    "out_of_scope": [
+      "User authentication or authorization beyond admin/manager roles",
+      "Advanced inventory management features like stock alerts or bulk updates",
+      "Integration with external systems or third-party APIs",
+      "Item versioning or audit trails"
+    ],
+    "user_roles": [
+      "Admin/Manager"
+    ],
+    "feature_boundary": "This Architecture Plan covers only the Item Listing (CRUD) feature and excludes unrelated features."
+  },
+  "requirement_interpretation": {
+    "functional_requirements": [
+      {
+        "id": "FR-001",
+        "description": "User can view a list of all items (name, price, quantity, category shown in the list) [EDITED-MARKER-771]",
+        "priority": "Must Have"
+      },
+      {
+        "id": "FR-002",
+        "description": "User can view a single item's full details",
+        "priority": "Must Have"
+      },
+      {
+        "id": "FR-003",
+        "description": "User can create a new item by filling out a form (name, description, price, quantity, category, image URL)",
+        "priority": "Must Have"
+      },
+      {
+        "id": "FR-004",
+        "description": "User can edit/update an existing item's details",
+        "priority": "Must Have"
+      },
+      {
+        "id": "FR-005",
+        "description": "User can delete an item, with a confirmation prompt before deletion",
+        "priority": "Must Have"
+      },
+      {
+        "id": "FR-006",
+        "description": "The item list should support basic search/filter by name",
+        "priority": "Should Have"
+      },
+      {
+        "id": "FR-007",
+        "description": "The item list should support sorting by name (A–Z / Z–A) and by price (low to high / high to low)",
+        "priority": "Should Have"
+      },
+      {
+        "id": "FR-008",
+        "description": "The item list should be paginated with 20 items per page, with navigation controls (previous/next, jump to page)",
+        "priority": "Must Have"
+      },
+      {
+        "id": "FR-009",
+        "description": "The item list supports server-side filtering and sorting for performance with up to 10,000 items",
+        "priority": "Must Have"
+      },
+      {
+        "id": "FR-010",
+        "description": "Search and filters (name, category, price range) are applied server-side with debounced live search on name",
+        "priority": "Must Have"
+      }
+    ],
+    "acceptance_criteria": [
+      {
+        "id": "AC-001",
+        "description": "Creating an item with valid data returns a success response and the new item appears in the list immediately"
+      },
+      {
+        "id": "AC-002",
+        "description": "Submitting the create/edit form with a missing name, non-positive price, or negative quantity shows a validation error and does not save"
+      },
+      {
+        "id": "AC-003",
+        "description": "Deleting an item removes it from the list and requires confirmation first — canceling the confirmation leaves the item untouched"
+      },
+      {
+        "id": "AC-004",
+        "description": "Editing an item and saving updates only that item's fields, without affecting any other item"
+      },
+      {
+        "id": "AC-005",
+        "description": "Sorting by name or price correctly reorders the full list, not just the current page/view"
+      },
+      {
+        "id": "AC-006",
+        "description": "Every API endpoint (POST/GET/PUT/DELETE /api/items) returns the correct HTTP status code for both success and invalid-input cases (200/201 vs. 400)"
+      },
+      {
+        "id": "AC-007",
+        "description": "Pagination works with 20 items per page and supports previous/next and jump-to-page navigation"
+      },
+      {
+        "id": "AC-008",
+        "description": "Search and filters (name, category, price range) are applied server-side with debounced live search on name"
+      }
+    ],
+    "validation_rules": [
+      {
+        "id": "VR-001",
+        "description": "Name must not be empty"
+      },
+      {
+        "id": "VR-002",
+        "description": "Price must be a positive number (minimum 0.01)"
+      },
+      {
+        "id": "VR-003",
+        "description": "Quantity must be a non-negative integer (minimum 0)"
+      },
+      {
+        "id": "VR-004",
+        "description": "Category must not be empty"
+      },
+      {
+        "id": "VR-005",
+        "description": "Image URL must be a valid URL format if provided"
+      }
+    ],
+    "non_functional_requirements": [
+      {
+        "id": "NFR-001",
+        "description": "The item list should load in under 2 seconds for up to 1,000 items",
+        "category": "Performance"
+      },
+      {
+        "id": "NFR-002",
+        "description": "The UI must be accessible to screen readers (proper labels/ARIA attributes on the form and list, keyboard-navigable buttons for Edit/Delete/Add)",
+        "category": "Usability"
+      },
+      {
+        "id": "NFR-003",
+        "description": "Support for up to 10,000 items total with server-side pagination and filtering",
+        "category": "Scalability"
+      },
+      {
+        "id": "NFR-004",
+        "description": "Search and filters should query the backend directly rather than client-side filtering",
+        "category": "Performance"
+      }
+    ]
+  },
+  "architecture_approach": {
+    "architecture_style": "modular",
+    "architecture_rationale": "Use modular to keep the Item Listing (CRUD) feature separated into presentation, business logic, and data responsibilities where applicable.",
+    "frontend_overview": "Frontend design should provide the user-facing entry points, inputs, states, and feedback required by the approved SRS.",
+    "backend_overview": "Backend design should process feature requests, enforce business rules, validate inputs, and return structured responses.",
+    "data_overview": "Data design should support the data requirements defined in the approved SRS.",
+    "integration_overview": "Integration design should follow the API expectations and dependencies listed in the approved SRS.",
+    "design_tradeoffs": [
+      "Design is derived directly from the approved SRS to preserve traceability and feature scope.",
+      "Design is kept feature-scoped to preserve feature-by-feature SDLC development.",
+      "Internal generation or repair details are kept in backend logs and are not exposed in the approval-ready Architecture Plan."
+    ]
+  },
+  "design_views": {
+    "context_view": {
+      "actors": [
+        "Admin/Manager"
+      ],
+      "external_systems": [
+        "Backend API service for handling CRUD operations",
+        "Database schema for storing item data",
+        "Authentication and authorization system for admin/manager access",
+        "Image storage service for storing and serving item photos",
+        "Caching layer (e.g., Redis) to speed up search and filtering operations"
+      ],
+      "feature_boundary": "Item Listing (CRUD) feature boundary.",
+      "main_interactions": [
+        "Admin/Manager interacts with the Item Listing (CRUD) feature.",
+        "User can view a list of all items (name, price, quantity, category shown in the list) [EDITED-MARKER-771]",
+        "User can view a single item's full details",
+        "User can create a new item by filling out a form (name, description, price, quantity, category, image URL)",
+        "User can edit/update an existing item's details",
+        "User can delete an item, with a confirmation prompt before deletion",
+        "The item list should support basic search/filter by name",
+        "The item list should support sorting by name (A–Z / Z–A) and by price (low to high / high to low)",
+        "The item list should be paginated with 20 items per page, with navigation controls (previous/next, jump to page)",
+        "The item list supports server-side filtering and sorting for performance with up to 10,000 items",
+        "Search and filters (name, category, price range) are applied server-side with debounced live search on name"
+      ]
+    },
+    "logical_view": {
+      "frontend_modules": [
+        {
+          "name": "ItemListingCRUDFrontendModule",
+          "responsibility": "Handle frontend responsibilities for the Item Listing (CRUD) feature.",
+          "derived_from": [
+            "A main page showing all items in a list/table/grid layout",
+            "An \"Add Item\" button that opens a form to create a new item",
+            "Each item has \"Edit\" and \"Delete\" actions",
+            "Editing opens the same form pre-filled with the item's current data",
+            "Deleting shows a confirm dialog before removing the item",
+            "Pagination controls at the bottom of the list (previous/next, jump to page)",
+            "Live search input with debouncing, plus filter dropdowns for category and price range",
+            "Name (string, required)",
+            "Description (string, optional)",
+            "Price (number, required, minimum 0.01)",
+            "Quantity (integer, required, minimum 0)",
+            "Category (string, required)",
+            "Image URL (string, optional, valid URL format)",
+            "Search term (string, optional)",
+            "Filter criteria (category, price range)"
+          ]
+        }
+      ],
+      "backend_modules": [
+        {
+          "name": "ItemListingCRUDBackendModule",
+          "responsibility": "Handle backend responsibilities for the Item Listing (CRUD) feature.",
+          "derived_from": [
+            "User can view a list of all items (name, price, quantity, category shown in the list) [EDITED-MARKER-771]",
+            "User can view a single item's full details",
+            "User can create a new item by filling out a form (name, description, price, quantity, category, image URL)",
+            "User can edit/update an existing item's details",
+            "User can delete an item, with a confirmation prompt before deletion",
+            "The item list should support basic search/filter by name",
+            "The item list should support sorting by name (A–Z / Z–A) and by price (low to high / high to low)",
+            "The item list should be paginated with 20 items per page, with navigation controls (previous/next, jump to page)",
+            "The item list supports server-side filtering and sorting for performance with up to 10,000 items",
+            "Search and filters (name, category, price range) are applied server-side with debounced live search on name",
+            "Name must not be empty",
+            "Price must be a positive number (minimum 0.01)",
+            "Quantity must be a non-negative integer (minimum 0)",
+            "Category must not be empty",
+            "Image URL must be a valid URL format if provided"
+          ]
+        }
+      ],
+      "domain_services": [
+        {
+          "name": "ItemListingCRUDService",
+          "responsibility": "Apply business rules for the Item Listing (CRUD) feature.",
+          "related_requirements": [
+            "FR-001",
+            "FR-002",
+            "FR-003",
+            "FR-004",
+            "FR-005",
+            "FR-006",
+            "FR-007",
+            "FR-008",
+            "FR-009",
+            "FR-010"
+          ]
+        }
+      ],
+      "data_modules": [
+        {
+          "name": "ItemListingCRUDDataModule",
+          "responsibility": "Manage data access required by the feature.",
+          "derived_from": [
+            "id (string, auto-generated, unique identifier)",
+            "name (string, required, non-empty)",
+            "description (string, optional)",
+            "price (number, required, minimum value 0.01)",
+            "quantity (integer, required, minimum value 0)",
+            "category (string, required, non-empty)",
+            "imageUrl (string, optional, valid URL format)",
+            "createdAt (timestamp, auto-generated on creation)",
+            "updatedAt (timestamp, auto-updated on every edit)"
+          ]
+        }
+      ],
+      "integration_points": [
+        {
+          "type": "API",
+          "description": "POST /api/items"
+        },
+        {
+          "type": "API",
+          "description": "GET /api/items"
+        },
+        {
+          "type": "API",
+          "description": "PUT /api/items/{id}"
+        },
+        {
+          "type": "API",
+          "description": "DELETE /api/items/{id}"
+        },
+        {
+          "type": "Dependency",
+          "description": "Backend API service for handling CRUD operations"
+        },
+        {
+          "type": "Dependency",
+          "description": "Database schema for storing item data"
+        },
+        {
+          "type": "Dependency",
+          "description": "Authentication and authorization system for admin/manager access"
+        },
+        {
+          "type": "Dependency",
+          "description": "Image storage service for storing and serving item photos"
+        },
+        {
+          "type": "Dependency",
+          "description": "Caching layer (e.g., Redis) to speed up search and filtering operations"
+        }
+      ]
+    },
+    "interface_view": {
+      "api_endpoints": [
+        {
+          "endpoint": "/api/item-listing-crud",
+          "method": "GET",
+          "purpose": "Support the Item Listing (CRUD) feature.",
+          "request_model": "ItemListingCRUDRequest",
+          "success_response_model": "ItemListingCRUDSuccessResponse",
+          "error_response_model": "ItemListingCRUDErrorResponse",
+          "related_requirements": [
+            "FR-001",
+            "FR-002",
+            "FR-003",
+            "FR-004",
+            "FR-005",
+            "FR-006",
+            "FR-007",
+            "FR-008",
+            "FR-009",
+            "FR-010"
+          ]
+        },
+        {
+          "endpoint": "/api/item-listing-crud",
+          "method": "GET",
+          "purpose": "Support the Item Listing (CRUD) feature.",
+          "request_model": "ItemListingCRUDRequest",
+          "success_response_model": "ItemListingCRUDSuccessResponse",
+          "error_response_model": "ItemListingCRUDErrorResponse",
+          "related_requirements": [
+            "FR-001",
+            "FR-002",
+            "FR-003",
+            "FR-004",
+            "FR-005",
+            "FR-006",
+            "FR-007",
+            "FR-008",
+            "FR-009",
+            "FR-010"
+          ]
+        },
+        {
+          "endpoint": "/api/item-listing-crud",
+          "method": "GET",
+          "purpose": "Support the Item Listing (CRUD) feature.",
+          "request_model": "ItemListingCRUDRequest",
+          "success_response_model": "ItemListingCRUDSuccessResponse",
+          "error_response_model": "ItemListingCRUDErrorResponse",
+          "related_requirements": [
+            "FR-001",
+            "FR-002",
+            "FR-003",
+            "FR-004",
+            "FR-005",
+            "FR-006",
+            "FR-007",
+            "FR-008",
+            "FR-009",
+            "FR-010"
+          ]
+        },
+        {
+          "endpoint": "/api/item-listing-crud",
+          "method": "GET",
+          "purpose": "Support the Item Listing (CRUD) feature.",
+          "request_model": "ItemListingCRUDRequest",
+          "success_response_model": "ItemListingCRUDSuccessResponse",
+          "error_response_model": "ItemListingCRUDErrorResponse",
+          "related_requirements": [
+            "FR-001",
+            "FR-002",
+            "FR-003",
+            "FR-004",
+            "FR-005",
+            "FR-006",
+            "FR-007",
+            "FR-008",
+            "FR-009",
+            "FR-010"
+          ]
+        }
+      ],
+      "request_models": [
+        {
+          "name": "ItemListingCRUDRequest",
+          "fields": [
+            {
+              "name": "field",
+              "type": "string",
+              "format": "Name (string, required)",
+              "required": true
+            },
+            {
+              "name": "field",
+              "type": "string",
+              "format": "Description (string, optional)",
+              "required": true
+            },
+            {
+              "name": "field",
+              "type": "string",
+              "format": "Price (number, required, minimum 0.01)",
+              "required": true
+            },
+            {
+              "name": "field",
+              "type": "string",
+              "format": "Quantity (integer, required, minimum 0)",
+              "required": true
+            },
+            {
+              "name": "field",
+              "type": "string",
+              "format": "Category (string, required)",
+              "required": true
+            },
+            {
+              "name": "field",
+              "type": "string",
+              "format": "Image URL (string, optional, valid URL format)",
+              "required": true
+            },
+            {
+              "name": "field",
+              "type": "string",
+              "format": "Search term (string, optional)",
+              "required": true
+            },
+            {
+              "name": "field",
+              "type": "string",
+              "format": "Filter criteria (category, price range)",
+              "required": true
+            }
+          ],
+          "related_requirements": [
+            "FR-001",
+            "FR-002",
+            "FR-003",
+            "FR-004",
+            "FR-005",
+            "FR-006",
+            "FR-007",
+            "FR-008",
+            "FR-009",
+            "FR-010"
+          ]
+        }
+      ],
+      "response_models": [
+        {
+          "name": "ItemListingCRUDSuccessResponse",
+          "type": "success",
+          "fields": [
+            {
+              "name": "field",
+              "type": "string",
+              "description": "List of items with name, price, quantity, and category"
+            },
+            {
+              "name": "field",
+              "type": "string",
+              "description": "Full details of a single item"
+            },
+            {
+              "name": "field",
+              "type": "string",
+              "description": "Paginated results with navigation controls"
+            },
+            {
+              "name": "field",
+              "type": "string",
+              "description": "Filtered and sorted item list"
+            }
+          ],
+          "related_requirements": [
+            "FR-001",
+            "FR-002",
+            "FR-003",
+            "FR-004",
+            "FR-005",
+            "FR-006",
+            "FR-007",
+            "FR-008",
+            "FR-009",
+            "FR-010"
+          ]
+        },
+        {
+          "name": "ItemListingCRUDErrorResponse",
+          "type": "error",
+          "fields": [
+            {
+              "name": "field",
+              "type": "string",
+              "description": "Success or error messages for CRUD operations"
+            }
+          ],
+          "related_requirements": []
+        }
+      ]
+    },
+    "data_view": {
+      "data_entities": [
+        {
+          "name": "Item Listing (CRUD)DataEntity1",
+          "purpose": "id (string, auto-generated, unique identifier)",
+          "fields": [
+            {
+              "name": "string",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "auto",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "generated",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "uniqueIdentifier",
+              "type": "String",
+              "required": false
+            }
+          ],
+          "relationships": [],
+          "indexes_or_constraints": [
+            "Unique constraint required where applicable."
+          ],
+          "related_requirements": [
+            "FR-001",
+            "FR-002",
+            "FR-003",
+            "FR-004",
+            "FR-005",
+            "FR-006",
+            "FR-007",
+            "FR-008",
+            "FR-009",
+            "FR-010"
+          ]
+        },
+        {
+          "name": "Item Listing (CRUD)DataEntity2",
+          "purpose": "name (string, required, non-empty)",
+          "fields": [
+            {
+              "name": "name",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "string",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "required",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "non",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "empty",
+              "type": "String",
+              "required": false
+            }
+          ],
+          "relationships": [],
+          "indexes_or_constraints": [],
+          "related_requirements": [
+            "FR-003"
+          ]
+        },
+        {
+          "name": "Item Listing (CRUD)DataEntity3",
+          "purpose": "description (string, optional)",
+          "fields": [
+            {
+              "name": "description",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "string",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "optional",
+              "type": "String",
+              "required": false
+            }
+          ],
+          "relationships": [],
+          "indexes_or_constraints": [],
+          "related_requirements": [
+            "FR-001",
+            "FR-002",
+            "FR-003",
+            "FR-004",
+            "FR-005",
+            "FR-006",
+            "FR-007",
+            "FR-008",
+            "FR-009",
+            "FR-010"
+          ]
+        },
+        {
+          "name": "Item Listing (CRUD)DataEntity4",
+          "purpose": "price (number, required, minimum value 0.01)",
+          "fields": [
+            {
+              "name": "price",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "number",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "required",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "minimumValue0",
+              "type": "String",
+              "required": false
+            }
+          ],
+          "relationships": [],
+          "indexes_or_constraints": [],
+          "related_requirements": [
+            "FR-003"
+          ]
+        },
+        {
+          "name": "Item Listing (CRUD)DataEntity5",
+          "purpose": "quantity (integer, required, minimum value 0)",
+          "fields": [
+            {
+              "name": "quantity",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "integer",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "required",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "minimumValue0",
+              "type": "String",
+              "required": false
+            }
+          ],
+          "relationships": [],
+          "indexes_or_constraints": [],
+          "related_requirements": [
+            "FR-003"
+          ]
+        },
+        {
+          "name": "Item Listing (CRUD)DataEntity6",
+          "purpose": "category (string, required, non-empty)",
+          "fields": [
+            {
+              "name": "category",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "string",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "required",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "non",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "empty",
+              "type": "String",
+              "required": false
+            }
+          ],
+          "relationships": [],
+          "indexes_or_constraints": [],
+          "related_requirements": [
+            "FR-003"
+          ]
+        },
+        {
+          "name": "Item Listing (CRUD)DataEntity7",
+          "purpose": "imageUrl (string, optional, valid URL format)",
+          "fields": [
+            {
+              "name": "imageUrl",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "string",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "optional",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "validURLFormat",
+              "type": "String",
+              "required": false
+            }
+          ],
+          "relationships": [],
+          "indexes_or_constraints": [],
+          "related_requirements": [
+            "FR-003"
+          ]
+        },
+        {
+          "name": "Item Listing (CRUD)DataEntity8",
+          "purpose": "createdAt (timestamp, auto-generated on creation)",
+          "fields": [
+            {
+              "name": "createdAt",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "timestamp",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "auto",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "generatedOnCreation",
+              "type": "String",
+              "required": false
+            }
+          ],
+          "relationships": [],
+          "indexes_or_constraints": [],
+          "related_requirements": [
+            "FR-001",
+            "FR-002",
+            "FR-003",
+            "FR-004",
+            "FR-005",
+            "FR-006",
+            "FR-007",
+            "FR-008",
+            "FR-009",
+            "FR-010"
+          ]
+        },
+        {
+          "name": "Item Listing (CRUD)DataEntity9",
+          "purpose": "updatedAt (timestamp, auto-updated on every edit)",
+          "fields": [
+            {
+              "name": "updatedAt",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "timestamp",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "auto",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "updatedOnEveryEdit",
+              "type": "String",
+              "required": false
+            }
+          ],
+          "relationships": [],
+          "indexes_or_constraints": [],
+          "related_requirements": [
+            "FR-001",
+            "FR-002",
+            "FR-003",
+            "FR-004",
+            "FR-005",
+            "FR-006",
+            "FR-007",
+            "FR-008",
+            "FR-009",
+            "FR-010"
+          ]
+        }
+      ],
+      "storage_rules": [
+        "id (string, auto-generated, unique identifier)",
+        "name (string, required, non-empty)",
+        "description (string, optional)",
+        "price (number, required, minimum value 0.01)",
+        "quantity (integer, required, minimum value 0)",
+        "category (string, required, non-empty)",
+        "imageUrl (string, optional, valid URL format)",
+        "createdAt (timestamp, auto-generated on creation)",
+        "updatedAt (timestamp, auto-updated on every edit)"
+      ],
+      "data_validation_rules": [
+        {
+          "rule_id": "VR-001",
+          "rule": "Name must not be empty",
+          "related_requirements": [
+            "VR-001"
+          ]
+        },
+        {
+          "rule_id": "VR-002",
+          "rule": "Price must be a positive number (minimum 0.01)",
+          "related_requirements": [
+            "VR-002"
+          ]
+        },
+        {
+          "rule_id": "VR-003",
+          "rule": "Quantity must be a non-negative integer (minimum 0)",
+          "related_requirements": [
+            "VR-003"
+          ]
+        },
+        {
+          "rule_id": "VR-004",
+          "rule": "Category must not be empty",
+          "related_requirements": [
+            "VR-004"
+          ]
+        },
+        {
+          "rule_id": "VR-005",
+          "rule": "Image URL must be a valid URL format if provided",
+          "related_requirements": [
+            "VR-005"
+          ]
+        }
+      ]
+    },
+    "behavior_view": {
+      "main_success_flow": [
+        {
+          "id": "AC-001",
+          "description": "Creating an item with valid data returns a success response and the new item appears in the list immediately",
+          "related_requirements": [
+            "FR-001",
+            "FR-002",
+            "FR-003",
+            "FR-004",
+            "FR-005",
+            "FR-006",
+            "FR-007",
+            "FR-008",
+            "FR-009",
+            "FR-010"
+          ]
+        },
+        {
+          "id": "AC-003",
+          "description": "Deleting an item removes it from the list and requires confirmation first — canceling the confirmation leaves the item untouched",
+          "related_requirements": [
+            "FR-001",
+            "FR-004",
+            "FR-005",
+            "FR-006",
+            "FR-007",
+            "FR-008",
+            "FR-009"
+          ]
+        },
+        {
+          "id": "AC-004",
+          "description": "Editing an item and saving updates only that item's fields, without affecting any other item",
+          "related_requirements": [
+            "FR-002",
+            "FR-004",
+            "FR-005",
+            "FR-007",
+            "FR-009"
+          ]
+        },
+        {
+          "id": "AC-005",
+          "description": "Sorting by name or price correctly reorders the full list, not just the current page/view",
+          "related_requirements": [
+            "FR-001",
+            "FR-002",
+            "FR-003",
+            "FR-006",
+            "FR-007",
+            "FR-008",
+            "FR-009",
+            "FR-010"
+          ]
+        },
+        {
+          "id": "AC-007",
+          "description": "Pagination works with 20 items per page and supports previous/next and jump-to-page navigation",
+          "related_requirements": [
+            "FR-007",
+            "FR-008",
+            "FR-009",
+            "FR-010"
+          ]
+        },
+        {
+          "id": "AC-008",
+          "description": "Search and filters (name, category, price range) are applied server-side with debounced live search on name",
+          "related_requirements": [
+            "FR-001",
+            "FR-003",
+            "FR-006",
+            "FR-007",
+            "FR-009",
+            "FR-010"
+          ]
+        }
+      ],
+      "alternative_flows": [],
+      "exception_flows": [
+        {
+          "id": "AC-002",
+          "description": "Submitting the create/edit form with a missing name, non-positive price, or negative quantity shows a validation error and does not save",
+          "related_requirements": [
+            "FR-001",
+            "FR-003",
+            "FR-005",
+            "FR-006",
+            "FR-007",
+            "FR-008",
+            "FR-009",
+            "FR-010"
+          ]
+        },
+        {
+          "id": "AC-006",
+          "description": "Every API endpoint (POST/GET/PUT/DELETE /api/items) returns the correct HTTP status code for both success and invalid-input cases (200/201 vs. 400)",
+          "related_requirements": [
+            "FR-001",
+            "FR-007",
+            "FR-008",
+            "FR-009"
+          ]
+        }
+      ],
+      "state_changes": [
+        {
+          "description": "User can create a new item by filling out a form (name, description, price, quantity, category, image URL)",
+          "related_requirements": [
+            "FR-003"
+          ]
+        },
+        {
+          "description": "User can edit/update an existing item's details",
+          "related_requirements": [
+            "FR-004"
+          ]
+        },
+        {
+          "description": "User can delete an item, with a confirmation prompt before deletion",
+          "related_requirements": [
+            "FR-005"
+          ]
+        },
+        {
+          "description": "Creating an item with valid data returns a success response and the new item appears in the list immediately",
+          "related_requirements": [
+            "AC-001"
+          ]
+        },
+        {
+          "description": "Submitting the create/edit form with a missing name, non-positive price, or negative quantity shows a validation error and does not save",
+          "related_requirements": [
+            "AC-002"
+          ]
+        },
+        {
+          "description": "Editing an item and saving updates only that item's fields, without affecting any other item",
+          "related_requirements": [
+            "AC-004"
+          ]
+        },
+        {
+          "description": "Every API endpoint (POST/GET/PUT/DELETE /api/items) returns the correct HTTP status code for both success and invalid-input cases (200/201 vs. 400)",
+          "related_requirements": [
+            "AC-006"
+          ]
+        }
+      ]
+    },
+    "error_handling_view": {
+      "validation_errors": [
+        {
+          "source_id": "VR-001",
+          "condition": "Name must not be empty",
+          "handling": "Return a clear validation message and prevent invalid processing."
+        },
+        {
+          "source_id": "VR-002",
+          "condition": "Price must be a positive number (minimum 0.01)",
+          "handling": "Return a clear validation message and prevent invalid processing."
+        },
+        {
+          "source_id": "VR-003",
+          "condition": "Quantity must be a non-negative integer (minimum 0)",
+          "handling": "Return a clear validation message and prevent invalid processing."
+        },
+        {
+          "source_id": "VR-004",
+          "condition": "Category must not be empty",
+          "handling": "Return a clear validation message and prevent invalid processing."
+        },
+        {
+          "source_id": "VR-005",
+          "condition": "Image URL must be a valid URL format if provided",
+          "handling": "Return a clear validation message and prevent invalid processing."
+        }
+      ],
+      "business_errors": [
+        {
+          "source_id": "AC-002",
+          "condition": "Submitting the create/edit form with a missing name, non-positive price, or negative quantity shows a validation error and does not save",
+          "handling": "Return a clear, user-friendly error and prevent the invalid action."
+        },
+        {
+          "source_id": "AC-006",
+          "condition": "Every API endpoint (POST/GET/PUT/DELETE /api/items) returns the correct HTTP status code for both success and invalid-input cases (200/201 vs. 400)",
+          "handling": "Return a clear, user-friendly error and prevent the invalid action."
+        }
+      ],
+      "authorization_errors": [],
+      "system_errors": [
+        "Unexpected system errors should return safe generic messages without exposing internal details."
+      ],
+      "user_message_rules": [
+        "All user-facing errors must be clear, non-technical, and aligned with the approved SRS."
+      ]
+    },
+    "security_authorization_view": {
+      "authentication_design": [],
+      "authorization_design": [
+        "Apply role/access rules required by the SRS."
+      ],
+      "sensitive_data_rules": [],
+      "risk_mitigations": [
+        {
+          "risk": "{'description': 'Performance degradation with large datasets if server-side filtering is not properly implemented'}",
+          "mitigation": "Apply suitable mitigation based on project security policy.",
+          "related_requirements": [
+            "FR-009",
+            "FR-010"
+          ]
+        },
+        {
+          "risk": "{'description': 'Inconsistent UI behavior due to lack of proper state management during CRUD operations'}",
+          "mitigation": "Apply suitable mitigation based on project security policy.",
+          "related_requirements": [
+            "FR-001",
+            "FR-002",
+            "FR-003",
+            "FR-004",
+            "FR-005",
+            "FR-006",
+            "FR-007",
+            "FR-008",
+            "FR-009",
+            "FR-010"
+          ]
+        },
+        {
+          "risk": "{'description': 'Potential security vulnerabilities if input validation is not enforced on the backend'}",
+          "mitigation": "Apply suitable mitigation based on project security policy.",
+          "related_requirements": [
+            "FR-001",
+            "FR-002",
+            "FR-003",
+            "FR-004",
+            "FR-005",
+            "FR-006",
+            "FR-007",
+            "FR-008",
+            "FR-009",
+            "FR-010"
+          ]
+        }
+      ]
+    },
+    "quality_attributes_view": {
+      "performance": [
+        {
+          "nfr_id": "NFR-001",
+          "description": "The item list should load in under 2 seconds for up to 1,000 items",
+          "design_decision": "Optimize design to satisfy the stated performance expectation."
+        },
+        {
+          "nfr_id": "NFR-004",
+          "description": "Search and filters should query the backend directly rather than client-side filtering",
+          "design_decision": "Design must satisfy this non-functional requirement."
+        }
+      ],
+      "usability": [
+        {
+          "nfr_id": "NFR-002",
+          "description": "The UI must be accessible to screen readers (proper labels/ARIA attributes on the form and list, keyboard-navigable buttons for Edit/Delete/Add)",
+          "design_decision": "Design must satisfy this non-functional requirement."
+        }
+      ],
+      "reliability": [],
+      "scalability": [
+        {
+          "nfr_id": "NFR-003",
+          "description": "Support for up to 10,000 items total with server-side pagination and filtering",
+          "design_decision": "Optimize design to satisfy the stated performance expectation."
+        }
+      ],
+      "maintainability": [],
+      "accessibility": []
+    }
+  },
+  "frontend_architecture_plan": {
+    "responsibilities": [
+      {
+        "name": "ItemListingCRUDFrontendModule",
+        "responsibility": "Handle frontend responsibilities for the Item Listing (CRUD) feature.",
+        "derived_from": [
+          "A main page showing all items in a list/table/grid layout",
+          "An \"Add Item\" button that opens a form to create a new item",
+          "Each item has \"Edit\" and \"Delete\" actions",
+          "Editing opens the same form pre-filled with the item's current data",
+          "Deleting shows a confirm dialog before removing the item",
+          "Pagination controls at the bottom of the list (previous/next, jump to page)",
+          "Live search input with debouncing, plus filter dropdowns for category and price range",
+          "Name (string, required)",
+          "Description (string, optional)",
+          "Price (number, required, minimum 0.01)",
+          "Quantity (integer, required, minimum 0)",
+          "Category (string, required)",
+          "Image URL (string, optional, valid URL format)",
+          "Search term (string, optional)",
+          "Filter criteria (category, price range)"
+        ]
+      }
+    ],
+    "pages_or_components": [
+      {
+        "description": "A main page showing all items in a list/table/grid layout"
+      },
+      {
+        "description": "An \"Add Item\" button that opens a form to create a new item"
+      },
+      {
+        "description": "Each item has \"Edit\" and \"Delete\" actions"
+      },
+      {
+        "description": "Editing opens the same form pre-filled with the item's current data"
+      },
+      {
+        "description": "Deleting shows a confirm dialog before removing the item"
+      },
+      {
+        "description": "Pagination controls at the bottom of the list (previous/next, jump to page)"
+      },
+      {
+        "description": "Live search input with debouncing, plus filter dropdowns for category and price range"
+      }
+    ],
+    "state_and_feedback": [
+      "Submitting the create/edit form with a missing name, non-positive price, or negative quantity shows a validation error and does not save"
+    ]
+  },
+  "backend_architecture_plan": {
+    "responsibilities": [
+      {
+        "name": "ItemListingCRUDBackendModule",
+        "responsibility": "Handle backend responsibilities for the Item Listing (CRUD) feature.",
+        "derived_from": [
+          "User can view a list of all items (name, price, quantity, category shown in the list) [EDITED-MARKER-771]",
+          "User can view a single item's full details",
+          "User can create a new item by filling out a form (name, description, price, quantity, category, image URL)",
+          "User can edit/update an existing item's details",
+          "User can delete an item, with a confirmation prompt before deletion",
+          "The item list should support basic search/filter by name",
+          "The item list should support sorting by name (A–Z / Z–A) and by price (low to high / high to low)",
+          "The item list should be paginated with 20 items per page, with navigation controls (previous/next, jump to page)",
+          "The item list supports server-side filtering and sorting for performance with up to 10,000 items",
+          "Search and filters (name, category, price range) are applied server-side with debounced live search on name",
+          "Name must not be empty",
+          "Price must be a positive number (minimum 0.01)",
+          "Quantity must be a non-negative integer (minimum 0)",
+          "Category must not be empty",
+          "Image URL must be a valid URL format if provided"
+        ]
+      }
+    ],
+    "layers": [
+      {
+        "name": "ItemListingCRUDService",
+        "responsibility": "Apply business rules for the Item Listing (CRUD) feature.",
+        "related_requirements": [
+          "FR-001",
+          "FR-002",
+          "FR-003",
+          "FR-004",
+          "FR-005",
+          "FR-006",
+          "FR-007",
+          "FR-008",
+          "FR-009",
+          "FR-010"
+        ]
+      },
+      {
+        "name": "ItemListingCRUDDataModule",
+        "responsibility": "Manage data access required by the feature.",
+        "derived_from": [
+          "id (string, auto-generated, unique identifier)",
+          "name (string, required, non-empty)",
+          "description (string, optional)",
+          "price (number, required, minimum value 0.01)",
+          "quantity (integer, required, minimum value 0)",
+          "category (string, required, non-empty)",
+          "imageUrl (string, optional, valid URL format)",
+          "createdAt (timestamp, auto-generated on creation)",
+          "updatedAt (timestamp, auto-updated on every edit)"
+        ]
+      }
+    ],
+    "integration_points": [
+      {
+        "type": "API",
+        "description": "POST /api/items"
+      },
+      {
+        "type": "API",
+        "description": "GET /api/items"
+      },
+      {
+        "type": "API",
+        "description": "PUT /api/items/{id}"
+      },
+      {
+        "type": "API",
+        "description": "DELETE /api/items/{id}"
+      },
+      {
+        "type": "Dependency",
+        "description": "Backend API service for handling CRUD operations"
+      },
+      {
+        "type": "Dependency",
+        "description": "Database schema for storing item data"
+      },
+      {
+        "type": "Dependency",
+        "description": "Authentication and authorization system for admin/manager access"
+      },
+      {
+        "type": "Dependency",
+        "description": "Image storage service for storing and serving item photos"
+      },
+      {
+        "type": "Dependency",
+        "description": "Caching layer (e.g., Redis) to speed up search and filtering operations"
+      }
+    ]
+  },
+  "validation_plan": {
+    "input_validation": [
+      {
+        "rule_id": "VR-001",
+        "rule": "Name must not be empty",
+        "related_requirements": [
+          "VR-001"
+        ]
+      },
+      {
+        "rule_id": "VR-002",
+        "rule": "Price must be a positive number (minimum 0.01)",
+        "related_requirements": [
+          "VR-002"
+        ]
+      },
+      {
+        "rule_id": "VR-003",
+        "rule": "Quantity must be a non-negative integer (minimum 0)",
+        "related_requirements": [
+          "VR-003"
+        ]
+      },
+      {
+        "rule_id": "VR-004",
+        "rule": "Category must not be empty",
+        "related_requirements": [
+          "VR-004"
+        ]
+      },
+      {
+        "rule_id": "VR-005",
+        "rule": "Image URL must be a valid URL format if provided",
+        "related_requirements": [
+          "VR-005"
+        ]
+      }
+    ],
+    "processing_validation": [
+      {
+        "source_id": "VR-001",
+        "condition": "Name must not be empty",
+        "handling": "Return a clear validation message and prevent invalid processing."
+      },
+      {
+        "source_id": "VR-002",
+        "condition": "Price must be a positive number (minimum 0.01)",
+        "handling": "Return a clear validation message and prevent invalid processing."
+      },
+      {
+        "source_id": "VR-003",
+        "condition": "Quantity must be a non-negative integer (minimum 0)",
+        "handling": "Return a clear validation message and prevent invalid processing."
+      },
+      {
+        "source_id": "VR-004",
+        "condition": "Category must not be empty",
+        "handling": "Return a clear validation message and prevent invalid processing."
+      },
+      {
+        "source_id": "VR-005",
+        "condition": "Image URL must be a valid URL format if provided",
+        "handling": "Return a clear validation message and prevent invalid processing."
+      }
+    ]
+  },
+  "coder_implementation_tasks": [
+    {
+      "task_id": "TASK-001",
+      "task": "Create or update frontend screen/components for the Item Listing (CRUD) feature.",
+      "layer": "frontend",
+      "suggested_files": [
+        "app/item-listing-crud/page.tsx",
+        "components/ItemListingCRUDForm.tsx"
+      ],
+      "related_requirements": [
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005",
+        "FR-006",
+        "FR-007",
+        "FR-008",
+        "FR-009",
+        "FR-010",
+        "AC-001",
+        "AC-002",
+        "AC-003",
+        "AC-004",
+        "AC-005",
+        "AC-006",
+        "AC-007",
+        "AC-008"
+      ]
+    },
+    {
+      "task_id": "TASK-002",
+      "task": "Implement Next.js Route Handler(s) for the Item Listing (CRUD) API expectations.",
+      "layer": "backend",
+      "suggested_files": [
+        "app/api/item-listing-crud/route.ts",
+        "models/ItemListingCRUD.ts"
+      ],
+      "related_requirements": [
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005",
+        "FR-006",
+        "FR-007",
+        "FR-008",
+        "FR-009",
+        "FR-010",
+        "AC-001",
+        "AC-002",
+        "AC-003",
+        "AC-004",
+        "AC-005",
+        "AC-006",
+        "AC-007",
+        "AC-008"
+      ]
+    },
+    {
+      "task_id": "TASK-003",
+      "task": "Create or update data model/repository required by the Item Listing (CRUD) feature.",
+      "layer": "data",
+      "suggested_files": [
+        "backend/models/item_listing_crud.model.js",
+        "backend/repositories/item_listing_crud.repository.js"
+      ],
+      "related_requirements": [
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005",
+        "FR-006",
+        "FR-007",
+        "FR-008",
+        "FR-009",
+        "FR-010"
+      ]
+    },
+    {
+      "task_id": "TASK-004",
+      "task": "Implement validation rules before processing feature requests.",
+      "layer": "validation",
+      "suggested_files": [
+        "backend/validators/item_listing_crud.validator.js"
+      ],
+      "related_requirements": [
+        "VR-001",
+        "VR-002",
+        "VR-003",
+        "VR-004",
+        "VR-005"
+      ]
+    },
+    {
+      "task_id": "TASK-005",
+      "task": "Implement success, alternative, and exception handling according to acceptance criteria.",
+      "layer": "backend/frontend",
+      "suggested_files": [],
+      "related_requirements": [
+        "AC-001",
+        "AC-002",
+        "AC-003",
+        "AC-004",
+        "AC-005",
+        "AC-006",
+        "AC-007",
+        "AC-008"
+      ]
+    },
+    {
+      "task_id": "TASK-006",
+      "task": "Implement security controls required by the feature, including authentication/authorization or sensitive data handling where applicable.",
+      "layer": "security",
+      "suggested_files": [],
+      "related_requirements": [
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005",
+        "FR-006",
+        "FR-007",
+        "FR-008",
+        "FR-009",
+        "FR-010",
+        "NFR-001",
+        "NFR-002",
+        "NFR-003",
+        "NFR-004"
+      ]
+    }
+  ],
+  "implementation_plan": {
+    "backend": {
+      "files": [
+        {
+          "path": "app/api/item-listing-crud/route.ts",
+          "action": "create",
+          "purpose": "Next.js Route Handler implementing GET for Item Listing (CRUD) (/api/item-listing-crud, /api/item-listing-crud, /api/item-listing-crud, /api/item-listing-crud), with request validation before any handler logic.",
+          "implements_endpoints": [
+            "/api/item-listing-crud",
+            "/api/item-listing-crud",
+            "/api/item-listing-crud",
+            "/api/item-listing-crud"
+          ]
+        },
+        {
+          "path": "models/ItemListingCRUDDataEntity1.ts",
+          "action": "create",
+          "purpose": "Mongoose model for the Item Listing (CRUD)DataEntity1 entity (must use the `mongoose.models.ItemListingCRUDDataEntity1 || mongoose.model(...)` guard to avoid OverwriteModelError).",
+          "implements_endpoints": []
+        },
+        {
+          "path": "models/ItemListingCRUDDataEntity2.ts",
+          "action": "create",
+          "purpose": "Mongoose model for the Item Listing (CRUD)DataEntity2 entity (must use the `mongoose.models.ItemListingCRUDDataEntity2 || mongoose.model(...)` guard to avoid OverwriteModelError).",
+          "implements_endpoints": []
+        },
+        {
+          "path": "models/ItemListingCRUDDataEntity3.ts",
+          "action": "create",
+          "purpose": "Mongoose model for the Item Listing (CRUD)DataEntity3 entity (must use the `mongoose.models.ItemListingCRUDDataEntity3 || mongoose.model(...)` guard to avoid OverwriteModelError).",
+          "implements_endpoints": []
+        },
+        {
+          "path": "models/ItemListingCRUDDataEntity4.ts",
+          "action": "create",
+          "purpose": "Mongoose model for the Item Listing (CRUD)DataEntity4 entity (must use the `mongoose.models.ItemListingCRUDDataEntity4 || mongoose.model(...)` guard to avoid OverwriteModelError).",
+          "implements_endpoints": []
+        },
+        {
+          "path": "models/ItemListingCRUDDataEntity5.ts",
+          "action": "create",
+          "purpose": "Mongoose model for the Item Listing (CRUD)DataEntity5 entity (must use the `mongoose.models.ItemListingCRUDDataEntity5 || mongoose.model(...)` guard to avoid OverwriteModelError).",
+          "implements_endpoints": []
+        },
+        {
+          "path": "models/ItemListingCRUDDataEntity6.ts",
+          "action": "create",
+          "purpose": "Mongoose model for the Item Listing (CRUD)DataEntity6 entity (must use the `mongoose.models.ItemListingCRUDDataEntity6 || mongoose.model(...)` guard to avoid OverwriteModelError).",
+          "implements_endpoints": []
+        },
+        {
+          "path": "models/ItemListingCRUDDataEntity7.ts",
+          "action": "create",
+          "purpose": "Mongoose model for the Item Listing (CRUD)DataEntity7 entity (must use the `mongoose.models.ItemListingCRUDDataEntity7 || mongoose.model(...)` guard to avoid OverwriteModelError).",
+          "implements_endpoints": []
+        },
+        {
+          "path": "models/ItemListingCRUDDataEntity8.ts",
+          "action": "create",
+          "purpose": "Mongoose model for the Item Listing (CRUD)DataEntity8 entity (must use the `mongoose.models.ItemListingCRUDDataEntity8 || mongoose.model(...)` guard to avoid OverwriteModelError).",
+          "implements_endpoints": []
+        },
+        {
+          "path": "models/ItemListingCRUDDataEntity9.ts",
+          "action": "create",
+          "purpose": "Mongoose model for the Item Listing (CRUD)DataEntity9 entity (must use the `mongoose.models.ItemListingCRUDDataEntity9 || mongoose.model(...)` guard to avoid OverwriteModelError).",
+          "implements_endpoints": []
+        }
+      ],
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/api/item-listing-crud",
+          "request_body": [
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Name (string, required)"
+            },
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Description (string, optional)"
+            },
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Price (number, required, minimum 0.01)"
+            },
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Quantity (integer, required, minimum 0)"
+            },
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Category (string, required)"
+            },
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Image URL (string, optional, valid URL format)"
+            },
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Search term (string, optional)"
+            },
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Filter criteria (category, price range)"
+            }
+          ],
+          "response": "ItemListingCRUDSuccessResponse",
+          "error_cases": [
+            "400 when required request fields are missing or invalid",
+            "{'source_id': 'VR-001', 'condition': 'Name must not be empty', 'handling': 'Return a clear validation message and prevent invalid processing.'}",
+            "{'source_id': 'VR-002', 'condition': 'Price must be a positive number (minimum 0.01)', 'handling': 'Return a clear validation message and prevent invalid processing.'}",
+            "{'source_id': 'VR-003', 'condition': 'Quantity must be a non-negative integer (minimum 0)', 'handling': 'Return a clear validation message and prevent invalid processing.'}",
+            "500 when an unexpected server error occurs"
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/api/item-listing-crud",
+          "request_body": [
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Name (string, required)"
+            },
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Description (string, optional)"
+            },
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Price (number, required, minimum 0.01)"
+            },
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Quantity (integer, required, minimum 0)"
+            },
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Category (string, required)"
+            },
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Image URL (string, optional, valid URL format)"
+            },
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Search term (string, optional)"
+            },
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Filter criteria (category, price range)"
+            }
+          ],
+          "response": "ItemListingCRUDSuccessResponse",
+          "error_cases": [
+            "400 when required request fields are missing or invalid",
+            "{'source_id': 'VR-001', 'condition': 'Name must not be empty', 'handling': 'Return a clear validation message and prevent invalid processing.'}",
+            "{'source_id': 'VR-002', 'condition': 'Price must be a positive number (minimum 0.01)', 'handling': 'Return a clear validation message and prevent invalid processing.'}",
+            "{'source_id': 'VR-003', 'condition': 'Quantity must be a non-negative integer (minimum 0)', 'handling': 'Return a clear validation message and prevent invalid processing.'}",
+            "500 when an unexpected server error occurs"
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/api/item-listing-crud",
+          "request_body": [
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Name (string, required)"
+            },
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Description (string, optional)"
+            },
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Price (number, required, minimum 0.01)"
+            },
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Quantity (integer, required, minimum 0)"
+            },
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Category (string, required)"
+            },
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Image URL (string, optional, valid URL format)"
+            },
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Search term (string, optional)"
+            },
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Filter criteria (category, price range)"
+            }
+          ],
+          "response": "ItemListingCRUDSuccessResponse",
+          "error_cases": [
+            "400 when required request fields are missing or invalid",
+            "{'source_id': 'VR-001', 'condition': 'Name must not be empty', 'handling': 'Return a clear validation message and prevent invalid processing.'}",
+            "{'source_id': 'VR-002', 'condition': 'Price must be a positive number (minimum 0.01)', 'handling': 'Return a clear validation message and prevent invalid processing.'}",
+            "{'source_id': 'VR-003', 'condition': 'Quantity must be a non-negative integer (minimum 0)', 'handling': 'Return a clear validation message and prevent invalid processing.'}",
+            "500 when an unexpected server error occurs"
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/api/item-listing-crud",
+          "request_body": [
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Name (string, required)"
+            },
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Description (string, optional)"
+            },
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Price (number, required, minimum 0.01)"
+            },
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Quantity (integer, required, minimum 0)"
+            },
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Category (string, required)"
+            },
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Image URL (string, optional, valid URL format)"
+            },
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Search term (string, optional)"
+            },
+            {
+              "field": "field",
+              "type": "string",
+              "required": true,
+              "validation": "Filter criteria (category, price range)"
+            }
+          ],
+          "response": "ItemListingCRUDSuccessResponse",
+          "error_cases": [
+            "400 when required request fields are missing or invalid",
+            "{'source_id': 'VR-001', 'condition': 'Name must not be empty', 'handling': 'Return a clear validation message and prevent invalid processing.'}",
+            "{'source_id': 'VR-002', 'condition': 'Price must be a positive number (minimum 0.01)', 'handling': 'Return a clear validation message and prevent invalid processing.'}",
+            "{'source_id': 'VR-003', 'condition': 'Quantity must be a non-negative integer (minimum 0)', 'handling': 'Return a clear validation message and prevent invalid processing.'}",
+            "500 when an unexpected server error occurs"
+          ]
+        }
+      ],
+      "models": [
+        {
+          "name": "Item Listing (CRUD)DataEntity1",
+          "file": "models/ItemListingCRUDDataEntity1.ts",
+          "fields": [
+            {
+              "name": "string",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "auto",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "generated",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "uniqueIdentifier",
+              "type": "String",
+              "constraints": ""
+            }
+          ]
+        },
+        {
+          "name": "Item Listing (CRUD)DataEntity2",
+          "file": "models/ItemListingCRUDDataEntity2.ts",
+          "fields": [
+            {
+              "name": "name",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "string",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "required",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "non",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "empty",
+              "type": "String",
+              "constraints": ""
+            }
+          ]
+        },
+        {
+          "name": "Item Listing (CRUD)DataEntity3",
+          "file": "models/ItemListingCRUDDataEntity3.ts",
+          "fields": [
+            {
+              "name": "description",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "string",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "optional",
+              "type": "String",
+              "constraints": ""
+            }
+          ]
+        },
+        {
+          "name": "Item Listing (CRUD)DataEntity4",
+          "file": "models/ItemListingCRUDDataEntity4.ts",
+          "fields": [
+            {
+              "name": "price",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "number",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "required",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "minimumValue0",
+              "type": "String",
+              "constraints": ""
+            }
+          ]
+        },
+        {
+          "name": "Item Listing (CRUD)DataEntity5",
+          "file": "models/ItemListingCRUDDataEntity5.ts",
+          "fields": [
+            {
+              "name": "quantity",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "integer",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "required",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "minimumValue0",
+              "type": "String",
+              "constraints": ""
+            }
+          ]
+        },
+        {
+          "name": "Item Listing (CRUD)DataEntity6",
+          "file": "models/ItemListingCRUDDataEntity6.ts",
+          "fields": [
+            {
+              "name": "category",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "string",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "required",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "non",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "empty",
+              "type": "String",
+              "constraints": ""
+            }
+          ]
+        },
+        {
+          "name": "Item Listing (CRUD)DataEntity7",
+          "file": "models/ItemListingCRUDDataEntity7.ts",
+          "fields": [
+            {
+              "name": "imageUrl",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "string",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "optional",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "validURLFormat",
+              "type": "String",
+              "constraints": ""
+            }
+          ]
+        },
+        {
+          "name": "Item Listing (CRUD)DataEntity8",
+          "file": "models/ItemListingCRUDDataEntity8.ts",
+          "fields": [
+            {
+              "name": "createdAt",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "timestamp",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "auto",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "generatedOnCreation",
+              "type": "String",
+              "constraints": ""
+            }
+          ]
+        },
+        {
+          "name": "Item Listing (CRUD)DataEntity9",
+          "file": "models/ItemListingCRUDDataEntity9.ts",
+          "fields": [
+            {
+              "name": "updatedAt",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "timestamp",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "auto",
+              "type": "String",
+              "constraints": ""
+            },
+            {
+              "name": "updatedOnEveryEdit",
+              "type": "String",
+              "constraints": ""
+            }
+          ]
+        }
+      ]
+    },
+    "frontend": {
+      "pages": [
+        {
+          "path": "app/item-listing-crud/page.tsx",
+          "route": "/item-listing-crud",
+          "purpose": "Main page for the Item Listing (CRUD) feature. UI expectations: A main page showing all items in a list/table/grid layout; An \"Add Item\" button that opens a form to create a new item; Each item has \"Edit\" and \"Delete\" actions; Editing opens the same form pre-filled with the item's current data; Deleting shows a confirm dialog before removing the item",
+          "uses_components": []
+        }
+      ],
+      "components_to_reuse": [],
+      "services": [
+        {
+          "path": "lib/api/itemListingCRUD.ts",
+          "functions": [
+            {
+              "name": "getItemListingCrud",
+              "calls_endpoint": "GET /api/item-listing-crud"
+            },
+            {
+              "name": "getItemListingCrud",
+              "calls_endpoint": "GET /api/item-listing-crud"
+            },
+            {
+              "name": "getItemListingCrud",
+              "calls_endpoint": "GET /api/item-listing-crud"
+            },
+            {
+              "name": "getItemListingCrud",
+              "calls_endpoint": "GET /api/item-listing-crud"
+            }
+          ]
+        }
+      ],
+      "routing": {
+        "new_routes": [
+          {
+            "path": "/item-listing-crud",
+            "component": "ItemListingCRUDPage"
+          }
+        ],
+        "nav_links": [
+          {
+            "to": "/item-listing-crud",
+            "label": "Item Listing (CRUD)"
+          }
+        ]
+      }
+    },
+    "implementation_order": [
+      "Create the Mongoose model(s): models/ItemListingCRUDDataEntity1.ts, models/ItemListingCRUDDataEntity2.ts, models/ItemListingCRUDDataEntity3.ts, models/ItemListingCRUDDataEntity4.ts, models/ItemListingCRUDDataEntity5.ts, models/ItemListingCRUDDataEntity6.ts, models/ItemListingCRUDDataEntity7.ts, models/ItemListingCRUDDataEntity8.ts, models/ItemListingCRUDDataEntity9.ts",
+      "Create app/api/item-listing-crud/route.ts implementing /api/item-listing-crud, /api/item-listing-crud, /api/item-listing-crud, /api/item-listing-crud, validating required request fields before use (400 on missing/malformed) -- it is automatically live the instant the file exists, no separate mount step needed.",
+      "Create lib/api/itemListingCRUD.ts with one function per endpoint.",
+      "Create app/item-listing-crud/page.tsx (a Client Component, `\"use client\"` as its first line), reusing approved UI/UX components where available instead of re-authoring their markup.",
+      "Register a real <Link href=\"/item-listing-crud\"> in app/page.tsx at the FEATURE_LINKS markers -- a page with no link to it is not complete."
+    ],
+    "constraints": [
+      "The Next.js App Router scaffold already exists and works -- never recreate app/layout.tsx, next.config.mjs, tsconfig.json, or lib/mongodb.ts.",
+      "A Route Handler (route.ts) is live the instant it exists -- there is no router to mount it on, unlike an Express app.js.",
+      "Register new pages by adding a real <Link href=\"...\"> in app/page.tsx (FEATURE_LINKS markers) -- an unreachable page is not done.",
+      "Every Mongoose model file must use the `mongoose.models.X || mongoose.model(...)` guard to avoid OverwriteModelError.",
+      "Reuse approved UI/UX components verbatim (via read_ui_component) instead of re-authoring their markup."
+    ]
+  },
+  "traceability_matrix": [
+    {
+      "source_id": "FR-001",
+      "source_type": "FR",
+      "architecture_plan_section": "Design Views / Detailed Design Decisions",
+      "design_element": "User can view a list of all items (name, price, quantity, category shown in the list) [EDITED-MARKER-771]",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "FR-002",
+      "source_type": "FR",
+      "architecture_plan_section": "Design Views / Detailed Design Decisions",
+      "design_element": "User can view a single item's full details",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "FR-003",
+      "source_type": "FR",
+      "architecture_plan_section": "Design Views / Detailed Design Decisions",
+      "design_element": "User can create a new item by filling out a form (name, description, price, quantity, category, image URL)",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "FR-004",
+      "source_type": "FR",
+      "architecture_plan_section": "Design Views / Detailed Design Decisions",
+      "design_element": "User can edit/update an existing item's details",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "FR-005",
+      "source_type": "FR",
+      "architecture_plan_section": "Design Views / Detailed Design Decisions",
+      "design_element": "User can delete an item, with a confirmation prompt before deletion",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "FR-006",
+      "source_type": "FR",
+      "architecture_plan_section": "Design Views / Detailed Design Decisions",
+      "design_element": "The item list should support basic search/filter by name",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "FR-007",
+      "source_type": "FR",
+      "architecture_plan_section": "Design Views / Detailed Design Decisions",
+      "design_element": "The item list should support sorting by name (A–Z / Z–A) and by price (low to high / high to low)",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "FR-008",
+      "source_type": "FR",
+      "architecture_plan_section": "Design Views / Detailed Design Decisions",
+      "design_element": "The item list should be paginated with 20 items per page, with navigation controls (previous/next, jump to page)",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "FR-009",
+      "source_type": "FR",
+      "architecture_plan_section": "Design Views / Detailed Design Decisions",
+      "design_element": "The item list supports server-side filtering and sorting for performance with up to 10,000 items",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "FR-010",
+      "source_type": "FR",
+      "architecture_plan_section": "Design Views / Detailed Design Decisions",
+      "design_element": "Search and filters (name, category, price range) are applied server-side with debounced live search on name",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "AC-001",
+      "source_type": "AC",
+      "architecture_plan_section": "Behavior View / Error Handling View",
+      "design_element": "Creating an item with valid data returns a success response and the new item appears in the list immediately",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "AC-002",
+      "source_type": "AC",
+      "architecture_plan_section": "Behavior View / Error Handling View",
+      "design_element": "Submitting the create/edit form with a missing name, non-positive price, or negative quantity shows a validation error and does not save",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "AC-003",
+      "source_type": "AC",
+      "architecture_plan_section": "Behavior View / Error Handling View",
+      "design_element": "Deleting an item removes it from the list and requires confirmation first — canceling the confirmation leaves the item untouched",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "AC-004",
+      "source_type": "AC",
+      "architecture_plan_section": "Behavior View / Error Handling View",
+      "design_element": "Editing an item and saving updates only that item's fields, without affecting any other item",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "AC-005",
+      "source_type": "AC",
+      "architecture_plan_section": "Behavior View / Error Handling View",
+      "design_element": "Sorting by name or price correctly reorders the full list, not just the current page/view",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "AC-006",
+      "source_type": "AC",
+      "architecture_plan_section": "Behavior View / Error Handling View",
+      "design_element": "Every API endpoint (POST/GET/PUT/DELETE /api/items) returns the correct HTTP status code for both success and invalid-input cases (200/201 vs. 400)",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "AC-007",
+      "source_type": "AC",
+      "architecture_plan_section": "Behavior View / Error Handling View",
+      "design_element": "Pagination works with 20 items per page and supports previous/next and jump-to-page navigation",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "AC-008",
+      "source_type": "AC",
+      "architecture_plan_section": "Behavior View / Error Handling View",
+      "design_element": "Search and filters (name, category, price range) are applied server-side with debounced live search on name",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "VR-001",
+      "source_type": "VR",
+      "architecture_plan_section": "Interface View / Data View / Error Handling View",
+      "design_element": "Name must not be empty",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "VR-002",
+      "source_type": "VR",
+      "architecture_plan_section": "Interface View / Data View / Error Handling View",
+      "design_element": "Price must be a positive number (minimum 0.01)",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "VR-003",
+      "source_type": "VR",
+      "architecture_plan_section": "Interface View / Data View / Error Handling View",
+      "design_element": "Quantity must be a non-negative integer (minimum 0)",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "VR-004",
+      "source_type": "VR",
+      "architecture_plan_section": "Interface View / Data View / Error Handling View",
+      "design_element": "Category must not be empty",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "VR-005",
+      "source_type": "VR",
+      "architecture_plan_section": "Interface View / Data View / Error Handling View",
+      "design_element": "Image URL must be a valid URL format if provided",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "NFR-001",
+      "source_type": "NFR",
+      "architecture_plan_section": "Quality Attributes View",
+      "design_element": "The item list should load in under 2 seconds for up to 1,000 items",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "NFR-002",
+      "source_type": "NFR",
+      "architecture_plan_section": "Quality Attributes View",
+      "design_element": "The UI must be accessible to screen readers (proper labels/ARIA attributes on the form and list, keyboard-navigable buttons for Edit/Delete/Add)",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "NFR-003",
+      "source_type": "NFR",
+      "architecture_plan_section": "Quality Attributes View",
+      "design_element": "Support for up to 10,000 items total with server-side pagination and filtering",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "NFR-004",
+      "source_type": "NFR",
+      "architecture_plan_section": "Quality Attributes View",
+      "design_element": "Search and filters should query the backend directly rather than client-side filtering",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "CONSTRAINT-001",
+      "source_type": "Constraint",
+      "architecture_plan_section": "Design Considerations / Architecture Overview",
+      "design_element": "Name must not be empty",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "CONSTRAINT-002",
+      "source_type": "Constraint",
+      "architecture_plan_section": "Design Considerations / Architecture Overview",
+      "design_element": "Price must be a positive number (minimum 0.01)",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "CONSTRAINT-003",
+      "source_type": "Constraint",
+      "architecture_plan_section": "Design Considerations / Architecture Overview",
+      "design_element": "Quantity must be a non-negative integer (minimum 0)",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "CONSTRAINT-004",
+      "source_type": "Constraint",
+      "architecture_plan_section": "Design Considerations / Architecture Overview",
+      "design_element": "Category must not be empty",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "CONSTRAINT-005",
+      "source_type": "Constraint",
+      "architecture_plan_section": "Design Considerations / Architecture Overview",
+      "design_element": "Image URL must be a valid URL format if provided",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "RISK-001",
+      "source_type": "Risk",
+      "architecture_plan_section": "Design Considerations / Security and Authorization View",
+      "design_element": "Performance degradation with large datasets if server-side filtering is not properly implemented",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "RISK-002",
+      "source_type": "Risk",
+      "architecture_plan_section": "Design Considerations / Security and Authorization View",
+      "design_element": "Inconsistent UI behavior due to lack of proper state management during CRUD operations",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "RISK-003",
+      "source_type": "Risk",
+      "architecture_plan_section": "Design Considerations / Security and Authorization View",
+      "design_element": "Potential security vulnerabilities if input validation is not enforced on the backend",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "DEPENDENCY-001",
+      "source_type": "Dependency",
+      "architecture_plan_section": "Design Context / Logical View",
+      "design_element": "Backend API service for handling CRUD operations",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "DEPENDENCY-002",
+      "source_type": "Dependency",
+      "architecture_plan_section": "Design Context / Logical View",
+      "design_element": "Database schema for storing item data",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "DEPENDENCY-003",
+      "source_type": "Dependency",
+      "architecture_plan_section": "Design Context / Logical View",
+      "design_element": "Authentication and authorization system for admin/manager access",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "DEPENDENCY-004",
+      "source_type": "Dependency",
+      "architecture_plan_section": "Design Context / Logical View",
+      "design_element": "Image storage service for storing and serving item photos",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "DEPENDENCY-005",
+      "source_type": "Dependency",
+      "architecture_plan_section": "Design Context / Logical View",
+      "design_element": "Caching layer (e.g., Redis) to speed up search and filtering operations",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "DATA-001",
+      "source_type": "Data",
+      "architecture_plan_section": "Data View",
+      "design_element": "id (string, auto-generated, unique identifier)",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "DATA-002",
+      "source_type": "Data",
+      "architecture_plan_section": "Data View",
+      "design_element": "name (string, required, non-empty)",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "DATA-003",
+      "source_type": "Data",
+      "architecture_plan_section": "Data View",
+      "design_element": "description (string, optional)",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "DATA-004",
+      "source_type": "Data",
+      "architecture_plan_section": "Data View",
+      "design_element": "price (number, required, minimum value 0.01)",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "DATA-005",
+      "source_type": "Data",
+      "architecture_plan_section": "Data View",
+      "design_element": "quantity (integer, required, minimum value 0)",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "DATA-006",
+      "source_type": "Data",
+      "architecture_plan_section": "Data View",
+      "design_element": "category (string, required, non-empty)",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "DATA-007",
+      "source_type": "Data",
+      "architecture_plan_section": "Data View",
+      "design_element": "imageUrl (string, optional, valid URL format)",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "DATA-008",
+      "source_type": "Data",
+      "architecture_plan_section": "Data View",
+      "design_element": "createdAt (timestamp, auto-generated on creation)",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "DATA-009",
+      "source_type": "Data",
+      "architecture_plan_section": "Data View",
+      "design_element": "updatedAt (timestamp, auto-updated on every edit)",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "API-001",
+      "source_type": "API",
+      "architecture_plan_section": "Interface View",
+      "design_element": "POST /api/items",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "API-002",
+      "source_type": "API",
+      "architecture_plan_section": "Interface View",
+      "design_element": "GET /api/items",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "API-003",
+      "source_type": "API",
+      "architecture_plan_section": "Interface View",
+      "design_element": "PUT /api/items/{id}",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "API-004",
+      "source_type": "API",
+      "architecture_plan_section": "Interface View",
+      "design_element": "DELETE /api/items/{id}",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "UI-001",
+      "source_type": "UI",
+      "architecture_plan_section": "Context View / Logical View",
+      "design_element": "A main page showing all items in a list/table/grid layout",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "UI-002",
+      "source_type": "UI",
+      "architecture_plan_section": "Context View / Logical View",
+      "design_element": "An \"Add Item\" button that opens a form to create a new item",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "UI-003",
+      "source_type": "UI",
+      "architecture_plan_section": "Context View / Logical View",
+      "design_element": "Each item has \"Edit\" and \"Delete\" actions",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "UI-004",
+      "source_type": "UI",
+      "architecture_plan_section": "Context View / Logical View",
+      "design_element": "Editing opens the same form pre-filled with the item's current data",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "UI-005",
+      "source_type": "UI",
+      "architecture_plan_section": "Context View / Logical View",
+      "design_element": "Deleting shows a confirm dialog before removing the item",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "UI-006",
+      "source_type": "UI",
+      "architecture_plan_section": "Context View / Logical View",
+      "design_element": "Pagination controls at the bottom of the list (previous/next, jump to page)",
+      "coverage_status": "covered"
+    },
+    {
+      "source_id": "UI-007",
+      "source_type": "UI",
+      "architecture_plan_section": "Context View / Logical View",
+      "design_element": "Live search input with debouncing, plus filter dropdowns for category and price range",
+      "coverage_status": "covered"
+    }
+  ],
+  "assumptions": [
+    "The API endpoints will be inferred from functional and data requirements (e.g., POST/GET/PUT/DELETE /api/items).",
+    "The UI layout will be responsive and follow standard Next.js conventions.",
+    "No specific architectural style was mentioned, so defaulting to a standard web app architecture.",
+    "The search and filter UI components will be implemented using standard Next.js patterns.",
+    "UI expectations were inferred from functional requirements.",
+    "No SRS changes were made for revision comment: 'User stories are missing fil the user stories as well' -- agent's response: The human comment was unclear and did not specify what needs to be added or changed in the user stories. No actionable revision was provided, so no operations were performed.",
+    "No SRS changes were made for revision comment: 'User stories are missing fill the user stories as well' -- agent's response: The human comment was unclear and did not specify what needs to be added or changed in the user stories. No actionable revision was provided, so no operations were performed.",
+    "Revision could not be fully applied -- Skipped operation on unsupported field 'business_goal' (action=modify).",
+    "No SRS changes were made for revision comment: 'User stories are missing fill the user stories' -- agent's response: The human comment was unclear and did not specify what needs to be added or changed in the user stories. No actionable revision was provided, so no operations were performed.",
+    "No SRS changes were made for revision comment: 'Fill the empty user stories in the SRS, because user stories are empty' -- agent's response: The user stories section was already populated with several entries, so no changes were made. The comment was unclear about which specific user stories were missing, and the existing entries align with the feature's functional requirements and user roles.",
+    "No SRS changes were made for revision comment: 'Think and add the necessary user stories because all the 8 user stories are empty' -- agent's response: The user stories section was already populated with entries, but the comment suggested they were empty. I've reviewed the existing stories and confirmed they align with the feature's functional requirements and user roles, so no changes were made.",
+    "No SRS changes were made for revision comment: 'Add some user stories to the empty user story section' -- agent's response: The user story section was already populated with entries, so no changes were made. The existing stories align with the feature's functional requirements and user roles."
+  ],
+  "constraints": [
+    "Name must not be empty",
+    "Price must be a positive number (minimum 0.01)",
+    "Quantity must be a non-negative integer (minimum 0)",
+    "Category must not be empty",
+    "Image URL must be a valid URL format if provided"
+  ],
+  "risks": [
+    {
+      "description": "Performance degradation with large datasets if server-side filtering is not properly implemented"
+    },
+    {
+      "description": "Inconsistent UI behavior due to lack of proper state management during CRUD operations"
+    },
+    {
+      "description": "Potential security vulnerabilities if input validation is not enforced on the backend"
+    }
+  ],
+  "dependencies": [
+    "Backend API service for handling CRUD operations",
+    "Database schema for storing item data",
+    "Authentication and authorization system for admin/manager access",
+    "Image storage service for storing and serving item photos",
+    "Caching layer (e.g., Redis) to speed up search and filtering operations"
+  ],
+  "revision_metadata": null,
+  "human_approval_note": "This Architecture Plan must be reviewed and approved before the UI/UX Agent or Coder Agent starts. AUTOMATIC VALIDATION FAILED -- review carefully before approving: Technical component used as actor: Image Storage Service For Storing And Serving Item Photos"
+}

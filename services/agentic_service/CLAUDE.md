@@ -4454,6 +4454,76 @@ milestone — that file is scratch, **this file is the durable one**.
       project/feature deleted via the real `DELETE /projects/{id}` endpoint afterward; isolated
       backend/frontend verification processes killed.
 
+59. **A real, reported bug: Architecture Agent would run for ~10 minutes then fail with a chat
+    banner reading "Architecture Agent failed: " -- literally nothing after the colon.** Direct
+    user report with a screenshot. Root-caused by reading the actual code, then confirmed with a
+    real (not mocked) reproduction: `httpx.ReadTimeout` -- what `provider.invoke_agent()` raises
+    when Ollama accepts a request but never responds within the configured timeout (600s in this
+    project's live settings, matching the reported "~10 min" almost exactly) -- is frequently
+    raised by httpx's own internals with an EMPTY `str()`. Confirmed directly:
+    `httpx.ReadTimeout('')` -> `str()` is `''`. Several call sites in
+    `architecture_agent/agent.py` only ever guarded against the LLM call *returning* bad/
+    unparseable content -- never against the call **itself throwing** (a transport/timeout
+    failure) -- so that exception propagated fully uncaught out of the method, was caught only by
+    the route's generic `except Exception as error:`, and rendered as
+    `f"Architecture Agent failed: {str(error)}"` = `"Architecture Agent failed: "`.
+    - **Fixed 4 real, unguarded call sites** (every other `invoke_agent`/`stream` call in this
+      file was already correctly wrapped with a "never raises" contract -- confirmed by reading
+      each one before concluding these 4 were the actual gap): `run_stream`'s JSON-repair
+      `invoke_agent` call, `_generate_architecture_output`'s single-shot AND JSON-repair
+      `invoke_agent` calls, and `_revise_architecture_plan_output`'s single-shot `invoke_agent`
+      call. Each now wraps the call itself in its own try/except, treating a transport failure
+      exactly like an unparseable response (empty string in, which the existing parse/validate
+      step then correctly rejects) -- so the request falls through to the next rung of the
+      already-existing reliability ladder (repair -> deterministic fallback) instead of crashing.
+      `revise_stream`'s single `provider.stream(...)` call was already correctly guarded (falls
+      straight to `_fallback_revise_architecture_plan_json` on any exception) -- confirmed by
+      reading it, no change needed there.
+    - **Defensive fix, applied consistently across every agent, not just Architecture**: added
+      `_readable_error(error)` (`agents.py`) -- `str(error) or f"{type(error).__name__} (no
+      further detail was provided by the error itself)"` -- and replaced `str(error)` with it in
+      all 25 generic `except Exception as error:` blocks across Requirement/Domain/Architecture/
+      Coder's run/revise/streaming routes (done via a small script that only touched lines inside
+      an `except Exception` block, verified against the diff to confirm every `except ValueError`
+      block -- always a deliberately-authored, already-readable message -- was left untouched).
+      This is a second, independent layer of defense: even if a future call site somewhere in
+      this codebase has the same "call itself can throw" gap, the user will never again see a
+      blank error message, just possibly a less specific one.
+    - Tests: `tests/test_architecture_agent_transport_errors.py` (new, 4 -- single-shot call
+      exception falls through to repair then fallback; repair call exception falls through to
+      fallback; revise's single-shot call exception falls back to
+      `_fallback_revise_architecture_plan_json`; a `run_stream`-specific test, mocking
+      `store`/`read_json_file`/`project_memory_service` so no real Mongo access happens, confirms
+      the real async generator yields a `done` event instead of raising uncaught). All 4 use
+      `Exception("")` as the mock's `side_effect` -- deliberately the worst case for this bug (an
+      exception with a genuinely empty message), not just any exception. Full suite: **488
+      passed** (up from 484).
+    - **Real, live verification -- not just mocked units**: confirmed `httpx.ReadTimeout('')`'s
+      `str()` really is empty (direct interpreter check). Then built a real "black hole" TCP
+      server (accepts a real connection, never responds) and pointed a real `OllamaProvider` at it
+      with a short timeout -- producing a **genuine** `httpx.ReadTimeout` with an empty message
+      within ~2 seconds (not the real ~10 minutes), through the REAL, unmocked httpx/OllamaProvider
+      networking code. Ran the real `ArchitectureAgent._generate_architecture_output` against this
+      real failing provider end-to-end: log output showed the exact new warning lines firing
+      three times in a row (single-shot call, repair call, and diagram generation's own focused
+      single-shot call all hit the same real read-timeout with an empty message) and the method
+      still completed successfully with a real, complete fallback plan
+      (`implementation_plan` present, an honest `human_approval_note`) -- direct proof the fix
+      survives the actual failure mode a real, too-slow/VRAM-mismatched model produces, not just a
+      synthetic mock. (Confirmed via `httpx.ConnectError` separately that a plain "nothing is
+      listening on this port" failure DOES carry a real message ("All connection attempts
+      failed") -- it's specifically the read-timeout case, a request that WAS accepted but never
+      answered, that produces the empty message this bug depended on; the black-hole-server
+      technique was chosen specifically to reproduce that exact case, not just any connection
+      failure.)
+    - **Not fixed here, out of scope for this report**: the underlying reason generation can take
+      ~10 minutes in the first place -- the screenshot showed `qwen3-coder.max:latest` selected
+      for Architecture Agent, already documented elsewhere in this file (see the RESOLVED
+      "Architecture Agent taking over an hour" gotcha) as a model that doesn't fit this machine's
+      6GB GPU. This fix makes a timeout/failure recover gracefully and legibly regardless of
+      model choice; it does not make a mismatched model fast. `llama3:latest` remains the
+      documented, actually-fast choice for this machine.
+
 ## Where to look
 
 - Full build spec (read this first, in order, before any new milestone): `instructions .md`
