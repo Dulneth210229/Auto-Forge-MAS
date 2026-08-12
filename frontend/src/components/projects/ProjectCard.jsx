@@ -1,39 +1,72 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { timeAgo } from "../../lib/format";
 import EditProjectModal from "./EditProjectModal";
 import DeleteProjectModal from "./DeleteProjectModal";
+import { iconForProjectType, gradientForProjectType } from "./projectVisuals";
 
-const TYPE_ICONS = {
-  "e-commerce": "🛒",
-  saas: "☁️",
-  social: "💬",
-  fintech: "💳",
-  healthcare: "🏥",
-  education: "🎓",
-};
+function CardMenu({ onEdit, onDelete }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
 
-const TYPE_GRADIENTS = {
-  "e-commerce": "from-orange-400 to-pink-500",
-  saas: "from-sky-400 to-indigo-500",
-  social: "from-fuchsia-400 to-purple-500",
-  fintech: "from-emerald-400 to-teal-500",
-  healthcare: "from-rose-400 to-red-500",
-  education: "from-amber-400 to-orange-500",
-};
+  useEffect(() => {
+    function handleClickOutside(event) {
+      if (ref.current && !ref.current.contains(event.target)) setOpen(false);
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
-function iconFor(projectType) {
-  const key = (projectType || "").toLowerCase();
-  return TYPE_ICONS[key] || "📦";
-}
-
-function gradientFor(projectType) {
-  const key = (projectType || "").toLowerCase();
-  return TYPE_GRADIENTS[key] || "from-accent-400 to-accent-600";
+  return (
+    <div className="relative z-10" ref={ref}>
+      <button
+        type="button"
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setOpen((v) => !v);
+        }}
+        title="Project actions"
+        className="w-7 h-7 flex items-center justify-center rounded-full bg-white/90 dark:bg-gray-800/90 text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-100 shadow-sm"
+      >
+        <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+          <path d="M10 5.5a1.5 1.5 0 100-3 1.5 1.5 0 000 3zM10 11.5a1.5 1.5 0 100-3 1.5 1.5 0 000 3zM10 17.5a1.5 1.5 0 100-3 1.5 1.5 0 000 3z" />
+        </svg>
+      </button>
+      {open && (
+        <div className="absolute right-0 mt-1 w-32 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg overflow-hidden">
+          <button
+            type="button"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              setOpen(false);
+              onEdit();
+            }}
+            className="w-full text-left px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
+          >
+            Edit
+          </button>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              setOpen(false);
+              onDelete();
+            }}
+            className="w-full text-left px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10"
+          >
+            Delete
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function ProjectCard({ project }) {
-  const gradient = gradientFor(project.project_type);
+  const gradient = gradientForProjectType(project.project_type);
   const [showEdit, setShowEdit] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
 
@@ -45,45 +78,15 @@ export default function ProjectCard({ project }) {
     >
       <div className={`h-1.5 bg-gradient-to-r ${gradient}`} />
 
-      {/* Edit/Delete -- hover-revealed, stop propagation so clicking them doesn't also
-          navigate into the project (the whole card is a Link). */}
-      <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-10">
-        <button
-          type="button"
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            setShowEdit(true);
-          }}
-          title="Edit project"
-          className="w-7 h-7 flex items-center justify-center rounded-full bg-white/90 dark:bg-gray-800/90 text-gray-500 dark:text-gray-400 hover:text-accent-600 dark:hover:text-accent-400 shadow-sm text-sm"
-        >
-          ✎
-        </button>
-        <button
-          type="button"
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            setShowDelete(true);
-          }}
-          title="Delete project"
-          className="w-7 h-7 flex items-center justify-center rounded-full bg-white/90 dark:bg-gray-800/90 text-gray-500 dark:text-gray-400 hover:text-red-600 dark:hover:text-red-400 shadow-sm text-sm"
-        >
-          &times;
-        </button>
+      <div className="absolute top-2 right-2">
+        <CardMenu onEdit={() => setShowEdit(true)} onDelete={() => setShowDelete(true)} />
       </div>
 
       <div className="p-5">
-        <div className="flex items-start justify-between">
-          <div
-            className={`w-12 h-12 rounded-xl bg-gradient-to-br ${gradient} flex items-center justify-center text-xl shadow-sm flex-shrink-0`}
-          >
-            {iconFor(project.project_type)}
-          </div>
-          <span className="text-gray-300 dark:text-gray-700 group-hover:text-accent-500 group-hover:translate-x-0.5 transition-all text-lg">
-            &rarr;
-          </span>
+        <div
+          className={`w-12 h-12 rounded-xl bg-gradient-to-br ${gradient} flex items-center justify-center text-xl shadow-sm flex-shrink-0`}
+        >
+          {iconForProjectType(project.project_type)}
         </div>
 
         <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 mt-3 group-hover:text-accent-700 dark:group-hover:text-accent-400 transition-colors">

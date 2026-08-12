@@ -71,6 +71,18 @@ def _validate_feature(feature_id: str):
     return feature
 
 
+def _readable_error(error: Exception) -> str:
+    """
+    str(error) is frequently EMPTY for transport/timeout exceptions -- e.g. httpx.ReadTimeout is
+    often raised by httpx's internals with no message at all. Confirmed as the real cause of a
+    reported "Architecture Agent failed: " banner with nothing after the colon (a real request
+    that timed out mid-repair-call). Every generic `except Exception` handler in this file that
+    builds a user-facing message uses this instead of a bare str(error), so a human always sees
+    something actionable (at minimum the exception's class name) instead of a blank message.
+    """
+    return str(error) or f"{type(error).__name__} (no further detail was provided by the error itself)"
+
+
 @router.post("/requirement/run", response_model=AgentRunResponse)
 async def run_requirement_agent(
     feature_id: str,
@@ -106,7 +118,7 @@ async def run_requirement_agent(
 
         raise HTTPException(
             status_code=500,
-            detail=f"Requirement Agent failed: {str(error)}"
+            detail=f"Requirement Agent failed: {_readable_error(error)}"
         )
 
 @router.post("/requirement/revise", response_model=AgentRunResponse)
@@ -141,7 +153,7 @@ async def revise_requirement_agent(
     except Exception as error:
         raise HTTPException(
             status_code=500,
-            detail=f"Requirement Agent revision failed: {str(error)}"
+            detail=f"Requirement Agent revision failed: {_readable_error(error)}"
         )
 
 
@@ -173,7 +185,7 @@ async def revise_requirement_agent_stream(feature_id: str, request: RequirementA
             yield json.dumps({"type": "error", "message": str(error)}) + "\n"
         except Exception as error:
             yield json.dumps(
-                {"type": "error", "message": f"Requirement Agent revision failed: {str(error)}"}
+                {"type": "error", "message": f"Requirement Agent revision failed: {_readable_error(error)}"}
             ) + "\n"
 
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")
@@ -211,7 +223,7 @@ async def edit_requirement_agent_fields(feature_id: str, request: RequirementAge
     except Exception as error:
         raise HTTPException(
             status_code=500,
-            detail=f"Requirement Agent field edit failed: {str(error)}"
+            detail=f"Requirement Agent field edit failed: {_readable_error(error)}"
         )
 
 
@@ -237,7 +249,7 @@ async def start_requirement_conversation(feature_id: str):
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:
-        raise HTTPException(status_code=500, detail=f"Failed to start requirement conversation: {str(error)}")
+        raise HTTPException(status_code=500, detail=f"Failed to start requirement conversation: {_readable_error(error)}")
 
 
 @router.post("/requirement/conversation/reply", response_model=RequirementConversationState)
@@ -253,7 +265,7 @@ async def reply_to_requirement_conversation(feature_id: str, request: Requiremen
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:
-        raise HTTPException(status_code=500, detail=f"Failed to continue requirement conversation: {str(error)}")
+        raise HTTPException(status_code=500, detail=f"Failed to continue requirement conversation: {_readable_error(error)}")
 
 
 @router.post("/requirement/conversation/reply/stream")
@@ -280,7 +292,7 @@ async def reply_to_requirement_conversation_stream(feature_id: str, request: Req
             yield json.dumps({"type": "error", "message": str(error)}) + "\n"
         except Exception as error:
             yield json.dumps(
-                {"type": "error", "message": f"Failed to continue requirement conversation: {str(error)}"}
+                {"type": "error", "message": f"Failed to continue requirement conversation: {_readable_error(error)}"}
             ) + "\n"
 
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")
@@ -314,7 +326,7 @@ async def reply_to_requirement_conversation_with_document(
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:
-        raise HTTPException(status_code=500, detail=f"Failed to process attached document: {str(error)}")
+        raise HTTPException(status_code=500, detail=f"Failed to process attached document: {_readable_error(error)}")
 
 
 @router.post("/requirement/conversation/turns/{turn_index}/edit", response_model=RequirementConversationState)
@@ -336,7 +348,7 @@ async def edit_requirement_conversation_turn(
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:
-        raise HTTPException(status_code=500, detail=f"Failed to edit requirement conversation turn: {str(error)}")
+        raise HTTPException(status_code=500, detail=f"Failed to edit requirement conversation turn: {_readable_error(error)}")
 
 
 @router.post("/requirement/conversation/turns/{turn_index}/edit/stream")
@@ -367,7 +379,7 @@ async def edit_requirement_conversation_turn_stream(
             yield json.dumps({"type": "error", "message": str(error)}) + "\n"
         except Exception as error:
             yield json.dumps(
-                {"type": "error", "message": f"Failed to edit requirement conversation turn: {str(error)}"}
+                {"type": "error", "message": f"Failed to edit requirement conversation turn: {_readable_error(error)}"}
             ) + "\n"
 
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")
@@ -408,7 +420,7 @@ async def confirm_requirement_conversation(feature_id: str, request: Requirement
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:
-        raise HTTPException(status_code=500, detail=f"Failed to confirm requirement conversation: {str(error)}")
+        raise HTTPException(status_code=500, detail=f"Failed to confirm requirement conversation: {_readable_error(error)}")
 
 
 @router.post("/requirement/conversation/confirm/stream")
@@ -440,7 +452,7 @@ async def confirm_requirement_conversation_stream(feature_id: str, request: Requ
             yield json.dumps({"type": "error", "message": str(error)}) + "\n"
         except Exception as error:
             yield json.dumps(
-                {"type": "error", "message": f"Failed to confirm requirement conversation: {str(error)}"}
+                {"type": "error", "message": f"Failed to confirm requirement conversation: {_readable_error(error)}"}
             ) + "\n"
 
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")
@@ -478,7 +490,7 @@ async def run_domain_agent(
 
         raise HTTPException(
             status_code=500,
-            detail=f"Domain Agent failed: {str(error)}"
+            detail=f"Domain Agent failed: {_readable_error(error)}"
         )
 
 
@@ -502,7 +514,7 @@ async def run_domain_agent_stream(feature_id: str, request: DomainAgentRunReques
         except ValueError as error:
             yield json.dumps({"type": "error", "message": str(error)}) + "\n"
         except Exception as error:
-            yield json.dumps({"type": "error", "message": f"Domain Agent failed: {str(error)}"}) + "\n"
+            yield json.dumps({"type": "error", "message": f"Domain Agent failed: {_readable_error(error)}"}) + "\n"
 
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
@@ -543,7 +555,7 @@ async def revise_domain_agent(
 
         raise HTTPException(
             status_code=500,
-            detail=f"Domain Agent revision failed: {str(error)}"
+            detail=f"Domain Agent revision failed: {_readable_error(error)}"
         )
 
 
@@ -568,7 +580,7 @@ async def revise_domain_agent_stream(feature_id: str, request: DomainAgentRevise
         except ValueError as error:
             yield json.dumps({"type": "error", "message": str(error)}) + "\n"
         except Exception as error:
-            yield json.dumps({"type": "error", "message": f"Domain Agent revision failed: {str(error)}"}) + "\n"
+            yield json.dumps({"type": "error", "message": f"Domain Agent revision failed: {_readable_error(error)}"}) + "\n"
 
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
@@ -609,7 +621,7 @@ async def run_architecture_agent(
     except Exception as error:
         raise HTTPException(
             status_code=500,
-            detail=f"Architecture Agent failed: {str(error)}"
+            detail=f"Architecture Agent failed: {_readable_error(error)}"
         )
     
 
@@ -650,7 +662,7 @@ async def revise_architecture_agent(
     except Exception as error:
         raise HTTPException(
             status_code=500,
-            detail=f"Architecture Agent revision failed: {str(error)}"
+            detail=f"Architecture Agent revision failed: {_readable_error(error)}"
         )
 
 
@@ -676,7 +688,7 @@ async def run_architecture_agent_stream(feature_id: str, request: ArchitectureAg
         except ValueError as error:
             yield json.dumps({"type": "error", "message": str(error)}) + "\n"
         except Exception as error:
-            yield json.dumps({"type": "error", "message": f"Architecture Agent failed: {str(error)}"}) + "\n"
+            yield json.dumps({"type": "error", "message": f"Architecture Agent failed: {_readable_error(error)}"}) + "\n"
 
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
@@ -704,7 +716,7 @@ async def revise_architecture_agent_stream(feature_id: str, request: Architectur
             yield json.dumps({"type": "error", "message": str(error)}) + "\n"
         except Exception as error:
             yield json.dumps(
-                {"type": "error", "message": f"Architecture Agent revision failed: {str(error)}"}
+                {"type": "error", "message": f"Architecture Agent revision failed: {_readable_error(error)}"}
             ) + "\n"
 
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")
@@ -750,7 +762,7 @@ async def run_uiux_agent(feature_id: str, request: UIUXAgentRunRequest):
 
         raise HTTPException(
             status_code=500,
-            detail=f"UI/UX Agent failed: {str(error)}"
+            detail=f"UI/UX Agent failed: {_readable_error(error)}"
         )
 
 
@@ -794,7 +806,7 @@ async def run_coder_agent(feature_id: str, request: CoderAgentRunRequest):
 
         raise HTTPException(
             status_code=500,
-            detail=f"Coder Agent failed: {str(error)}"
+            detail=f"Coder Agent failed: {_readable_error(error)}"
         )
 
 
@@ -855,7 +867,7 @@ async def revise_coder_agent(feature_id: str, request: CoderAgentReviseRequest):
 
         raise HTTPException(
             status_code=500,
-            detail=f"Coder Agent revision failed: {str(error)}"
+            detail=f"Coder Agent revision failed: {_readable_error(error)}"
         )
 
 
@@ -882,7 +894,7 @@ async def run_coder_agent_stream(feature_id: str, request: CoderAgentRunRequest)
         except ValueError as error:
             yield json.dumps({"type": "error", "message": str(error)}) + "\n"
         except Exception as error:
-            yield json.dumps({"type": "error", "message": f"Coder Agent failed: {str(error)}"}) + "\n"
+            yield json.dumps({"type": "error", "message": f"Coder Agent failed: {_readable_error(error)}"}) + "\n"
 
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
@@ -906,7 +918,7 @@ async def revise_coder_agent_stream(feature_id: str, request: CoderAgentReviseRe
             yield json.dumps({"type": "error", "message": str(error)}) + "\n"
         except Exception as error:
             yield json.dumps(
-                {"type": "error", "message": f"Coder Agent revision failed: {str(error)}"}
+                {"type": "error", "message": f"Coder Agent revision failed: {_readable_error(error)}"}
             ) + "\n"
 
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")

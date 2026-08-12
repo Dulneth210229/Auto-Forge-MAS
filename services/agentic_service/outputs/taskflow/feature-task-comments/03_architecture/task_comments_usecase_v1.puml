@@ -7,26 +7,14 @@ skinparam shadowing false
 
 title Task Comments Use Case Diagram
 
-actor "Team Member" as ACT_001
-actor "Admin" as ACT_002
-actor "User Authentication System" as ACT_003
+actor "Registered User" as ACT_001
 
 rectangle "Task Comments Feature" {
   usecase "Task Comments" as UC_001
-  usecase "Validate Input" as UC_002
-  usecase "Delete Their Own Comment" as UC_003
-  usecase "Record Who Posted Each" as UC_004
-  usecase "A Task The Can" as UC_005
-  usecase "A Comment The Authored" as UC_006
+  usecase "Comment Text Must Not Be" as UC_002
 }
 
 ACT_001 -- UC_001
-ACT_002 -- UC_001
-ACT_003 -- UC_001
 UC_001 .> UC_002 : <<include>>
-UC_001 .> UC_003 : <<include>>
-UC_004 .> UC_001 : <<extend>>
-UC_005 .> UC_001 : <<extend>>
-UC_006 .> UC_001 : <<extend>>
 
 @enduml
