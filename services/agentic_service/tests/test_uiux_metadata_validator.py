@@ -43,7 +43,7 @@ def _complete_page(**overrides) -> dict:
                 "name": "LoginForm",
                 "reused_from_design_system": False,
                 "covers_ui_expectations": ["Login Form", "Forgot Password Link"],
-                "props": {},
+                "content_elements": ["email field label", "password field label", "forgot password link"],
             }
         ],
         "states": ["idle", "loading", "error", "success"],
@@ -105,3 +105,32 @@ def test_missing_page_id_or_name_fails(validator):
 def test_empty_pages_fails(validator):
     with pytest.raises(UIMetadataValidationError, match="non-empty list"):
         validator.validate(SRS, {"pages": []})
+
+
+def test_empty_content_elements_fails(validator):
+    page = _complete_page()
+    page["components"][0]["content_elements"] = []
+    with pytest.raises(UIMetadataValidationError, match="content_elements"):
+        validator.validate(SRS, {"pages": [page]})
+
+
+def test_missing_content_elements_key_fails(validator):
+    page = _complete_page()
+    del page["components"][0]["content_elements"]
+    with pytest.raises(UIMetadataValidationError, match="content_elements"):
+        validator.validate(SRS, {"pages": [page]})
+
+
+def test_placeholder_content_elements_echo_fails(validator):
+    # Real, confirmed bug (Sample E-commerce / Item Listing feature): the model echoed the
+    # prompt's own example field-name text back verbatim instead of writing real content.
+    page = _complete_page()
+    page["components"][0]["content_elements"] = ["propName", "short description of the prop"]
+    with pytest.raises(UIMetadataValidationError, match="placeholder"):
+        validator.validate(SRS, {"pages": [page]})
+
+
+def test_real_content_elements_pass(validator):
+    page = _complete_page()
+    page["components"][0]["content_elements"] = ["item name", "item price", "stock quantity"]
+    validator.validate(SRS, {"pages": [page]})  # should not raise

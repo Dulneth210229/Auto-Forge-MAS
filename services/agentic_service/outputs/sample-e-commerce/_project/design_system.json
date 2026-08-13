@@ -1,0 +1,15 @@
+{
+  "colors": {},
+  "typography": {},
+  "spacing": {},
+  "components": {
+    "Pagination": {
+      "content_elements": [
+        "page number",
+        "total pages"
+      ],
+      "introduced_by_feature": "Item Listing (CRUD)"
+    }
+  },
+  "tokens": {}
+}

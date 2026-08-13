@@ -166,7 +166,7 @@ class CodePlanner:
         Unlike generate() (a single-shot LLM call with zero visibility into
         the actual codebase), this gives the model read-only tools
         (list_dir/read_file/search_code/read_project_manifest/
-        read_ui_component) to look at the real, current feature branch
+        read_ui_component_design/read_ui_page_design) to look at the real, current feature branch
         before finalizing a plan. This is what lets a vague, file-unspecified
         revision comment (e.g. "styles are missing, add tailwind css") be
         correctly scoped to every actually-affected file, instead of only

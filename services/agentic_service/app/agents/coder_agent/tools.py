@@ -13,10 +13,10 @@ instead of crashing.
 
 Tools are built per-run by build_coder_tools(project_id, feature_id) rather
 than defined as bare module-level @tool functions, because every tool needs
-to already be bound to one project's workspace (and, for read_ui_component,
-one feature's approved UI/UX output) -- the LLM-facing signatures below take
-no project_id/feature_id argument at all, matching the build plan's literal
-tool signatures.
+to already be bound to one project's workspace (and, for
+read_ui_component_design/read_ui_page_design, one feature's approved UI/UX
+output) -- the LLM-facing signatures below take no project_id/feature_id
+argument at all, matching the build plan's literal tool signatures.
 """
 
 from __future__ import annotations
@@ -269,12 +269,34 @@ def build_coder_tools(
         return json.dumps(manifest, indent=2, default=str)
 
     @tool
-    def read_ui_component(component_name: str) -> str:
-        """Read the approved .jsx file the UI/UX Agent produced for this feature."""
+    def read_ui_component_design(component_name: str) -> str:
+        """
+        Read the approved HTML+Tailwind VISUAL REFERENCE the UI/UX Agent produced for one
+        component of this feature. This is a static design reference, NOT working code -- read
+        its structure/Tailwind classes/content, then write real Next.js TSX that faithfully
+        matches it (same layout, classes, and content), wired to real props/state/data-fetching.
+        Never dangerouslySetInnerHTML the raw HTML.
+        """
         artifact = _find_approved_component_artifact(feature_id, component_name)
 
         if not artifact:
-            return f"No approved UI component found for this feature named: {component_name}"
+            return f"No approved UI component design found for this feature named: {component_name}"
+
+        return Path(artifact["file_path"]).read_text(encoding="utf-8")
+
+    @tool
+    def read_ui_page_design(page_id_or_route: str) -> str:
+        """
+        Read the approved, fully-assembled HTML+Tailwind VISUAL REFERENCE for one whole page of
+        this feature (all of that page's components combined into one document, in their real
+        layout order) -- use this for full-page layout/structure context beyond a single
+        component. Same rule as read_ui_component_design: this is a design reference to
+        re-implement faithfully as real TSX, not code to import or embed verbatim.
+        """
+        artifact = _find_approved_page_html_artifact(feature_id, page_id_or_route)
+
+        if not artifact:
+            return f"No approved UI page design found for this feature matching: {page_id_or_route}"
 
         return Path(artifact["file_path"]).read_text(encoding="utf-8")
 
@@ -379,7 +401,8 @@ def build_coder_tools(
         run_shell,
         search_code,
         read_project_manifest,
-        read_ui_component,
+        read_ui_component_design,
+        read_ui_page_design,
         list_unimplemented_planned_files,
         check_syntax,
     ]
@@ -390,7 +413,8 @@ REVISION_PLANNING_TOOL_NAMES = {
     "read_file",
     "search_code",
     "read_project_manifest",
-    "read_ui_component",
+    "read_ui_component_design",
+    "read_ui_page_design",
 }
 
 
@@ -474,7 +498,37 @@ def _find_approved_component_artifact(feature_id: str, component_name: str) -> d
             continue
         if artifact.get("artifact_type") not in [ArtifactType.UI_COMPONENT_CODE, ArtifactType.UI_COMPONENT_CODE.value]:
             continue
-        if artifact.get("artifact_format") not in [ArtifactFormat.CODE, ArtifactFormat.CODE.value]:
+        if artifact.get("artifact_format") not in [ArtifactFormat.HTML, ArtifactFormat.HTML.value]:
+            continue
+        if artifact.get("approval_status") not in [ApprovalStatus.APPROVED, ApprovalStatus.APPROVED.value]:
+            continue
+        if slug not in str(artifact.get("file_path", "")).lower():
+            continue
+
+        matching.append(artifact)
+
+    if not matching:
+        return None
+
+    return max(matching, key=lambda item: item.get("version", 1))
+
+
+def _find_approved_page_html_artifact(feature_id: str, page_id_or_route: str) -> dict[str, Any] | None:
+    """Same lookup shape as _find_approved_component_artifact, sibling type (UI_PAGE_HTML) --
+    matches a page's slugified page_id/route against the artifact's file_path, e.g. either
+    "item-listing-page" or "/item-listing" resolve to the same "item_listing_page" slug."""
+    slug = re.sub(r"[^a-z0-9]+", "_", page_id_or_route.lower()).strip("_")
+
+    matching = []
+
+    for artifact in store.artifacts.values():
+        if artifact.get("feature_id") != feature_id:
+            continue
+        if artifact.get("agent_name") not in [AgentName.UIUX, AgentName.UIUX.value]:
+            continue
+        if artifact.get("artifact_type") not in [ArtifactType.UI_PAGE_HTML, ArtifactType.UI_PAGE_HTML.value]:
+            continue
+        if artifact.get("artifact_format") not in [ArtifactFormat.HTML, ArtifactFormat.HTML.value]:
             continue
         if artifact.get("approval_status") not in [ApprovalStatus.APPROVED, ApprovalStatus.APPROVED.value]:
             continue

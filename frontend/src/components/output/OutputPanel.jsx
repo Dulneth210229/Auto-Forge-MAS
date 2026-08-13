@@ -6,6 +6,7 @@ import { getEffectiveActiveArtifact } from "../../lib/activeArtifactSelection";
 import { ARTIFACT_TYPE_LABELS, ARTIFACT_TYPE_STAGE } from "../../lib/artifactTypeMeta";
 import ResultTab from "./ResultTab";
 import PreviewPanel from "./PreviewPanel";
+import UiuxPreviewPanel from "./UiuxPreviewPanel";
 import LoadingSpinner from "../common/LoadingSpinner";
 import ErrorBanner from "../common/ErrorBanner";
 
@@ -29,8 +30,11 @@ const NEXT_AGENT_BY_ARTIFACT_TYPE = {
 };
 
 // The right panel -- deliberately the largest of the three (see ResizableWorkspace's default
-// sizes). "Preview" is live (Cursor-style Start/Stop of the Coder Agent's generated Next.js app,
-// see PreviewPanel). "Files" stays disabled -- a workspace file browser hasn't been built yet.
+// sizes). "Preview" is live: Cursor-style Start/Stop of the Coder Agent's generated Next.js app
+// (PreviewPanel) for every stage EXCEPT uiux, which gets an instant, server-less HTML+Tailwind
+// design preview instead (UiuxPreviewPanel) -- a UI/UX page has no server/build step of its own,
+// so there's nothing to Start/Stop. "Files" stays disabled -- a workspace file browser hasn't
+// been built yet.
 export default function OutputPanel({ featureId }) {
   const { selectedAgent, activeOutputTab, setActiveOutputTab } = useWorkspaceSelection();
   const { data: artifacts, isLoading, error } = useFeatureArtifacts(featureId);
@@ -92,7 +96,11 @@ export default function OutputPanel({ featureId }) {
 
       <div className="flex-1 min-h-0 overflow-y-auto p-4">
         {activeOutputTab === "preview" ? (
-          <PreviewPanel featureId={featureId} />
+          selectedAgent === "uiux" ? (
+            <UiuxPreviewPanel featureId={featureId} />
+          ) : (
+            <PreviewPanel featureId={featureId} />
+          )
         ) : (
           <>
             <ErrorBanner error={error} fallback="Failed to load artifacts." />

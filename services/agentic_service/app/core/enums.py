@@ -47,6 +47,7 @@ class ArtifactType(str, Enum):
     UI_METADATA = "ui_metadata"
     UI_INTEGRATION_MANIFEST = "ui_integration_manifest"
     UI_COMPONENT_CODE = "ui_component_code"
+    UI_PAGE_HTML = "ui_page_html"
     UI_PREVIEW_SCREENSHOT = "ui_preview_screenshot"
     DESIGN_SYSTEM = "design_system"
 

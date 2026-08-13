@@ -1,0 +1,52 @@
+{
+  "pages": [
+    {
+      "page_id": "item-listing-page",
+      "name": "Item Listing Page",
+      "route": "/item-listing",
+      "actors": [
+        "Admin/Manager"
+      ],
+      "covers_requirements": [
+        "FR-001",
+        "US-001",
+        "AC-001",
+        "AC-002",
+        "AC-005",
+        "AC-007",
+        "US-003",
+        "US-004",
+        "US-005",
+        "US-006",
+        "US-007",
+        "US-008",
+        "US-009",
+        "US-010"
+      ],
+      "layout_regions": [
+        "header",
+        "main",
+        "footer"
+      ],
+      "components": [
+        {
+          "name": "Pagination",
+          "reused_from_design_system": true,
+          "content_elements": [
+            "page number",
+            "total pages"
+          ],
+          "introduced_by_feature": "Item Listing (CRUD)"
+        }
+      ],
+      "states": [
+        "idle",
+        "loading",
+        "error",
+        "success"
+      ]
+    }
+  ],
+  "color_theme": "indigo",
+  "notes": ""
+}

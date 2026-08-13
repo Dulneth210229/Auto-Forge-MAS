@@ -7,7 +7,7 @@ const WIDTH_CLASSES = {
   xl: "max-w-6xl",
 };
 
-export default function Modal({ open, onClose, title, children, wide = false, size }) {
+export default function Modal({ open, onClose, title, children, wide = false, size, bodyClassName }) {
   useEffect(() => {
     if (!open) return;
 
@@ -48,7 +48,7 @@ export default function Modal({ open, onClose, title, children, wide = false, si
             &times;
           </button>
         </div>
-        <div className="px-6 py-4 overflow-y-auto text-gray-700 dark:text-gray-300">{children}</div>
+        <div className={`px-6 py-4 text-gray-700 dark:text-gray-300 ${bodyClassName || "overflow-y-auto"}`}>{children}</div>
       </div>
     </div>,
     document.body

@@ -1,9 +1,12 @@
 """
 UI/UX Agent prompt templates.
 
-Milestone note: this milestone only generates ui_metadata_json (design tokens
-+ page/component tree). Component code generation prompts are added when
-component_generator.py is built in the next milestone.
+Output format: HTML + Tailwind CSS, not React/JSX. A component is a single, self-contained HTML
+fragment with realistic, fully-populated example content baked directly into the markup -- there
+is no props/mock_props/state-branching concept anymore (see the module docstring in
+component_generator.py for the full rationale). This is what a human reviews and what the Coder
+Agent later reads as a VISUAL REFERENCE (structure/Tailwind classes/content) to re-implement as
+real, working Next.js TSX -- never something to import or embed verbatim.
 """
 
 import json
@@ -27,16 +30,33 @@ Hard rules:
    "covers_requirements" list.
 5. REUSE existing components from the provided design system's
    "components" registry whenever one already fits (set
-   "reused_from_design_system": true and do not redefine its props). Only
-   propose a new component when nothing in the registry fits, and explain why
-   in "new_component_justification".
-6. Every page must declare its interaction states: at minimum
-   ["idle", "loading", "error", "success"] -- add more only if the SRS
-   acceptance criteria describe additional distinct states.
-7. Only propose a new design token (color/spacing/typography) if the existing
+   "reused_from_design_system": true and do not redefine its content_elements).
+   Only propose a new component when nothing in the registry fits, and explain
+   why in "new_component_justification".
+6. Every page must declare which interaction states the real, eventual working
+   app will need to handle: at minimum ["idle", "loading", "error", "success"]
+   -- add more only if the SRS acceptance criteria describe additional
+   distinct states. This list is INFORMATIONAL ONLY, for the Coder Agent's
+   benefit later -- it does NOT mean multiple visual variants get generated.
+   Every component you plan here is later rendered as exactly ONE fully-
+   populated, successful/complete view with realistic example data, never a
+   loading/error/empty placeholder.
+7. Every component needs a "content_elements" list: the real, SPECIFIC pieces
+   of dynamic content it must display, grounded in the related data entity's
+   real fields (e.g. for an item shown from an "Item" entity with fields
+   name/price/stock/category, write ["item name", "item price", "stock
+   quantity", "category"] -- never a generic placeholder like "propName" or
+   "content", and never leave this list empty).
+8. Only propose a new design token (color/spacing/typography) if the existing
    design system truly has no equivalent. Justify every new token.
-8. Do not invent requirements, pages, or components that are not implied by
+9. Do not invent requirements, pages, or components that are not implied by
    the SRS/Architecture Plan you were given.
+10. Choose ONE "color_theme" for this whole feature: a single Tailwind color family name (e.g.
+    "indigo", "blue", "emerald", "violet", "rose", "teal") that every component's generation
+    step will be told to use consistently for its primary accent color. Reuse the project's
+    existing design system color if one is already established; otherwise pick one that fits
+    the project/feature. Chosen ONCE here, not re-decided per component, so every component on
+    every page of this feature agrees on the same accent color.
 
 Return exactly this JSON shape:
 {
@@ -54,7 +74,7 @@ Return exactly this JSON shape:
           "reused_from_design_system": false,
           "new_component_justification": "why no existing component fits (omit if reused)",
           "covers_ui_expectations": ["UI expectation element text"],
-          "props": {"propName": "short description of the prop"}
+          "content_elements": ["real, specific content this component displays, e.g. item name, item price"]
         }
       ],
       "states": ["idle", "loading", "error", "success"],
@@ -63,6 +83,7 @@ Return exactly this JSON shape:
       ]
     }
   ],
+  "color_theme": "indigo",
   "notes": "short free-text notes, or empty string"
 }
 """
@@ -131,8 +152,8 @@ def build_uiux_validation_repair_prompt(raw_output: str, validation_error: str) 
     """
     Unlike build_uiux_json_repair_prompt (malformed/unparseable JSON), this is for output that
     parsed fine but failed the coverage/structure validator -- e.g. a page missing one of the
-    required "states" values. The fix is targeted: keep everything else, correct only what the
-    error names.
+    required "states" values, or a component whose "content_elements" is empty or an unfilled
+    placeholder. The fix is targeted: keep everything else, correct only what the error names.
     """
 
     return f"""
@@ -152,51 +173,79 @@ Return only valid JSON. No prose, no markdown fences, no comments.
 """
 
 
-COMPONENT_GENERATOR_SYSTEM_PROMPT = """
-You are the UI/UX Agent's component generator. You write ONE React component
-at a time, in plain JSX with Tailwind CSS utility classes, using realistic
-mock data props for preview -- no backend calls.
+HTML_COMPONENT_GENERATOR_SYSTEM_PROMPT = """
+You are the UI/UX Agent's component generator. You write ONE static HTML + Tailwind CSS fragment
+at a time -- a visual reference showing exactly what this piece of the feature looks like when
+it's working, fully populated with realistic example content. This is not React, not JSX, and not
+working application code -- a later step re-implements it as real Next.js code; your job is to
+produce an accurate, polished, self-contained visual design.
 
 Hard rules:
-1. Do not import React, ReactDOM, or any package. React and its hooks
-   (useState, useEffect, etc.) are already available as globals.
-2. Export exactly one component using: export default function ComponentName(props) { ... }
-3. Use Tailwind utility classes only for styling -- no inline style objects,
-   no separate CSS files.
-4. Implement every state listed for this component's page (idle, loading,
-   error, success, plus any extra ones given) as visibly distinct rendered
-   output driven by props (e.g. a `state` prop), not by internal fetch calls.
-5. Mock data field names should match the related data entity fields you were
-   given wherever applicable, so swapping in real data later doesn't require
-   renaming props.
-6. Do not add features, fields, or components not implied by the metadata you
-   were given.
-7. The component must be self-contained: manage its own local state (typed
-   text, toggles, etc.) internally with useState. Do NOT expect event-handler
-   callbacks (onSubmit, onChange, onClick, etc.) as props.
-8. MOCK_PROPS_JSON must be valid JSON and nothing else: only strings, numbers,
-   booleans, arrays, objects, or null. NEVER put a function, arrow function,
-   or any executable code as a prop value there (e.g. `"onSubmit": () => {}`
-   is INVALID and will be rejected) -- rule 7 means you should not need any
-   function-valued props in the first place.
-9. The file must be fully self-contained: never reference a component, type,
-   or variable that is not either a React global (useState, useEffect, ...),
-   a value from `props`, or defined locally inside this function. In
-   particular, do NOT factor a per-row/per-item element out into a separate
-   named component (e.g. `<Item ... />` or `<ItemRow ... />`) unless you
-   define that component's function in this same file too -- inline that
-   markup directly inside your `.map(...)` call instead.
+1. Plain, semantic HTML5 + Tailwind CSS utility classes only. No `<script>` tags, no inline
+   `style="..."` attributes, no separate `<style>` blocks, no JSX/React syntax, no `{ }`
+   expressions, no framework-specific directives.
+2. Exactly ONE root element (whichever semantic tag fits the component's real purpose --
+   `<section>`, `<table>`, `<nav>`, `<form>`, `<div>`, etc.). Do NOT include `<html>`, `<head>`,
+   or `<body>` tags -- this fragment is embedded directly inside a larger page document by a
+   separate step.
+3. Populate the fragment with REALISTIC, fully-populated, feature-specific example content --
+   real example names/prices/dates/statuses/labels matching the content_elements and related data
+   entity fields you were given. NEVER use Lorem Ipsum, NEVER render a placeholder message like
+   "No data available", "Loading...", or "Coming soon", and NEVER render an empty/edge-case state.
+   This must always show the feature working, with real-looking data, not a corner case.
+4. Visually polished and modern, with REAL color used purposefully -- not just gray-on-white text.
+   This feature's chosen accent color is given to you below as `color_theme` (a Tailwind color
+   family, e.g. `indigo`). Use it consistently:
+   - Primary buttons/links/active or selected states: the accent color (e.g.
+     `bg-indigo-600 hover:bg-indigo-700 text-white` for a primary button, `text-indigo-600` for
+     a link).
+   - Semantic colors where they carry real meaning, NOT the accent color: green for price/
+     success/positive status (`text-green-600`), red for delete/destructive/error actions
+     (`text-red-600`/`bg-red-600`), amber for warnings.
+   - Cards/list items/sections get a real background + shadow + rounded corners
+     (`bg-white shadow-sm rounded-lg p-4` on a `bg-gray-50` page background) so they read as
+     distinct visual blocks, not flat text.
+   - Status/category/tag-like content as colored badges/chips
+     (`bg-indigo-100 text-indigo-700 rounded-full px-2 py-0.5 text-xs font-semibold`), not plain
+     text.
+   - A coherent spacing scale (consistent padding/margin utilities), a real typography hierarchy
+     (distinct font sizes/weights for headings vs. body text), responsive utility classes
+     (`sm:`/`md:`/`lg:` prefixes) where the layout benefits, and hover/focus utility classes on
+     interactive elements (they are inert in this static reference, but document the intended
+     interaction design).
+5. Interactive elements (buttons, links, inputs) must look and be labeled correctly for their
+   real purpose (e.g. a real "Delete" button, a real search `<input>` with a realistic
+   placeholder) but do not need real `href`/click behavior -- use `href="#"` or omit handlers
+   entirely; this is a design reference, not working code.
+6. NEVER reference an external or fake image URL via `<img src="...">` (e.g.
+   `https://example.com/...` or any URL that is not guaranteed to actually resolve) -- it cannot
+   load and renders as a broken-image icon with visible alt text next to it, which is a real,
+   confirmed defect this rule exists to prevent. Wherever the design calls for a product/item
+   image, avatar, or thumbnail, use a decorative placeholder box instead: a `<div>` with a fixed
+   size (`w-24 h-24` or similar), a neutral background (`bg-gray-200`), `rounded-lg`, and a
+   centered inline SVG icon, exactly like this (adapt size/classes to context, keep the icon
+   itself as-is):
+   ```html
+   <div class="w-24 h-24 bg-gray-200 rounded-lg flex items-center justify-center flex-shrink-0">
+     <svg class="w-10 h-10 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+       <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909m-18 3.75h16.5a1.5 1.5 0 001.5-1.5V6a1.5 1.5 0 00-1.5-1.5H3.75A1.5 1.5 0 002.25 6v12a1.5 1.5 0 001.5 1.5zm10.5-11.25h.008v.008h-.008V8.25zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z" />
+     </svg>
+   </div>
+   ```
+   Never a bare `<img>` pointing at a URL that will not resolve, and never leave `alt` text as the
+   only visible content where an image was intended. Every other icon-only control still gets a
+   real `aria-label`.
+7. Do not add features, fields, or sections not implied by the metadata you were given.
+8. The fragment must be fully self-contained and valid HTML on its own -- every tag properly
+   closed, no reference to a CSS class/id defined elsewhere, no undefined behavior.
 
-Return your answer in EXACTLY this format, with both markers present and
-nothing outside them:
+Return your answer in EXACTLY this format, with the marker present and nothing outside it:
 
----MOCK_PROPS_JSON---
-{ "propName": "example value", ... }
----JSX_CODE---
-```jsx
-export default function ComponentName(props) {
+---HTML_CODE---
+```html
+<section class="...">
   ...
-}
+</section>
 ```
 """
 
@@ -210,17 +259,21 @@ def build_component_generator_user_prompt(
     design_system_json: dict,
     ui_preferences: dict,
     human_comment: str | None,
+    color_theme: str = "indigo",
 ) -> str:
     sections = [
         f"Project: {project.get('project_name')}",
         f"Feature: {feature.get('feature_name')}",
         f"Page: {page_metadata.get('name')} (route: {page_metadata.get('route')})",
-        f"Page states to support: {page_metadata.get('states')}",
+        f"color_theme (use this exact color family consistently, per rule 4): {color_theme}",
+        f"Page's eventual interactive states (informational only -- render the ONE fully-populated "
+        f"success view, not these): {page_metadata.get('states')}",
         "",
-        "Component to generate (from ui_metadata_json):",
+        "Component to generate (from ui_metadata_json -- see content_elements for what real "
+        "content this fragment must display):",
         json.dumps(component_metadata, indent=2, default=str),
         "",
-        "Related data entities (for realistic mock field names, best-effort):",
+        "Related data entities (for realistic example content, best-effort):",
         json.dumps(data_entities, indent=2, default=str),
         "",
         "Existing design system component registry (match visual conventions):",
@@ -233,44 +286,41 @@ def build_component_generator_user_prompt(
     if human_comment:
         sections.extend(["", f"Human revision comment: {human_comment}"])
 
-    sections.extend(["", "Generate the component now, in the exact required format."])
+    sections.extend(["", "Generate the HTML fragment now, in the exact required format."])
 
     return "\n".join(sections)
 
 
-def build_component_repair_prompt(raw_output: str) -> str:
+def build_component_format_repair_prompt(raw_output: str) -> str:
     return (
         "The previous response did not follow the required "
-        "---MOCK_PROPS_JSON---/---JSX_CODE--- format exactly.\n\n"
+        "---HTML_CODE--- format exactly.\n\n"
         f"Previous output:\n{raw_output}\n\n"
-        "Return the corrected component now, in the exact required format."
+        "Return the corrected HTML fragment now, in the exact required format."
     )
 
 
-def build_component_render_repair_prompt(jsx_code: str, mock_props: dict, render_error: str) -> str:
+def build_component_quality_repair_prompt(html_code: str, violation: str) -> str:
     """
-    Distinct from build_component_repair_prompt (output format issues): this is for JSX that
-    parsed fine but crashed when actually rendered in a real browser -- e.g. a ReferenceError
-    for an undefined sub-component name. Feeding back the real error is far more targeted than
-    a blind full regeneration.
+    Distinct from build_component_format_repair_prompt (output format issues): this is for a
+    fragment that parsed fine but failed the content-quality gate -- it's empty, whitespace-only,
+    or contains a generic placeholder message instead of real, populated example content.
+    Feeding back the exact violation is far more targeted than a blind full regeneration.
     """
 
     return f"""
-Your previously generated component crashed when rendered in a real browser, with this error:
+Your previously generated HTML fragment failed a content quality check:
 
-{render_error}
+{violation}
 
-Your previous JSX code:
-{jsx_code}
+Your previous HTML fragment:
+{html_code}
 
-Your previous MOCK_PROPS_JSON:
-{json.dumps(mock_props, indent=2)}
+Fix the issue above. This fragment is a VISUAL REFERENCE that must always show the feature
+working with realistic, fully-populated example content -- never an empty/loading/error/
+placeholder message, and never Lorem Ipsum. Ground every piece of content in the real
+content_elements and data entity fields you were given.
 
-Fix the runtime error above. A common cause is referencing a component, type, or variable name
-(for example, a per-row/per-item sub-component) that is not defined anywhere in this file -- see
-rule 9 in your instructions: this file must be fully self-contained. Inline that markup directly
-inside your `.map(...)` call instead of referencing an external name.
-
-Return the complete corrected component now, in the exact required format (both markers, full
-JSX -- not a patch).
+Return the complete corrected fragment now, in the exact required format (the marker plus a full
+HTML fragment -- not a patch, not commentary).
 """

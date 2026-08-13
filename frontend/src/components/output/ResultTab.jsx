@@ -17,6 +17,7 @@ import { useWorkspaceSelection } from "../workspace/WorkspaceSelectionContext";
 import { useRequirementConversationFlowContext } from "../workspace/RequirementConversationFlowContext";
 import { useDomainAgentFlowContext } from "../workspace/DomainAgentFlowContext";
 import { useArchitectureAgentFlowContext } from "../workspace/ArchitectureAgentFlowContext";
+import { useUiuxAgentFlowContext } from "../workspace/UiuxAgentFlowContext";
 import { useCoderAgentFlowContext } from "../workspace/CoderAgentFlowContext";
 import { useFeature, useSetActiveArtifactSelection } from "../../hooks/useFeatures";
 import { useApprovalMutation } from "../../hooks/useApprovalMutation";
@@ -29,13 +30,15 @@ const ACTIVE_SELECTION_ARTIFACT_TYPE_BY_STAGE = {
   domain: "enhanced_srs",
 };
 
-// Drives the "Approve and continue" popup + orchestration for the two stage transitions that need
-// it -- one config, one confirmingArtifactId state, one ConfirmDialog, instead of a second
-// parallel isEnhancedSrsApproval block duplicating requirement's own. `autoRun: true` (Domain ->
-// Architecture only) means confirming doesn't just switch the chat -- it also starts the next
-// agent's stream immediately, no separate manual click needed (a deliberate, different UX from
-// Requirement -> Domain, where a human explicitly guides the very first run instead -- see
-// ChatPanel's own proactive Domain Agent prompt).
+// Drives the "Approve and continue" popup + orchestration for the three stage transitions that
+// need it -- one config, one confirmingArtifactId state, one ConfirmDialog, instead of a separate
+// parallel block per stage duplicating requirement's own. `autoRun: true` means confirming
+// doesn't just switch the chat -- it also starts the next agent immediately, no separate manual
+// click needed (a deliberate, different UX from Requirement -> Domain, where a human explicitly
+// guides the very first run instead -- see ChatPanel's own proactive Domain Agent prompt).
+// Domain -> Architecture's autoRun starts a real STREAM (handleRunArchitectureStream); Architecture
+// -> UI/UX's autoRun instead fires a plain, non-streaming mutation (runUiux.mutate({})) -- UI/UX
+// Agent has no streaming backend route today, see UiuxAgentFlowContext's own docstring.
 const APPROVE_CONTINUATION_BY_STAGE = {
   requirement: {
     nextAgent: "domain",
@@ -50,6 +53,13 @@ const APPROVE_CONTINUATION_BY_STAGE = {
     title: "Approve this Enhanced SRS and start Architecture Agent?",
     message: (version) =>
       `Approving v${version} makes it the Enhanced SRS this feature uses going forward (any other approved Enhanced SRS version is superseded back to pending). Architecture Agent will start automatically and generate the Architecture Plan plus Use Case, Sequence, and Class diagrams -- watch it live in the Result panel.`,
+  },
+  architecture: {
+    nextAgent: "uiux",
+    autoRun: true,
+    title: "Approve this Architecture Plan and start UI/UX Agent?",
+    message: (version) =>
+      `Approving v${version} makes it the Architecture Plan this feature uses going forward (any other approved Architecture Plan version is superseded back to pending). UI/UX Agent will start automatically and generate page-level UI metadata, component code, and preview screenshots -- watch it live in the Result panel.`,
   },
 };
 
@@ -72,7 +82,23 @@ const APPROVE_CONTINUATION_BY_STAGE = {
 // decision for this stage -- approving the generated code -- still happens exactly as before,
 // through GovernancePanel's own Approve/Reject panel below (STAGE_GATING_ARTIFACT.coder points at
 // code_diff/markdown, read from the unfiltered allArtifacts, independent of this list).
-const UNLISTED_ARTIFACT_TYPES = ["domain_improvements", "code_plan", "code_diff", "code_manifest", "requirement_code_map"];
+// use_case_diagram/sequence_diagram/class_diagram: per direct user request, diagrams no longer
+// have an independent approval decision -- approving/rejecting/requesting revision on the
+// Architecture Plan cascades the same decision to them automatically on the backend (see
+// approval_service.py's _cascade_architecture_plan_decision). They're viewable only through
+// ArchitectureDiagramsGallery now, not listed generically here.
+// ui_metadata/ui_integration_manifest/ui_component_code/ui_page_html: same pattern, per direct
+// user request -- the ONE artifact a human interacts with for the uiux stage is now
+// ui_preview_screenshot (STAGE_GATING_ARTIFACT.uiux); approving/rejecting/requesting revision on
+// it cascades the same decision to all four of these, of the same version, automatically (see
+// approval_service.py's _cascade_uiux_screenshot_decision). Raw metadata/manifest/component/page
+// source is still viewable via the Preview tab and the "View" link on the Preview Screenshot
+// itself where relevant -- just not as separate listed/approvable rows here.
+const UNLISTED_ARTIFACT_TYPES = [
+  "domain_improvements", "code_plan", "code_diff", "code_manifest", "requirement_code_map",
+  "use_case_diagram", "sequence_diagram", "class_diagram",
+  "ui_metadata", "ui_integration_manifest", "ui_component_code", "ui_page_html",
+];
 
 // setup_instructions is the one Coder Agent artifact still worth showing a human directly (real
 // npm/build/run instructions for the generated project) -- but every past version is superseded
@@ -236,6 +262,12 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
   const coderPhase = isCoderRevising ? coderRevisionPhase : coderRunPhase;
   const coderPhaseStartedAt = isCoderRevising ? coderRevisionPhaseStartedAt : coderRunPhaseStartedAt;
 
+  // UI/UX Agent has no streaming route -- runUiux is one plain mutation shared (via
+  // UiuxAgentFlowContext) with ChatPanel's own composer, so a run auto-started from this
+  // component's handleConfirmedApprove is still visible as "pending" wherever else it's read.
+  const { runUiux } = useUiuxAgentFlowContext();
+  const isUiuxGenerating = stage === "uiux" && runUiux.isPending;
+
   // Deduped for display: every gating artifact_type saves a JSON+Markdown pair sharing one
   // version, and listing both as separate rows read as the same version being duplicated (a real
   // reported issue) -- see dedupeArtifactVersions's own docstring.
@@ -299,13 +331,18 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
     selectAgent(approveContinuation.nextAgent);
 
     if (approveContinuation.autoRun) {
-      // Not awaited: the multi-minute run's own state already lives in the always-mounted
-      // ArchitectureAgentFlowProvider, so nothing is lost by not waiting here -- awaiting would
-      // instead hold this dialog's "Approving..." spinner up for the entire run. No pin/selection
-      // call is needed first either -- the approval above just reverted every other Enhanced SRS
-      // version back to pending (exclusivity), so the pin-aware lookup on the backend resolves to
-      // exactly the version just approved.
-      handleRunArchitectureStream({ use_enhanced_srs_if_available: true, architecture_notes: null, human_comment: null });
+      // Not awaited: the run's own state already lives in the always-mounted flow provider (an
+      // ArchitectureAgentFlowContext stream, or a UiuxAgentFlowContext mutation), so nothing is
+      // lost by not waiting here -- awaiting would instead hold this dialog's "Approving..."
+      // spinner up for the entire run. No pin/selection call is needed first either -- the
+      // approval above just reverted every other version of this artifact_type back to pending
+      // (exclusivity), so the pin-aware lookup on the backend resolves to exactly the version
+      // just approved.
+      if (approveContinuation.nextAgent === "architecture") {
+        handleRunArchitectureStream({ use_enhanced_srs_if_available: true, architecture_notes: null, human_comment: null });
+      } else if (approveContinuation.nextAgent === "uiux") {
+        runUiux.mutate({});
+      }
     }
   }
 
@@ -370,6 +407,16 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
           isFinalizing={Boolean(coderPhase)}
           finalizingLabel={coderPhase?.label}
           phaseStartedAt={coderPhaseStartedAt}
+        />
+      ) : isUiuxGenerating ? (
+        <LiveGenerationView
+          displayText=""
+          hasStarted={false}
+          connectingLabel="Connecting to UI/UX Agent..."
+          generatingLabel="Generating pages, components, and previews..."
+          isFinalizing
+          finalizingLabel="Generating pages, components, and previews..."
+          phaseStartedAt={runUiux.submittedAt || null}
         />
       ) : versions.length === 0 && isRequirementStage ? (
         <RequirementSrsOutputPanel />

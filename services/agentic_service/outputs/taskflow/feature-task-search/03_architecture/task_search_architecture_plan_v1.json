@@ -2,13 +2,13 @@
   "document_control": {
     "document_title": "Architecture Plan: Task Search",
     "document_type": "Feature Architecture Plan",
-    "project_id": "proj_53284a63",
+    "project_id": "proj_revladder",
     "project_name": "TaskFlow",
-    "project_type": "SaaS",
-    "feature_id": "feature_244e26d1",
+    "project_type": "General",
+    "feature_id": "feature_revladder",
     "feature_name": "Task Search",
     "target_stack": "MERN",
-    "architecture_style": "modular",
+    "architecture_style": "mvc",
     "version": "v1",
     "generated_by": "Architecture Agent",
     "input_artifacts": [
@@ -18,18 +18,11 @@
     "approval_status": "pending"
   },
   "feature_overview": {
-    "business_goal": "Deliver the Task Search feature for the SaaS application.",
+    "business_goal": "Support the Task Search feature.",
     "scope": [
-      "Implement search functionality for tasks by keyword in title or description",
-      "Display matching tasks as a list with links to task detail pages",
-      "Support real-time search as user types"
+      "Design the approved Task Search feature only."
     ],
-    "out_of_scope": [
-      "Search across multiple projects or workspaces",
-      "Advanced filtering or sorting options",
-      "Search in task comments or tags",
-      "Full-text search with natural language processing"
-    ],
+    "out_of_scope": [],
     "user_roles": [
       "Registered User"
     ],
@@ -39,46 +32,31 @@
     "functional_requirements": [
       {
         "id": "FR-001",
-        "description": "Search tasks by keyword in their title or description, showing matching tasks as a list with links to each task's detail page.",
-        "priority": "Must Have"
+        "description": "Users can search tasks by keyword."
       }
     ],
     "acceptance_criteria": [
       {
         "id": "AC-001",
-        "description": "When a user enters a keyword, matching tasks are displayed in a list with links to their detail pages."
-      },
-      {
-        "id": "AC-002",
-        "description": "Search is case-insensitive and returns results from both title and description fields."
-      },
-      {
-        "id": "AC-003",
-        "description": "Search results load within 2 seconds for up to 1000 tasks."
+        "description": "Matching tasks are displayed."
       }
     ],
     "validation_rules": [
       {
         "id": "VR-001",
-        "description": "Search keyword must be at least 2 characters long to initiate search."
+        "description": "Search query must not be empty."
       }
     ],
     "non_functional_requirements": [
       {
         "id": "NFR-001",
-        "description": "Search results should load within 2 seconds for up to 1000 tasks.",
-        "category": "Performance"
-      },
-      {
-        "id": "NFR-002",
-        "description": "The search feature must support case-insensitive matching.",
-        "category": "Usability"
+        "description": "Search responds within 1s."
       }
     ]
   },
   "architecture_approach": {
-    "architecture_style": "modular",
-    "architecture_rationale": "Use modular to keep the Task Search feature separated into presentation, business logic, and data responsibilities where applicable.",
+    "architecture_style": "mvc",
+    "architecture_rationale": "Use mvc to keep the Task Search feature separated into presentation, business logic, and data responsibilities where applicable.",
     "frontend_overview": "Frontend design should provide the user-facing entry points, inputs, states, and feedback required by the approved SRS.",
     "backend_overview": "Backend design should process feature requests, enforce business rules, validate inputs, and return structured responses.",
     "data_overview": "Data design should support the data requirements defined in the approved SRS.",
@@ -94,14 +72,11 @@
       "actors": [
         "Registered User"
       ],
-      "external_systems": [
-        "Task listing API endpoint must be available",
-        "Task detail page routes must be defined"
-      ],
+      "external_systems": [],
       "feature_boundary": "Task Search feature boundary.",
       "main_interactions": [
         "Registered User interacts with the Task Search feature.",
-        "Search tasks by keyword in their title or description, showing matching tasks as a list with links to each task's detail page."
+        "Users can search tasks by keyword."
       ]
     },
     "logical_view": {
@@ -110,11 +85,8 @@
           "name": "TaskSearchFrontendModule",
           "responsibility": "Handle frontend responsibilities for the Task Search feature.",
           "derived_from": [
-            "Search bar component at the top of the task list view",
-            "Auto-suggest or live search results as user types",
-            "Clear visual indication of matched tasks",
-            "User enters a keyword in the search bar",
-            "Keyword can be a partial match in title or description"
+            "A search input box",
+            "Search keyword"
           ]
         }
       ],
@@ -123,8 +95,8 @@
           "name": "TaskSearchBackendModule",
           "responsibility": "Handle backend responsibilities for the Task Search feature.",
           "derived_from": [
-            "Search tasks by keyword in their title or description, showing matching tasks as a list with links to each task's detail page.",
-            "Search keyword must be at least 2 characters long to initiate search."
+            "Users can search tasks by keyword.",
+            "Search query must not be empty."
           ]
         }
       ],
@@ -142,27 +114,14 @@
           "name": "TaskSearchDataModule",
           "responsibility": "Manage data access required by the feature.",
           "derived_from": [
-            "Task title and description fields must be indexed for search",
-            "Task ID and detail page URL must be included in search results"
+            "Represents a matched task"
           ]
         }
       ],
       "integration_points": [
         {
           "type": "API",
-          "description": "API endpoint to handle search requests with keyword parameter"
-        },
-        {
-          "type": "API",
-          "description": "API returns structured JSON with task details and links"
-        },
-        {
-          "type": "Dependency",
-          "description": "Task listing API endpoint must be available"
-        },
-        {
-          "type": "Dependency",
-          "description": "Task detail page routes must be defined"
+          "description": "Search tasks"
         }
       ]
     },
@@ -171,18 +130,7 @@
         {
           "endpoint": "/api/task-search",
           "method": "GET",
-          "purpose": "Support the Task Search feature.",
-          "request_model": "TaskSearchRequest",
-          "success_response_model": "TaskSearchSuccessResponse",
-          "error_response_model": "TaskSearchErrorResponse",
-          "related_requirements": [
-            "FR-001"
-          ]
-        },
-        {
-          "endpoint": "/api/task-search",
-          "method": "GET",
-          "purpose": "Support the Task Search feature.",
+          "purpose": "Search tasks",
           "request_model": "TaskSearchRequest",
           "success_response_model": "TaskSearchSuccessResponse",
           "error_response_model": "TaskSearchErrorResponse",
@@ -196,15 +144,9 @@
           "name": "TaskSearchRequest",
           "fields": [
             {
-              "name": "field",
+              "name": "query",
               "type": "string",
-              "format": "User enters a keyword in the search bar",
-              "required": true
-            },
-            {
-              "name": "field",
-              "type": "string",
-              "format": "Keyword can be a partial match in title or description",
+              "format": "Search keyword",
               "required": true
             }
           ],
@@ -219,9 +161,9 @@
           "type": "success",
           "fields": [
             {
-              "name": "field",
-              "type": "string",
-              "description": "List of matching tasks with title and link to detail page"
+              "name": "results",
+              "type": "array",
+              "description": "Matching tasks"
             }
           ],
           "related_requirements": [
@@ -231,13 +173,7 @@
         {
           "name": "TaskSearchErrorResponse",
           "type": "error",
-          "fields": [
-            {
-              "name": "field",
-              "type": "string",
-              "description": "Display of zero results message when no matches found"
-            }
-          ],
+          "fields": [],
           "related_requirements": []
         }
       ]
@@ -245,37 +181,11 @@
     "data_view": {
       "data_entities": [
         {
-          "name": "Task SearchDataEntity1",
-          "purpose": "Task title and description fields must be indexed for search",
+          "name": "TaskSearchResult",
+          "purpose": "Represents a matched task",
           "fields": [
             {
-              "name": "taskTitleAndDescriptionFiel",
-              "type": "String",
-              "required": false
-            },
-            {
-              "name": "dsMustBeIndexedForSearch",
-              "type": "String",
-              "required": false
-            }
-          ],
-          "relationships": [],
-          "indexes_or_constraints": [],
-          "related_requirements": [
-            "FR-001"
-          ]
-        },
-        {
-          "name": "Task SearchDataEntity2",
-          "purpose": "Task ID and detail page URL must be included in search results",
-          "fields": [
-            {
-              "name": "taskIDAndDetailPageURLMus",
-              "type": "String",
-              "required": false
-            },
-            {
-              "name": "tBeIncludedInSearchResults",
+              "name": "representsAMatchedTask",
               "type": "String",
               "required": false
             }
@@ -288,13 +198,12 @@
         }
       ],
       "storage_rules": [
-        "Task title and description fields must be indexed for search",
-        "Task ID and detail page URL must be included in search results"
+        "Represents a matched task"
       ],
       "data_validation_rules": [
         {
           "rule_id": "VR-001",
-          "rule": "Search keyword must be at least 2 characters long to initiate search.",
+          "rule": "Search query must not be empty.",
           "related_requirements": [
             "VR-001"
           ]
@@ -305,21 +214,7 @@
       "main_success_flow": [
         {
           "id": "AC-001",
-          "description": "When a user enters a keyword, matching tasks are displayed in a list with links to their detail pages.",
-          "related_requirements": [
-            "FR-001"
-          ]
-        },
-        {
-          "id": "AC-002",
-          "description": "Search is case-insensitive and returns results from both title and description fields.",
-          "related_requirements": [
-            "FR-001"
-          ]
-        },
-        {
-          "id": "AC-003",
-          "description": "Search results load within 2 seconds for up to 1000 tasks.",
+          "description": "Matching tasks are displayed.",
           "related_requirements": [
             "FR-001"
           ]
@@ -329,10 +224,8 @@
       "exception_flows": [],
       "state_changes": [
         {
-          "description": "Search is case-insensitive and returns results from both title and description fields.",
-          "related_requirements": [
-            "AC-002"
-          ]
+          "description": "Feature state changes should follow the approved Task Search acceptance criteria.",
+          "related_requirements": []
         }
       ]
     },
@@ -340,7 +233,7 @@
       "validation_errors": [
         {
           "source_id": "VR-001",
-          "condition": "Search keyword must be at least 2 characters long to initiate search.",
+          "condition": "Search query must not be empty.",
           "handling": "Return a clear validation message and prevent invalid processing."
         }
       ],
@@ -356,44 +249,21 @@
     "security_authorization_view": {
       "authentication_design": [],
       "authorization_design": [],
-      "sensitive_data_rules": [
-        "Sensitive values must not be exposed in responses, logs, or generated artifacts."
-      ],
-      "risk_mitigations": [
-        {
-          "risk": "{'description': 'Search performance degradation with large datasets'}",
-          "mitigation": "Apply suitable mitigation based on project security policy.",
-          "related_requirements": [
-            "FR-001"
-          ]
-        },
-        {
-          "risk": "{'description': 'Inconsistent search behavior due to indexing issues'}",
-          "mitigation": "Apply suitable mitigation based on project security policy.",
-          "related_requirements": [
-            "FR-001"
-          ]
-        }
-      ]
+      "sensitive_data_rules": [],
+      "risk_mitigations": []
     },
     "quality_attributes_view": {
-      "performance": [
+      "performance": [],
+      "usability": [],
+      "reliability": [],
+      "scalability": [],
+      "maintainability": [
         {
           "nfr_id": "NFR-001",
-          "description": "Search results should load within 2 seconds for up to 1000 tasks.",
-          "design_decision": "Optimize design to satisfy the stated performance expectation."
-        }
-      ],
-      "usability": [
-        {
-          "nfr_id": "NFR-002",
-          "description": "The search feature must support case-insensitive matching.",
+          "description": "Search responds within 1s.",
           "design_decision": "Design must satisfy this non-functional requirement."
         }
       ],
-      "reliability": [],
-      "scalability": [],
-      "maintainability": [],
       "accessibility": []
     }
   },
@@ -403,27 +273,19 @@
         "name": "TaskSearchFrontendModule",
         "responsibility": "Handle frontend responsibilities for the Task Search feature.",
         "derived_from": [
-          "Search bar component at the top of the task list view",
-          "Auto-suggest or live search results as user types",
-          "Clear visual indication of matched tasks",
-          "User enters a keyword in the search bar",
-          "Keyword can be a partial match in title or description"
+          "A search input box",
+          "Search keyword"
         ]
       }
     ],
     "pages_or_components": [
       {
-        "description": "Search bar component at the top of the task list view"
-      },
-      {
-        "description": "Auto-suggest or live search results as user types"
-      },
-      {
-        "description": "Clear visual indication of matched tasks"
+        "id": "UI-001",
+        "description": "A search input box"
       }
     ],
     "state_and_feedback": [
-      "When a user enters a keyword, matching tasks are displayed in a list with links to their detail pages."
+      "Matching tasks are displayed."
     ]
   },
   "backend_architecture_plan": {
@@ -432,8 +294,8 @@
         "name": "TaskSearchBackendModule",
         "responsibility": "Handle backend responsibilities for the Task Search feature.",
         "derived_from": [
-          "Search tasks by keyword in their title or description, showing matching tasks as a list with links to each task's detail page.",
-          "Search keyword must be at least 2 characters long to initiate search."
+          "Users can search tasks by keyword.",
+          "Search query must not be empty."
         ]
       }
     ],
@@ -449,27 +311,14 @@
         "name": "TaskSearchDataModule",
         "responsibility": "Manage data access required by the feature.",
         "derived_from": [
-          "Task title and description fields must be indexed for search",
-          "Task ID and detail page URL must be included in search results"
+          "Represents a matched task"
         ]
       }
     ],
     "integration_points": [
       {
         "type": "API",
-        "description": "API endpoint to handle search requests with keyword parameter"
-      },
-      {
-        "type": "API",
-        "description": "API returns structured JSON with task details and links"
-      },
-      {
-        "type": "Dependency",
-        "description": "Task listing API endpoint must be available"
-      },
-      {
-        "type": "Dependency",
-        "description": "Task detail page routes must be defined"
+        "description": "Search tasks"
       }
     ]
   },
@@ -477,7 +326,7 @@
     "input_validation": [
       {
         "rule_id": "VR-001",
-        "rule": "Search keyword must be at least 2 characters long to initiate search.",
+        "rule": "Search query must not be empty.",
         "related_requirements": [
           "VR-001"
         ]
@@ -486,7 +335,7 @@
     "processing_validation": [
       {
         "source_id": "VR-001",
-        "condition": "Search keyword must be at least 2 characters long to initiate search.",
+        "condition": "Search query must not be empty.",
         "handling": "Return a clear validation message and prevent invalid processing."
       }
     ]
@@ -497,30 +346,25 @@
       "task": "Create or update frontend screen/components for the Task Search feature.",
       "layer": "frontend",
       "suggested_files": [
-        "frontend/src/pages/TaskSearch.jsx",
-        "frontend/src/components/TaskSearchForm.jsx"
+        "app/task-search/page.tsx",
+        "components/TaskSearchForm.tsx"
       ],
       "related_requirements": [
         "FR-001",
-        "AC-001",
-        "AC-002",
-        "AC-003"
+        "AC-001"
       ]
     },
     {
       "task_id": "TASK-002",
-      "task": "Implement backend route/controller/service flow for the Task Search API expectations.",
+      "task": "Implement Next.js Route Handler(s) for the Task Search API expectations.",
       "layer": "backend",
       "suggested_files": [
-        "backend/routes/task_search.routes.js",
-        "backend/controllers/task_search.controller.js",
-        "backend/services/task_search.service.js"
+        "app/api/task-search/route.ts",
+        "models/TaskSearch.ts"
       ],
       "related_requirements": [
         "FR-001",
-        "AC-001",
-        "AC-002",
-        "AC-003"
+        "AC-001"
       ]
     },
     {
@@ -552,9 +396,7 @@
       "layer": "backend/frontend",
       "suggested_files": [],
       "related_requirements": [
-        "AC-001",
-        "AC-002",
-        "AC-003"
+        "AC-001"
       ]
     },
     {
@@ -564,8 +406,7 @@
       "suggested_files": [],
       "related_requirements": [
         "FR-001",
-        "NFR-001",
-        "NFR-002"
+        "NFR-001"
       ]
     }
   ],
@@ -573,30 +414,17 @@
     "backend": {
       "files": [
         {
-          "path": "server/src/routes/task-search.routes.js",
+          "path": "app/api/task-search/route.ts",
           "action": "create",
-          "purpose": "Express router implementing every Task Search API endpoint, with request validation before any handler logic.",
+          "purpose": "Next.js Route Handler implementing GET for Task Search (/api/task-search), with request validation before any handler logic.",
           "implements_endpoints": [
-            "/api/task-search",
             "/api/task-search"
           ]
         },
         {
-          "path": "server/src/app.js",
-          "action": "modify",
-          "purpose": "Mount the new Task Search router with require(...) + app.use(...) inserted at the // FEATURE_ROUTES_END marker.",
-          "implements_endpoints": []
-        },
-        {
-          "path": "server/src/models/TaskSearchDataEntity1.js",
+          "path": "models/TaskSearchResult.ts",
           "action": "create",
-          "purpose": "Mongoose model for the Task SearchDataEntity1 entity.",
-          "implements_endpoints": []
-        },
-        {
-          "path": "server/src/models/TaskSearchDataEntity2.js",
-          "action": "create",
-          "purpose": "Mongoose model for the Task SearchDataEntity2 entity.",
+          "purpose": "Mongoose model for the TaskSearchResult entity (must use the `mongoose.models.TaskSearchResult || mongoose.model(...)` guard to avoid OverwriteModelError).",
           "implements_endpoints": []
         }
       ],
@@ -606,78 +434,27 @@
           "path": "/api/task-search",
           "request_body": [
             {
-              "field": "field",
+              "field": "query",
               "type": "string",
               "required": true,
-              "validation": "User enters a keyword in the search bar"
-            },
-            {
-              "field": "field",
-              "type": "string",
-              "required": true,
-              "validation": "Keyword can be a partial match in title or description"
+              "validation": "Search keyword"
             }
           ],
           "response": "TaskSearchSuccessResponse",
           "error_cases": [
             "400 when required request fields are missing or invalid",
-            "{'source_id': 'VR-001', 'condition': 'Search keyword must be at least 2 characters long to initiate search.', 'handling': 'Return a clear validation message and prevent invalid processing.'}",
-            "500 when an unexpected server error occurs"
-          ]
-        },
-        {
-          "method": "GET",
-          "path": "/api/task-search",
-          "request_body": [
-            {
-              "field": "field",
-              "type": "string",
-              "required": true,
-              "validation": "User enters a keyword in the search bar"
-            },
-            {
-              "field": "field",
-              "type": "string",
-              "required": true,
-              "validation": "Keyword can be a partial match in title or description"
-            }
-          ],
-          "response": "TaskSearchSuccessResponse",
-          "error_cases": [
-            "400 when required request fields are missing or invalid",
-            "{'source_id': 'VR-001', 'condition': 'Search keyword must be at least 2 characters long to initiate search.', 'handling': 'Return a clear validation message and prevent invalid processing.'}",
+            "{'source_id': 'VR-001', 'condition': 'Search query must not be empty.', 'handling': 'Return a clear validation message and prevent invalid processing.'}",
             "500 when an unexpected server error occurs"
           ]
         }
       ],
       "models": [
         {
-          "name": "Task SearchDataEntity1",
-          "file": "server/src/models/TaskSearchDataEntity1.js",
+          "name": "TaskSearchResult",
+          "file": "models/TaskSearchResult.ts",
           "fields": [
             {
-              "name": "taskTitleAndDescriptionFiel",
-              "type": "String",
-              "constraints": ""
-            },
-            {
-              "name": "dsMustBeIndexedForSearch",
-              "type": "String",
-              "constraints": ""
-            }
-          ]
-        },
-        {
-          "name": "Task SearchDataEntity2",
-          "file": "server/src/models/TaskSearchDataEntity2.js",
-          "fields": [
-            {
-              "name": "taskIDAndDetailPageURLMus",
-              "type": "String",
-              "constraints": ""
-            },
-            {
-              "name": "tBeIncludedInSearchResults",
+              "name": "representsAMatchedTask",
               "type": "String",
               "constraints": ""
             }
@@ -688,21 +465,17 @@
     "frontend": {
       "pages": [
         {
-          "path": "client/src/pages/TaskSearchPage.jsx",
+          "path": "app/task-search/page.tsx",
           "route": "/task-search",
-          "purpose": "Main page for the Task Search feature. UI expectations: Search bar component at the top of the task list view; Auto-suggest or live search results as user types; Clear visual indication of matched tasks",
+          "purpose": "Main page for the Task Search feature. UI expectations: A search input box",
           "uses_components": []
         }
       ],
       "components_to_reuse": [],
       "services": [
         {
-          "path": "client/src/services/taskSearchService.js",
+          "path": "lib/api/taskSearch.ts",
           "functions": [
-            {
-              "name": "getTaskSearch",
-              "calls_endpoint": "GET /api/task-search"
-            },
             {
               "name": "getTaskSearch",
               "calls_endpoint": "GET /api/task-search"
@@ -726,18 +499,18 @@
       }
     },
     "implementation_order": [
-      "Create the Mongoose model(s): server/src/models/TaskSearchDataEntity1.js, server/src/models/TaskSearchDataEntity2.js",
-      "Create server/src/routes/task-search.routes.js implementing every endpoint above, validating required request fields before use (400 on missing/malformed).",
-      "Mount the new router in server/src/app.js at the // FEATURE_ROUTES_END marker.",
-      "Create client/src/services/taskSearchService.js with one function per endpoint.",
-      "Create client/src/pages/TaskSearchPage.jsx, reusing approved UI/UX components where available instead of re-authoring their markup.",
-      "Register <Route path=\"/task-search\"> AND a HomePage <Link> in client/src/App.jsx at the FEATURE_LINKS markers -- a route with no link is not complete."
+      "Create the Mongoose model(s): models/TaskSearchResult.ts",
+      "Create app/api/task-search/route.ts implementing /api/task-search, validating required request fields before use (400 on missing/malformed) -- it is automatically live the instant the file exists, no separate mount step needed.",
+      "Create lib/api/taskSearch.ts with one function per endpoint.",
+      "Create app/task-search/page.tsx (a Client Component, `\"use client\"` as its first line), reusing approved UI/UX components where available instead of re-authoring their markup.",
+      "Register a real <Link href=\"/task-search\"> in app/page.tsx at the FEATURE_LINKS markers -- a page with no link to it is not complete."
     ],
     "constraints": [
-      "The Express+Vite scaffold already exists and works -- never recreate server/src/app.js, server/src/server.js, client/src/main.jsx, client/vite.config.js, or client/index.html.",
-      "Mount new backend routers by patching the // FEATURE_ROUTES_END marker in server/src/app.js -- never rewrite the file.",
-      "Register new pages by adding both a <Route> and a reachable <Link> in client/src/App.jsx (FEATURE_LINKS markers) -- an unreachable page is not done.",
-      "Reuse approved UI/UX components verbatim (via read_ui_component) instead of re-authoring their markup."
+      "The Next.js App Router scaffold already exists and works -- never recreate app/layout.tsx, next.config.mjs, tsconfig.json, or lib/mongodb.ts.",
+      "A Route Handler (route.ts) is live the instant it exists -- there is no router to mount it on, unlike an Express app.js.",
+      "Register new pages by adding a real <Link href=\"...\"> in app/page.tsx (FEATURE_LINKS markers) -- an unreachable page is not done.",
+      "Every Mongoose model file must use the `mongoose.models.X || mongoose.model(...)` guard to avoid OverwriteModelError.",
+      "Approved UI/UX output is a visual reference, not code to import -- use read_ui_component_design/read_ui_page_design to see the approved HTML+Tailwind design, then write real TSX that faithfully matches its structure/classes/content."
     ]
   },
   "traceability_matrix": [
@@ -745,164 +518,67 @@
       "source_id": "FR-001",
       "source_type": "FR",
       "architecture_plan_section": "Design Views / Detailed Design Decisions",
-      "design_element": "Search tasks by keyword in their title or description, showing matching tasks as a list with links to each task's detail page.",
+      "design_element": "Users can search tasks by keyword.",
       "coverage_status": "covered"
     },
     {
       "source_id": "AC-001",
       "source_type": "AC",
       "architecture_plan_section": "Behavior View / Error Handling View",
-      "design_element": "When a user enters a keyword, matching tasks are displayed in a list with links to their detail pages.",
-      "coverage_status": "covered"
-    },
-    {
-      "source_id": "AC-002",
-      "source_type": "AC",
-      "architecture_plan_section": "Behavior View / Error Handling View",
-      "design_element": "Search is case-insensitive and returns results from both title and description fields.",
-      "coverage_status": "covered"
-    },
-    {
-      "source_id": "AC-003",
-      "source_type": "AC",
-      "architecture_plan_section": "Behavior View / Error Handling View",
-      "design_element": "Search results load within 2 seconds for up to 1000 tasks.",
+      "design_element": "Matching tasks are displayed.",
       "coverage_status": "covered"
     },
     {
       "source_id": "VR-001",
       "source_type": "VR",
       "architecture_plan_section": "Interface View / Data View / Error Handling View",
-      "design_element": "Search keyword must be at least 2 characters long to initiate search.",
+      "design_element": "Search query must not be empty.",
       "coverage_status": "covered"
     },
     {
       "source_id": "NFR-001",
       "source_type": "NFR",
       "architecture_plan_section": "Quality Attributes View",
-      "design_element": "Search results should load within 2 seconds for up to 1000 tasks.",
-      "coverage_status": "covered"
-    },
-    {
-      "source_id": "NFR-002",
-      "source_type": "NFR",
-      "architecture_plan_section": "Quality Attributes View",
-      "design_element": "The search feature must support case-insensitive matching.",
-      "coverage_status": "covered"
-    },
-    {
-      "source_id": "CONSTRAINT-001",
-      "source_type": "Constraint",
-      "architecture_plan_section": "Design Considerations / Architecture Overview",
-      "design_element": "Search must be implemented using the MERN stack",
-      "coverage_status": "covered"
-    },
-    {
-      "source_id": "CONSTRAINT-002",
-      "source_type": "Constraint",
-      "architecture_plan_section": "Design Considerations / Architecture Overview",
-      "design_element": "No external search engines or services allowed",
-      "coverage_status": "covered"
-    },
-    {
-      "source_id": "RISK-001",
-      "source_type": "Risk",
-      "architecture_plan_section": "Design Considerations / Security and Authorization View",
-      "design_element": "Search performance degradation with large datasets",
-      "coverage_status": "covered"
-    },
-    {
-      "source_id": "RISK-002",
-      "source_type": "Risk",
-      "architecture_plan_section": "Design Considerations / Security and Authorization View",
-      "design_element": "Inconsistent search behavior due to indexing issues",
-      "coverage_status": "covered"
-    },
-    {
-      "source_id": "DEPENDENCY-001",
-      "source_type": "Dependency",
-      "architecture_plan_section": "Design Context / Logical View",
-      "design_element": "Task listing API endpoint must be available",
-      "coverage_status": "covered"
-    },
-    {
-      "source_id": "DEPENDENCY-002",
-      "source_type": "Dependency",
-      "architecture_plan_section": "Design Context / Logical View",
-      "design_element": "Task detail page routes must be defined",
+      "design_element": "Search responds within 1s.",
       "coverage_status": "covered"
     },
     {
       "source_id": "DATA-001",
       "source_type": "Data",
       "architecture_plan_section": "Data View",
-      "design_element": "Task title and description fields must be indexed for search",
-      "coverage_status": "covered"
-    },
-    {
-      "source_id": "DATA-002",
-      "source_type": "Data",
-      "architecture_plan_section": "Data View",
-      "design_element": "Task ID and detail page URL must be included in search results",
+      "design_element": "Represents a matched task",
       "coverage_status": "covered"
     },
     {
       "source_id": "API-001",
       "source_type": "API",
       "architecture_plan_section": "Interface View",
-      "design_element": "API endpoint to handle search requests with keyword parameter",
-      "coverage_status": "covered"
-    },
-    {
-      "source_id": "API-002",
-      "source_type": "API",
-      "architecture_plan_section": "Interface View",
-      "design_element": "API returns structured JSON with task details and links",
+      "design_element": "Search tasks",
       "coverage_status": "covered"
     },
     {
       "source_id": "UI-001",
       "source_type": "UI",
       "architecture_plan_section": "Context View / Logical View",
-      "design_element": "Search bar component at the top of the task list view",
-      "coverage_status": "covered"
-    },
-    {
-      "source_id": "UI-002",
-      "source_type": "UI",
-      "architecture_plan_section": "Context View / Logical View",
-      "design_element": "Auto-suggest or live search results as user types",
-      "coverage_status": "covered"
-    },
-    {
-      "source_id": "UI-003",
-      "source_type": "UI",
-      "architecture_plan_section": "Context View / Logical View",
-      "design_element": "Clear visual indication of matched tasks",
+      "design_element": "A search input box",
       "coverage_status": "covered"
     }
   ],
-  "assumptions": [
-    "Users will have access to task titles and descriptions in the database",
-    "Task detail pages are already implemented and accessible via URL",
-    "Search performance is acceptable for up to 1000 tasks"
-  ],
+  "assumptions": [],
   "constraints": [
-    "Search must be implemented using the MERN stack",
-    "No external search engines or services allowed"
+    "Search must be rate-limited to 10 requests per minute."
   ],
-  "risks": [
-    {
-      "description": "Search performance degradation with large datasets"
-    },
-    {
-      "description": "Inconsistent search behavior due to indexing issues"
-    }
-  ],
-  "dependencies": [
-    "Task listing API endpoint must be available",
-    "Task detail page routes must be defined"
-  ],
-  "revision_metadata": null,
-  "human_approval_note": "This Architecture Plan must be reviewed and approved before the UI/UX Agent or Coder Agent starts. AUTOMATIC VALIDATION FAILED even on the deterministic SRS-derived fallback -- review carefully before approving: Duplicate use case name found: Find Specific Tasks Quickly Using"
+  "risks": [],
+  "dependencies": [],
+  "revision_metadata": {
+    "revision_type": "architecture_plan_revision",
+    "revision_comment": "Add a constraint that search must be rate-limited to 10 requests per minute.",
+    "revised_by": "human_user",
+    "revision_summary": "Added a rate-limiting constraint as requested.",
+    "applied_changes": [
+      "Added to constraints: Search must be rate-limited to 10 requests per minute."
+    ],
+    "unmatched_operations": []
+  },
+  "human_approval_note": "This Architecture Plan must be reviewed and approved before the UI/UX Agent or Coder Agent starts."
 }

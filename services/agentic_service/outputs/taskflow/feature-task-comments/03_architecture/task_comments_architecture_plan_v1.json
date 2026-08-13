@@ -530,7 +530,7 @@
       "A Route Handler (route.ts) is live the instant it exists -- there is no router to mount it on, unlike an Express app.js.",
       "Register new pages by adding a real <Link href=\"...\"> in app/page.tsx (FEATURE_LINKS markers) -- an unreachable page is not done.",
       "Every Mongoose model file must use the `mongoose.models.X || mongoose.model(...)` guard to avoid OverwriteModelError.",
-      "Reuse approved UI/UX components verbatim (via read_ui_component) instead of re-authoring their markup."
+      "Approved UI/UX output is a visual reference, not code to import -- use read_ui_component_design/read_ui_page_design to see the approved HTML+Tailwind design, then write real TSX that faithfully matches its structure/classes/content."
     ]
   },
   "traceability_matrix": [

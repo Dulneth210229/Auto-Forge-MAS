@@ -31,6 +31,19 @@ class UIMetadataValidator:
     Generic coverage validator for ui_metadata_json against an approved SRS.
     """
 
+    # Real, confirmed bug (Sample E-commerce / Item Listing feature): the model echoed the
+    # prompt's own example text/field name back verbatim instead of writing real content -- these
+    # are the exact strings that showed up in practice, kept case-insensitive/stripped so the
+    # check survives minor rewording.
+    _PLACEHOLDER_CONTENT_ELEMENTS = {
+        "propname",
+        "short description of the prop",
+        "real, specific content this component displays, e.g. item name, item price",
+        "content",
+        "value",
+        "data",
+    }
+
     def validate(self, srs_json: dict[str, Any], ui_metadata_json: dict[str, Any]) -> None:
         errors: list[str] = []
 
@@ -74,6 +87,8 @@ class UIMetadataValidator:
             components = page.get("components", [])
             if not isinstance(components, list):
                 errors.append(f"pages[{index}].components must be a list.")
+            else:
+                errors.extend(self._validate_content_elements(index, page.get("page_id"), components))
 
             states = page.get("states", [])
             required_states = {"idle", "loading", "error", "success"}
@@ -82,6 +97,41 @@ class UIMetadataValidator:
                     f"pages[{index}] ({page.get('page_id')}) is missing required states: "
                     f"{sorted(required_states - set(states))}"
                 )
+
+        return errors
+
+    def _validate_content_elements(
+        self, page_index: int, page_id: Any, components: list[Any]
+    ) -> list[str]:
+        """
+        Catches the real, confirmed bug behind an "empty UI" screenshot at the source: a
+        component whose declared content is empty or a literal, unfilled echo of the prompt's own
+        example text never had real content to render in the first place, regardless of what the
+        component-generation step later does with it.
+        """
+        errors: list[str] = []
+
+        for component_index, component in enumerate(components):
+            if not isinstance(component, dict):
+                continue
+
+            name = component.get("name") or f"components[{component_index}]"
+            content_elements = component.get("content_elements")
+
+            if not isinstance(content_elements, list) or not content_elements:
+                errors.append(
+                    f"pages[{page_index}] ({page_id}) component '{name}' has an empty/missing "
+                    "content_elements list -- must name the real, specific content it displays."
+                )
+                continue
+
+            for entry in content_elements:
+                normalized = str(entry).strip().lower()
+                if not normalized or normalized in self._PLACEHOLDER_CONTENT_ELEMENTS:
+                    errors.append(
+                        f"pages[{page_index}] ({page_id}) component '{name}' has a placeholder/"
+                        f"empty content_elements entry ({entry!r}) instead of real content."
+                    )
 
         return errors
 

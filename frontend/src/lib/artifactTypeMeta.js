@@ -11,7 +11,8 @@ export const ARTIFACT_TYPE_LABELS = {
   architecture_traceability: "Architecture Traceability",
   ui_metadata: "UI Metadata",
   ui_integration_manifest: "UI Integration Manifest",
-  ui_component_code: "Component Code",
+  ui_component_code: "Component Design",
+  ui_page_html: "Page Design",
   ui_preview_screenshot: "Preview Screenshot",
   design_system: "Design System",
   code_plan: "Code Plan",
@@ -38,6 +39,7 @@ export const ARTIFACT_TYPE_STAGE = {
   ui_metadata: "uiux",
   ui_integration_manifest: "uiux",
   ui_component_code: "uiux",
+  ui_page_html: "uiux",
   ui_preview_screenshot: "uiux",
   code_plan: "coder",
   code_diff: "coder",
@@ -55,7 +57,12 @@ export const STAGE_GATING_ARTIFACT = {
   requirement: { type: "srs", format: "json" },
   domain: { type: "enhanced_srs", format: "json" },
   architecture: { type: "architecture_plan", format: "json" },
-  uiux: { type: "ui_metadata", format: "json" },
+  // Per direct user request, the Preview Screenshot is the ONE artifact a human directly
+  // approves for this stage -- ui_metadata/ui_integration_manifest/ui_component_code/
+  // ui_page_html are no longer independently listed or approvable (see ResultTab.jsx's
+  // UNLISTED_ARTIFACT_TYPES); approving the screenshot cascades the same decision to all of them
+  // (approval_service.py's _cascade_uiux_screenshot_decision).
+  uiux: { type: "ui_preview_screenshot", format: "png" },
   coder: { type: "code_diff", format: "markdown" },
 };
 
@@ -127,6 +134,7 @@ export function pickViewer(artifact) {
   }
   if (artifact.artifact_format === "markdown") return "markdown";
   if (artifact.artifact_format === "json") return "json";
+  if (artifact.artifact_format === "html") return "html";
   if (artifact.artifact_format === "code") return "code";
   return "raw";
 }

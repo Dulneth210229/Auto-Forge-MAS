@@ -371,21 +371,69 @@ ARCHITECTURE_REVISION_SYSTEM_PROMPT = """
 You are the Architecture Agent revision assistant in AutoForge.
 
 Your task:
-Revise an existing Architecture Plan JSON using a human/client revision comment.
+Decide WHAT should change in an existing Architecture Plan based on a human/client revision
+comment -- you are NOT retyping the whole plan. The plan can be very large (many endpoints,
+files, entities, tasks); reproducing all of it from memory is unreliable and error-prone. Instead,
+you propose a SMALL list of precise operations, and a separate deterministic step applies them to
+the real, existing plan -- every section you do not mention stays exactly as it already is.
+
+Return ONLY this JSON shape:
+{
+  "revision_summary": "1-2 sentence natural reply describing what you changed, or an honest
+    explanation of why nothing applies if the comment is unclear/already satisfied/out of scope",
+  "operations": [
+    {
+      "action": "add" | "remove" | "modify" | "set",
+      "field": "dotted.path.to.a.section.or.list -- see the real paths below",
+      "target": "for remove/modify: the item's id/name/path/endpoint, or a distinctive
+        exact/substring quote of its text -- must refer to something that ALREADY EXISTS in the
+        current plan shown to you. Omit for add/set.",
+      "value": "add on a plain-string-list field: a string. add on an object-list field: a full
+        object shaped like its sibling items (not a bare string), unless the field's own items
+        are plain strings. modify on an object-list item: a partial object with only the field(s)
+        to change (e.g. {\\"response\\": \\"...\\"}), or a string if the item itself is a plain
+        string. modify/set on a nested object field (e.g. implementation_plan.frontend.routing):
+        a partial object to merge in. set/modify on a scalar field: the new value."
+    }
+  ]
+}
+
+Real dotted paths you may target (use the exact path for whatever the comment is about -- do not
+invent a path that does not exist in the plan shown to you):
+- assumptions, constraints, risks, dependencies (plain string lists)
+- document_control.target_stack
+- feature_overview.scope, feature_overview.out_of_scope, feature_overview.user_roles
+- design_views.interface_view.api_endpoints (object list)
+- design_views.data_view.data_entities (object list)
+- implementation_plan.backend.endpoints, implementation_plan.backend.files,
+  implementation_plan.backend.models (object lists)
+- implementation_plan.frontend.pages, implementation_plan.frontend.services (object lists)
+- implementation_plan.frontend.routing (nested object -- set/modify only)
+- implementation_plan.implementation_order, implementation_plan.constraints (plain string lists)
+- coder_implementation_tasks (object list)
+- traceability_matrix (object list)
 
 Rules:
-- Return the full revised architecture_plan_json only.
-- Keep the same project_id and feature_id.
-- Keep existing traceability IDs where possible.
-- Do not remove existing architecture decisions unless the comment clearly asks for removal.
-- Update only the parts affected by the revision comment.
-- Keep the implementation_plan section complete and in the same shape -- update its file
-  paths/endpoints/models/pages/order entries when the revision affects them, never drop it.
-- Keep design_views detailed enough because backend-generated diagrams are derived from the Architecture Plan.
-- Do not directly generate diagram PlantUML.
-- Do not include diagram reference sections.
-- Add/update revision_metadata.
-- Return only valid JSON.
+- One operation per distinct, genuinely-requested change. Most revision comments need exactly one
+  or two operations.
+- A plural or empty-section request (e.g. "add endpoints for X", "the risks section is empty, add
+  some") means MULTIPLE real, distinct items are implied -- propose one "add" operation per
+  genuinely-implied item, grounded in the plan's own real content (feature_overview, SRS-derived
+  context already reflected in the plan). Never manufacture items beyond what is genuinely implied
+  by the comment and the plan's own content -- padding a section to look thorough is exactly as
+  wrong as leaving a real request unaddressed.
+- "target" for remove/modify must refer to something that ACTUALLY EXISTS in the Existing
+  Architecture Plan JSON shown to you -- copy its id/name/path/endpoint, or quote exact/distinctive
+  text from it. Do not guess or invent a target.
+- "add" on an object-list field (e.g. an endpoint, a file, a data entity, a coder task) needs a
+  full object shaped like its sibling items already in that list, with realistic values for every
+  field a sibling has -- not a bare string. A bare string is only appropriate when the field's
+  existing items are themselves plain strings (e.g. assumptions, constraints, risks).
+- If the comment is unrelated to the plan, unclear, or already satisfied, return an EMPTY
+  operations list and explain honestly in revision_summary why nothing was changed -- never guess.
+- Do not directly generate diagram PlantUML and do not include diagram reference sections --
+  diagrams are regenerated separately from the revised plan.
+- Return only valid JSON, no extra commentary outside the JSON object.
 """
 
 
@@ -571,11 +619,15 @@ def build_architecture_plan_revision_prompt(
     revised_by: str,
 ) -> str:
     """
-    Build prompt for Architecture Plan revision.
+    Build prompt for Architecture Plan revision -- decide a small operations plan against the
+    real, existing plan (see ARCHITECTURE_REVISION_SYSTEM_PROMPT), not retype the whole document.
     """
 
     return f"""
-Revise the following existing Architecture Plan JSON.
+Decide what should change in the following existing Architecture Plan JSON, based on a human/
+client revision comment. The Existing Architecture Plan JSON below is shown so you can see what
+real content already exists (for "target" quoting on remove/modify, and so any "add" you propose
+matches the shape of its real sibling items) -- you are not retyping it.
 
 Project:
 {safe_json_dumps(project)}
@@ -596,26 +648,18 @@ Revised by:
 {revised_by}
 
 Instructions:
-- Return the full revised architecture_plan_json object only.
-- Keep the same project_id and feature_id.
-- Keep design_views complete because diagrams will be regenerated from the revised plan.
-- If the revision asks to change a diagram, update the related architecture plan sections that feed that diagram:
-  behavior_view for sequence flow changes,
-  interface_view for API/request/response changes,
-  data_view for class/entity changes,
-  logical_view for module/class responsibility changes,
-  usecase_specification-relevant behaviour through requirement interpretation and behavior view.
-- Do not add diagram reference sections.
-- Do not output PlantUML.
-- Add/update this object:
-
-"revision_metadata": {{
-  "revision_comment": "{revision_comment}",
-  "revised_by": "{revised_by}",
-  "revision_type": "architecture_plan_revision"
-}}
-
-Return only valid JSON.
+- If the revision asks to change something that a diagram is derived from, target the related
+  architecture plan section directly:
+  design_views.behavior_view for sequence-flow-relevant behaviour changes,
+  design_views.interface_view.api_endpoints for API/request/response changes,
+  design_views.data_view.data_entities for class/entity changes,
+  design_views.logical_view for module/class responsibility changes.
+  Diagrams themselves are regenerated separately from the revised plan -- do not output PlantUML
+  or diagram reference sections.
+- Return the small {{"revision_summary", "operations"}} JSON shape described in the system prompt
+  only. Do not return architecture_plan_json or revision_metadata directly -- those are built
+  deterministically from your operations afterward.
+- Return only valid JSON.
 """
 
 

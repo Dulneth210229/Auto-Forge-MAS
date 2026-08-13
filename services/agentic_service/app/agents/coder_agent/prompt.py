@@ -28,12 +28,14 @@ not skip any file it lists.
 
 Next.js App Router rules (violating these breaks the app in ways that only show
 up at runtime, not at compile time -- these are not optional style preferences):
-- BLANKET RULE, not a judgment call: every page you create under `app/` and every
-  UI/UX component you integrate gets `"use client";` as the literal first line of
-  the file, before any import. UI/UX components are self-contained with internal
-  `useState`, and the App Router defaults every component to a Server Component --
-  do not reason about which specific page needs it; every feature page and every
-  integrated component gets it, no exceptions.
+- BLANKET RULE, not a judgment call: every interactive page/component you write
+  under `app/`/`components/` gets `"use client";` as the literal first line of the
+  file, before any import. The App Router defaults every component to a Server
+  Component, and anything using `useState`/event handlers/browser-only APIs needs
+  to opt out explicitly -- do not reason about which specific page needs it; every
+  feature page you write, and every component you write (including one you wrote
+  to match an approved UI/UX design reference -- see the UI/UX rule below), gets
+  it, no exceptions.
 - Route Handlers (`route.ts`) are server-only -- NEVER add `"use client"` to one.
 - `export const metadata` may only appear in a Server Component (never one marked
   `"use client"`).
@@ -107,11 +109,15 @@ plausible-looking feature into a broken one that a human has to catch by hand):
   `NextResponse.json({ error: ... }, { status: 400 })` with a clear message if
   not. Do not pass unvalidated request input straight into a database query or a
   password/crypto function.
-- When you render a component you did not author yourself (e.g. one fetched via
-  `read_ui_component`) from a parent you ARE writing, you MUST first read that
-  component's actual prop usage and then pass every prop its logic depends on
-  (state, callbacks, data) from the parent. Rendering it with zero/wrong props
-  and assuming it will work is a common, easy-to-miss failure -- do not do it.
+- Approved UI/UX output (`read_ui_component_design`/`read_ui_page_design`) is a
+  static HTML+Tailwind VISUAL REFERENCE, not working code and not something to
+  import. Read it to see the real structure/Tailwind classes/content the human
+  approved, then WRITE YOUR OWN real TSX that faithfully matches it -- reusing the
+  exact Tailwind utility classes wherever they apply is encouraged (they are
+  literally copy-pasteable `className` values), but the JSX structure, component
+  boundaries, props, state, and real data-wiring (fetch calls, event handlers) are
+  yours to design properly for a working Next.js app. NEVER embed the raw HTML
+  directly (e.g. via `dangerouslySetInnerHTML`) -- write proper JSX.
 - Never create a page under `app/` without also adding a corresponding `<Link>`
   reachable from `app/page.tsx`'s `HomePage` (directly, or via a list/index page
   it links to, for parameterized routes) -- an unreachable page is exactly the
@@ -149,9 +155,9 @@ Tool usage:
   A new Route Handler or page never needs a separate "mount" step anywhere else
   -- Next.js's file-based routing makes `app/api/.../route.ts` and
   `app/.../page.tsx` live the instant the file exists.
-- If a page/component is described as an approved UI/UX component, call
-  `read_ui_component` with its name and integrate that exact file (import it,
-  wire routing/props) rather than writing your own version of its markup.
+- If a page/component has an approved UI/UX design reference, call
+  `read_ui_component_design`/`read_ui_page_design` to see its exact visual design
+  before writing the real TSX that implements it (see the UI/UX rule above).
 - Use `search_code` to find where an existing symbol/route/model is defined
   before assuming it doesn't exist.
 - `run_shell` is allowlisted to npm/npx/node and `git status`/`git diff` only --
@@ -199,9 +205,10 @@ _CODE_PLANNER_SHARED_HARD_RULES = """
    file.
 6. Prefer "modify" over "create" for any path the project manifest says
    already exists. Do not re-plan files for other, already-merged features.
-7. If an approved UI/UX component is provided, plan the frontend integration
-   (route + import) around that exact component file -- do not plan to
-   regenerate or rewrite UI markup yourself.
+7. If an approved UI/UX design reference is provided, plan the frontend page/
+   component to VISUALLY MATCH that reference (real TSX written to faithfully
+   reproduce its structure/Tailwind classes/content) -- it is a design reference
+   to re-implement, not a file to import verbatim.
 8. Do not invent files, dependencies, or env vars beyond what the SRS/
    Architecture Plan implies.
 9. THE PROJECT ALREADY HAS A WORKING, RUNNABLE SCAFFOLD (Next.js App Router +
@@ -329,7 +336,8 @@ coding step must create, modify, or delete.
 
 Unlike a normal planning call, you have READ-ONLY tools to look at the real,
 current codebase before deciding: `list_dir`, `read_file`, `search_code`,
-`read_project_manifest`, `read_ui_component`, `check_component_styling`. Use
+`read_project_manifest`, `read_ui_component_design`, `read_ui_page_design`,
+`check_component_styling`. Use
 them. You do NOT have write_file/apply_patch -- you cannot and must not
 change anything, only look.
 
@@ -456,12 +464,14 @@ def _build_shared_planner_context_sections(
         sections.extend(
             [
                 "",
-                "Approved UI/UX integration manifest (routes/components a human already approved "
-                "the VISUAL DESIGN of -- do not regenerate their markup). IMPORTANT: this manifest "
-                "describes what to wire in, it does NOT mean these files exist in the codebase yet. "
-                "Check the project manifest above for what actually already exists; if it's empty "
-                "or doesn't list a file, you must plan to CREATE it (e.g. a page that imports and "
-                "routes to the approved component), not 'modify' something that isn't there.",
+                "Approved UI/UX integration manifest (routes/content a human already approved the "
+                "VISUAL DESIGN of -- call read_ui_component_design/read_ui_page_design to see the "
+                "actual HTML+Tailwind reference, then write real TSX that faithfully matches it; "
+                "it is a design reference to re-implement, not markup to import). IMPORTANT: this "
+                "manifest describes what to wire in, it does NOT mean these files exist in the "
+                "codebase yet. Check the project manifest above for what actually already exists; "
+                "if it's empty or doesn't list a file, you must plan to CREATE it (e.g. a page "
+                "matching the approved design), not 'modify' something that isn't there.",
                 json.dumps(ui_integration_manifest_json, indent=2, default=str),
             ]
         )

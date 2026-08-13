@@ -1,7 +1,7 @@
 // ui_metadata is the UI/UX Agent's page/component plan -- real shape confirmed against generated
 // artifacts: { pages: [{page_id, name, route, actors[], covers_requirements[], layout_regions[],
 // components[{name, reused_from_design_system, new_component_justification, covers_ui_expectations[],
-// props}], states[]}], notes }. Rendered as real page cards instead of a raw JSON tree.
+// content_elements[]}], states[]}], notes }. Rendered as real page cards instead of a raw JSON tree.
 function Chip({ children, tone = "gray" }) {
   const tones = {
     gray: "bg-gray-100 dark:bg-white/10 text-gray-600 dark:text-gray-300",
@@ -29,7 +29,7 @@ function ChipGroup({ label, items, tone }) {
 
 function ComponentRow({ component }) {
   const reused = Boolean(component.reused_from_design_system);
-  const props = component.props && typeof component.props === "object" ? Object.entries(component.props) : [];
+  const contentElements = Array.isArray(component.content_elements) ? component.content_elements : [];
 
   return (
     <div
@@ -62,13 +62,15 @@ function ComponentRow({ component }) {
         </ul>
       )}
 
-      {props.length > 0 && (
-        <div className="mt-2 pt-2 border-t border-gray-100 dark:border-gray-800 flex flex-col gap-0.5">
-          {props.map(([key, value]) => (
-            <p key={key} className="text-xs text-gray-600 dark:text-gray-400">
-              <span className="font-mono font-semibold text-gray-700 dark:text-gray-300">{key}</span>: {String(value)}
-            </p>
-          ))}
+      {contentElements.length > 0 && (
+        <div className="mt-2 pt-2 border-t border-gray-100 dark:border-gray-800">
+          <div className="flex flex-wrap gap-1.5">
+            {contentElements.map((element, i) => (
+              <Chip key={i} tone="gray">
+                {String(element)}
+              </Chip>
+            ))}
+          </div>
         </div>
       )}
     </div>
