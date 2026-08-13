@@ -24,3 +24,19 @@ class UIUXAgentRunRequest(BaseModel):
         default=None,
         example="Generate UI metadata for the Login feature."
     )
+
+
+class UIUXAgentReviseRequest(BaseModel):
+    """
+    Request body for revising already-generated UI/UX Agent output.
+    """
+
+    revision_comment: str = Field(
+        ...,
+        example="Add a 'no items found' empty state message to the item list component.",
+    )
+
+    revised_by: str | None = Field(
+        default=None,
+        description="Optional identifier of who requested the revision.",
+    )

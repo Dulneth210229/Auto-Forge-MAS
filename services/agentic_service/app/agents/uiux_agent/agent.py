@@ -29,6 +29,7 @@ See services/agentic_service/instructions .md section 4 for the full plan.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,15 +39,25 @@ from app.agents.uiux_agent.component_generator import ComponentGenerationError, 
 from app.agents.uiux_agent.design_system_service import uiux_design_system_service
 from app.agents.uiux_agent.integration_manifest_builder import uiux_integration_manifest_builder
 from app.agents.uiux_agent.markdown_builder import uiux_markdown_builder
-from app.agents.uiux_agent.metadata_modeler import UIUXMetadataModeler
+from app.agents.uiux_agent.metadata_modeler import UIMetadataGenerationError, UIUXMetadataModeler
 from app.agents.uiux_agent.metadata_validator import UIMetadataValidationError, UIMetadataValidator
 from app.agents.uiux_agent.page_html_builder import uiux_page_html_builder
 from app.agents.uiux_agent.preview_renderer import PreviewRenderError, uiux_preview_renderer
+from app.agents.uiux_agent.prompt import (
+    UIUX_METADATA_SYSTEM_PROMPT,
+    UIUX_REVISION_JSON_REPAIR_PROMPT,
+    UIUX_REVISION_SYSTEM_PROMPT,
+    build_uiux_metadata_user_prompt,
+    build_uiux_revision_json_repair_prompt,
+    build_uiux_revision_prompt,
+)
+from app.agents.uiux_agent.revision_patcher import apply_uiux_revision_operations
 from app.agents.uiux_agent.schemas import UIUXAgentInput, UIUXAgentOutput
 from app.core.enums import AgentName, ApprovalStatus, ArtifactFormat, ArtifactType
-from app.schemas.uiux_schema import UIUXAgentRunRequest
+from app.schemas.uiux_schema import UIUXAgentReviseRequest, UIUXAgentRunRequest
 from app.services.artifact_service import artifact_service
 from app.services.in_memory_store import store
+from app.services.llm_provider_service import llm_provider_service
 from app.services.project_memory_service import project_memory_service
 from app.utils.file_manager import read_json_file
 from app.utils.logger import get_logger
@@ -176,7 +187,10 @@ class UIUXAgent:
             raw_llm_output=raw_llm_output,
         )
 
-        output.artifact_ids = self._save_artifacts(project=dict(project), feature=dict(feature), output=output)
+        artifact_ids, version = self._save_artifacts(project=dict(project), feature=dict(feature), output=output)
+        output.artifact_ids = artifact_ids
+
+        self.apply_design_system_patch(feature_id, version)
 
         logger.info(
             "UI/UX Agent completed for feature_id=%s artifacts=%s",
@@ -185,6 +199,203 @@ class UIUXAgent:
         )
 
         return output
+
+    async def run_stream(self, feature_id: str, request: UIUXAgentRunRequest):
+        """
+        Streaming variant of run() -- same NDJSON event shape as DomainAgent.run_stream/
+        ArchitectureAgent.run_stream (see those methods' own docstrings): the ui_metadata_json
+        "types" in live instead of a blocking wait. Streams only the initial metadata-generation
+        LLM call; the JSON-parse repair (on malformed output) and the coverage/structure
+        validation repair loop (_validate_metadata_with_repair) are non-streamed, same as every
+        other agent's streaming variant in this codebase -- only the primary generation is live,
+        rarely-hit repair rungs are not. Component generation and page assembly are reported via
+        {"type": "phase"} events, the same mechanism Architecture Agent uses for its own
+        non-streamable tail (diagram generation/rendering).
+
+        UI/UX Agent has no deterministic fallback by design (see module docstring: a guessed-at
+        UI plan is worse than none) -- unlike Domain/Architecture Agent's run_stream, if metadata
+        generation and every repair attempt fail, this yields an error event rather than falling
+        back to synthesized content.
+
+        Events:
+            {"type": "token", "text": "..."}
+            {"type": "phase", "phase": "...", "label": "..."}
+            {"type": "error", "message": "..."}
+            {"type": "done", "artifact_ids": [...], "message": "..."}
+        """
+
+        logger.info("UI/UX Agent (streamed) started for feature_id=%s", feature_id)
+
+        feature = store.features.get(feature_id)
+        if not feature:
+            yield {"type": "error", "message": "Feature not found."}
+            return
+
+        project = store.projects.get(feature["project_id"])
+        if not project:
+            yield {"type": "error", "message": "Project not found for this feature."}
+            return
+
+        srs_artifact = self._find_latest_approved_artifact(
+            feature_id=feature_id,
+            agent_name=AgentName.REQUIREMENT,
+            artifact_type=ArtifactType.SRS,
+            artifact_format=ArtifactFormat.JSON,
+        )
+        if not srs_artifact:
+            yield {
+                "type": "error",
+                "message": (
+                    "No approved SRS JSON artifact found. "
+                    "Approve Requirement Agent SRS JSON before running UI/UX Agent."
+                ),
+            }
+            return
+
+        srs_json = read_json_file(srs_artifact["file_path"])
+
+        enhanced_srs_json = None
+        if request.use_enhanced_srs_if_available:
+            enhanced_srs_artifact = self._find_latest_approved_artifact(
+                feature_id=feature_id,
+                agent_name=AgentName.DOMAIN,
+                artifact_type=ArtifactType.ENHANCED_SRS,
+                artifact_format=ArtifactFormat.JSON,
+            )
+            if enhanced_srs_artifact:
+                enhanced_srs_json = read_json_file(enhanced_srs_artifact["file_path"])
+
+        architecture_plan_json = self._load_approved_architecture_plan(feature_id)
+        if architecture_plan_json is None:
+            yield {
+                "type": "error",
+                "message": (
+                    "No approved Architecture Plan (or legacy SDS) JSON artifact found. "
+                    "Approve Architecture Agent output before running UI/UX Agent."
+                ),
+            }
+            return
+
+        design_system_json = uiux_design_system_service.load(project["project_id"])
+
+        agent_input = UIUXAgentInput(
+            project=dict(project),
+            feature=dict(feature),
+            srs_json=srs_json,
+            enhanced_srs_json=enhanced_srs_json,
+            architecture_plan_json=architecture_plan_json,
+            design_system_json=design_system_json,
+            ui_preferences=request.ui_preferences,
+            human_comment=request.human_comment,
+        )
+
+        provider = llm_provider_service.get_provider(agent_name=AgentName.UIUX.value)
+        prompt = build_uiux_metadata_user_prompt(
+            project=agent_input.project,
+            feature=agent_input.feature,
+            srs_json=agent_input.srs_json,
+            enhanced_srs_json=agent_input.enhanced_srs_json,
+            architecture_plan_json=agent_input.architecture_plan_json,
+            design_system_json=agent_input.design_system_json,
+            ui_preferences=agent_input.ui_preferences,
+            human_comment=agent_input.human_comment,
+        )
+
+        raw_chunks: list[str] = []
+        try:
+            async for chunk in provider.stream(prompt=prompt, system_prompt=UIUX_METADATA_SYSTEM_PROMPT):
+                raw_chunks.append(chunk)
+                yield {"type": "token", "text": chunk}
+        except Exception as stream_error:
+            logger.warning(
+                "Streamed UI/UX metadata generation failed mid-stream for feature_id=%s: %s",
+                feature_id, stream_error,
+            )
+
+        raw_output = "".join(raw_chunks)
+
+        try:
+            ui_metadata_json = self.metadata_modeler._extract_json_object(raw_output)
+        except ValueError as parse_error:
+            logger.warning(
+                "Streamed UI/UX metadata failed to parse for feature_id=%s: %s -- attempting repair.",
+                feature_id, parse_error,
+            )
+            try:
+                # repair_until_valid gives this several real repair rounds (not just one) --
+                # see metadata_modeler.py's module docstring for the real failure this fixes.
+                ui_metadata_json, raw_output = await self.metadata_modeler.repair_until_valid(
+                    raw_output, provider
+                )
+            except UIMetadataGenerationError as repair_error:
+                logger.warning(
+                    "Streamed UI/UX metadata repair also failed for feature_id=%s: %s",
+                    feature_id, repair_error,
+                )
+                yield {
+                    "type": "error",
+                    "message": str(repair_error),
+                }
+                return
+
+        yield {"type": "phase", "phase": "validating", "label": "Checking coverage against the approved SRS..."}
+
+        srs_for_validation = agent_input.enhanced_srs_json or agent_input.srs_json
+
+        try:
+            ui_metadata_json, raw_output = await self._validate_metadata_with_repair(
+                ui_metadata_json, raw_output, srs_for_validation
+            )
+        except UIMetadataValidationError as validation_error:
+            yield {
+                "type": "error",
+                "message": (
+                    f"UI/UX Agent's generated plan did not pass coverage validation after "
+                    f"repair attempts: {validation_error}"
+                ),
+            }
+            return
+
+        yield {"type": "phase", "phase": "components", "label": "Generating components (HTML + Tailwind)..."}
+
+        component_files, page_component_order = await self._generate_components(agent_input, ui_metadata_json)
+
+        yield {"type": "phase", "phase": "assembly", "label": "Assembling pages and rendering previews..."}
+
+        page_html_files, page_screenshots = await self._assemble_and_render_pages(
+            ui_metadata_json, component_files, page_component_order
+        )
+
+        integration_manifest_json = uiux_integration_manifest_builder.build(ui_metadata_json)
+        ui_design_markdown = uiux_markdown_builder.build(
+            feature_name=feature["feature_name"],
+            ui_metadata_json=ui_metadata_json,
+            integration_manifest_json=integration_manifest_json,
+        )
+
+        output = UIUXAgentOutput(
+            ui_metadata_json=ui_metadata_json,
+            component_files=component_files,
+            page_html_files=page_html_files,
+            page_screenshots=page_screenshots,
+            integration_manifest_json=integration_manifest_json,
+            ui_design_markdown=ui_design_markdown,
+            raw_llm_output=raw_output,
+        )
+
+        artifact_ids, version = self._save_artifacts(project=dict(project), feature=dict(feature), output=output)
+        self.apply_design_system_patch(feature_id, version)
+
+        logger.info(
+            "UI/UX Agent (streamed) completed for feature_id=%s artifacts=%s",
+            feature_id, artifact_ids,
+        )
+
+        yield {
+            "type": "done",
+            "artifact_ids": artifact_ids,
+            "message": "UI/UX Agent completed. Pages, components, and previews were generated.",
+        }
 
     async def _generate_and_validate_metadata(
         self, agent_input: UIUXAgentInput
@@ -201,6 +412,18 @@ class UIUXAgent:
         )
 
         srs_for_validation = agent_input.enhanced_srs_json or agent_input.srs_json
+
+        return await self._validate_metadata_with_repair(ui_metadata_json, raw_llm_output, srs_for_validation)
+
+    async def _validate_metadata_with_repair(
+        self, ui_metadata_json: dict[str, Any], raw_llm_output: str, srs_for_validation: dict
+    ) -> tuple[dict[str, Any], str]:
+        """
+        Coverage/structure validation with a bounded repair loop -- factored out of
+        _generate_and_validate_metadata so run_stream can reuse the exact same repair ladder
+        starting from an already-obtained (ui_metadata_json, raw_llm_output) pair (e.g. from a
+        streamed initial call) instead of generating one itself.
+        """
 
         last_error: UIMetadataValidationError | None = None
 
@@ -229,7 +452,11 @@ class UIUXAgent:
         raise last_error
 
     async def _generate_components(
-        self, agent_input: UIUXAgentInput, ui_metadata_json: dict[str, Any]
+        self,
+        agent_input: UIUXAgentInput,
+        ui_metadata_json: dict[str, Any],
+        touched_components: set[str] | None = None,
+        carry_over_version: int | None = None,
     ) -> tuple[dict[str, str], dict[str, list[str]]]:
         """
         Generate every component's HTML fragment, one LLM call per component. A freshly
@@ -239,6 +466,15 @@ class UIUXAgent:
         time -- this is what structurally prevents the real, confirmed "Unknown state."/"No data
         available" bug class from ever reaching a saved artifact (see component_generator.py's
         module docstring for the full root-cause story this replaces).
+
+        touched_components/carry_over_version are set ONLY by revise()/revise_stream() (run()/
+        run_stream() leave both None, preserving this method's original fresh-generation
+        behavior exactly): when touched_components is not None, this is a revision -- a
+        component NOT in that set is carried over VERBATIM from carry_over_version's own saved
+        artifact instead of being regenerated (falling through to fresh generation only if that
+        lookup unexpectedly finds nothing), and the "reused_from_design_system" cross-feature
+        lookup is skipped entirely (it only makes sense for a brand-new run, not a revision of an
+        already-generated feature).
 
         Returns:
             component_files: component name -> HTML fragment source text
@@ -260,6 +496,9 @@ class UIUXAgent:
         # cosmetic, not a correctness failure.
         color_theme = ui_metadata_json.get("color_theme") or "indigo"
 
+        is_revision = touched_components is not None
+        feature_id = agent_input.feature.get("feature_id")
+
         component_files: dict[str, str] = {}
         page_component_order: dict[str, list[str]] = {}
 
@@ -270,7 +509,21 @@ class UIUXAgent:
                 component_name = component_metadata["name"]
                 ordered_names.append(component_name)
 
-                if component_metadata.get("reused_from_design_system"):
+                if is_revision and component_name not in touched_components:
+                    carried_html = self._load_component_html_by_name(
+                        feature_id, carry_over_version, component_name
+                    )
+                    if carried_html is not None:
+                        component_files[component_name] = carried_html
+                        continue
+
+                    logger.warning(
+                        "Revision: could not find prior HTML for untouched component '%s' at "
+                        "version %s -- generating it fresh instead.",
+                        component_name, carry_over_version,
+                    )
+
+                elif not is_revision and component_metadata.get("reused_from_design_system"):
                     reused_html = self._load_existing_approved_component(
                         agent_input.project["project_id"], component_name
                     )
@@ -293,6 +546,42 @@ class UIUXAgent:
             page_component_order[page["page_id"]] = ordered_names
 
         return component_files, page_component_order
+
+    def _load_component_html_by_name(
+        self, feature_id: str, version: int | None, component_name: str
+    ) -> str | None:
+        """
+        Read a specific PRIOR version's saved UI_COMPONENT_CODE artifact for this exact
+        component name, for the "carry untouched components over verbatim" side of a revision --
+        matches the same filename slug convention _save_artifacts writes
+        ("{feature_slug}_{component_slug}_v{version}.html"), scoped to this feature and exact
+        version (unlike _load_existing_approved_component, which searches ANY approved version
+        across the whole project for cross-feature reuse -- a different purpose).
+        """
+
+        if version is None:
+            return None
+
+        slug = self._slug(component_name)
+        marker = f"_{slug}_v{version}.html"
+
+        for artifact in store.artifacts.values():
+            if artifact.get("feature_id") != feature_id:
+                continue
+            if artifact.get("agent_name") not in [AgentName.UIUX, AgentName.UIUX.value]:
+                continue
+            if artifact.get("artifact_type") not in [
+                ArtifactType.UI_COMPONENT_CODE, ArtifactType.UI_COMPONENT_CODE.value,
+            ]:
+                continue
+            if artifact.get("version") != version:
+                continue
+            if not str(artifact.get("file_path", "")).endswith(marker):
+                continue
+
+            return Path(artifact["file_path"]).read_text(encoding="utf-8")
+
+        return None
 
     async def _generate_component_with_quality_gate(
         self,
@@ -366,16 +655,10 @@ class UIUXAgent:
         an environmental/Playwright issue, not a content problem a regeneration could fix. It is
         simply skipped and logged (not fatal to the run) if it happens.
 
-        IMPORTANT, changed from this render path's earlier design: ui_preview_screenshot is now
-        the HUMAN'S SOLE APPROVAL SURFACE for the uiux stage (per direct user request --
-        ui_metadata/ui_integration_manifest/ui_component_code/ui_page_html are no longer
-        independently listed or approvable; approving a Preview Screenshot cascades the same
-        decision to all of them, see approval_service.py's _cascade_uiux_screenshot_decision). It
-        is NOT a pure "nothing downstream reads it" convenience artifact anymore -- if every page's
-        screenshot render fails for a run, the human has nothing to approve and the stage cannot
-        progress. This is treated as a low-likelihood, accepted risk (plain HTML/CSS screenshotting
-        is far more reliable than the old JSX+Babel+React mount it replaced), not engineered
-        around further in this pass -- worth revisiting if it's ever observed to actually happen.
+        ui_preview_screenshot is purely a best-effort "Page Previews" thumbnail -- no human
+        approval gate depends on it anymore (this whole stage is auto-approved, see
+        _save_artifacts' own docstring), so a failed render here is genuinely harmless: the live
+        HTML preview (page_html_files, always produced) remains fully usable regardless.
         """
 
         page_metadata_by_id = {page["page_id"]: page for page in ui_metadata_json.get("pages", [])}
@@ -448,10 +731,20 @@ class UIUXAgent:
         latest = max(matching, key=lambda item: item.get("version", 1))
         return Path(latest["file_path"]).read_text(encoding="utf-8")
 
-    def _save_artifacts(self, project: dict, feature: dict, output: UIUXAgentOutput) -> list[str]:
+    def _save_artifacts(self, project: dict, feature: dict, output: UIUXAgentOutput) -> tuple[list[str], int]:
         """
         Save all UI/UX Agent artifacts for this run, all sharing one version
         number (mirrors architecture_agent's markdown+json+diagrams pattern).
+
+        Every artifact is saved already APPROVED (approval_status=ApprovalStatus.APPROVED) --
+        per direct user request, NOTHING in the UI/UX stage requires a human decision anymore.
+        This is what makes every existing approval-status-dependent UI surface (GovernancePanel,
+        ApprovalPanel, ArtifactList) and backend lookup (Coder Agent's approved-only artifact
+        finders) keep working completely unchanged: they simply never see a "pending" UI/UX
+        artifact to show controls for or wait on.
+
+        Returns (artifact_ids, version) -- the version is needed by the caller to invoke
+        apply_design_system_patch for this exact run/revision.
         """
 
         version = artifact_service.get_next_version(
@@ -471,6 +764,7 @@ class UIUXAgent:
             filename=f"{feature_slug}_ui_metadata_v{{version}}.json",
             data=output.ui_metadata_json,
             version_override=version,
+            approval_status=ApprovalStatus.APPROVED,
         )
         artifact_ids.append(metadata_artifact.artifact_id)
 
@@ -482,6 +776,7 @@ class UIUXAgent:
             filename=f"{feature_slug}_integration_manifest_v{{version}}.json",
             data=output.integration_manifest_json,
             version_override=version,
+            approval_status=ApprovalStatus.APPROVED,
         )
         artifact_ids.append(manifest_artifact.artifact_id)
 
@@ -494,6 +789,7 @@ class UIUXAgent:
             filename=f"{feature_slug}_ui_design_v{{version}}.md",
             content=output.ui_design_markdown,
             version_override=version,
+            approval_status=ApprovalStatus.APPROVED,
         )
         artifact_ids.append(markdown_artifact.artifact_id)
 
@@ -508,6 +804,7 @@ class UIUXAgent:
                 filename=f"{feature_slug}_{component_slug}_v{{version}}.html",
                 content=html_code,
                 version_override=version,
+                approval_status=ApprovalStatus.APPROVED,
             )
             artifact_ids.append(component_artifact.artifact_id)
 
@@ -522,6 +819,7 @@ class UIUXAgent:
                 filename=f"{feature_slug}_{page_slug}_page_v{{version}}.html",
                 content=page_html,
                 version_override=version,
+                approval_status=ApprovalStatus.APPROVED,
             )
             artifact_ids.append(page_html_artifact.artifact_id)
 
@@ -535,19 +833,21 @@ class UIUXAgent:
                 artifact_format=ArtifactFormat.PNG,
                 filename=f"{feature_slug}_{page_slug}_v{version}.png",
                 binary_content=png_bytes,
+                approval_status=ApprovalStatus.APPROVED,
             )
             artifact_ids.append(screenshot_artifact.artifact_id)
 
-        return artifact_ids
+        return artifact_ids, version
 
     def apply_design_system_patch(self, feature_id: str, version: int) -> None:
         """
-        Merge new components/tokens from an approved UI/UX run into the
-        project's shared design_system.json.
+        Merge new components/tokens from a UI/UX run into the project's shared
+        design_system.json.
 
-        Called from approval_service.py only after the UI_METADATA artifact
-        for this exact version has been approved -- never before, so a
-        rejected run cannot pollute the shared design system.
+        Called directly and unconditionally by run()/run_stream()/revise()/revise_stream() at
+        the end of every generation -- no longer approval-triggered (previously called from
+        approval_service.py only after a human approved the run's screenshot; there is no more
+        human approval step for this stage at all, see _save_artifacts' own docstring).
         """
 
         feature = store.features.get(feature_id)
@@ -621,6 +921,360 @@ class UIUXAgent:
             new_component_count,
             new_token_count,
         )
+
+    async def revise(self, feature_id: str, request: UIUXAgentReviseRequest) -> UIUXAgentOutput:
+        """
+        Revise the latest UI/UX output for a feature via a small, explicit human-directed change.
+
+        Unlike run() (a fresh generation), this loads the CURRENT ui_metadata_json, asks the LLM
+        for a SMALL ops plan describing exactly what should change (mirrors the same "small ops
+        plan + deterministic patcher" pattern already proven for Requirement/Architecture/Domain
+        Agent's own revisions -- see revision_patcher.py's module docstring), applies it
+        deterministically, and only regenerates the HTML of components the plan actually touched
+        -- every other component is carried over verbatim from the prior version. This is what
+        makes a revision a real, targeted change rather than a full, silent regeneration.
+        """
+
+        logger.info("UI/UX Agent revision started for feature_id=%s", feature_id)
+
+        feature = store.features.get(feature_id)
+        if not feature:
+            raise ValueError("Feature not found.")
+
+        project = store.projects.get(feature["project_id"])
+        if not project:
+            raise ValueError("Project not found for this feature.")
+
+        metadata_artifact = self._find_latest_uiux_artifact(feature_id, ArtifactType.UI_METADATA)
+        if not metadata_artifact:
+            raise ValueError(
+                "No existing UI/UX output found. Run UI/UX Agent first before requesting a revision."
+            )
+
+        current_ui_metadata_json = read_json_file(metadata_artifact["file_path"])
+        current_version = metadata_artifact.get("version", 1)
+
+        agent_input = self._build_revision_agent_input(project, feature, request.revision_comment)
+
+        provider = llm_provider_service.get_provider(agent_name=AgentName.UIUX.value)
+        prompt = build_uiux_revision_prompt(
+            project=agent_input.project,
+            feature=agent_input.feature,
+            current_ui_metadata_json=current_ui_metadata_json,
+            revision_comment=request.revision_comment,
+            revised_by=request.revised_by,
+        )
+
+        raw_output = await provider.invoke_agent([
+            {"role": "system", "content": UIUX_REVISION_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ])
+
+        revision_plan = await self._resolve_uiux_revision_plan(provider, raw_output)
+
+        patched_metadata, touched_components = self._prepare_revision(
+            current_ui_metadata_json, revision_plan, request.revision_comment, request.revised_by
+        )
+
+        component_files, page_component_order = await self._generate_components(
+            agent_input, patched_metadata, touched_components=touched_components, carry_over_version=current_version
+        )
+
+        page_html_files, page_screenshots = await self._assemble_and_render_pages(
+            patched_metadata, component_files, page_component_order
+        )
+
+        integration_manifest_json = uiux_integration_manifest_builder.build(patched_metadata)
+        ui_design_markdown = uiux_markdown_builder.build(
+            feature_name=feature["feature_name"],
+            ui_metadata_json=patched_metadata,
+            integration_manifest_json=integration_manifest_json,
+        )
+
+        output = UIUXAgentOutput(
+            ui_metadata_json=patched_metadata,
+            component_files=component_files,
+            page_html_files=page_html_files,
+            page_screenshots=page_screenshots,
+            integration_manifest_json=integration_manifest_json,
+            ui_design_markdown=ui_design_markdown,
+            raw_llm_output=raw_output,
+        )
+
+        artifact_ids, version = self._save_artifacts(project=dict(project), feature=dict(feature), output=output)
+        output.artifact_ids = artifact_ids
+
+        self.apply_design_system_patch(feature_id, version)
+
+        logger.info(
+            "UI/UX Agent revision completed for feature_id=%s artifacts=%s",
+            feature_id, artifact_ids,
+        )
+
+        return output
+
+    async def revise_stream(self, feature_id: str, request: UIUXAgentReviseRequest):
+        """
+        Streaming variant of revise() -- same event shape/tail as run_stream (see that method's
+        own docstring). Streams the small ops-plan LLM call live, then yields {"type": "phase"}
+        events for the non-streamable tail (component regeneration for only the touched
+        components, then page reassembly/rendering).
+
+        Events:
+            {"type": "token", "text": "..."}
+            {"type": "phase", "phase": "...", "label": "..."}
+            {"type": "error", "message": "..."}
+            {"type": "done", "artifact_ids": [...], "message": "..."}
+        """
+
+        logger.info("UI/UX Agent revision (streamed) started for feature_id=%s", feature_id)
+
+        feature = store.features.get(feature_id)
+        if not feature:
+            yield {"type": "error", "message": "Feature not found."}
+            return
+
+        project = store.projects.get(feature["project_id"])
+        if not project:
+            yield {"type": "error", "message": "Project not found for this feature."}
+            return
+
+        metadata_artifact = self._find_latest_uiux_artifact(feature_id, ArtifactType.UI_METADATA)
+        if not metadata_artifact:
+            yield {
+                "type": "error",
+                "message": "No existing UI/UX output found. Run UI/UX Agent first before requesting a revision.",
+            }
+            return
+
+        current_ui_metadata_json = read_json_file(metadata_artifact["file_path"])
+        current_version = metadata_artifact.get("version", 1)
+
+        agent_input = self._build_revision_agent_input(project, feature, request.revision_comment)
+
+        provider = llm_provider_service.get_provider(agent_name=AgentName.UIUX.value)
+        prompt = build_uiux_revision_prompt(
+            project=agent_input.project,
+            feature=agent_input.feature,
+            current_ui_metadata_json=current_ui_metadata_json,
+            revision_comment=request.revision_comment,
+            revised_by=request.revised_by,
+        )
+
+        raw_chunks: list[str] = []
+        try:
+            async for chunk in provider.stream(prompt=prompt, system_prompt=UIUX_REVISION_SYSTEM_PROMPT):
+                raw_chunks.append(chunk)
+                yield {"type": "token", "text": chunk}
+        except Exception as stream_error:
+            logger.warning(
+                "Streamed UI/UX revision failed mid-stream for feature_id=%s: %s",
+                feature_id, stream_error,
+            )
+
+        raw_output = "".join(raw_chunks)
+        revision_plan = await self._resolve_uiux_revision_plan(provider, raw_output)
+
+        patched_metadata, touched_components = self._prepare_revision(
+            current_ui_metadata_json, revision_plan, request.revision_comment, request.revised_by
+        )
+
+        yield {"type": "phase", "phase": "components", "label": "Updating affected components..."}
+
+        component_files, page_component_order = await self._generate_components(
+            agent_input, patched_metadata, touched_components=touched_components, carry_over_version=current_version
+        )
+
+        yield {"type": "phase", "phase": "assembly", "label": "Reassembling pages and rendering previews..."}
+
+        page_html_files, page_screenshots = await self._assemble_and_render_pages(
+            patched_metadata, component_files, page_component_order
+        )
+
+        integration_manifest_json = uiux_integration_manifest_builder.build(patched_metadata)
+        ui_design_markdown = uiux_markdown_builder.build(
+            feature_name=feature["feature_name"],
+            ui_metadata_json=patched_metadata,
+            integration_manifest_json=integration_manifest_json,
+        )
+
+        output = UIUXAgentOutput(
+            ui_metadata_json=patched_metadata,
+            component_files=component_files,
+            page_html_files=page_html_files,
+            page_screenshots=page_screenshots,
+            integration_manifest_json=integration_manifest_json,
+            ui_design_markdown=ui_design_markdown,
+            raw_llm_output=raw_output,
+        )
+
+        artifact_ids, version = self._save_artifacts(project=dict(project), feature=dict(feature), output=output)
+        self.apply_design_system_patch(feature_id, version)
+
+        logger.info(
+            "UI/UX Agent revision (streamed) completed for feature_id=%s artifacts=%s",
+            feature_id, artifact_ids,
+        )
+
+        yield {
+            "type": "done",
+            "artifact_ids": artifact_ids,
+            "message": "UI/UX Agent revision completed. Only the affected components were regenerated.",
+        }
+
+    def _build_revision_agent_input(self, project: dict, feature: dict, human_comment: str | None) -> UIUXAgentInput:
+        """
+        Build a minimal UIUXAgentInput for a revision -- srs_json/enhanced_srs_json are not
+        needed (revision never re-generates ui_metadata_json's coverage from scratch, only
+        patches it), but architecture_plan_json (for data entity fields) and design_system_json
+        are still loaded fresh so component regeneration has the same real context run() uses.
+        """
+
+        architecture_plan_json = self._load_approved_architecture_plan(feature["feature_id"]) or {}
+        design_system_json = uiux_design_system_service.load(project["project_id"])
+
+        return UIUXAgentInput(
+            project=dict(project),
+            feature=dict(feature),
+            srs_json={},
+            enhanced_srs_json=None,
+            architecture_plan_json=architecture_plan_json,
+            design_system_json=design_system_json,
+            ui_preferences={},
+            human_comment=human_comment,
+        )
+
+    def _prepare_revision(
+        self,
+        current_ui_metadata_json: dict,
+        revision_plan: dict,
+        revision_comment: str,
+        revised_by: str | None,
+    ) -> tuple[dict, set[str]]:
+        """
+        Deterministically apply a revision plan's operations to a copy of the current
+        ui_metadata_json, returning the patched metadata (with revision_metadata stamped) and the
+        set of component names that need fresh HTML generation (added/modified by this revision).
+        Never raises -- operations that match nothing just produce an honest, unchanged result
+        with the reason recorded in revision_metadata (see apply_uiux_revision_operations' own
+        "report, don't guess" contract).
+        """
+
+        operations = revision_plan.get("operations", [])
+        patched_metadata, applied, unmatched = apply_uiux_revision_operations(current_ui_metadata_json, operations)
+
+        touched_components: set[str] = set()
+        for page in patched_metadata.get("pages", []):
+            for component in page.get("components", []) or []:
+                if component.pop("_revision_touched", False):
+                    touched_components.add(component["name"])
+
+        revision_metadata = {
+            "revision_type": "uiux_revision",
+            "revision_summary": revision_plan.get("revision_summary", ""),
+            "revision_comment": revision_comment,
+            "revised_by": revised_by,
+            "applied_changes": applied,
+            "unmatched_operations": unmatched,
+        }
+
+        if not applied and not operations:
+            revision_metadata["no_changes_note"] = (
+                revision_plan.get("revision_summary")
+                or "No actionable UI change was identified for this request."
+            )
+
+        patched_metadata["revision_metadata"] = revision_metadata
+
+        return patched_metadata, touched_components
+
+    async def _resolve_uiux_revision_plan(self, provider, raw_output: str) -> dict:
+        """
+        Parse the LLM's small revision operations plan, with one JSON-repair attempt on
+        structural failure -- mirrors Domain/Architecture Agent's own resolve-with-repair
+        pattern. Never raises: a plan that still can't be parsed after repair resolves to an
+        honest, empty-operations plan (nothing changes, with a clear reason recorded) rather than
+        crashing the whole revision request.
+        """
+
+        try:
+            return self._parse_uiux_revision_plan(raw_output)
+        except ValueError as first_error:
+            logger.warning(
+                "UI/UX revision plan parse failed: %s -- attempting repair.", first_error
+            )
+
+            try:
+                repair_prompt = build_uiux_revision_json_repair_prompt(raw_output)
+                repaired_output = await provider.invoke_agent([
+                    {"role": "system", "content": UIUX_REVISION_JSON_REPAIR_PROMPT},
+                    {"role": "user", "content": repair_prompt},
+                ])
+                return self._parse_uiux_revision_plan(repaired_output)
+            except Exception as second_error:
+                logger.warning("UI/UX revision plan repair also failed: %s", second_error)
+                return {
+                    "revision_summary": (
+                        f"Could not parse a revision plan from the agent's response: {second_error}"
+                    ),
+                    "operations": [],
+                }
+
+    def _parse_uiux_revision_plan(self, raw_output: str) -> dict:
+        cleaned = raw_output.strip()
+
+        cleaned = re.sub(r"^```json\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"^```\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+
+        try:
+            parsed = json.loads(cleaned)
+        except json.JSONDecodeError:
+            start = cleaned.find("{")
+            end = cleaned.rfind("}")
+
+            if start == -1 or end == -1 or end <= start:
+                raise ValueError("No JSON object found in UI/UX Agent revision output.")
+
+            parsed = json.loads(cleaned[start:end + 1])
+
+        if not isinstance(parsed, dict):
+            raise ValueError("UI/UX Agent revision output must be a JSON object.")
+
+        if not isinstance(parsed.get("operations"), list):
+            raise ValueError("Revision output missing required 'operations' list.")
+
+        return parsed
+
+    def _find_latest_uiux_artifact(
+        self, feature_id: str, artifact_type: ArtifactType, artifact_format: ArtifactFormat = ArtifactFormat.JSON
+    ) -> dict | None:
+        """
+        Find the latest UI/UX Agent artifact of the given type/format for this feature,
+        REGARDLESS of approval status (every UI/UX artifact is always approved now, but this
+        stays robust even against legacy pre-migration data) -- a revision must build on the
+        latest generated version, mirroring Domain Agent's own
+        _find_latest_domain_json_artifact.
+        """
+
+        matching_artifacts = []
+
+        for artifact in store.artifacts.values():
+            if artifact.get("feature_id") != feature_id:
+                continue
+            if artifact.get("agent_name") not in [AgentName.UIUX, AgentName.UIUX.value]:
+                continue
+            if artifact.get("artifact_type") not in [artifact_type, artifact_type.value]:
+                continue
+            if artifact.get("artifact_format") not in [artifact_format, artifact_format.value]:
+                continue
+
+            matching_artifacts.append(artifact)
+
+        if not matching_artifacts:
+            return None
+
+        return max(matching_artifacts, key=lambda item: item.get("version", 1))
 
     def _find_artifact_by_version(
         self,

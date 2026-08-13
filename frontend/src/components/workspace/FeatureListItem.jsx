@@ -3,7 +3,7 @@ import { useGraphStatus } from "../../hooks/usePipeline";
 import { useFeatureArtifacts } from "../../hooks/useArtifacts";
 import { deriveStageStatus, STATUS } from "../../lib/deriveStageStatus";
 import { deriveCurrentStage } from "../../lib/deriveCurrentStage";
-import { GATED_STAGES, STAGE_LABELS } from "../../lib/pipelineStages";
+import { SELECTABLE_AGENT_STAGES, STAGE_LABELS } from "../../lib/pipelineStages";
 import StatusBadge from "../common/StatusBadge";
 
 const DOT_STYLES = {
@@ -26,7 +26,7 @@ export default function FeatureListItem({ feature, isSelected, onSelect, onDelet
 
   const allArtifacts = artifacts || [];
   const stageStatuses = {};
-  for (const stage of GATED_STAGES) {
+  for (const stage of SELECTABLE_AGENT_STAGES) {
     stageStatuses[stage] = deriveStageStatus({ stage, graphStatus, artifacts: allArtifacts });
   }
   const currentStage = deriveCurrentStage(graphStatus, stageStatuses) || "requirement";

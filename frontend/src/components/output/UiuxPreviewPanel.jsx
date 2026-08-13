@@ -195,7 +195,21 @@ export default function UiuxPreviewPanel({ featureId }) {
         {contentLoading ? (
           <LoadingSpinner variant="cube" label="Loading page design..." />
         ) : (
-          <iframe key={`${selectedPage.artifact_id}-${reloadKey}`} title="Page design preview" srcDoc={html} className="w-full h-full min-h-[500px]" />
+          <iframe
+            key={`${selectedPage.artifact_id}-${reloadKey}`}
+            title="Page design preview"
+            srcDoc={html}
+            // A bare srcDoc iframe resolves relative hrefs (e.g. "#") against the PARENT page's
+            // own URL, not the srcdoc content -- clicking a link could otherwise navigate this
+            // iframe to the AutoForge app itself, rendering it nested inside the preview (a real,
+            // confirmed bug). page_html_builder.py's inline click-guard script is the primary
+            // fix; this sandbox is defense-in-depth -- allow-scripts only (needed for the inlined
+            // Tailwind CDN script), deliberately no allow-same-origin/allow-top-navigation/
+            // allow-popups/allow-forms, so no navigation/popup/same-origin attempt can succeed
+            // regardless of what a future generation contains.
+            sandbox="allow-scripts"
+            className="w-full h-full min-h-[500px]"
+          />
         )}
       </div>
     </div>

@@ -9,6 +9,55 @@
         "total pages"
       ],
       "introduced_by_feature": "Item Listing (CRUD)"
+    },
+    "ItemTable": {
+      "content_elements": [
+        "item name",
+        "item price",
+        "stock quantity",
+        "category"
+      ],
+      "introduced_by_feature": "Item Listing (CRUD)"
+    },
+    "SearchFilterBar": {
+      "content_elements": [
+        "search term",
+        "selected category",
+        "price range min",
+        "price range max"
+      ],
+      "introduced_by_feature": "Item Listing (CRUD)"
+    },
+    "ItemDetailCard": {
+      "content_elements": [
+        "item name",
+        "item description",
+        "item price",
+        "stock quantity",
+        "category",
+        "image url",
+        "created at timestamp",
+        "updated at timestamp"
+      ],
+      "introduced_by_feature": "Item Listing (CRUD)"
+    },
+    "ItemForm": {
+      "content_elements": [
+        "item name",
+        "item description",
+        "item price",
+        "stock quantity",
+        "category",
+        "image url"
+      ],
+      "introduced_by_feature": "Item Listing (CRUD)"
+    },
+    "DeleteConfirmationDialog": {
+      "content_elements": [
+        "item name",
+        "confirmation message"
+      ],
+      "introduced_by_feature": "Item Listing (CRUD)"
     }
   },
   "tokens": {}

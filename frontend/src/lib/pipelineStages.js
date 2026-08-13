@@ -4,9 +4,17 @@
 
 export const STAGE_SEQUENCE = ["requirement", "domain", "architecture", "uiux", "coder", "security", "qa"];
 
-export const GATED_STAGES = ["requirement", "domain", "architecture", "uiux", "coder"];
+// "uiux" is intentionally absent -- the whole UI/UX stage no longer requires any human
+// approval decision (every UI/UX artifact is born already approved on the backend).
+export const GATED_STAGES = ["requirement", "domain", "architecture", "coder"];
 
-export const AUTO_APPROVED_STAGES = ["security", "qa"];
+export const AUTO_APPROVED_STAGES = ["uiux", "security", "qa"];
+
+// Every real, selectable agent stage in pipeline order (excludes security/qa/deployment, which
+// have no agent implementation yet -- see PLACEHOLDER_STAGES below). Distinct from GATED_STAGES:
+// this is "which stages are real agents a human can chat with / see status for," not "which
+// stages pause for a human approval gate" -- uiux belongs here but not in GATED_STAGES.
+export const SELECTABLE_AGENT_STAGES = ["requirement", "domain", "architecture", "uiux", "coder"];
 
 // Stages the human triggers directly via a "Run" button/form -- these are pass-through
 // no-ops inside the LangGraph itself (see agent.py's own run() methods, called outside the
@@ -41,8 +49,8 @@ export const STAGE_ROLE_LABELS = {
   deployment: "DevOps Engineer",
 };
 
-// Stages with a real POST .../revise endpoint (uiux has none at all).
-export const REVISABLE_STAGES = ["requirement", "domain", "architecture", "coder"];
+// Stages with a real POST .../revise endpoint.
+export const REVISABLE_STAGES = ["requirement", "domain", "architecture", "uiux", "coder"];
 
 // Generous, real-world-observed timeouts (ms) before a "processing" auto-run stage is shown
 // as "possibly stuck" rather than an indefinite spinner. The graph itself gives no distinct

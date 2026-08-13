@@ -87,13 +87,15 @@ const APPROVE_CONTINUATION_BY_STAGE = {
 // Architecture Plan cascades the same decision to them automatically on the backend (see
 // approval_service.py's _cascade_architecture_plan_decision). They're viewable only through
 // ArchitectureDiagramsGallery now, not listed generically here.
-// ui_metadata/ui_integration_manifest/ui_component_code/ui_page_html: same pattern, per direct
-// user request -- the ONE artifact a human interacts with for the uiux stage is now
-// ui_preview_screenshot (STAGE_GATING_ARTIFACT.uiux); approving/rejecting/requesting revision on
-// it cascades the same decision to all four of these, of the same version, automatically (see
-// approval_service.py's _cascade_uiux_screenshot_decision). Raw metadata/manifest/component/page
-// source is still viewable via the Preview tab and the "View" link on the Preview Screenshot
-// itself where relevant -- just not as separate listed/approvable rows here.
+// ui_metadata/ui_integration_manifest/ui_component_code/ui_page_html: per direct user request,
+// the WHOLE UI/UX stage no longer requires any human approval decision at all -- every UI/UX
+// artifact (including ui_preview_screenshot, STAGE_GATING_ARTIFACT.uiux) is saved already
+// approved on the backend (see uiux_agent/agent.py's _save_artifacts). These four stay excluded
+// from the listed rows for the same reason as always -- they're internal working documents, not
+// individually meaningful decision points -- and ui_preview_screenshot itself still shows in
+// GovernancePanel below as a plain "approved, nothing pending" status line. Raw metadata/
+// manifest/component/page source is still viewable via the Preview tab and the "View" link on
+// the Preview Screenshot itself where relevant -- just not as separate listed rows here.
 const UNLISTED_ARTIFACT_TYPES = [
   "domain_improvements", "code_plan", "code_diff", "code_manifest", "requirement_code_map",
   "use_case_diagram", "sequence_diagram", "class_diagram",
@@ -262,11 +264,32 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
   const coderPhase = isCoderRevising ? coderRevisionPhase : coderRunPhase;
   const coderPhaseStartedAt = isCoderRevising ? coderRevisionPhaseStartedAt : coderRunPhaseStartedAt;
 
-  // UI/UX Agent has no streaming route -- runUiux is one plain mutation shared (via
-  // UiuxAgentFlowContext) with ChatPanel's own composer, so a run auto-started from this
-  // component's handleConfirmedApprove is still visible as "pending" wherever else it's read.
-  const { runUiux } = useUiuxAgentFlowContext();
-  const isUiuxGenerating = stage === "uiux" && runUiux.isPending;
+  // Same idea, UI/UX Agent -- ui_metadata_json streams live, then a "phase" tail (component
+  // generation, page assembly/rendering) covers the rest, shown the same isFinalizing way
+  // Architecture/Coder's own non-streamable tails already are. Read unconditionally regardless of
+  // stage -- cheap, and this is also what handleConfirmedApprove below needs to auto-start a run
+  // from the architecture-approval branch.
+  const {
+    handleRunStream: handleRunUiuxStream,
+    runStream: uiuxRunStream,
+    runStreamedText: uiuxRunStreamedText,
+    runStreamStarted: uiuxRunStreamStarted,
+    runPhase: uiuxRunPhase,
+    runPhaseStartedAt: uiuxRunPhaseStartedAt,
+    reviseStream: uiuxReviseStream,
+    revisionStreamedText: uiuxRevisionStreamedText,
+    revisionStreamStarted: uiuxRevisionStreamStarted,
+    revisionPhase: uiuxRevisionPhase,
+    revisionPhaseStartedAt: uiuxRevisionPhaseStartedAt,
+  } = useUiuxAgentFlowContext();
+  const isUiuxStage = stage === "uiux";
+  const isUiuxRevising = isUiuxStage && uiuxReviseStream.isPending;
+  const isUiuxRunning = isUiuxStage && uiuxRunStream.isPending;
+  const isUiuxGenerating = isUiuxRevising || isUiuxRunning;
+  const uiuxStreamedText = isUiuxRevising ? uiuxRevisionStreamedText : uiuxRunStreamedText;
+  const uiuxStreamStarted = isUiuxRevising ? uiuxRevisionStreamStarted : uiuxRunStreamStarted;
+  const uiuxPhase = isUiuxRevising ? uiuxRevisionPhase : uiuxRunPhase;
+  const uiuxPhaseStartedAt = isUiuxRevising ? uiuxRevisionPhaseStartedAt : uiuxRunPhaseStartedAt;
 
   // Deduped for display: every gating artifact_type saves a JSON+Markdown pair sharing one
   // version, and listing both as separate rows read as the same version being duplicated (a real
@@ -341,7 +364,7 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
       if (approveContinuation.nextAgent === "architecture") {
         handleRunArchitectureStream({ use_enhanced_srs_if_available: true, architecture_notes: null, human_comment: null });
       } else if (approveContinuation.nextAgent === "uiux") {
-        runUiux.mutate({});
+        handleRunUiuxStream({ use_enhanced_srs_if_available: true, human_comment: null });
       }
     }
   }
@@ -410,13 +433,13 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
         />
       ) : isUiuxGenerating ? (
         <LiveGenerationView
-          displayText=""
-          hasStarted={false}
+          displayText={declutterJsonForDisplay(uiuxStreamedText)}
+          hasStarted={uiuxStreamStarted}
           connectingLabel="Connecting to UI/UX Agent..."
-          generatingLabel="Generating pages, components, and previews..."
-          isFinalizing
-          finalizingLabel="Generating pages, components, and previews..."
-          phaseStartedAt={runUiux.submittedAt || null}
+          generatingLabel={isUiuxRevising ? "Applying your requested change..." : "Generating ui_metadata..."}
+          isFinalizing={Boolean(uiuxPhase)}
+          finalizingLabel={uiuxPhase?.label}
+          phaseStartedAt={uiuxPhaseStartedAt}
         />
       ) : versions.length === 0 && isRequirementStage ? (
         <RequirementSrsOutputPanel />

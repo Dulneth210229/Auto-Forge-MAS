@@ -1,29 +1,36 @@
 {
   "pages": [
     {
-      "page_id": "item-listing-page",
-      "route": "/item-listing",
-      "nav_entry": "Item Listing Page",
+      "page_id": "item-listing",
+      "route": "/items",
+      "nav_entry": "Item Listing",
       "components": [
         {
-          "name": "ItemListingTable",
-          "reused_from_design_system": true,
-          "expected_props": [
-            "propName"
+          "name": "ItemTable",
+          "reused_from_design_system": false,
+          "content_elements": [
+            "item name",
+            "item price",
+            "stock quantity",
+            "category"
           ]
         },
         {
-          "name": "ItemDetailsModal",
-          "reused_from_design_system": true,
-          "expected_props": [
-            "propName"
+          "name": "SearchFilterBar",
+          "reused_from_design_system": false,
+          "content_elements": [
+            "search term",
+            "selected category",
+            "price range min",
+            "price range max"
           ]
         },
         {
-          "name": "PaginationControls",
+          "name": "Pagination",
           "reused_from_design_system": true,
-          "expected_props": [
-            "propName"
+          "content_elements": [
+            "page number",
+            "total pages"
           ]
         }
       ],
@@ -32,28 +39,111 @@
       ],
       "covers_requirements": [
         "FR-001",
-        "FR-002",
-        "FR-003",
-        "FR-004",
-        "FR-005",
         "FR-006",
         "FR-007",
         "FR-008",
         "FR-009",
         "FR-010",
-        "AC-002",
+        "US-004",
+        "US-005",
+        "US-006",
+        "US-008",
+        "US-009",
         "AC-005",
         "AC-007",
-        "US-001",
-        "US-002",
-        "US-003",
-        "US-004",
+        "AC-008"
+      ]
+    },
+    {
+      "page_id": "item-detail",
+      "route": "/items/:id",
+      "nav_entry": "Item Detail",
+      "components": [
+        {
+          "name": "ItemDetailCard",
+          "reused_from_design_system": false,
+          "content_elements": [
+            "item name",
+            "item description",
+            "item price",
+            "stock quantity",
+            "category",
+            "image url",
+            "created at timestamp",
+            "updated at timestamp"
+          ]
+        }
+      ],
+      "actors": [
+        "Admin/Manager"
+      ],
+      "covers_requirements": [
+        "FR-002",
+        "US-005",
+        "US-006",
+        "US-008"
+      ]
+    },
+    {
+      "page_id": "item-form",
+      "route": "/items/form",
+      "nav_entry": "Item Form",
+      "components": [
+        {
+          "name": "ItemForm",
+          "reused_from_design_system": false,
+          "content_elements": [
+            "item name",
+            "item description",
+            "item price",
+            "stock quantity",
+            "category",
+            "image url"
+          ]
+        }
+      ],
+      "actors": [
+        "Admin/Manager"
+      ],
+      "covers_requirements": [
+        "FR-003",
+        "FR-004",
+        "FR-005",
         "US-005",
         "US-006",
         "US-007",
         "US-008",
-        "US-009",
-        "US-010"
+        "US-010",
+        "AC-001",
+        "AC-002",
+        "AC-003",
+        "AC-004"
+      ]
+    },
+    {
+      "page_id": "item-delete-confirmation",
+      "route": "/items/:id/delete",
+      "nav_entry": "Item Delete Confirmation",
+      "components": [
+        {
+          "name": "DeleteConfirmationDialog",
+          "reused_from_design_system": false,
+          "content_elements": [
+            "item name",
+            "confirmation message"
+          ]
+        }
+      ],
+      "actors": [
+        "Admin/Manager"
+      ],
+      "covers_requirements": [
+        "FR-005",
+        "US-003",
+        "US-005",
+        "US-006",
+        "US-010",
+        "AC-003"
       ]
     }
   ]

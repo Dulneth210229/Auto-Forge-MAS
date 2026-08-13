@@ -1,6 +1,6 @@
 import { createContext, useContext, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { GATED_STAGES } from "../../lib/pipelineStages";
+import { SELECTABLE_AGENT_STAGES } from "../../lib/pipelineStages";
 
 const WorkspaceSelectionContext = createContext(null);
 
@@ -25,7 +25,7 @@ export function WorkspaceSelectionProvider({ featureId, onSelectFeature, childre
   const [searchParams, setSearchParams] = useSearchParams();
   const urlAgent = searchParams.get("agent");
   const [selectedAgent, setSelectedAgentState] = useState(
-    GATED_STAGES.includes(urlAgent) ? urlAgent : "requirement"
+    SELECTABLE_AGENT_STAGES.includes(urlAgent) ? urlAgent : "requirement"
   );
   const [selectedModel, setSelectedModel] = useState(null);
   const [activeOutputTab, setActiveOutputTab] = useState("result");

@@ -309,6 +309,38 @@ export async function runUiux(
   );
 }
 
+export async function reviseUiux(featureId, { revision_comment, revised_by }, signal) {
+  return postCancelable(`${base(featureId)}/uiux/revise`, { revision_comment, revised_by }, signal);
+}
+
+// Live, token-by-token variants (ChatGPT/Claude-style), same mechanism as Domain/Architecture
+// Agent's run*Stream/revise*Stream above -- what UiuxAgentChat/useUiuxAgentFlow use instead of the
+// plain runUiux/reviseUiux. Events additionally include a "phase" type for the non-streamable tail
+// (component generation, page assembly/rendering) once ui_metadata_json itself finishes
+// streaming -- see the backend routes' own docstrings.
+export async function runUiuxStream(
+  featureId,
+  { use_enhanced_srs_if_available = true, ui_preferences, human_comment } = {},
+  onEvent,
+  signal
+) {
+  return streamNdjsonPost(
+    `${API_BASE_URL}${base(featureId)}/uiux/run/stream`,
+    { use_enhanced_srs_if_available, ui_preferences, human_comment },
+    onEvent,
+    signal
+  );
+}
+
+export async function reviseUiuxStream(featureId, { revision_comment, revised_by }, onEvent, signal) {
+  return streamNdjsonPost(
+    `${API_BASE_URL}${base(featureId)}/uiux/revise/stream`,
+    { revision_comment, revised_by },
+    onEvent,
+    signal
+  );
+}
+
 // Coder Agent
 export async function runCoder(
   featureId,

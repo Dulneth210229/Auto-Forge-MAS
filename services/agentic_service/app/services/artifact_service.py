@@ -109,7 +109,8 @@ class ArtifactService:
         artifact_format: ArtifactFormat,
         filename: str,
         content: str,
-        version_override: int | None = None
+        version_override: int | None = None,
+        approval_status: ApprovalStatus = ApprovalStatus.PENDING,
     ) -> ArtifactResponse:
         """
         Save a text-based artifact and register metadata.
@@ -118,6 +119,10 @@ class ArtifactService:
 
         Example:
             SRS_v1.md and SRS_v1.json should both be version 1.
+
+        approval_status defaults to PENDING (every existing caller's behavior, unchanged) --
+        an agent whose stage requires no human decision at all (e.g. UI/UX Agent) can pass
+        APPROVED instead so the artifact is born already approved.
         """
         version = version_override or self.get_next_version(
             feature_id=feature["feature_id"],
@@ -141,7 +146,8 @@ class ArtifactService:
             artifact_type=artifact_type,
             artifact_format=artifact_format,
             file_path=saved_path,
-            version=version
+            version=version,
+            approval_status=approval_status,
         )
 
     def save_json_artifact(
@@ -154,6 +160,7 @@ class ArtifactService:
         data: dict[str, Any],
         version_override: int | None = None,
         summary: str | None = None,
+        approval_status: ApprovalStatus = ApprovalStatus.PENDING,
     ) -> ArtifactResponse:
         """
         Save a JSON artifact and register metadata.
@@ -165,6 +172,9 @@ class ArtifactService:
         artifact's content (e.g. a CODE_PLAN's own "summary" field) --
         stored alongside the artifact record so the frontend chat can show
         real, model-generated text instead of a generic placeholder.
+
+        approval_status defaults to PENDING (every existing caller's behavior, unchanged) --
+        see save_text_artifact's docstring for why an agent might pass APPROVED instead.
         """
         version = version_override or self.get_next_version(
             feature_id=feature["feature_id"],
@@ -190,6 +200,7 @@ class ArtifactService:
             file_path=saved_path,
             version=version,
             summary=summary,
+            approval_status=approval_status,
         )
 
     def _hydrate_artifact_response(self, artifact: dict[str, Any]) -> ArtifactResponse:
@@ -217,6 +228,7 @@ class ArtifactService:
         file_path: str,
         version: int,
         summary: str | None = None,
+        approval_status: ApprovalStatus = ApprovalStatus.PENDING,
     ) -> ArtifactResponse:
         """
         Create artifact metadata and store it in the temporary in-memory store.
@@ -233,7 +245,7 @@ class ArtifactService:
             "artifact_format": artifact_format,
             "file_path": file_path,
             "version": version,
-            "approval_status": ApprovalStatus.PENDING,
+            "approval_status": approval_status,
             "created_at": created_at,
             "summary": summary,
         }
@@ -464,7 +476,8 @@ class ArtifactService:
         artifact_type: ArtifactType,
         artifact_format: ArtifactFormat,
         filename: str,
-        binary_content: bytes
+        binary_content: bytes,
+        approval_status: ApprovalStatus = ApprovalStatus.PENDING,
     ) -> ArtifactResponse:
         """
         Save a binary artifact.
@@ -473,6 +486,9 @@ class ArtifactService:
 
         Example:
             usecase_v1.png
+
+        approval_status defaults to PENDING (every existing caller's behavior, unchanged) --
+        see save_text_artifact's docstring for why an agent might pass APPROVED instead.
         """
         version = self.get_next_version(
             feature_id=feature["feature_id"],
@@ -498,7 +514,8 @@ class ArtifactService:
             artifact_type=artifact_type,
             artifact_format=artifact_format,
             file_path=str(file_path),
-            version=version
+            version=version,
+            approval_status=approval_status,
         )
 
     def get_latest_approved_artifact(

@@ -1,0 +1,56 @@
+<section class="bg-white shadow-sm rounded-lg p-4">
+  <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+    <div class="flex-1 w-full">
+      <label for="search-input" class="block text-sm font-medium text-gray-700 mb-1">Search Items</label>
+      <div class="relative">
+        <input
+          type="text"
+          id="search-input"
+          placeholder="Search by name or description..."
+          class="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+          value="Wireless Headphones"
+        />
+        <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+          <svg class="h-5 w-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+        </div>
+      </div>
+    </div>
+
+    <div class="flex flex-col sm:flex-row gap-4 w-full md:w-auto">
+      <div class="w-full sm:w-48">
+        <label for="category-filter" class="block text-sm font-medium text-gray-700 mb-1">Category</label>
+        <select
+          id="category-filter"
+          class="w-full py-2 px-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+        >
+          <option value="">All Categories</option>
+          <option value="electronics" selected>Electronics</option>
+          <option value="clothing">Clothing</option>
+          <option value="home">Home & Kitchen</option>
+          <option value="books">Books</option>
+        </select>
+      </div>
+
+      <div class="w-full sm:w-48">
+        <label class="block text-sm font-medium text-gray-700 mb-1">Price Range</label>
+        <div class="flex items-center space-x-2">
+          <input
+            type="number"
+            placeholder="Min"
+            class="w-full py-2 px-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+            value="20"
+          />
+          <span class="text-gray-500">-</span>
+          <input
+            type="number"
+            placeholder="Max"
+            class="w-full py-2 px-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+            value="200"
+          />
+        </div>
+      </div>
+    </div>
+  </div>
+</section>

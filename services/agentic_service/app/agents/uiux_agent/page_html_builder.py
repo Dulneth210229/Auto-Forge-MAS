@@ -17,6 +17,17 @@ render correctly -- it can be opened standalone, downloaded, or dropped straight
 <iframe srcDoc>. Confirmed by direct inspection: this is a self-scanning Play-CDN IIFE bundle (no
 companion <script type="text/tailwindcss"> block needed) that behaves identically whether loaded
 via `src=` or executed inline.
+
+Real, confirmed bug this template also guards against: an `<iframe srcDoc>` resolves a document's
+*relative* URLs (including a plain `href="#"` -- exactly the convention
+HTML_COMPONENT_GENERATOR_SYSTEM_PROMPT already asks for on decorative links) against the
+*embedding parent page's own URL*, not against the srcdoc content itself. Clicking such a link
+inside the preview iframe therefore navigates the iframe to the host app's own URL, rendering the
+entire host app nested inside the preview pane -- confirmed directly against a real generated
+page (its Pagination "Next"/"Previous" links use exactly `href="#"`). The inline click-prevention
+script below (`_CLICK_GUARD_SCRIPT`) makes every link in every assembled page permanently inert
+regardless of its href value, present or future -- the deterministic fix for the whole bug class,
+not just this one link.
 """
 
 from __future__ import annotations
@@ -26,6 +37,19 @@ from typing import Any
 
 VENDOR_DIR = Path(__file__).parent / "vendor"
 TAILWIND_VENDOR_FILE = "tailwindcss.js"
+
+# Makes every link in the assembled page permanently inert -- see the module docstring for the
+# real iframe[srcdoc] navigation bug this prevents. Capture-phase so it runs before any other
+# handler; closest("a") so it also catches a click on an element nested inside a link (e.g. an
+# icon or span). Deliberately unconditional: this is a static visual reference, never working
+# navigation, regardless of what href value any given link happens to carry.
+_CLICK_GUARD_SCRIPT = """<script>
+document.addEventListener("click", function (event) {
+  if (event.target && event.target.closest && event.target.closest("a")) {
+    event.preventDefault();
+  }
+}, true);
+</script>"""
 
 _PAGE_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
@@ -41,6 +65,7 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
 <main class="max-w-6xl mx-auto p-6 space-y-6">
 {fragments}
 </main>
+{click_guard_script}
 </body>
 </html>
 """
@@ -72,6 +97,7 @@ class UIUXPageHtmlBuilder:
             title=title,
             tailwind_js=self._read_tailwind_js(),
             fragments=fragments_html,
+            click_guard_script=_CLICK_GUARD_SCRIPT,
         )
 
     def _read_tailwind_js(self) -> str:

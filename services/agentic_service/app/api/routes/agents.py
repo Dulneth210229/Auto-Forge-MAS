@@ -49,7 +49,7 @@ from app.schemas.architecture_schema import (
     ArchitectureAgentRunRequest,
     ArchitectureAgentReviseRequest,
 )
-from app.schemas.uiux_schema import UIUXAgentRunRequest
+from app.schemas.uiux_schema import UIUXAgentReviseRequest, UIUXAgentRunRequest
 from app.schemas.coder_schema import CoderAgentRunRequest, CoderAgentReviseRequest
 from app.services.in_memory_store import store
 from app.services.plantuml_service import plantuml_service
@@ -735,8 +735,9 @@ async def run_uiux_agent(feature_id: str, request: UIUXAgentRunRequest):
     - optionally uses an approved Enhanced SRS JSON if available
     - generates ui_metadata, per-component code, and per-page preview screenshots
 
-    Human approval is required after this -- both for the ui_metadata as a whole and for each
-    individual component (see StageOutputPanel/GovernancePanel's separate component approval UI).
+    No human approval is required after this -- every UI/UX artifact is saved already approved
+    (per direct user request; see uiux_agent/agent.py's _save_artifacts). A human can still
+    explicitly change the output afterward via POST .../uiux/revise (or its streaming variant).
     """
     _validate_feature(feature_id)
     stage_event_service.record(feature_id, AgentName.UIUX, "run", request.human_comment)
@@ -748,7 +749,7 @@ async def run_uiux_agent(feature_id: str, request: UIUXAgentRunRequest):
             feature_id=feature_id,
             agent_name=AgentName.UIUX,
             status="completed",
-            message="UI/UX Agent completed. Metadata and components require human approval.",
+            message="UI/UX Agent completed. Pages, components, and previews were generated.",
             artifact_ids=output.artifact_ids,
         )
 
@@ -764,6 +765,104 @@ async def run_uiux_agent(feature_id: str, request: UIUXAgentRunRequest):
             status_code=500,
             detail=f"UI/UX Agent failed: {_readable_error(error)}"
         )
+
+
+@router.post("/uiux/run/stream")
+async def run_uiux_agent_stream(feature_id: str, request: UIUXAgentRunRequest):
+    """
+    Streaming variant of /uiux/run -- same newline-delimited JSON event shape as Domain/
+    Architecture Agent's streaming endpoints, so the frontend can show ui_metadata_json "typing"
+    live, followed by {"type": "phase"} events for the non-streamable tail (component generation,
+    page assembly/rendering):
+        {"type": "token", "text": "..."}
+        {"type": "phase", "phase": "...", "label": "..."}
+        {"type": "error", "message": "..."}
+        {"type": "done", "artifact_ids": [...], "message": "..."}
+    """
+    _validate_feature(feature_id)
+    stage_event_service.record(feature_id, AgentName.UIUX, "run", request.human_comment)
+
+    async def event_stream():
+        try:
+            async for event in uiux_agent.run_stream(feature_id=feature_id, request=request):
+                yield json.dumps(event) + "\n"
+        except ValueError as error:
+            yield json.dumps({"type": "error", "message": str(error)}) + "\n"
+        except Exception as error:
+            yield json.dumps({"type": "error", "message": f"UI/UX Agent failed: {_readable_error(error)}"}) + "\n"
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
+
+
+@router.post("/uiux/revise", response_model=AgentRunResponse)
+async def revise_uiux_agent(feature_id: str, request: UIUXAgentReviseRequest):
+    """
+    Revise the latest UI/UX Agent output via an explicit human-directed change.
+
+    This endpoint:
+    - loads the latest ui_metadata_json artifact
+    - asks the LLM for a small, targeted plan of what should change (never a full retype)
+    - regenerates only the affected components' HTML; every other component is carried over
+      verbatim from the prior version
+    - creates a new, already-approved version; previous versions are kept unchanged
+    """
+    _validate_feature(feature_id)
+    stage_event_service.record(
+        feature_id, AgentName.UIUX, "revise", request.revision_comment, request.revised_by
+    )
+
+    try:
+        output = await uiux_agent.revise(feature_id=feature_id, request=request)
+
+        return AgentRunResponse(
+            feature_id=feature_id,
+            agent_name=AgentName.UIUX,
+            status="revised",
+            message="UI/UX Agent revision completed. Only the affected components were regenerated.",
+            artifact_ids=output.artifact_ids,
+        )
+
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+    except Exception as error:
+        print("========== UI/UX AGENT REVISION ERROR ==========")
+        print(traceback.format_exc())
+        print("==================================================")
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"UI/UX Agent revision failed: {_readable_error(error)}"
+        )
+
+
+@router.post("/uiux/revise/stream")
+async def revise_uiux_agent_stream(feature_id: str, request: UIUXAgentReviseRequest):
+    """
+    Streaming variant of /uiux/revise -- same newline-delimited JSON event shape as
+    /uiux/run/stream.
+        {"type": "token", "text": "..."}
+        {"type": "phase", "phase": "...", "label": "..."}
+        {"type": "error", "message": "..."}
+        {"type": "done", "artifact_ids": [...], "message": "..."}
+    """
+    _validate_feature(feature_id)
+    stage_event_service.record(
+        feature_id, AgentName.UIUX, "revise", request.revision_comment, request.revised_by
+    )
+
+    async def event_stream():
+        try:
+            async for event in uiux_agent.revise_stream(feature_id=feature_id, request=request):
+                yield json.dumps(event) + "\n"
+        except ValueError as error:
+            yield json.dumps({"type": "error", "message": str(error)}) + "\n"
+        except Exception as error:
+            yield json.dumps(
+                {"type": "error", "message": f"UI/UX Agent revision failed: {_readable_error(error)}"}
+            ) + "\n"
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
 
 @router.post("/coder/run", response_model=AgentRunResponse)

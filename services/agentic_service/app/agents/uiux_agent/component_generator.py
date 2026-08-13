@@ -149,21 +149,40 @@ class UIUXComponentGenerator:
         fragment is empty/whitespace-only or contains an obvious generic-placeholder phrase
         instead of real content, else None. This is what catches the real bug class at the
         source, before a human ever sees a broken preview.
+
+        Checks only the fragment's rendered/visible TEXT (see _visible_text), never the raw
+        markup -- a real, confirmed false positive this fixes: a bare "placeholder" phrase
+        previously matched against the WHOLE lowered HTML string, so any legitimate
+        `<input placeholder="Search...">` attribute (exactly what a real search/filter component
+        needs) always tripped this gate and made the component un-generatable, exhausting every
+        repair attempt and crashing the whole run even though the fragment was correct.
         """
 
         stripped = html_code.strip()
         if not stripped:
             return "The fragment is empty."
 
-        lowered = stripped.lower()
+        visible_text = self._visible_text(stripped)
         for phrase in PLACEHOLDER_CONTENT_PHRASES:
-            if phrase in lowered:
+            if phrase in visible_text:
                 return (
                     f"The fragment contains the placeholder/generic phrase {phrase!r} instead of "
                     "real, populated example content."
                 )
 
         return None
+
+    def _visible_text(self, html_code: str) -> str:
+        """
+        Best-effort extraction of a fragment's rendered/visible text -- strips every tag
+        (including its attributes, e.g. `placeholder="..."`, `class="..."`) so the
+        content-quality check above only ever sees what a human would actually see on screen,
+        never markup. Not a full HTML parser -- a regex tag-strip is sufficient here since this
+        is a quality heuristic, not a correctness-critical parse.
+        """
+
+        without_tags = re.sub(r"<[^>]*>", " ", html_code)
+        return re.sub(r"\s+", " ", without_tags).strip().lower()
 
     def _parse(self, text: str) -> dict[str, Any]:
         if HTML_CODE_MARKER not in text:

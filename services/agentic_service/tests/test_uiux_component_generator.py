@@ -78,3 +78,30 @@ def test_detect_placeholder_content_allows_real_content(generator):
     </table>
     """
     assert generator.detect_placeholder_content(real_fragment) is None
+
+
+def test_detect_placeholder_content_allows_legitimate_html_placeholder_attribute(generator):
+    """
+    Real, confirmed false-positive bug: a genuine <input placeholder="..."> attribute (exactly
+    what a real search/filter component needs) previously matched the bare "placeholder" phrase
+    because the check searched the whole raw HTML string, not just visible text -- crashing a
+    real run for a component named "SearchFilterBar" after exhausting every repair attempt.
+    """
+    search_bar = """
+    <section class="bg-white p-4 rounded-lg shadow-sm flex gap-3">
+      <input type="text" placeholder="Search items by name..." class="border rounded px-3 py-2 flex-1">
+      <select class="border rounded px-3 py-2">
+        <option>All Categories</option>
+        <option>Electronics</option>
+      </select>
+    </section>
+    """
+    assert generator.detect_placeholder_content(search_bar) is None
+
+
+def test_detect_placeholder_content_still_flags_placeholder_as_visible_text(generator):
+    """The gate must still catch a genuine "placeholder" phrase when it's real, rendered text
+    content (not an HTML attribute) -- the fix narrows what's checked, not what's caught."""
+    violation = generator.detect_placeholder_content("<p>This is a placeholder message.</p>")
+    assert violation is not None
+    assert "placeholder" in violation.lower()

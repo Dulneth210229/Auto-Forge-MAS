@@ -300,6 +300,92 @@ def build_component_format_repair_prompt(raw_output: str) -> str:
     )
 
 
+UIUX_REVISION_SYSTEM_PROMPT = """
+You are the UI/UX Agent, responding to a human's explicit request to change already-generated
+ui_metadata_json for one feature. You do NOT retype the whole document -- you propose a SMALL,
+targeted list of operations describing exactly what should change, and a separate deterministic
+step applies them.
+
+Hard rules:
+1. Output ONLY a single JSON object: {"revision_summary": "...", "operations": [...]}. No prose,
+   no markdown fences, no comments.
+2. Each operation is one of:
+   {"action": "add", "page_id": "existing-page-id", "component_name": "NewComponentName",
+    "content_elements": ["real, specific content this component displays"],
+    "new_component_justification": "why this new component is needed",
+    "covers_ui_expectations": ["UI expectation element text, if any"]}
+   {"action": "remove", "page_id": "existing-page-id (optional if the name is unambiguous)",
+    "component_name": "ExistingComponentName"}
+   {"action": "modify", "page_id": "existing-page-id (optional if the name is unambiguous)",
+    "component_name": "ExistingComponentName",
+    "content_elements": ["the complete new content_elements list"],
+    "covers_ui_expectations": ["the complete new list, if changing it"]}
+3. "component_name" for "remove"/"modify" MUST exactly match a component name that already
+   exists in the CURRENT ui_metadata_json shown to you below -- never invent or guess a name.
+4. "page_id" for "add" MUST exactly match a page_id that already exists in the CURRENT
+   ui_metadata_json -- this agent cannot create a new page from a revision request.
+5. Do not manufacture changes beyond what the human's comment genuinely implies. If the comment
+   describes a single change, propose exactly one operation. If the comment is plural/describes
+   several distinct changes, propose one operation per genuinely distinct change -- never pad the
+   list with unrelated or invented changes.
+6. If the request cannot be matched to any real page/component in the current ui_metadata_json,
+   or does not describe an actionable UI change at all, return an EMPTY "operations" list and
+   explain why in "revision_summary" -- never guess.
+7. This agent does not change the feature's "color_theme" via this mechanism -- if a color/theme
+   change is requested, note it in "revision_summary" as something to address in
+   content_elements/component styling only, not by changing the top-level color_theme field.
+
+Return exactly this JSON shape:
+{
+  "revision_summary": "short, human-readable summary of what will change and why",
+  "operations": [ ... ]
+}
+"""
+
+
+def build_uiux_revision_prompt(
+    project: dict,
+    feature: dict,
+    current_ui_metadata_json: dict,
+    revision_comment: str,
+    revised_by: str | None,
+) -> str:
+    """
+    Build the user prompt for a UI/UX revision's small operations plan -- shown the CURRENT
+    ui_metadata_json (real page/component/content_elements/color_theme) so it can reference real
+    component names, mirrors Requirement/Domain/Architecture Agent's own revision prompt shape.
+    """
+
+    sections = [
+        f"Project: {project.get('project_name')} ({project.get('project_type')})",
+        f"Feature: {feature.get('feature_name')}",
+        "",
+        "Current ui_metadata_json (read-only context -- do not retype it, only reference its "
+        "real page_id/component names in your operations):",
+        json.dumps(current_ui_metadata_json, indent=2, default=str),
+        "",
+        f"Human revision comment: {revision_comment}",
+    ]
+
+    if revised_by:
+        sections.append(f"Requested by: {revised_by}")
+
+    sections.extend(["", "Return the revision operations plan now, following the required JSON shape exactly."])
+
+    return "\n".join(sections)
+
+
+UIUX_REVISION_JSON_REPAIR_PROMPT = """
+The previous response was not a valid revision operations plan. Return ONLY a corrected JSON
+object matching the required {"revision_summary", "operations"} shape. No prose, no markdown
+fences.
+"""
+
+
+def build_uiux_revision_json_repair_prompt(raw_output: str) -> str:
+    return f"Previous invalid output:\n{raw_output}\n\nReturn the corrected revision operations plan now."
+
+
 def build_component_quality_repair_prompt(html_code: str, violation: str) -> str:
     """
     Distinct from build_component_format_repair_prompt (output format issues): this is for a

@@ -6,15 +6,10 @@ import { useArtifactContent } from "../../hooks/useArtifacts";
 import ApprovalPanel from "./ApprovalPanel";
 import LoadingSpinner from "../common/LoadingSpinner";
 
+// uiux previously had an entry here -- removed: the whole UI/UX stage no longer requires any
+// human approval decision at all (every UI/UX artifact is born already approved), so
+// ApprovalPanel never renders for it and this warning could never show.
 const APPROVAL_WARNINGS = {
-  uiux: (
-    <>
-      Approving this Preview Screenshot approves the underlying UI metadata, integration
-      manifest, and every component/page design of this version <strong>together</strong> --
-      Coder Agent will treat all of them as approved reference material to build from. Rejecting
-      or requesting revision applies to all of them the same way.
-    </>
-  ),
   coder: (
     <>
       Approving this runs a real <code>git merge --no-ff</code> into <code>main</code> and{" "}

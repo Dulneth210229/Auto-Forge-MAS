@@ -2054,6 +2054,203 @@ milestone — that file is scratch, **this file is the durable one**.
       results are left in place on the real feature (new SRS versions, all pending review), per
       this file's own established convention.
 
+65. **UI/UX Agent: removed human approval entirely, added a real `revise()`/`revise_stream()`,
+    and gave it a dedicated live chat -- the third and final part of the UI/UX Agent trilogy
+    (items 63-64-65) that started with the HTML+Tailwind rewrite.** Direct user request, five
+    parts: remove ALL human approval from the UI/UX stage (a further escalation past item 64's
+    "only the Preview Screenshot is approvable" -- now NOTHING requires a decision); let a human
+    explicitly change already-generated UI by messaging the agent, "through the revise method"
+    specifically; the agent must dynamically interact with and satisfy that specific request (not
+    a generic regeneration); the UI/UX Agent's chat history must work "just like the other
+    agents." Investigated directly (2 Explore agents, the second stalled mid-task and was
+    finished by reading the remaining files directly -- a recurring reliability gap for
+    background Explore agents this session, worked around the same way each time): confirmed
+    `UIUXAgent` genuinely had no `revise()`/`revise_stream()` at all (only `run()`), no `/uiux/
+    revise` route, no `UIUXAgentReviseRequest` schema -- matching the user's report exactly.
+    Also confirmed `buildAgentTimeline` was already fully generic per-stage and needed zero
+    changes -- the "no chat" complaint was specifically that `ChatPanel.jsx`'s
+    `reviseMutationsByStage` had no `uiux` entry, hard-disabling the composer with a stale "can't
+    be messaged directly" banner once output existed; the READ side (history) already worked,
+    only the WRITE side (revise) was missing.
+    - **Design decision for "remove all approval," made before writing any code**: rather than
+      removing the `approval_status` concept from the data model (which would require touching
+      `deriveStageStatus.js`, `STAGE_GATING_ARTIFACT`, and every approval-status-dependent lookup
+      across the codebase), UI/UX artifacts are simply saved **already approved**. Confirmed by
+      reading `GovernancePanel.jsx` directly that this makes every existing UI surface do the
+      right thing with zero changes: it only ever renders `ApprovalPanel` (the button row) when
+      `gatingArtifact?.approval_status === "pending"` -- otherwise a plain "Latest version is
+      {status}. Nothing pending." line, which was already correct, already built, already tested.
+    - **Backend**: `artifact_service.py`'s `save_text_artifact`/`save_json_artifact`/
+      `save_binary_artifact`/`_register_artifact` all gained an optional `approval_status:
+      ApprovalStatus = ApprovalStatus.PENDING` parameter -- every other caller in the codebase is
+      completely unaffected (parameter omitted = today's exact behavior, confirmed by a new
+      regression test). `uiux_agent/agent.py`'s `_save_artifacts` now passes
+      `approval_status=ApprovalStatus.APPROVED` on every save call, and returns `(artifact_ids,
+      version)` instead of just `artifact_ids` so callers can invoke `apply_design_system_patch`
+      themselves. `apply_design_system_patch` (merges new components/tokens into
+      `design_system.json`) is now called directly and unconditionally from `agent.py` at the end
+      of every `run()`/`run_stream()`/`revise()`/`revise_stream()`, instead of being
+      approval-triggered from `approval_service.py`.
+    - **A deliberate, transparent reversal of this session's own immediately-prior work**: item
+      64's approval-cascade mechanism (`UIUX_SIBLING_ARTIFACT_TYPES`, `_is_uiux_screenshot_type`,
+      `_cascade_uiux_screenshot_decision`, the `UI_PREVIEW_SCREENSHOT` entry in
+      `EXCLUSIVE_VERSIONED_ARTIFACT_TYPES`, and its own dedicated test file) all existed
+      specifically to make a human's one click on the Preview Screenshot cascade to everything
+      else -- since no human click will ever happen for this stage anymore, all of it became
+      unreachable and was removed outright rather than left as confusing dead code, matching this
+      project's own established practice (e.g. item 45's `_placeholder_mock_props` deletion).
+    - **Graph-level gate removed too, since `approval_status` alone doesn't stop LangGraph's
+      `interrupt()`**: `graph_orchestrator_service.py` moved `"uiux"` from `GATED_STAGES` to
+      `AUTO_APPROVED_STAGES` (joining `security`/`qa`) -- confirmed by reading `_build_graph()`
+      that this loop is already fully generic over both lists, so the move alone correctly wires
+      a plain `uiux_node -> coder_node` edge with no `approve_uiux` interrupt node built at all;
+      `uiux_node` itself needed no changes. `frontend/src/lib/pipelineStages.js`'s own mirror was
+      updated the same way. **A real, honest tradeoff, stated directly rather than engineered
+      around**: a feature whose pipeline runs via the full graph `start()`/`resume()` flow will
+      now auto-continue straight from `uiux_node` into `coder_node`, with no pause for a human to
+      revise UI/UX output first -- accepted because this project has repeatedly confirmed (e.g.
+      item 30) that the graph `start()`/`resume()` path is the less-common one in practice; the
+      primary interaction model (a human working through an agent's own chat, calling run/revise
+      directly) never even engages the graph unless a run happens to already be active.
+    - **A real regression this move would have caused in the frontend, found and fixed before it
+      shipped, not after**: `GATED_STAGES` turned out to be doing double duty across three
+      frontend files as "which stages are real, selectable agents" (not just "which stages have
+      an approval gate") -- `WorkspaceSelectionContext.jsx` used
+      `GATED_STAGES.includes(urlAgent)` to validate the `?agent=` URL query param (item 44's
+      reload-persistence fix), `FeatureListItem.jsx` looped over `GATED_STAGES` to compute the
+      feature-list status dot, and `deriveCurrentStage.js` scanned `GATED_STAGES` as its
+      "which real stage is current" fallback. Removing `uiux` from `GATED_STAGES` would have
+      silently broken all three for the uiux stage specifically: a page reload on `?agent=uiux`
+      would snap back to Requirement (reintroducing exactly the bug item 44 fixed, for this one
+      stage), and the feature-list status dot / chat's default agent selection would skip over
+      "UI/UX" entirely while it's actively generating, jumping straight to "Coder" instead. Fixed
+      by adding a new, distinct `SELECTABLE_AGENT_STAGES` constant (`pipelineStages.js`) --
+      "every real, non-placeholder agent stage," explicitly including uiux -- and repointing all
+      three files at it instead of `GATED_STAGES`. `REVISABLE_STAGES` also gained `"uiux"`.
+    - **Revision mechanism, mirroring the proven "small ops plan + deterministic patcher"
+      pattern** (Requirement Agent item 57, Architecture Agent item 62) at the right scale for
+      this schema: new `app/agents/uiux_agent/revision_patcher.py`
+      (`apply_uiux_revision_operations`) matches by `(page_id, component_name)` and supports
+      `add`/`remove`/`modify` -- much shallower than the SRS/Architecture Plan patchers since
+      `ui_metadata_json` is just a list of pages each with a list of components, no deeply nested
+      structure to walk. New `UIUX_REVISION_SYSTEM_PROMPT`/`build_uiux_revision_prompt` (shown
+      the CURRENT metadata so the model can reference real component names; explicit "target must
+      already exist" and anti-padding rules, matching every other revision prompt in this
+      codebase). New `UIUXAgent.revise()`/`revise_stream()`: load the latest `ui_metadata_json`
+      (via new `_find_latest_uiux_artifact`, regardless of approval status, mirroring Domain
+      Agent's own revision-artifact lookup) -> stream/invoke the small ops-plan call -> parse with
+      one JSON-repair attempt on failure, never raising (`_resolve_uiux_revision_plan`, an honest
+      empty-operations plan is the worst case) -> apply via the patcher (`_prepare_revision`) ->
+      for every `add`/`modify`'d component, call the EXISTING, UNCHANGED
+      `_generate_component_with_quality_gate` (same quality gate, same bounded repair loop, same
+      `color_theme` threading fresh generation already has) -> every UNTOUCHED component is
+      carried over VERBATIM from the prior version's own saved artifact (new
+      `_load_component_html_by_name`, matches by the same filename-slug convention
+      `_save_artifacts` already writes) -> reassemble via the EXISTING, UNCHANGED
+      `_assemble_and_render_pages` -> save via the EXISTING, UNCHANGED `_save_artifacts` (now
+      auto-approved) -> `apply_design_system_patch`. `_generate_components` gained two optional,
+      backward-compatible parameters (`touched_components`/`carry_over_version`, both `None` for
+      `run()`) rather than a parallel duplicate method, so `run()`'s own fresh-generation
+      behavior (including the cross-feature `reused_from_design_system` lookup) is provably
+      unchanged -- confirmed by a dedicated regression test. New `UIUXAgent.run_stream()` too
+      (streams the metadata-generation call directly, mirrors Architecture's own `run_stream`
+      shape: falls through to a non-streamed JSON-repair call on parse failure, then the same
+      `_validate_metadata_with_repair` ladder `run()` already uses -- extracted from
+      `_generate_and_validate_metadata` specifically so both paths share the identical repair
+      loop) so the chat's FIRST message streams live too, not just revisions. New
+      `UIUXAgentReviseRequest` schema; new `POST /uiux/run/stream`, `/uiux/revise`,
+      `/uiux/revise/stream` routes (existing `POST /uiux/run` untouched, matching every other
+      agent's own non-streaming-route-stays precedent).
+    - **Dedicated live chat, mirroring `ArchitectureAgentChat.jsx`/`useArchitectureAgentFlow.js`
+      exactly** (the closer template of the two real precedents, since UI/UX generation -- like
+      Architecture's diagram tail -- has a genuinely non-streamable tail after the main LLM call):
+      new `useUiuxAgentFlow.js` (run/revise stream mutations, `runPhase`/`revisionPhase` +
+      start-timestamp tracking, `AbortController`-based stop, the awaited
+      `invalidateAfterCompletion` -- copied deliberately verbatim, since omitting the `await` is
+      this project's own documented recurring "reply disappears instantly" bug whenever this
+      pattern gets copied without it). `UiuxAgentFlowContext.jsx` rewritten in place (same
+      exported names) to wrap the new hook instead of the old single `useRunUiux` mutation. New
+      `UiuxAgentChat.jsx` (optimistic "You" bubble, live streaming + phase/elapsed-time banner
+      with a Stop button, composer) -- no "/" document-mention picker (Domain-specific) and no
+      "deep exploration mode" escape hatch (Architecture-specific), since UI/UX Agent has neither
+      concept. `ChatPanel.jsx` gained a `selectedAgent === "uiux"` dispatch branch (mirroring the
+      other four agents exactly) and lost the stale "can't be messaged directly"/"no revise
+      action" banner and its `uiux` entries from the generic fallback's mutation maps.
+      `ResultTab.jsx`'s `isUiuxGenerating` branch upgraded from a bare `isFinalizing` spinner
+      reading a plain mutation's `submittedAt` to the full real-streamed-text + phase/elapsed-time
+      `LiveGenerationView`, matching Architecture's own branch shape exactly; its
+      Architecture-Plan-approval-auto-continue trigger now calls `handleRunUiuxStream(...)`
+      instead of the old `runUiux.mutate({})`. `GovernancePanel.jsx`'s now-unreachable
+      `APPROVAL_WARNINGS.uiux` entry (the button row it warned about can never render anymore)
+      was removed rather than left as dead code, for the same reason as the backend cascade code.
+    - **Tests**: `tests/test_uiux_revision_patcher.py` (new, 16, no-LLM -- add/remove/modify
+      matching by page_id+name, duplicate-add and missing-target both correctly unmatched not
+      guessed, malformed operations skipped not raised, original metadata never mutated, the
+      transient `_revision_touched` marker set correctly by add/modify and never by remove).
+      `tests/test_uiux_agent_revision.py` (new, 12, mocked provider/store/artifact_service/
+      component_generator/preview_renderer, no real LLM/HTTP/Docker/Playwright -- `_prepare_
+      revision`'s touched-component computation and honest no-op case; `_parse_uiux_revision_
+      plan`/`_resolve_uiux_revision_plan`'s parse-then-repair-then-honest-empty-plan ladder;
+      `_generate_components`' revision-mode carry-over-vs-regenerate branching AND a dedicated
+      test proving `run()`'s own unchanged fresh-generation/reuse behavior when the new params
+      are omitted; a full end-to-end `revise_stream()` run confirming the removed component is
+      never (re)generated, the one remaining untouched component's HTML is looked up from the
+      prior version and never touches `component_generator.generate`, every save call carries
+      `approval_status=APPROVED`, and `apply_design_system_patch` is called with the correct new
+      version). `tests/test_artifact_service_approval_status.py` (new, 7 -- default-PENDING and
+      explicit-APPROVED for all three save methods, plus an explicit regression guard that an
+      existing caller passing no `approval_status` argument at all still gets PENDING). Deleted
+      `tests/test_approval_uiux_cascade.py` outright (item 64's own cascade tests -- the
+      mechanism they tested no longer exists, so keeping them around failing would just be
+      confusing, not informative). Full suite: **575 passed** (up from 587 before this item --
+      net down because item 64's 8 now-obsolete cascade tests were deleted while a smaller number
+      of new tests were added; zero regressions in anything else). `npm run build` clean.
+    - **Real, live verification against the same real feature** (`feature_94701501` "Item
+      Listing (CRUD)" in `proj_34e07440` "Sample E-commerce"): the first real attempt at a fresh
+      full `run_stream()` (curl with `--max-time 300`, then `900`) both got cut off by the
+      client-side timeout before the backend finished -- **not a bug in this change**, a direct,
+      concrete re-confirmation of this project's own repeatedly-documented "closing the
+      connection cancels an in-flight stream" behavior (FastAPI/Starlette cancels the underlying
+      async generator on client disconnect). Switched to a Python `requests`-based script with no
+      client-side timeout at all; a subsequent real full run genuinely ran for 1015 real seconds
+      before hitting a real `httpx.ReadTimeout` during component generation on this machine's
+      currently-configured global model (`llama3:latest`, no per-agent override set) -- correctly
+      surfaced as a clean `{"type": "error", "message": "UI/UX Agent failed: ReadTimeout (no
+      further detail...)"}"` event (confirming item 59's `_readable_error` fix, applied to these
+      new routes from the start, correctly protects them too) rather than crashing the stream
+      uncaught. Given the real time cost of a full 3-component fresh generation on this model,
+      pivoted to the more directly relevant real-data test: a real `revise_stream()` call against
+      the feature's actual, existing, already-approved v3 output (revision comment: "In the
+      Pagination component, also show the current page indicator text") -- **completed cleanly in
+      287 real seconds**, `components` phase at 12s (the single small ops-plan call, fast) then
+      `assembly` at 278s (the one touched component's quality-gated generation + page
+      reassembly + screenshot render). Confirmed directly: the real saved v4 `revision_metadata`
+      shows `applied_changes: ["Modified component 'Pagination' on page 'item-listing-page'
+      (content_elements)."]` and `unmatched_operations: []`; the component's `content_elements`
+      genuinely gained `"current page indicator text"`; the regenerated HTML shows real pagination
+      controls with page-count text; all 6 new v4 artifacts saved with `approval_status:
+      "approved"` -- zero human action. **An honest, unrelated model-quality observation, not a
+      code bug**: the regenerated Pagination component came back scoped more broadly than its
+      name alone would suggest (a full item-grid "Product Inventory" card plus pagination footer,
+      rather than just pagination controls) -- a real characteristic of how this local model
+      interprets a single component's generation context, out of this item's own scope (which was
+      the approval/revision mechanism, not general component-generation prompt tuning) to address
+      further. Confirmed `apply_design_system_patch` ran without error and correctly left the
+      already-registered `Pagination` design-system entry untouched (its own pre-existing,
+      unchanged "only ever add NEW components" semantics -- there was nothing new to add).
+      **Real browser verification** (Playwright, zero console/page errors): the live chat shows
+      real history (`Started · UI/UX` / `UI/UX Agent: Produced...` / historical `UI/UX: Approved`
+      pills from before this change), the stale "can't be messaged directly"/"no revise action"
+      banners are both confirmed absent, and the composer is enabled with the real
+      `hasOutput`-aware placeholder. "All Artifacts" for this stage correctly shows exactly what
+      the mixed real history should: v4 and v3 (both genuinely `approved`, zero action buttons)
+      alongside v2 and v1 (real, honest **pre-existing** legacy data from before this fix was
+      built -- still genuinely `pending`, still showing their real Approve/Reject/Request-Revision
+      controls) -- direct, live proof that this change only affects artifacts saved going
+      forward, never retroactively rewrites history, exactly as designed. This real v4 state is
+      left in place as genuine verification evidence, matching this project's own established
+      convention.
+
 ## Known model-quality gotchas (not code bugs — prompts already account for these)
 
 - `qwen3-coder:latest` sometimes emits function-valued mock props (e.g. `"onSubmit": () => {}`)

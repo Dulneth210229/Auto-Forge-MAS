@@ -4,12 +4,22 @@ UI/UX Agent metadata modeler.
 Purpose:
 - Ask the LLM (one-shot, via the existing llm_provider_service -- no tool
   calling needed) for ui_metadata_json.
-- Parse and lightly repair its output.
+- Parse and repair its output.
 
-This mirrors architecture_agent's JSON-extraction/repair pattern: try once,
-repair once on failure, then give up and let the caller decide (the UI/UX
-Agent fails loudly rather than synthesizing a fallback here, since a
-guessed-at UI plan is more likely to be actively wrong than merely absent).
+This mirrors architecture_agent's JSON-extraction/repair pattern -- give up and let the caller
+decide once repair is exhausted (the UI/UX Agent fails loudly rather than synthesizing a fallback
+here, since a guessed-at UI plan is more likely to be actively wrong than merely absent).
+
+Real, confirmed gap this file fixes: the JSON-repair step (distinct from the SEPARATE
+coverage/structure validation-repair loop in agent.py, which already retries up to
+MAX_VALIDATION_REPAIR_ATTEMPTS times) previously got exactly ONE repair attempt before raising --
+a real run against qwen3-coder:latest (a genuinely capable model) failed this exact way on a real
+feature: two consecutive responses in a row both came back with an empty/missing "pages" list.
+repair_until_valid() below widens this to MAX_JSON_REPAIR_ATTEMPTS tries and is shared by both
+generate() (non-streaming run()'s own repair phase) and UIUXAgent.run_stream() (whose first LLM
+call already happened via provider.stream(), so it calls this method directly instead of
+duplicating the retry logic inline, which is also what used to leave run_stream() with the same
+one-shot gap independently).
 """
 
 from __future__ import annotations
@@ -27,10 +37,14 @@ from app.agents.uiux_agent.prompt import (
 )
 from app.core.enums import AgentName
 from app.services.llm_provider_service import llm_provider_service
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class UIMetadataGenerationError(Exception):
-    """Raised when the LLM output could not be parsed into ui_metadata_json."""
+    """Raised when the LLM output could not be parsed into ui_metadata_json after every repair
+    attempt is exhausted."""
 
 
 class UIUXMetadataModeler:
@@ -38,6 +52,11 @@ class UIUXMetadataModeler:
     Generates ui_metadata_json from approved SRS + Architecture Plan + the
     project's existing design system.
     """
+
+    # See module docstring -- a real run against qwen3-coder:latest needed more than one repair
+    # round to recover from a missing/empty "pages" list. 3 repair attempts (on top of the
+    # initial generation) gives real convergence room without an unbounded retry loop.
+    MAX_JSON_REPAIR_ATTEMPTS = 3
 
     async def generate(
         self,
@@ -79,21 +98,46 @@ class UIUXMetadataModeler:
         except ValueError:
             pass
 
-        repair_prompt = build_uiux_json_repair_prompt(raw_output)
+        return await self.repair_until_valid(raw_output, provider)
 
-        repaired_output = await provider.invoke_agent(
-            [
-                {"role": "system", "content": UIUX_JSON_REPAIR_PROMPT},
-                {"role": "user", "content": repair_prompt},
-            ]
-        )
+    async def repair_until_valid(self, raw_output: str, provider: Any = None) -> tuple[dict[str, Any], str]:
+        """
+        Retry the JSON-repair prompt up to MAX_JSON_REPAIR_ATTEMPTS times, feeding back the
+        previous (still-invalid) output each round, until it parses into a valid ui_metadata_json
+        (a dict with a non-empty "pages" list) or every attempt is exhausted. Raises
+        UIMetadataGenerationError only after the last attempt still fails -- this agent's
+        deliberate "fail loudly, never fabricate a fallback" design (see module docstring) is
+        unchanged, only the number of real chances to recover before that happens.
+        """
 
-        try:
-            return self._extract_json_object(repaired_output), repaired_output
-        except ValueError as error:
-            raise UIMetadataGenerationError(
-                f"UI/UX Agent could not produce valid ui_metadata_json after one repair attempt: {error}"
-            ) from error
+        if provider is None:
+            provider = llm_provider_service.get_provider(agent_name=AgentName.UIUX.value)
+
+        last_error: ValueError | None = None
+
+        for attempt in range(1, self.MAX_JSON_REPAIR_ATTEMPTS + 1):
+            repair_prompt = build_uiux_json_repair_prompt(raw_output)
+
+            raw_output = await provider.invoke_agent(
+                [
+                    {"role": "system", "content": UIUX_JSON_REPAIR_PROMPT},
+                    {"role": "user", "content": repair_prompt},
+                ]
+            )
+
+            try:
+                return self._extract_json_object(raw_output), raw_output
+            except ValueError as error:
+                last_error = error
+                logger.warning(
+                    "UI/UX metadata JSON repair attempt %s/%s still invalid: %s",
+                    attempt, self.MAX_JSON_REPAIR_ATTEMPTS, error,
+                )
+
+        raise UIMetadataGenerationError(
+            f"UI/UX Agent could not produce valid ui_metadata_json after "
+            f"{self.MAX_JSON_REPAIR_ATTEMPTS} repair attempts: {last_error}"
+        ) from last_error
 
     async def repair_for_validation(self, raw_output: str, validation_error: str) -> tuple[dict[str, Any], str]:
         """

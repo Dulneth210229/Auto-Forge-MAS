@@ -1,36 +1,27 @@
 {
   "pages": [
     {
-      "page_id": "item-listing-page",
-      "name": "Item Listing Page",
-      "route": "/item-listing",
+      "page_id": "item-listing",
+      "name": "Item Listing",
+      "route": "/items",
       "actors": [
         "Admin/Manager"
       ],
       "covers_requirements": [
         "FR-001",
-        "FR-002",
-        "FR-003",
-        "FR-004",
-        "FR-005",
         "FR-006",
         "FR-007",
         "FR-008",
         "FR-009",
         "FR-010",
-        "AC-002",
-        "AC-005",
-        "AC-007",
-        "US-001",
-        "US-002",
-        "US-003",
         "US-004",
         "US-005",
         "US-006",
-        "US-007",
         "US-008",
         "US-009",
-        "US-010"
+        "AC-005",
+        "AC-007",
+        "AC-008"
       ],
       "layout_regions": [
         "header",
@@ -39,37 +30,47 @@
       ],
       "components": [
         {
-          "name": "ItemListingTable",
-          "reused_from_design_system": true,
-          "new_component_justification": "",
+          "name": "ItemTable",
+          "reused_from_design_system": false,
+          "new_component_justification": "The existing design system does not have a table component that supports sorting, filtering, and pagination as required by this feature.",
           "covers_ui_expectations": [
-            "A main page showing all items in a list/table/grid layout"
+            "A main page showing all items in a list/table/grid layout",
+            "Each item has \"Edit\" and \"Delete\" actions",
+            "Pagination controls at the bottom of the list (previous/next, jump to page)",
+            "Live search input with debouncing, plus filter dropdowns for category and price range"
           ],
-          "props": {
-            "propName": "short description of the prop"
-          }
+          "content_elements": [
+            "item name",
+            "item price",
+            "stock quantity",
+            "category"
+          ]
         },
         {
-          "name": "ItemDetailsModal",
-          "reused_from_design_system": true,
-          "new_component_justification": "",
+          "name": "SearchFilterBar",
+          "reused_from_design_system": false,
+          "new_component_justification": "No existing component matches the required combination of live search, category filter, and price range filter.",
           "covers_ui_expectations": [
-            "Each item has \"Edit\" and \"Delete\" actions"
+            "Live search input with debouncing, plus filter dropdowns for category and price range"
           ],
-          "props": {
-            "propName": "short description of the prop"
-          }
+          "content_elements": [
+            "search term",
+            "selected category",
+            "price range min",
+            "price range max"
+          ]
         },
         {
-          "name": "PaginationControls",
+          "name": "Pagination",
           "reused_from_design_system": true,
           "new_component_justification": "",
           "covers_ui_expectations": [
-            "Paginated results with navigation controls"
+            "Pagination controls at the bottom of the list (previous/next, jump to page)"
           ],
-          "props": {
-            "propName": "short description of the prop"
-          }
+          "content_elements": [
+            "page number",
+            "total pages"
+          ]
         }
       ],
       "states": [
@@ -77,8 +78,153 @@
         "loading",
         "error",
         "success"
-      ]
+      ],
+      "new_design_tokens": []
+    },
+    {
+      "page_id": "item-detail",
+      "name": "Item Detail",
+      "route": "/items/:id",
+      "actors": [
+        "Admin/Manager"
+      ],
+      "covers_requirements": [
+        "FR-002",
+        "US-005",
+        "US-006",
+        "US-008"
+      ],
+      "layout_regions": [
+        "header",
+        "main",
+        "footer"
+      ],
+      "components": [
+        {
+          "name": "ItemDetailCard",
+          "reused_from_design_system": false,
+          "new_component_justification": "No existing component displays full item details in a structured card layout.",
+          "covers_ui_expectations": [
+            "An item's full details are displayed"
+          ],
+          "content_elements": [
+            "item name",
+            "item description",
+            "item price",
+            "stock quantity",
+            "category",
+            "image url",
+            "created at timestamp",
+            "updated at timestamp"
+          ]
+        }
+      ],
+      "states": [
+        "idle",
+        "loading",
+        "error",
+        "success"
+      ],
+      "new_design_tokens": []
+    },
+    {
+      "page_id": "item-form",
+      "name": "Item Form",
+      "route": "/items/form",
+      "actors": [
+        "Admin/Manager"
+      ],
+      "covers_requirements": [
+        "FR-003",
+        "FR-004",
+        "FR-005",
+        "US-005",
+        "US-006",
+        "US-007",
+        "US-008",
+        "US-010",
+        "AC-001",
+        "AC-002",
+        "AC-003",
+        "AC-004"
+      ],
+      "layout_regions": [
+        "header",
+        "main",
+        "footer"
+      ],
+      "components": [
+        {
+          "name": "ItemForm",
+          "reused_from_design_system": false,
+          "new_component_justification": "No existing component supports a full CRUD form with validation and submission handling.",
+          "covers_ui_expectations": [
+            "An \"Add Item\" button that opens a form to create a new item",
+            "Editing opens the same form pre-filled with the item's current data",
+            "Submitting the create/edit form with a missing name, non-positive price, or negative quantity shows a validation error and does not save"
+          ],
+          "content_elements": [
+            "item name",
+            "item description",
+            "item price",
+            "stock quantity",
+            "category",
+            "image url"
+          ]
+        }
+      ],
+      "states": [
+        "idle",
+        "loading",
+        "error",
+        "success"
+      ],
+      "new_design_tokens": []
+    },
+    {
+      "page_id": "item-delete-confirmation",
+      "name": "Item Delete Confirmation",
+      "route": "/items/:id/delete",
+      "actors": [
+        "Admin/Manager"
+      ],
+      "covers_requirements": [
+        "FR-005",
+        "US-003",
+        "US-005",
+        "US-006",
+        "US-010",
+        "AC-003"
+      ],
+      "layout_regions": [
+        "header",
+        "main",
+        "footer"
+      ],
+      "components": [
+        {
+          "name": "DeleteConfirmationDialog",
+          "reused_from_design_system": false,
+          "new_component_justification": "No existing component handles confirmation prompts for destructive actions like deletion.",
+          "covers_ui_expectations": [
+            "Deleting shows a confirm dialog before removing the item",
+            "Canceling the confirmation leaves the item untouched"
+          ],
+          "content_elements": [
+            "item name",
+            "confirmation message"
+          ]
+        }
+      ],
+      "states": [
+        "idle",
+        "loading",
+        "error",
+        "success"
+      ],
+      "new_design_tokens": []
     }
   ],
+  "color_theme": "indigo",
   "notes": ""
 }

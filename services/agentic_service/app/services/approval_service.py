@@ -10,7 +10,6 @@ No agent output should move to the next agent unless the artifact is approved.
 from datetime import datetime
 
 from app.agents.coder_agent.agent import coder_agent
-from app.agents.uiux_agent.agent import uiux_agent
 from app.core.enums import AgentName, ApprovalStatus, ArtifactType
 from app.schemas.approval_schema import ApprovalRequest, ApprovalResponse
 from app.services.graph_orchestrator_service import (
@@ -33,9 +32,13 @@ logger = get_logger(__name__)
 # one". Deliberately narrow, not every gating artifact_type: e.g. UI/UX's ui_component_code
 # artifacts are legitimately, independently approved several at a time (distinct components, not
 # versions of one document).
+#
+# NOTE: UI_PREVIEW_SCREENSHOT previously belonged here (and had its own sibling-cascade
+# mechanism below), but the whole UI/UX stage no longer goes through human approval at all --
+# every UI/UX artifact is now born already APPROVED (see uiux_agent/agent.py's _save_artifacts).
+# Removed rather than left as unreachable dead code, per this project's own established practice.
 EXCLUSIVE_VERSIONED_ARTIFACT_TYPES = {
     ArtifactType.SRS, ArtifactType.ENHANCED_SRS, ArtifactType.ARCHITECTURE_PLAN,
-    ArtifactType.UI_PREVIEW_SCREENSHOT,
 }
 
 # The 3 diagram artifact types that ride along with every Architecture Plan generation, always
@@ -48,17 +51,6 @@ ARCHITECTURE_SIBLING_DIAGRAM_TYPES = {
     ArtifactType.USE_CASE_DIAGRAM, ArtifactType.SEQUENCE_DIAGRAM, ArtifactType.CLASS_DIAGRAM,
 }
 
-# Every UI/UX artifact type EXCEPT ui_preview_screenshot itself -- these no longer have their own
-# independent approval decision either (per direct user request, mirroring the architecture
-# diagram cascade above): approving/rejecting/requesting revision on the Preview Screenshot
-# cascades the same decision to all of these, of the SAME version, automatically. A different
-# page's screenshot (same version) is handled separately in the cascade itself, since it's the
-# same type as the anchor artifact, not a "sibling type."
-UIUX_SIBLING_ARTIFACT_TYPES = {
-    ArtifactType.UI_METADATA, ArtifactType.UI_INTEGRATION_MANIFEST,
-    ArtifactType.UI_COMPONENT_CODE, ArtifactType.UI_PAGE_HTML,
-}
-
 
 def _is_exclusive_versioned_type(artifact_type) -> bool:
     return any(
@@ -69,10 +61,6 @@ def _is_exclusive_versioned_type(artifact_type) -> bool:
 
 def _is_architecture_plan_type(artifact_type) -> bool:
     return artifact_type in (ArtifactType.ARCHITECTURE_PLAN, ArtifactType.ARCHITECTURE_PLAN.value)
-
-
-def _is_uiux_screenshot_type(artifact_type) -> bool:
-    return artifact_type in (ArtifactType.UI_PREVIEW_SCREENSHOT, ArtifactType.UI_PREVIEW_SCREENSHOT.value)
 
 
 class ApprovalService:
@@ -138,12 +126,6 @@ class ApprovalService:
                     # of sync (plan back to pending, diagrams still showing approved).
                     if _is_architecture_plan_type(other.get("artifact_type")):
                         self._cascade_architecture_plan_decision(other, ApprovalStatus.PENDING)
-                    # Same reasoning, UI/UX side: the reverted sibling is a DIFFERENT Preview
-                    # Screenshot version -- its own metadata/manifest/components/page-html cascade
-                    # must revert too, or that old version goes out of sync (screenshot back to
-                    # pending, everything else still showing approved).
-                    if _is_uiux_screenshot_type(other.get("artifact_type")):
-                        self._cascade_uiux_screenshot_decision(other, ApprovalStatus.PENDING)
 
         # Approving/rejecting/requesting revision on the Architecture Plan applies the exact same
         # decision to its own Markdown/JSON sibling and all 3 diagram artifacts of the SAME
@@ -151,12 +133,6 @@ class ApprovalService:
         # decision at all. Fires on all three outcomes (not just approval), so self-gates on
         # artifact_type internally rather than being nested under is_approved/is_rejected below.
         self._cascade_architecture_plan_decision(artifact, request.status)
-
-        # Same pattern, UI/UX side: approving/rejecting/requesting revision on the Preview
-        # Screenshot applies the exact same decision to the underlying metadata, integration
-        # manifest, every component, and every page-html artifact of the SAME version -- per
-        # direct user request, these no longer have an independent approval decision either.
-        self._cascade_uiux_screenshot_decision(artifact, request.status)
 
         # If this artifact belongs to a feature with an active graph run paused on
         # an approval gate, advance it. Most artifacts today are still approved
@@ -176,34 +152,10 @@ class ApprovalService:
                 artifact["feature_id"],
             )
 
-        # UI/UX Agent: merge new components/tokens into the project's shared
-        # design_system.json, but only now that this exact version has been
-        # approved -- a rejected run must never reach this line, so there is
-        # no separate "rollback" path to maintain. Triggers on either UI_METADATA
-        # (the old, direct-approval target) or UI_PREVIEW_SCREENSHOT (the new one,
-        # per direct user request) being the artifact DIRECTLY approved --
-        # apply_design_system_patch resolves the actual UI_METADATA artifact by
-        # version internally regardless of which one triggered the call.
-        is_uiux_metadata_or_screenshot = (
-            artifact["agent_name"] in [AgentName.UIUX, AgentName.UIUX.value]
-            and artifact["artifact_type"] in [
-                ArtifactType.UI_METADATA, ArtifactType.UI_METADATA.value,
-                ArtifactType.UI_PREVIEW_SCREENSHOT, ArtifactType.UI_PREVIEW_SCREENSHOT.value,
-            ]
-        )
-
-        if is_approved and is_uiux_metadata_or_screenshot:
-            try:
-                uiux_agent.apply_design_system_patch(
-                    feature_id=artifact["feature_id"],
-                    version=artifact["version"],
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to apply design system patch for feature_id=%s version=%s",
-                    artifact["feature_id"],
-                    artifact["version"],
-                )
+        # UI/UX Agent no longer routes through this approval flow at all -- every UI/UX artifact
+        # is born already APPROVED, and apply_design_system_patch is called directly from
+        # uiux_agent.py's run()/run_stream()/revise()/revise_stream() at the end of every
+        # generation instead of from an approval hook here.
 
         # Coder Agent: merge the approved feature branch into main and update
         # project_manifest.json, or discard the branch on rejection -- gated
@@ -301,70 +253,6 @@ class ApprovalService:
         except Exception:
             logger.exception(
                 "Failed to cascade Architecture Plan decision for feature_id=%s version=%s",
-                artifact.get("feature_id"),
-                artifact.get("version"),
-            )
-
-    def _cascade_uiux_screenshot_decision(self, artifact: dict, status) -> None:
-        """
-        Applies `status` to every UI/UX sibling artifact of this Preview Screenshot -- the
-        underlying ui_metadata (JSON+Markdown), ui_integration_manifest, every ui_component_code,
-        every ui_page_html, AND any other ui_preview_screenshot (a different page) -- that shares
-        the SAME feature_id and SAME version. Self-gates on artifact_type (a no-op for anything
-        that isn't a Preview Screenshot artifact), so callers can invoke it unconditionally.
-        Mirrors _cascade_architecture_plan_decision exactly -- same reasoning, same
-        synthetic-approval-record convention, different anchor type.
-
-        Writes a synthetic approval record per cascaded sibling -- without one, a cascaded
-        artifact would be a silent gap in list_feature_approvals (its status visibly changed but
-        no record of why/when). approved_by is deliberately "system:uiux_screenshot_cascade",
-        never the human's own name, so a future reader can immediately tell this wasn't an
-        independent click.
-
-        Never raises: a cascade failure must not prevent the human's own approval action from
-        succeeding, same precedent as every other post-approval hook in this file.
-        """
-        if not _is_uiux_screenshot_type(artifact.get("artifact_type")):
-            return
-
-        try:
-            approved_at = datetime.utcnow()
-            for sibling in store.artifacts.values():
-                if sibling["artifact_id"] == artifact["artifact_id"]:
-                    continue
-                if sibling.get("feature_id") != artifact["feature_id"]:
-                    continue
-                if sibling.get("version") != artifact.get("version"):
-                    continue
-
-                is_sibling_type = any(
-                    sibling.get("artifact_type") in (sibling_type, sibling_type.value)
-                    for sibling_type in UIUX_SIBLING_ARTIFACT_TYPES
-                )
-                is_other_screenshot = _is_uiux_screenshot_type(sibling.get("artifact_type"))
-                if not (is_sibling_type or is_other_screenshot):
-                    continue
-
-                sibling["approval_status"] = status
-
-                cascade_approval_id = generate_id("approval")
-                store.approvals[cascade_approval_id] = {
-                    "approval_id": cascade_approval_id,
-                    "artifact_id": sibling["artifact_id"],
-                    "feature_id": sibling["feature_id"],
-                    "agent_name": sibling["agent_name"],
-                    "status": status,
-                    "reviewer_comment": (
-                        f"Auto-{status.value if hasattr(status, 'value') else status} together "
-                        f"with Preview Screenshot v{artifact['version']} -- not an independent "
-                        f"human decision."
-                    ),
-                    "approved_by": "system:uiux_screenshot_cascade",
-                    "approved_at": approved_at,
-                }
-        except Exception:
-            logger.exception(
-                "Failed to cascade Preview Screenshot decision for feature_id=%s version=%s",
                 artifact.get("feature_id"),
                 artifact.get("version"),
             )

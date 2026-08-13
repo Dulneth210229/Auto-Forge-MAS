@@ -7,12 +7,12 @@ import { GATED_STAGES, STAGE_LABELS } from "../../lib/pipelineStages";
 import { buildAgentTimeline } from "../../lib/buildAgentTimeline";
 import { SUGGESTION_CHIPS } from "../../lib/suggestionChips";
 import { useWorkspaceSelection } from "../workspace/WorkspaceSelectionContext";
-import { useUiuxAgentFlowContext } from "../workspace/UiuxAgentFlowContext";
 import ChatBubble from "./ChatBubble";
 import ChatComposerBox from "./ChatComposerBox";
 import RequirementConversationChat from "./RequirementConversationChat";
 import DomainAgentChat from "./DomainAgentChat";
 import ArchitectureAgentChat from "./ArchitectureAgentChat";
+import UiuxAgentChat from "./UiuxAgentChat";
 import CoderAgentChat from "./CoderAgentChat";
 import LoadingSpinner from "../common/LoadingSpinner";
 import ErrorBanner from "../common/ErrorBanner";
@@ -100,12 +100,7 @@ export default function ChatPanel({ featureId }) {
 
   const [comment, setComment] = useState("");
 
-  // Shared with ResultTab (see UiuxAgentFlowContext's own docstring) so an auto-started run
-  // (right after Architecture Plan approval) is visible here as pending too, not just wherever it
-  // was triggered from.
-  const { runUiux } = useUiuxAgentFlowContext();
-
-  const runMutationsByStage = { uiux: runUiux };
+  const runMutationsByStage = {};
   const reviseMutationsByStage = {};
 
   const versions = listGatingArtifactVersions(selectedAgent, allArtifacts);
@@ -159,6 +154,27 @@ export default function ChatPanel({ featureId }) {
   if (selectedAgent === "architecture") {
     return (
       <ArchitectureAgentChat
+        featureId={featureId}
+        feature={feature}
+        runningStage={runningStage}
+        selectedAgent={selectedAgent}
+        selectAgent={selectAgent}
+        timeline={timeline}
+        allArtifacts={allArtifacts}
+        onViewArtifact={viewArtifact}
+        isLoadingTimeline={graphLoading || artifactsLoading || eventsLoading}
+      />
+    );
+  }
+
+  // UI/UX Agent: its own dedicated chat (live ui_metadata_json streaming + a phase/elapsed-time
+  // banner for the non-streamable tail -- component generation, page assembly/rendering), no
+  // human approval required for any of its output anymore, and a real revise() capability where
+  // there previously was none at all -- see UiuxAgentChat.jsx's own docstring for the full,
+  // direct user request this replaces.
+  if (selectedAgent === "uiux") {
+    return (
+      <UiuxAgentChat
         featureId={featureId}
         feature={feature}
         runningStage={runningStage}
@@ -261,13 +277,6 @@ export default function ChatPanel({ featureId }) {
       </div>
 
       <div className="flex-shrink-0 pt-1">
-        {hasOutput && selectedAgent === "uiux" && (
-          <p className="text-xs bg-gray-50 dark:bg-white/5 text-gray-500 dark:text-gray-400 rounded-md px-2.5 py-1.5 mb-2">
-            There's no revise action for UI/UX yet -- approve, reject, or request revision on
-            individual components from the Result tab.
-          </p>
-        )}
-
         <form onSubmit={handleSubmit} className="flex flex-col gap-2">
           <ErrorBanner error={activeMutation?.error} fallback="Request failed." />
 
