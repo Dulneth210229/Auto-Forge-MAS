@@ -2,7 +2,11 @@ import { useState } from "react";
 import StatusBadge from "../common/StatusBadge";
 import ErrorBanner from "../common/ErrorBanner";
 import ConfirmDialog from "../common/ConfirmDialog";
-import { ARTIFACT_TYPE_LABELS, NON_APPROVABLE_ARTIFACT_TYPES } from "../../lib/artifactTypeMeta";
+import {
+  ARTIFACT_TYPE_LABELS,
+  NON_APPROVABLE_ARTIFACT_TYPES,
+  screenshotPageLabel,
+} from "../../lib/artifactTypeMeta";
 import { useApprovalMutation } from "../../hooks/useApprovalMutation";
 import { useDeleteArtifact } from "../../hooks/useArtifacts";
 
@@ -80,6 +84,11 @@ export default function ArtifactRow({
             />
           )}
           <span className="text-sm font-medium text-gray-900 dark:text-gray-100">{ARTIFACT_TYPE_LABELS[artifact.artifact_type] || artifact.artifact_type}</span>
+          {artifact.artifact_type === "ui_preview_screenshot" && screenshotPageLabel(artifact) && (
+            <span className="text-xs text-gray-500 dark:text-gray-400 italic truncate max-w-[220px]">
+              {screenshotPageLabel(artifact)}
+            </span>
+          )}
           <span className="text-xs text-gray-400 dark:text-gray-500">v{artifact.version}</span>
           {isActiveSelection && (
             <span className="text-[10px] font-semibold text-accent-700 dark:text-accent-400 bg-accent-50 dark:bg-accent-500/10 rounded-full px-2 py-0.5">

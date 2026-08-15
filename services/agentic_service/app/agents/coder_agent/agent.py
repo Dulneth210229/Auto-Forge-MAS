@@ -178,6 +178,7 @@ _TOOL_ACTIVITY_LABELS: dict[str, Any] = {
     "read_project_manifest": lambda args: "Checking the project manifest",
     "read_ui_component_design": lambda args: f"Reading UI design for {args.get('component_name', '?')}",
     "read_ui_page_design": lambda args: f"Reading UI page design for {args.get('page_id_or_route', '?')}",
+    "list_unread_ui_designs": lambda args: "Checking which approved UI designs remain unread",
     "list_unimplemented_planned_files": lambda args: "Checking which planned files remain",
     "check_syntax": lambda args: f"Checking syntax of {args.get('path', '?')}",
     "check_component_styling": lambda args: "Scanning component styling",
@@ -320,6 +321,7 @@ class CoderAgent:
             code_plan_json,
             revision_start_sha=revision_start_sha,
             original_request=human_comment_for_planning,
+            ui_integration_manifest_json=ui_integration_manifest_json,
         )
 
         diff = workspace_service.diff_against_main(project["project_id"], feature_id)
@@ -514,6 +516,7 @@ class CoderAgent:
             code_plan_json,
             revision_start_sha=revision_start_sha,
             original_request=revision_comment_for_planning,
+            ui_integration_manifest_json=ui_integration_manifest_json,
         )
 
         diff = workspace_service.diff_against_main(project["project_id"], feature_id)
@@ -755,6 +758,7 @@ class CoderAgent:
             result_holder,
             revision_start_sha=revision_start_sha,
             original_request=human_comment_for_planning,
+            ui_integration_manifest_json=ui_integration_manifest_json,
         ):
             yield event
 
@@ -995,6 +999,7 @@ class CoderAgent:
             result_holder,
             revision_start_sha=revision_start_sha,
             original_request=revision_comment_for_planning,
+            ui_integration_manifest_json=ui_integration_manifest_json,
         ):
             yield event
 
@@ -1052,6 +1057,7 @@ class CoderAgent:
         result_holder: dict[str, Any],
         revision_start_sha: str | None = None,
         original_request: str | None = None,
+        ui_integration_manifest_json: dict[str, Any] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """
         Streaming counterpart to _code_with_retries -- identical retry/gap-detection/verify
@@ -1087,7 +1093,11 @@ class CoderAgent:
                 "label": f"Coding (attempt {attempt} of {MAX_CODING_ATTEMPTS})...",
             }
 
-            react_agent = build_coder_react_agent(project_id, feature_id, code_plan_json)
+            attempt_start_sha = workspace_service.ensure_project_repo(project_id).head.commit.hexsha
+            ui_design_read_tracker: dict[str, set[str]] = {"components": set(), "pages": set()}
+            react_agent = build_coder_react_agent(
+                project_id, feature_id, code_plan_json, ui_integration_manifest_json, ui_design_read_tracker
+            )
             task_message = build_task_message(
                 code_plan_json, prior_failure_output, already_touched, original_request
             )
@@ -1183,7 +1193,31 @@ class CoderAgent:
 
             gaps = self._find_plan_gaps(code_plan_json, already_touched)
 
-            if gaps or hit_recursion_limit or attempt_error or touched_error:
+            # Skipped entirely (not just short-circuited inside the helper) when there's no
+            # manifest to check against -- see the identical comment in _code_with_retries.
+            design_gap: str | None = None
+            if ui_integration_manifest_json:
+                try:
+                    this_attempt_touched = workspace_service.get_touched_files(
+                        project_id, feature_id, since=attempt_start_sha
+                    )
+                    design_gap = self._find_unread_ui_design_gap(
+                        ui_integration_manifest_json, this_attempt_touched, ui_design_read_tracker
+                    )
+                except Exception:
+                    # Non-fatal by design -- this is an additive quality check, not a
+                    # correctness gate; a failure here (e.g. get_touched_files itself erroring)
+                    # just means this one attempt skips the check rather than the whole run
+                    # failing over it.
+                    logger.exception(
+                        "Streamed coding attempt %d/%d for feature_id=%s: UI-fidelity gap check "
+                        "itself failed -- skipping the check for this attempt",
+                        attempt,
+                        MAX_CODING_ATTEMPTS,
+                        feature_id,
+                    )
+
+            if gaps or hit_recursion_limit or attempt_error or touched_error or design_gap:
                 logger.warning(
                     "Streamed coding attempt %d/%d for feature_id=%s left %d planned file(s) "
                     "untouched",
@@ -1212,6 +1246,8 @@ class CoderAgent:
                         f"(error: {touched_error}) -- proceed carefully and re-check your work.\n\n"
                         + (prior_failure_output or "")
                     )
+                if design_gap:
+                    prior_failure_output = design_gap + "\n\n" + (prior_failure_output or "")
                 verify_result = {
                     "passed": False,
                     "steps": [
@@ -1720,13 +1756,18 @@ class CoderAgent:
         code_plan_json: dict[str, Any],
         revision_start_sha: str | None = None,
         original_request: str | None = None,
+        ui_integration_manifest_json: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], int]:
         prior_failure_output = None
         already_touched: dict[str, list[str]] | None = None
         verify_result: dict[str, Any] = {"passed": False, "steps": []}
 
         for attempt in range(1, MAX_CODING_ATTEMPTS + 1):
-            react_agent = build_coder_react_agent(project_id, feature_id, code_plan_json)
+            attempt_start_sha = workspace_service.ensure_project_repo(project_id).head.commit.hexsha
+            ui_design_read_tracker: dict[str, set[str]] = {"components": set(), "pages": set()}
+            react_agent = build_coder_react_agent(
+                project_id, feature_id, code_plan_json, ui_integration_manifest_json, ui_design_read_tracker
+            )
             task_message = build_task_message(
                 code_plan_json, prior_failure_output, already_touched, original_request
             )
@@ -1805,7 +1846,32 @@ class CoderAgent:
 
             gaps = self._find_plan_gaps(code_plan_json, already_touched)
 
-            if gaps or hit_recursion_limit or attempt_error or touched_error:
+            # Skipped entirely (not just short-circuited inside the helper) when there's no
+            # manifest to check against -- both an optimization (one fewer real get_touched_files
+            # call for the common case of a feature with no approved UI/UX design at all) and
+            # what keeps this a strictly additive change for every existing caller that never
+            # passes ui_integration_manifest_json.
+            design_gap: str | None = None
+            if ui_integration_manifest_json:
+                try:
+                    this_attempt_touched = workspace_service.get_touched_files(
+                        project_id, feature_id, since=attempt_start_sha
+                    )
+                    design_gap = self._find_unread_ui_design_gap(
+                        ui_integration_manifest_json, this_attempt_touched, ui_design_read_tracker
+                    )
+                except Exception:
+                    # Non-fatal by design -- see the identical comment in
+                    # _code_with_retries_stream.
+                    logger.exception(
+                        "Coding attempt %d/%d for feature_id=%s: UI-fidelity gap check itself "
+                        "failed -- skipping the check for this attempt",
+                        attempt,
+                        MAX_CODING_ATTEMPTS,
+                        feature_id,
+                    )
+
+            if gaps or hit_recursion_limit or attempt_error or touched_error or design_gap:
                 logger.warning(
                     "Coding attempt %d/%d for feature_id=%s left %d planned file(s) untouched",
                     attempt,
@@ -1833,6 +1899,8 @@ class CoderAgent:
                         f"(error: {touched_error}) -- proceed carefully and re-check your work.\n\n"
                         + (prior_failure_output or "")
                     )
+                if design_gap:
+                    prior_failure_output = design_gap + "\n\n" + (prior_failure_output or "")
                 verify_result = {
                     "passed": False,
                     "steps": [
@@ -1892,6 +1960,60 @@ class CoderAgent:
         return (
             "The following planned files were never created, modified, or deleted in this "
             "attempt -- implement these before doing anything else:\n" + "\n".join(lines)
+        )
+
+    def _find_unread_ui_design_gap(
+        self,
+        ui_integration_manifest_json: dict[str, Any] | None,
+        this_attempt_touched: dict[str, list[str]],
+        ui_design_read_tracker: dict[str, set[str]],
+    ) -> str | None:
+        """
+        Deterministic backstop for the advisory list_unread_ui_designs self-check tool: if an
+        approved UI/UX design exists for this feature and THIS ATTEMPT (not a cumulative,
+        whole-call view -- see the per-attempt `since=attempt_start_sha` caller) wrote/modified a
+        frontend file (under app/ or components/, the Next.js scaffold's real frontend roots,
+        matching style_checker.check_component_styling's own established scan scope) without ever
+        calling read_ui_component_design/read_ui_page_design during that same attempt, treat it
+        like a plan gap and retry with an explicit instruction to read the design first -- rather
+        than trusting the prompt-only instruction alone, this codebase's own repeatedly-documented
+        "ask nicely -> decide deterministically" lesson. Deliberately coarse (checks "was anything
+        read at ALL this attempt," not "was the SPECIFIC relevant design read") to avoid needing a
+        reliable path->component/page mapping that doesn't otherwise exist in this pipeline; still
+        catches the single most likely real failure mode -- the model ignoring the design
+        reference outright. Scoped per-attempt (not just attempt 1) precisely because a plan can
+        naturally split backend-first, so whichever attempt is the one that actually writes
+        frontend code is the one required to have read the design, regardless of its number.
+        """
+        if not ui_integration_manifest_json or not ui_integration_manifest_json.get("pages"):
+            return None
+
+        touched_paths = set(this_attempt_touched.get("added", [])) | set(
+            this_attempt_touched.get("modified", [])
+        )
+        # .tsx specifically (not just an app/ prefix) is what actually distinguishes a real
+        # page/component file from an app/api/.../route.ts backend file -- both live under app/
+        # in Next.js's file-based routing, but only pages/components (.tsx) are ever a UI/UX
+        # visual-fidelity concern.
+        touched_frontend = any(
+            path.startswith(("app/", "components/")) and path.endswith(".tsx") for path in touched_paths
+        )
+
+        if not touched_frontend:
+            return None
+
+        read_any = bool(ui_design_read_tracker.get("components")) or bool(
+            ui_design_read_tracker.get("pages")
+        )
+        if read_any:
+            return None
+
+        return (
+            "This attempt wrote or modified frontend code (under app/ or components/) but never "
+            "called read_ui_component_design or read_ui_page_design, even though an approved "
+            "UI/UX design exists for this feature. Call list_unread_ui_designs, then read the "
+            "design(s) relevant to the page/component you are writing, and make your TSX "
+            "faithfully match its layout, Tailwind classes, and content before continuing."
         )
 
     def _summarize_verify_failure(self, verify_result: dict[str, Any]) -> str:

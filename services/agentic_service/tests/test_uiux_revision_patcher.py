@@ -287,3 +287,149 @@ def test_remove_does_not_mark_any_component_as_touched():
     for page in patched["pages"]:
         for component in page["components"]:
             assert "_revision_touched" not in component
+
+
+class TestAllowedPageIds:
+    """
+    Real, confirmed gap this locks in: target_page_ids was previously only a soft prompt hint --
+    a real local model could (and, per the reported bug, did) apply operations to pages outside
+    what the human selected. allowed_page_ids is the deterministic, hard enforcement: an
+    operation resolving to a page outside the selected set is rejected into `unmatched`, never
+    silently applied and never silently dropped.
+    """
+
+    def test_modify_on_selected_page_applies(self):
+        patched, applied, unmatched = apply_uiux_revision_operations(
+            METADATA,
+            [{"action": "modify", "component_name": "ItemListingTable", "content_elements": ["x"]}],
+            allowed_page_ids={"item-listing-page"},
+        )
+
+        listing_page = next(p for p in patched["pages"] if p["page_id"] == "item-listing-page")
+        table = next(c for c in listing_page["components"] if c["name"] == "ItemListingTable")
+        assert table["content_elements"] == ["x"]
+        assert applied
+        assert unmatched == []
+
+    def test_modify_on_unselected_page_is_rejected_not_applied(self):
+        patched, applied, unmatched = apply_uiux_revision_operations(
+            METADATA,
+            [{"action": "modify", "component_name": "ItemDetailsPanel", "content_elements": ["changed"]}],
+            allowed_page_ids={"item-listing-page"},
+        )
+
+        details_page = next(p for p in patched["pages"] if p["page_id"] == "item-details-page")
+        panel = next(c for c in details_page["components"] if c["name"] == "ItemDetailsPanel")
+        # Untouched -- the operation targeted a page outside the selected set.
+        assert panel["content_elements"] == ["item name", "item description"]
+        assert applied == []
+        assert unmatched
+        assert "item-details-page" in unmatched[0]
+        assert "not one of the pages selected" in unmatched[0]
+
+    def test_remove_on_unselected_page_is_rejected(self):
+        patched, applied, unmatched = apply_uiux_revision_operations(
+            METADATA,
+            [{"action": "remove", "component_name": "ItemDetailsPanel"}],
+            allowed_page_ids={"item-listing-page"},
+        )
+
+        details_page = next(p for p in patched["pages"] if p["page_id"] == "item-details-page")
+        names = [c["name"] for c in details_page["components"]]
+        assert "ItemDetailsPanel" in names
+        assert applied == []
+        assert unmatched
+
+    def test_add_to_unselected_page_is_rejected(self):
+        patched, applied, unmatched = apply_uiux_revision_operations(
+            METADATA,
+            [
+                {
+                    "action": "add",
+                    "page_id": "item-details-page",
+                    "component_name": "NewThing",
+                    "content_elements": ["x"],
+                }
+            ],
+            allowed_page_ids={"item-listing-page"},
+        )
+
+        details_page = next(p for p in patched["pages"] if p["page_id"] == "item-details-page")
+        names = [c["name"] for c in details_page["components"]]
+        assert "NewThing" not in names
+        assert applied == []
+        assert unmatched
+
+    def test_mixed_operations_only_selected_page_ones_apply(self):
+        """One operation on a selected page, one on an unselected page, in the same call --
+        the selected one applies, the other is rejected, neither affects the other."""
+        patched, applied, unmatched = apply_uiux_revision_operations(
+            METADATA,
+            [
+                {"action": "remove", "component_name": "Pagination"},  # on item-listing-page
+                {
+                    "action": "modify",
+                    "component_name": "ItemDetailsPanel",  # on item-details-page
+                    "content_elements": ["should not apply"],
+                },
+            ],
+            allowed_page_ids={"item-listing-page"},
+        )
+
+        listing_page = next(p for p in patched["pages"] if p["page_id"] == "item-listing-page")
+        assert "Pagination" not in [c["name"] for c in listing_page["components"]]
+
+        details_page = next(p for p in patched["pages"] if p["page_id"] == "item-details-page")
+        panel = next(c for c in details_page["components"] if c["name"] == "ItemDetailsPanel")
+        assert panel["content_elements"] == ["item name", "item description"]
+
+        assert len(applied) == 1
+        assert len(unmatched) == 1
+
+    def test_multiple_selected_pages_both_allowed(self):
+        patched, applied, unmatched = apply_uiux_revision_operations(
+            METADATA,
+            [
+                {"action": "remove", "component_name": "Pagination"},
+                {
+                    "action": "modify",
+                    "component_name": "ItemDetailsPanel",
+                    "content_elements": ["updated"],
+                },
+            ],
+            allowed_page_ids={"item-listing-page", "item-details-page"},
+        )
+
+        assert len(applied) == 2
+        assert unmatched == []
+
+    def test_none_allowed_page_ids_is_unconstrained(self):
+        patched, applied, unmatched = apply_uiux_revision_operations(
+            METADATA,
+            [{"action": "remove", "component_name": "ItemDetailsPanel"}],
+            allowed_page_ids=None,
+        )
+
+        assert applied
+        assert unmatched == []
+
+    def test_empty_set_allowed_page_ids_is_unconstrained(self):
+        patched, applied, unmatched = apply_uiux_revision_operations(
+            METADATA,
+            [{"action": "remove", "component_name": "ItemDetailsPanel"}],
+            allowed_page_ids=set(),
+        )
+
+        assert applied
+        assert unmatched == []
+
+    def test_page_id_matching_is_case_and_whitespace_insensitive(self):
+        """Matches _normalize's own established behavior for every other match in this patcher."""
+        patched, applied, unmatched = apply_uiux_revision_operations(
+            METADATA,
+            [{"action": "remove", "component_name": "Pagination"}],
+            allowed_page_ids={"  Item-Listing-Page  "},
+        )
+
+        assert applied
+        assert unmatched == []

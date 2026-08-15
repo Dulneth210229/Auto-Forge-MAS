@@ -190,8 +190,6 @@ class UIUXAgent:
         artifact_ids, version = self._save_artifacts(project=dict(project), feature=dict(feature), output=output)
         output.artifact_ids = artifact_ids
 
-        self.apply_design_system_patch(feature_id, version)
-
         logger.info(
             "UI/UX Agent completed for feature_id=%s artifacts=%s",
             feature_id,
@@ -384,7 +382,6 @@ class UIUXAgent:
         )
 
         artifact_ids, version = self._save_artifacts(project=dict(project), feature=dict(feature), output=output)
-        self.apply_design_system_patch(feature_id, version)
 
         logger.info(
             "UI/UX Agent (streamed) completed for feature_id=%s artifacts=%s",
@@ -640,6 +637,9 @@ class UIUXAgent:
         ui_metadata_json: dict[str, Any],
         component_files: dict[str, str],
         page_component_order: dict[str, list[str]],
+        touched_components: set[str] | None = None,
+        carry_over_version: int | None = None,
+        feature_id: str | None = None,
     ) -> tuple[dict[str, str], dict[str, bytes]]:
         """
         Deterministically assemble each page's ordered component fragments into one full,
@@ -655,10 +655,15 @@ class UIUXAgent:
         an environmental/Playwright issue, not a content problem a regeneration could fix. It is
         simply skipped and logged (not fatal to the run) if it happens.
 
-        ui_preview_screenshot is purely a best-effort "Page Previews" thumbnail -- no human
-        approval gate depends on it anymore (this whole stage is auto-approved, see
-        _save_artifacts' own docstring), so a failed render here is genuinely harmless: the live
-        HTML preview (page_html_files, always produced) remains fully usable regardless.
+        touched_components/carry_over_version/feature_id are set ONLY by revise()/revise_stream(),
+        mirroring _generate_components' own revision-only parameters exactly: when
+        touched_components is not None, a page whose components are ALL untouched (no real content
+        change) is guaranteed to reassemble to byte-identical HTML, so its screenshot is carried
+        over verbatim from carry_over_version instead of re-rendered -- Playwright rendering is the
+        single slowest step in this pipeline, and re-running it for pages nothing actually changed
+        on contradicts this agent's own "only regenerate what's touched" revision philosophy.
+        Falls through to a fresh render if no prior screenshot is found (matches
+        _generate_components' own carry-over-miss fallback).
         """
 
         page_metadata_by_id = {page["page_id"]: page for page in ui_metadata_json.get("pages", [])}
@@ -673,6 +678,23 @@ class UIUXAgent:
             page_html = uiux_page_html_builder.build(page_metadata, fragments)
             page_html_files[page_id] = page_html
 
+            page_is_untouched = (
+                touched_components is not None
+                and not any(name in touched_components for name in component_names)
+            )
+
+            if page_is_untouched:
+                carried_png = self._load_page_screenshot_by_id(feature_id, carry_over_version, page_id)
+                if carried_png is not None:
+                    page_screenshots[page_id] = carried_png
+                    continue
+
+                logger.warning(
+                    "Revision: could not find prior screenshot for untouched page '%s' at "
+                    "version %s -- rendering it fresh instead.",
+                    page_id, carry_over_version,
+                )
+
             try:
                 page_screenshots[page_id] = await asyncio.to_thread(
                     uiux_preview_renderer.render_page_png, page_html
@@ -685,6 +707,40 @@ class UIUXAgent:
                 )
 
         return page_html_files, page_screenshots
+
+    def _load_page_screenshot_by_id(
+        self, feature_id: str | None, version: int | None, page_id: str
+    ) -> bytes | None:
+        """
+        Read a specific PRIOR version's saved UI_PREVIEW_SCREENSHOT artifact for this exact page,
+        for the "carry an untouched page's screenshot over verbatim" side of a revision -- mirrors
+        _load_component_html_by_name exactly, matching the same filename slug convention
+        _save_artifacts writes ("{feature_slug}_{page_slug}_v{version}.png").
+        """
+
+        if not feature_id or version is None:
+            return None
+
+        slug = self._slug(page_id)
+        marker = f"_{slug}_v{version}.png"
+
+        for artifact in store.artifacts.values():
+            if artifact.get("feature_id") != feature_id:
+                continue
+            if artifact.get("agent_name") not in [AgentName.UIUX, AgentName.UIUX.value]:
+                continue
+            if artifact.get("artifact_type") not in [
+                ArtifactType.UI_PREVIEW_SCREENSHOT, ArtifactType.UI_PREVIEW_SCREENSHOT.value,
+            ]:
+                continue
+            if artifact.get("version") != version:
+                continue
+            if not str(artifact.get("file_path", "")).endswith(marker):
+                continue
+
+            return Path(artifact["file_path"]).read_bytes()
+
+        return None
 
     def _load_existing_approved_component(self, project_id: str, component_name: str) -> str | None:
         """
@@ -736,15 +792,13 @@ class UIUXAgent:
         Save all UI/UX Agent artifacts for this run, all sharing one version
         number (mirrors architecture_agent's markdown+json+diagrams pattern).
 
-        Every artifact is saved already APPROVED (approval_status=ApprovalStatus.APPROVED) --
-        per direct user request, NOTHING in the UI/UX stage requires a human decision anymore.
-        This is what makes every existing approval-status-dependent UI surface (GovernancePanel,
-        ApprovalPanel, ArtifactList) and backend lookup (Coder Agent's approved-only artifact
-        finders) keep working completely unchanged: they simply never see a "pending" UI/UX
-        artifact to show controls for or wait on.
+        Every artifact is saved PENDING (the default) -- per direct user request, human approval
+        is required again: only a human clicking Approve on the Preview Screenshot decides the
+        output is good (see approval_service.py's UI/UX cascade, which then triggers
+        apply_design_system_patch -- never called directly from this class).
 
-        Returns (artifact_ids, version) -- the version is needed by the caller to invoke
-        apply_design_system_patch for this exact run/revision.
+        Returns (artifact_ids, version) -- the version is needed by callers that also need to know
+        which version this save produced (e.g. for logging or a follow-up lookup).
         """
 
         version = artifact_service.get_next_version(
@@ -764,7 +818,6 @@ class UIUXAgent:
             filename=f"{feature_slug}_ui_metadata_v{{version}}.json",
             data=output.ui_metadata_json,
             version_override=version,
-            approval_status=ApprovalStatus.APPROVED,
         )
         artifact_ids.append(metadata_artifact.artifact_id)
 
@@ -776,7 +829,6 @@ class UIUXAgent:
             filename=f"{feature_slug}_integration_manifest_v{{version}}.json",
             data=output.integration_manifest_json,
             version_override=version,
-            approval_status=ApprovalStatus.APPROVED,
         )
         artifact_ids.append(manifest_artifact.artifact_id)
 
@@ -789,7 +841,6 @@ class UIUXAgent:
             filename=f"{feature_slug}_ui_design_v{{version}}.md",
             content=output.ui_design_markdown,
             version_override=version,
-            approval_status=ApprovalStatus.APPROVED,
         )
         artifact_ids.append(markdown_artifact.artifact_id)
 
@@ -804,7 +855,6 @@ class UIUXAgent:
                 filename=f"{feature_slug}_{component_slug}_v{{version}}.html",
                 content=html_code,
                 version_override=version,
-                approval_status=ApprovalStatus.APPROVED,
             )
             artifact_ids.append(component_artifact.artifact_id)
 
@@ -819,7 +869,6 @@ class UIUXAgent:
                 filename=f"{feature_slug}_{page_slug}_page_v{{version}}.html",
                 content=page_html,
                 version_override=version,
-                approval_status=ApprovalStatus.APPROVED,
             )
             artifact_ids.append(page_html_artifact.artifact_id)
 
@@ -833,7 +882,13 @@ class UIUXAgent:
                 artifact_format=ArtifactFormat.PNG,
                 filename=f"{feature_slug}_{page_slug}_v{version}.png",
                 binary_content=png_bytes,
-                approval_status=ApprovalStatus.APPROVED,
+                # Real, confirmed bug fixed here: save_binary_artifact previously had no
+                # version_override support (unlike the other 3 save methods above, which all
+                # correctly share this run's one `version`) -- its own internal get_next_version()
+                # call incremented on every page saved within the SAME run, so multiple pages'
+                # screenshots ended up as separate versions (v1, v2, v3...) instead of one shared
+                # version. Now consistent with every other artifact this method saves.
+                version_override=version,
             )
             artifact_ids.append(screenshot_artifact.artifact_id)
 
@@ -963,6 +1018,7 @@ class UIUXAgent:
             current_ui_metadata_json=current_ui_metadata_json,
             revision_comment=request.revision_comment,
             revised_by=request.revised_by,
+            target_page_ids=request.target_page_ids,
         )
 
         raw_output = await provider.invoke_agent([
@@ -973,7 +1029,8 @@ class UIUXAgent:
         revision_plan = await self._resolve_uiux_revision_plan(provider, raw_output)
 
         patched_metadata, touched_components = self._prepare_revision(
-            current_ui_metadata_json, revision_plan, request.revision_comment, request.revised_by
+            current_ui_metadata_json, revision_plan, request.revision_comment, request.revised_by,
+            target_page_ids=request.target_page_ids,
         )
 
         component_files, page_component_order = await self._generate_components(
@@ -981,7 +1038,8 @@ class UIUXAgent:
         )
 
         page_html_files, page_screenshots = await self._assemble_and_render_pages(
-            patched_metadata, component_files, page_component_order
+            patched_metadata, component_files, page_component_order,
+            touched_components=touched_components, carry_over_version=current_version, feature_id=feature_id,
         )
 
         integration_manifest_json = uiux_integration_manifest_builder.build(patched_metadata)
@@ -1003,8 +1061,6 @@ class UIUXAgent:
 
         artifact_ids, version = self._save_artifacts(project=dict(project), feature=dict(feature), output=output)
         output.artifact_ids = artifact_ids
-
-        self.apply_design_system_patch(feature_id, version)
 
         logger.info(
             "UI/UX Agent revision completed for feature_id=%s artifacts=%s",
@@ -1059,6 +1115,7 @@ class UIUXAgent:
             current_ui_metadata_json=current_ui_metadata_json,
             revision_comment=request.revision_comment,
             revised_by=request.revised_by,
+            target_page_ids=request.target_page_ids,
         )
 
         raw_chunks: list[str] = []
@@ -1076,7 +1133,8 @@ class UIUXAgent:
         revision_plan = await self._resolve_uiux_revision_plan(provider, raw_output)
 
         patched_metadata, touched_components = self._prepare_revision(
-            current_ui_metadata_json, revision_plan, request.revision_comment, request.revised_by
+            current_ui_metadata_json, revision_plan, request.revision_comment, request.revised_by,
+            target_page_ids=request.target_page_ids,
         )
 
         yield {"type": "phase", "phase": "components", "label": "Updating affected components..."}
@@ -1088,7 +1146,8 @@ class UIUXAgent:
         yield {"type": "phase", "phase": "assembly", "label": "Reassembling pages and rendering previews..."}
 
         page_html_files, page_screenshots = await self._assemble_and_render_pages(
-            patched_metadata, component_files, page_component_order
+            patched_metadata, component_files, page_component_order,
+            touched_components=touched_components, carry_over_version=current_version, feature_id=feature_id,
         )
 
         integration_manifest_json = uiux_integration_manifest_builder.build(patched_metadata)
@@ -1109,7 +1168,6 @@ class UIUXAgent:
         )
 
         artifact_ids, version = self._save_artifacts(project=dict(project), feature=dict(feature), output=output)
-        self.apply_design_system_patch(feature_id, version)
 
         logger.info(
             "UI/UX Agent revision (streamed) completed for feature_id=%s artifacts=%s",
@@ -1150,24 +1208,46 @@ class UIUXAgent:
         revision_plan: dict,
         revision_comment: str,
         revised_by: str | None,
+        target_page_ids: list[str] | None = None,
     ) -> tuple[dict, set[str]]:
         """
         Deterministically apply a revision plan's operations to a copy of the current
         ui_metadata_json, returning the patched metadata (with revision_metadata stamped) and the
         set of component names that need fresh HTML generation (added/modified by this revision).
-        Never raises -- operations that match nothing just produce an honest, unchanged result
-        with the reason recorded in revision_metadata (see apply_uiux_revision_operations' own
-        "report, don't guess" contract).
+        Never raises -- operations that match nothing (including anything outside
+        target_page_ids, see revision_patcher.py's allowed_page_ids enforcement) just produce an
+        honest, unchanged result with the reason recorded in revision_metadata (see
+        apply_uiux_revision_operations' own "report, don't guess" contract).
         """
 
         operations = revision_plan.get("operations", [])
-        patched_metadata, applied, unmatched = apply_uiux_revision_operations(current_ui_metadata_json, operations)
+        allowed_page_ids = set(target_page_ids) if target_page_ids else None
+        patched_metadata, applied, unmatched = apply_uiux_revision_operations(
+            current_ui_metadata_json, operations, allowed_page_ids=allowed_page_ids
+        )
 
         touched_components: set[str] = set()
         for page in patched_metadata.get("pages", []):
             for component in page.get("components", []) or []:
                 if component.pop("_revision_touched", False):
                     touched_components.add(component["name"])
+
+        # A genuine color_theme change (see UIUX_REVISION_SYSTEM_PROMPT rule 7) means every
+        # surviving component's HTML needs regenerating to match, not just a metadata-field
+        # edit -- reuses the exact same "touched -> regenerate" pipeline as an add/modify
+        # operation, no separate generation pathway needed. Still respects target_page_ids: only
+        # components on a selected page (if any were selected) are marked touched, same
+        # "selected screens only" discipline as every other operation.
+        new_color_theme = revision_plan.get("color_theme")
+        color_theme_changed = bool(new_color_theme) and new_color_theme != patched_metadata.get("color_theme")
+        if color_theme_changed:
+            patched_metadata["color_theme"] = new_color_theme
+            for page in patched_metadata.get("pages", []):
+                if allowed_page_ids and page.get("page_id") not in allowed_page_ids:
+                    continue
+                for component in page.get("components", []) or []:
+                    touched_components.add(component["name"])
+            applied = [*applied, f"Changed color_theme to '{new_color_theme}' (every component regenerated to match)."]
 
         revision_metadata = {
             "revision_type": "uiux_revision",

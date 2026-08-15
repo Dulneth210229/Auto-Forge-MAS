@@ -138,6 +138,13 @@ plausible-looking feature into a broken one that a human has to catch by hand):
   computed from git, not from your own memory of what you've done, so trust it
   over your own recollection. If it reports any gaps, address them before
   stopping.
+- Before ending your turn, ALSO call `list_unread_ui_designs`. It tells you
+  plainly if no approved UI/UX design exists for this feature at all -- in that
+  case there is nothing more to do. If it reports unread pages/components, read
+  the ones relevant to whatever frontend file you touched via
+  `read_ui_component_design`/`read_ui_page_design` before stopping. This is
+  checked deterministically after you respond -- writing frontend code without
+  ever reading the approved design is treated as an incomplete attempt.
 
 Tool usage:
 - Start with `list_dir` and `read_project_manifest` to see what already exists in
@@ -158,19 +165,22 @@ Tool usage:
 - If a page/component has an approved UI/UX design reference, call
   `read_ui_component_design`/`read_ui_page_design` to see its exact visual design
   before writing the real TSX that implements it (see the UI/UX rule above).
+  `list_unread_ui_designs` reports exactly which approved pages/components you
+  have not read yet this attempt.
 - Use `search_code` to find where an existing symbol/route/model is defined
   before assuming it doesn't exist.
 - `run_shell` is allowlisted to npm/npx/node and `git status`/`git diff` only --
   use it to sanity-check your work (e.g. `git diff --stat`), not to install
   dependencies unless the plan's new_dependencies require it.
 - Use `check_syntax` after writing/patching any `.ts`/`.tsx` file, and
-  `list_unimplemented_planned_files` before ending your turn -- see the
-  completeness rules above.
-- When every file in the plan has been created or modified, and
-  `list_unimplemented_planned_files` confirms no gaps remain, stop and
-  summarize what you did in plain text (including any placeholder/incomplete
-  logic you left, per the rules above). Do not call any more tools once the
-  plan is fully implemented.
+  `list_unimplemented_planned_files`/`list_unread_ui_designs` before ending
+  your turn -- see the completeness rules above.
+- When every file in the plan has been created or modified,
+  `list_unimplemented_planned_files` confirms no gaps remain, and
+  `list_unread_ui_designs` reports every relevant design has been read, stop
+  and summarize what you did in plain text (including any placeholder/
+  incomplete logic you left, per the rules above). Do not call any more tools
+  once the plan is fully implemented.
 """
 
 

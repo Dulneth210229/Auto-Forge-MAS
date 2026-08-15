@@ -478,6 +478,7 @@ class ArtifactService:
         filename: str,
         binary_content: bytes,
         approval_status: ApprovalStatus = ApprovalStatus.PENDING,
+        version_override: int | None = None,
     ) -> ArtifactResponse:
         """
         Save a binary artifact.
@@ -489,8 +490,15 @@ class ArtifactService:
 
         approval_status defaults to PENDING (every existing caller's behavior, unchanged) --
         see save_text_artifact's docstring for why an agent might pass APPROVED instead.
+
+        version_override lets multiple binary artifacts share one version, the same way
+        save_text_artifact/save_json_artifact already do -- previously missing here specifically,
+        a real, confirmed bug: a UI/UX run producing multiple pages' screenshots had each one
+        silently get its OWN incrementing version (via this method's own get_next_version() call
+        below, run once per screenshot within the same save loop) instead of sharing the run's one
+        version like every other artifact type it saves alongside.
         """
-        version = self.get_next_version(
+        version = version_override or self.get_next_version(
             feature_id=feature["feature_id"],
             agent_name=agent_name,
             artifact_type=artifact_type

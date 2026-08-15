@@ -4,11 +4,11 @@
 
 export const STAGE_SEQUENCE = ["requirement", "domain", "architecture", "uiux", "coder", "security", "qa"];
 
-// "uiux" is intentionally absent -- the whole UI/UX stage no longer requires any human
-// approval decision (every UI/UX artifact is born already approved on the backend).
-export const GATED_STAGES = ["requirement", "domain", "architecture", "coder"];
+// "uiux" is back here per direct user request: human approval is required again for the UI/UX
+// stage's output (only the Preview Screenshot is the human's approval surface on the backend).
+export const GATED_STAGES = ["requirement", "domain", "architecture", "uiux", "coder"];
 
-export const AUTO_APPROVED_STAGES = ["uiux", "security", "qa"];
+export const AUTO_APPROVED_STAGES = ["security", "qa"];
 
 // Every real, selectable agent stage in pipeline order (excludes security/qa/deployment, which
 // have no agent implementation yet -- see PLACEHOLDER_STAGES below). Distinct from GATED_STAGES:

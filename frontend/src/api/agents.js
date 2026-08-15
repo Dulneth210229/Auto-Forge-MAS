@@ -309,8 +309,8 @@ export async function runUiux(
   );
 }
 
-export async function reviseUiux(featureId, { revision_comment, revised_by }, signal) {
-  return postCancelable(`${base(featureId)}/uiux/revise`, { revision_comment, revised_by }, signal);
+export async function reviseUiux(featureId, { revision_comment, revised_by, target_page_ids }, signal) {
+  return postCancelable(`${base(featureId)}/uiux/revise`, { revision_comment, revised_by, target_page_ids }, signal);
 }
 
 // Live, token-by-token variants (ChatGPT/Claude-style), same mechanism as Domain/Architecture
@@ -332,10 +332,10 @@ export async function runUiuxStream(
   );
 }
 
-export async function reviseUiuxStream(featureId, { revision_comment, revised_by }, onEvent, signal) {
+export async function reviseUiuxStream(featureId, { revision_comment, revised_by, target_page_ids }, onEvent, signal) {
   return streamNdjsonPost(
     `${API_BASE_URL}${base(featureId)}/uiux/revise/stream`,
-    { revision_comment, revised_by },
+    { revision_comment, revised_by, target_page_ids },
     onEvent,
     signal
   );

@@ -210,6 +210,126 @@ async def test_unexpected_exception_is_treated_as_a_failed_attempt_not_a_crash(a
     assert "Ollama connection reset" in verify_result["steps"][0]["output"]
 
 
+UI_MANIFEST = {
+    "pages": [
+        {"page_id": "item-listing", "route": "/item-listing", "components": [{"name": "ItemTable"}]}
+    ]
+}
+
+
+def test_find_unread_ui_design_gap_no_manifest_returns_none(agent):
+    assert agent._find_unread_ui_design_gap(None, _touched(["app/page.tsx"]), {}) is None
+    assert agent._find_unread_ui_design_gap({}, _touched(["app/page.tsx"]), {}) is None
+    assert agent._find_unread_ui_design_gap({"pages": []}, _touched(["app/page.tsx"]), {}) is None
+
+
+def test_find_unread_ui_design_gap_only_backend_touched_returns_none(agent):
+    tracker = {"components": set(), "pages": set()}
+    gap = agent._find_unread_ui_design_gap(
+        UI_MANIFEST, _touched(["app/api/items/route.ts"]), tracker
+    )
+    assert gap is None
+
+
+def test_find_unread_ui_design_gap_frontend_touched_nothing_read_returns_gap(agent):
+    tracker = {"components": set(), "pages": set()}
+    gap = agent._find_unread_ui_design_gap(
+        UI_MANIFEST, _touched(["app/item-listing/page.tsx"]), tracker
+    )
+    assert gap is not None
+    assert "read_ui_component_design" in gap
+    assert "read_ui_page_design" in gap
+
+
+def test_find_unread_ui_design_gap_frontend_touched_something_read_returns_none(agent):
+    tracker = {"components": {"itemtable"}, "pages": set()}
+    gap = agent._find_unread_ui_design_gap(
+        UI_MANIFEST, _touched(["app/item-listing/page.tsx"]), tracker
+    )
+    assert gap is None  # coarse check: ANY read this attempt clears the gate
+
+
+def test_find_unread_ui_design_gap_checks_modified_files_too(agent):
+    tracker = {"components": set(), "pages": set()}
+    touched = {"added": [], "modified": ["components/ItemTable.tsx"], "deleted": []}
+    gap = agent._find_unread_ui_design_gap(UI_MANIFEST, touched, tracker)
+    assert gap is not None
+
+
+@pytest.mark.asyncio
+async def test_design_gap_retries_the_attempt_that_touches_frontend_not_hardcoded_to_attempt_1(agent):
+    """
+    A real risk an independent design review flagged directly: the gate must apply on
+    WHICHEVER attempt actually writes frontend code, not just attempt 1 -- a plan can
+    naturally split backend-first. Simulates attempt 1 (backend only, no read) passing the
+    gate cleanly, attempt 2 (frontend touched, no read) getting caught and retried, attempt 3
+    (frontend touched, read recorded) finally passing.
+    """
+    code_plan = {
+        "files": [
+            {"path": "app/api/widgets/route.ts", "action": "create", "rationale": "r", "maps_to": []},
+            {"path": "app/widgets/page.tsx", "action": "create", "rationale": "r", "maps_to": []},
+        ]
+    }
+
+    mock_react_agent = AsyncMock()
+    mock_react_agent.ainvoke.return_value = None
+
+    # Attempt 1: only the backend file exists. Attempt 2 (retried): backend still there, frontend
+    # STILL not there because the model wrote it but the mocked get_touched_files below only
+    # tracks cumulative state via already_touched's own side_effect list, matched 1:1 with the
+    # per-attempt "since=attempt_start_sha" call this test doesn't distinguish by identity (the
+    # mock can't tell attempt_start_sha apart from revision_start_sha) -- so instead this uses a
+    # side_effect FUNCTION keyed on call order, mirroring the existing
+    # test_revision_start_sha_prevents_a_no_op_attempt_from_falsely_passing pattern.
+    call_count = {"n": 0}
+
+    def _fake_get_touched_files(project_id, feature_id, since="main"):
+        call_count["n"] += 1
+        # Calls alternate: cumulative (_find_plan_gaps), then per-attempt (design gap), per
+        # attempt -- 2 calls/attempt until the plan is fully satisfied and passes verify.
+        if call_count["n"] in (1, 2):
+            # Attempt 1: backend file done, frontend not yet -- plan_gaps sees a real gap
+            # (frontend file missing), so the design-gap branch is never reached this attempt
+            # (both calls return the same thing since _find_plan_gaps already fails first).
+            return _touched(["app/api/widgets/route.ts"])
+        if call_count["n"] in (3, 4):
+            # Attempt 2: frontend file now exists (plan complete) but was never READ.
+            return _touched(["app/api/widgets/route.ts", "app/widgets/page.tsx"])
+        # Attempt 3: frontend file exists, and this time the design was read (see
+        # ui_design_read_tracker mutation below).
+        return _touched(["app/api/widgets/route.ts", "app/widgets/page.tsx"])
+
+    def _fake_build_coder_react_agent(
+        project_id, feature_id, plan, ui_manifest=None, tracker=None
+    ):
+        # Simulate the model actually calling read_ui_component_design on attempt 3 only.
+        if call_count["n"] >= 4 and tracker is not None:
+            tracker["pages"].add("item_listing")
+        return mock_react_agent
+
+    with (
+        patch(
+            "app.agents.coder_agent.agent.build_coder_react_agent",
+            side_effect=_fake_build_coder_react_agent,
+        ),
+        patch("app.agents.coder_agent.agent.workspace_service") as mock_workspace,
+    ):
+        mock_workspace.commit_changes.return_value = True
+        mock_workspace.get_touched_files.side_effect = _fake_get_touched_files
+
+        with patch.object(agent.verifier, "verify", return_value={"passed": True, "steps": []}):
+            verify_result, attempts = await agent._code_with_retries(
+                "proj_x",
+                "feature_x",
+                code_plan,
+                ui_integration_manifest_json=UI_MANIFEST,
+            )
+
+    assert attempts == 3
+    assert verify_result["passed"] is True
+
+
 @pytest.mark.asyncio
 async def test_commit_changes_failure_is_treated_as_a_failed_attempt_not_a_crash(agent):
     """commit_changes() itself is called unguarded on the normal path -- a real GitPython

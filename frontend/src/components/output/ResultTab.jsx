@@ -10,6 +10,7 @@ import UiuxPagePreviewsPanel from "../pipeline/UiuxPagePreviewsPanel";
 import { LiveGenerationView } from "../pipeline/RequirementConversationParts";
 import GovernancePanel from "../pipeline/GovernancePanel";
 import ArtifactList from "../pipeline/ArtifactList";
+import UiuxVersionGroupList from "../pipeline/UiuxVersionGroupList";
 import ErrorBanner from "../common/ErrorBanner";
 import ConfirmDialog from "../common/ConfirmDialog";
 import RequirementSrsOutputPanel from "./RequirementSrsOutputPanel";
@@ -60,6 +61,19 @@ const APPROVE_CONTINUATION_BY_STAGE = {
     title: "Approve this Architecture Plan and start UI/UX Agent?",
     message: (version) =>
       `Approving v${version} makes it the Architecture Plan this feature uses going forward (any other approved Architecture Plan version is superseded back to pending). UI/UX Agent will start automatically and generate page-level UI metadata, component code, and preview screenshots -- watch it live in the Result panel.`,
+  },
+  // UI/UX -> Coder is the fourth link in this chain, and the first one where approving also
+  // LOCKS every other pending version's Approve button (direct user request, reversing the
+  // immediately-prior session's own "free approval" choice for UI/UX specifically -- see
+  // UiuxVersionGroupList's own comment) -- once Coder Agent starts consuming one version as its
+  // visual reference, a stray approve on a different version mid-build would be confusing and
+  // could re-trigger a second, conflicting run.
+  uiux: {
+    nextAgent: "coder",
+    autoRun: true,
+    title: "Approve this UI/UX version and start Coder Agent?",
+    message: (version) =>
+      `Approving v${version} locks it as the UI/UX design this feature builds from -- every other version is locked from approval until you reject this one. Coder Agent will start automatically and build the real frontend + backend to match this design as closely as possible -- watch it live in the Result panel.`,
   },
 };
 
@@ -244,6 +258,7 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
   // coding attempts, verification, diffing) covers the rest, shown the same isFinalizing way
   // Architecture's diagram-generation tail already is.
   const {
+    handleRunStream: handleRunCoderStream,
     runStream: coderRunStream,
     runStreamedText: coderRunStreamedText,
     runStreamStarted: coderRunStreamStarted,
@@ -333,6 +348,12 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
   // Domain -> Architecture is the opposite, deliberately: Architecture Agent needs no comparable
   // human-guidance step (there's nothing analogous to "here's a database schema" to wait for), so
   // approving auto-starts it immediately -- see APPROVE_CONTINUATION_BY_STAGE's own `autoRun`.
+  //
+  // UI/UX -> Coder is the fourth link, also auto-run -- and the first stage where approving ALSO
+  // locks every other pending version from being approved (UiuxVersionGroupList's own
+  // `approveLocked`, computed here indirectly since this same `requestApproveConfirmation` is
+  // what it calls) -- direct user request, so a stray approve on a different UI/UX version can't
+  // re-trigger a second, conflicting Coder Agent run once one is already building.
   const approveContinuation = APPROVE_CONTINUATION_BY_STAGE[stage];
   const [confirmingArtifactId, setConfirmingArtifactId] = useState(null);
   const srsApproval = useApprovalMutation(featureId);
@@ -365,6 +386,8 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
         handleRunArchitectureStream({ use_enhanced_srs_if_available: true, architecture_notes: null, human_comment: null });
       } else if (approveContinuation.nextAgent === "uiux") {
         handleRunUiuxStream({ use_enhanced_srs_if_available: true, human_comment: null });
+      } else if (approveContinuation.nextAgent === "coder") {
+        handleRunCoderStream({ use_enhanced_srs_if_available: true, human_comment: null });
       }
     }
   }
@@ -373,28 +396,44 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
     ? stageArtifacts.find((a) => a.artifact_id === confirmingArtifactId)
     : null;
 
+  // Direct user correction: a UI/UX run/revision producing several pages at once must be
+  // presented (and approved) as ONE version, not as N independent-looking per-page rows -- the
+  // backend already treats it that way (shared version number + approval cascade, see
+  // approval_service.py's UI/UX cascade); UiuxVersionGroupList makes that true on screen too.
+  // Every other stage keeps the generic ArtifactList exactly as before.
+  const uiuxVersionCount = stage === "uiux" ? new Set(stageArtifacts.map((a) => a.version)).size : null;
+
   return (
     <div className="flex flex-col gap-5">
       <div>
         <h3 className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wide mb-2">
-          All Artifacts ({stageArtifacts.length})
+          All Artifacts ({stage === "uiux" ? uiuxVersionCount : stageArtifacts.length})
         </h3>
         <ErrorBanner error={setActiveSelection.error} fallback="Failed to change which version is in use." />
-        <ArtifactList
-          artifacts={stageArtifacts}
-          onView={viewArtifact}
-          // Only used to gate the (separate, revise-only) Revise button -- approval controls are
-          // no longer suppressed for any row of the gating type (see ArtifactList's docstring).
-          gatingArtifactType={STAGE_GATING_ARTIFACT[stage]?.type ?? null}
-          featureId={featureId}
-          onApproveClick={approveContinuation ? requestApproveConfirmation : undefined}
-          activeArtifactType={activeArtifactType}
-          activeArtifactId={effectiveActiveArtifact?.artifact_id}
-          settingActive={setActiveSelection.isPending}
-          onSetActive={(artifactId) =>
-            setActiveSelection.mutate({ artifact_type: activeArtifactType, artifact_id: artifactId })
-          }
-        />
+        {stage === "uiux" ? (
+          <UiuxVersionGroupList
+            artifacts={stageArtifacts}
+            featureId={featureId}
+            onView={viewArtifact}
+            onApproveClick={approveContinuation ? requestApproveConfirmation : undefined}
+          />
+        ) : (
+          <ArtifactList
+            artifacts={stageArtifacts}
+            onView={viewArtifact}
+            // Only used to gate the (separate, revise-only) Revise button -- approval controls are
+            // no longer suppressed for any row of the gating type (see ArtifactList's docstring).
+            gatingArtifactType={STAGE_GATING_ARTIFACT[stage]?.type ?? null}
+            featureId={featureId}
+            onApproveClick={approveContinuation ? requestApproveConfirmation : undefined}
+            activeArtifactType={activeArtifactType}
+            activeArtifactId={effectiveActiveArtifact?.artifact_id}
+            settingActive={setActiveSelection.isPending}
+            onSetActive={(artifactId) =>
+              setActiveSelection.mutate({ artifact_type: activeArtifactType, artifact_id: artifactId })
+            }
+          />
+        )}
       </div>
 
       {isRevising ? (

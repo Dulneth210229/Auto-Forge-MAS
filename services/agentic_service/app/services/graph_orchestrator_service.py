@@ -58,20 +58,15 @@ logger = get_logger(__name__)
 # get a real human approval gate.
 STAGE_SEQUENCE = ["requirement", "domain", "architecture", "uiux", "coder", "security", "qa"]
 
-# Stages that stop for a human approval gate.
-#
-# "uiux" was removed from here (and added to AUTO_APPROVED_STAGES below) per direct user
-# request: the whole UI/UX stage no longer requires any human approval decision at all -- every
-# UI/UX artifact is born already APPROVED (see uiux_agent/agent.py's _save_artifacts). This
-# mirrors the exact, already-proven precedent security/qa already use below (an auto-approved
-# stub stage gets no interrupt node, wiring straight through to the next stage) -- uiux_node
-# itself is unchanged, it just never gets an approve_uiux interrupt node built for it anymore.
-GATED_STAGES = ["requirement", "domain", "architecture", "coder"]
+# Stages that stop for a human approval gate. "uiux" is back here per direct user request:
+# human approval is required again for the UI/UX stage's output (only the Preview Screenshot is
+# the human's approval surface -- see approval_service.py's UI/UX cascade). uiux_node itself is
+# unchanged -- it just gets a real approve_uiux interrupt node built for it again.
+GATED_STAGES = ["requirement", "domain", "architecture", "uiux", "coder"]
 
-# Stages that run automatically with no human gate. security/qa: no agent implementation yet,
-# nothing for a human to review. uiux: a real agent, but per direct user request its output
-# needs no human approval -- see GATED_STAGES' own comment above.
-AUTO_APPROVED_STAGES = ["uiux", "security", "qa"]
+# Stages that run automatically with no human gate -- security/qa only: no agent implementation
+# yet, nothing for a human to review.
+AUTO_APPROVED_STAGES = ["security", "qa"]
 
 
 class FeaturePipelineState(TypedDict, total=False):

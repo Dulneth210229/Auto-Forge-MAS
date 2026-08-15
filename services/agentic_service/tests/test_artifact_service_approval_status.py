@@ -148,6 +148,43 @@ def test_save_binary_artifact_honors_explicit_approved(project_and_feature):
     assert refetched.approval_status == ApprovalStatus.APPROVED
 
 
+def test_save_binary_artifact_honors_version_override(project_and_feature):
+    """
+    Real, confirmed bug this fixes: save_binary_artifact previously had NO version_override
+    support at all (unlike the other 3 save methods), so multiple binary artifacts saved within
+    one run (e.g. a UI/UX run's several page screenshots) each got their OWN incrementing version
+    via this method's own internal get_next_version() call, instead of sharing the run's one
+    version like every other artifact type. Confirms two binary artifacts saved with the same
+    version_override genuinely share that version, not two different auto-incremented ones.
+    """
+    project, feature = project_and_feature
+
+    first = artifact_service.save_binary_artifact(
+        project=project,
+        feature=feature,
+        agent_name=AgentName.UIUX,
+        artifact_type=ArtifactType.UI_PREVIEW_SCREENSHOT,
+        artifact_format=ArtifactFormat.PNG,
+        filename="page_one_v7.png",
+        binary_content=b"fake-png-bytes-one",
+        version_override=7,
+    )
+    second = artifact_service.save_binary_artifact(
+        project=project,
+        feature=feature,
+        agent_name=AgentName.UIUX,
+        artifact_type=ArtifactType.UI_PREVIEW_SCREENSHOT,
+        artifact_format=ArtifactFormat.PNG,
+        filename="page_two_v7.png",
+        binary_content=b"fake-png-bytes-two",
+        version_override=7,
+    )
+
+    assert first.version == 7
+    assert second.version == 7
+    assert first.artifact_id != second.artifact_id
+
+
 def test_existing_callers_without_approval_status_param_are_unaffected(project_and_feature):
     """Regression guard: a caller that never knew about this new parameter (i.e. every other
     agent in this codebase) must keep getting PENDING, exactly as before."""

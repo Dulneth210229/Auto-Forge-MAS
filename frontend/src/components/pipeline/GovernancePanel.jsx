@@ -6,9 +6,6 @@ import { useArtifactContent } from "../../hooks/useArtifacts";
 import ApprovalPanel from "./ApprovalPanel";
 import LoadingSpinner from "../common/LoadingSpinner";
 
-// uiux previously had an entry here -- removed: the whole UI/UX stage no longer requires any
-// human approval decision at all (every UI/UX artifact is born already approved), so
-// ApprovalPanel never renders for it and this warning could never show.
 const APPROVAL_WARNINGS = {
   coder: (
     <>
@@ -73,7 +70,18 @@ export default function GovernancePanel({ stage, featureId, allArtifacts, stageA
     <div className="flex flex-col gap-4">
       <div className="pb-4 border-b border-gray-100 dark:border-gray-800">
         <h3 className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wide mb-2">Stage Actions</h3>
-        {gatingArtifact ? (
+        {stage === "uiux" ? (
+          // UiuxVersionGroupList (in the All Artifacts section above) already lets a human
+          // approve/reject/request-revision on ANY pending version's whole batch of pages -- a
+          // second ApprovalPanel here (for just whichever ONE screenshot happens to be
+          // "operative") would be redundant and could show a different version than the one a
+          // human just acted on above.
+          <p className="text-xs text-gray-400 dark:text-gray-500">
+            {gatingArtifact
+              ? "Approve, reject, or request revision on each UI/UX version's whole batch of pages in All Artifacts above."
+              : "No output yet for this stage."}
+          </p>
+        ) : gatingArtifact ? (
           isAwaitingReview ? (
             <ApprovalPanel
               featureId={featureId}

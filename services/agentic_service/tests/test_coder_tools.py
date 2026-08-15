@@ -378,3 +378,103 @@ def test_check_syntax_rejects_unsupported_extension(project_and_tools):
 
     result = tools["check_syntax"].invoke({"path": "lib/notes.txt"})
     assert "only supports" in result
+
+
+UI_MANIFEST = {
+    "pages": [
+        {
+            "page_id": "item-listing",
+            "route": "/item-listing",
+            "components": [{"name": "ItemTable"}, {"name": "SearchFilterBar"}],
+        }
+    ]
+}
+
+
+@pytest.fixture
+def project_and_tools_with_ui_design():
+    """
+    Same as project_and_tools, but with a real ui_integration_manifest_json + a fresh
+    ui_design_read_tracker bound -- exercises list_unread_ui_designs and the tracker
+    population inside read_ui_component_design/read_ui_page_design.
+    """
+    project_id = generate_id("project")
+    feature_id = generate_id("feature")
+
+    store.projects[project_id] = {"project_id": project_id, "project_name": f"UI Design Tool Test {project_id}"}
+    store.features[feature_id] = {
+        "project_id": project_id,
+        "feature_id": feature_id,
+        "feature_name": "UI Design Tool Test Feature",
+    }
+
+    tracker = {"components": set(), "pages": set()}
+    tools = build_coder_tools(project_id, feature_id, None, UI_MANIFEST, tracker)
+    by_name = {t.name: t for t in tools}
+
+    yield {"project_id": project_id, "feature_id": feature_id, "tools": by_name, "tracker": tracker}
+
+    repo_path = workspace_service.get_repo_path(project_id)
+    workspace_service.ensure_project_repo(project_id).close()
+    store.database["projects"].delete_one({"project_id": project_id})
+    store.database["features"].delete_one({"feature_id": feature_id})
+    store.database["artifacts"].delete_many({"feature_id": feature_id})
+    shutil.rmtree(repo_path.parent, onerror=_remove_readonly)
+
+
+def test_list_unread_ui_designs_without_manifest_reports_nothing_to_check(project_and_tools):
+    result = project_and_tools["tools"]["list_unread_ui_designs"].invoke({})
+    assert "No approved UI/UX design exists" in result
+
+
+def test_list_unread_ui_designs_reports_everything_unread_initially(project_and_tools_with_ui_design):
+    result = project_and_tools_with_ui_design["tools"]["list_unread_ui_designs"].invoke({})
+    assert "page 'item-listing'" in result
+    assert "component 'ItemTable'" in result
+    assert "component 'SearchFilterBar'" in result
+
+
+def test_list_unread_ui_designs_reflects_a_real_read_via_the_tool(project_and_tools_with_ui_design, tmp_path):
+    fixture = project_and_tools_with_ui_design
+    fake_component_path = tmp_path / "ItemTable_v1.html"
+    fake_component_path.write_text("<table></table>", encoding="utf-8")
+
+    artifact_id = generate_id("artifact")
+    store.artifacts[artifact_id] = {
+        "artifact_id": artifact_id,
+        "project_id": fixture["project_id"],
+        "feature_id": fixture["feature_id"],
+        "agent_name": "uiux_agent",
+        "artifact_type": "ui_component_code",
+        "artifact_format": "html",
+        "file_path": str(fake_component_path),
+        "version": 1,
+        "approval_status": "approved",
+        "created_at": datetime.now(timezone.utc),
+    }
+
+    fixture["tools"]["read_ui_component_design"].invoke({"component_name": "ItemTable"})
+
+    result = fixture["tools"]["list_unread_ui_designs"].invoke({})
+    assert "component 'ItemTable'" not in result
+    assert "component 'SearchFilterBar'" in result  # still unread
+    assert "page 'item-listing'" in result  # still unread
+
+
+def test_list_unread_ui_designs_reports_clean_once_everything_is_read(project_and_tools_with_ui_design):
+    tracker = project_and_tools_with_ui_design["tracker"]
+    tracker["pages"].add("item_listing")
+    tracker["components"].add("itemtable")
+    tracker["components"].add("searchfilterbar")
+
+    result = project_and_tools_with_ui_design["tools"]["list_unread_ui_designs"].invoke({})
+    assert "Every approved UI/UX page/component design has been read" in result
+
+
+def test_read_ui_component_design_populates_tracker_only_on_a_real_find(project_and_tools_with_ui_design):
+    tracker = project_and_tools_with_ui_design["tracker"]
+
+    project_and_tools_with_ui_design["tools"]["read_ui_component_design"].invoke(
+        {"component_name": "NoSuchThing"}
+    )
+    assert tracker["components"] == set()  # not-found lookups never mark as read

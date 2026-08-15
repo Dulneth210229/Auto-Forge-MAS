@@ -1,12 +1,25 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useUiuxAgentFlowContext } from "../workspace/UiuxAgentFlowContext";
 import { listGatingArtifactVersions } from "../../lib/deriveStageStatus";
 import { SUGGESTION_CHIPS } from "../../lib/suggestionChips";
 import { LiveReactionBubble, useElapsedLabel } from "../pipeline/RequirementConversationParts";
+import { useArtifactContent } from "../../hooks/useArtifacts";
 import ChatBubble from "./ChatBubble";
 import ChatComposerBox from "./ChatComposerBox";
 import LoadingSpinner from "../common/LoadingSpinner";
 import ErrorBanner from "../common/ErrorBanner";
+
+// The authoritative page list comes from the latest ui_metadata JSON itself (pages[].page_id),
+// never guessed from a screenshot/page-html filename -- a filename-derived slug can't be reliably
+// reversed back to the real page_id (e.g. "-" and "_" both collapse to "_" during slugification),
+// and sending a mismatched page_id to the backend would silently fail to scope the revision.
+function latestUiMetadataArtifactId(allArtifacts) {
+  const candidates = (allArtifacts || []).filter(
+    (a) => a.artifact_type === "ui_metadata" && a.artifact_format === "json"
+  );
+  if (candidates.length === 0) return null;
+  return candidates.reduce((latest, a) => (a.version > latest.version ? a : latest)).artifact_id;
+}
 
 function ChatHeader({ feature, runningStage }) {
   return (
@@ -69,9 +82,36 @@ export default function UiuxAgentChat({
 
   const [comment, setComment] = useState("");
   const [pendingHumanReply, setPendingHumanReply] = useState(null);
+  // Multi-select, per direct user correction: a revision must be applicable to one OR MORE
+  // specific screens, not just a single page or the whole feature. Empty set = "Whole feature"
+  // (unconstrained, today's default) -- toggling a page pill adds/removes it from the set.
+  const [targetPageIds, setTargetPageIds] = useState(() => new Set());
+
+  function togglePageSelected(pageId) {
+    setTargetPageIds((current) => {
+      const next = new Set(current);
+      if (next.has(pageId)) {
+        next.delete(pageId);
+      } else {
+        next.add(pageId);
+      }
+      return next;
+    });
+  }
 
   const versions = listGatingArtifactVersions("uiux", allArtifacts);
   const hasOutput = versions.length > 0;
+
+  // Real, explicit per-page revision targeting (direct user request): with more than one page,
+  // a human can pin exactly which one a revision comment is about instead of relying on the LLM
+  // to infer it from prose alone. Read from the latest ui_metadata JSON itself -- see
+  // latestUiMetadataArtifactId's own comment for why a filename-derived guess isn't safe here.
+  const { data: latestMetadataContent } = useArtifactContent(latestUiMetadataArtifactId(allArtifacts));
+  const pages = useMemo(
+    () => latestMetadataContent?.content_json?.pages || [],
+    [latestMetadataContent]
+  );
+  const hasMultiplePages = pages.length > 1;
 
   const activeStream = hasOutput ? reviseStream : runStream;
   const streamStarted = hasOutput ? revisionStreamStarted : runStreamStarted;
@@ -95,7 +135,11 @@ export default function UiuxAgentChat({
     setPendingHumanReply(trimmed);
 
     const call = hasOutput
-      ? handleReviseStream({ revision_comment: trimmed, revised_by: "human_user" })
+      ? handleReviseStream({
+          revision_comment: trimmed,
+          revised_by: "human_user",
+          target_page_ids: hasMultiplePages && targetPageIds.size > 0 ? [...targetPageIds] : null,
+        })
       : handleRunStream({ use_enhanced_srs_if_available: true, human_comment: trimmed });
 
     call.finally(() => setPendingHumanReply(null));
@@ -204,6 +248,40 @@ export default function UiuxAgentChat({
           >
             Start UI/UX Agent now
           </button>
+        )}
+
+        {hasOutput && hasMultiplePages && (
+          <div className="mb-2 flex flex-wrap items-center gap-1.5">
+            <span className="text-xs text-gray-400 dark:text-gray-500">
+              Revising{targetPageIds.size > 0 ? ` (${targetPageIds.size} selected)` : ""}:
+            </span>
+            <button
+              type="button"
+              onClick={() => setTargetPageIds(new Set())}
+              className={`text-xs font-semibold px-2.5 py-1 rounded-full ${
+                targetPageIds.size === 0
+                  ? "bg-accent-600 text-white"
+                  : "bg-gray-100 dark:bg-white/10 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/20"
+              }`}
+            >
+              Whole feature
+            </button>
+            {pages.map((page) => (
+              <button
+                key={page.page_id}
+                type="button"
+                onClick={() => togglePageSelected(page.page_id)}
+                title="Click to toggle -- select one or more pages to scope this revision to just them"
+                className={`text-xs font-semibold px-2.5 py-1 rounded-full ${
+                  targetPageIds.has(page.page_id)
+                    ? "bg-accent-600 text-white"
+                    : "bg-gray-100 dark:bg-white/10 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/20"
+                }`}
+              >
+                {page.name || page.page_id}
+              </button>
+            ))}
+          </div>
         )}
 
         <form onSubmit={handleSubmit} className="flex flex-col gap-2">

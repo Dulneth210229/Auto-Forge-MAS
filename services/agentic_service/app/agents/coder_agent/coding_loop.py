@@ -28,14 +28,25 @@ from app.providers.agentic_model_factory import get_agentic_chat_model
 
 
 def build_coder_react_agent(
-    project_id: str, feature_id: str, code_plan_json: dict[str, Any] | None = None
+    project_id: str,
+    feature_id: str,
+    code_plan_json: dict[str, Any] | None = None,
+    ui_integration_manifest_json: dict[str, Any] | None = None,
+    ui_design_read_tracker: dict[str, set[str]] | None = None,
 ) -> Runnable:
     """
     Build the Coder Agent's agentic loop, with tools scoped to one project's
     workspace, one feature's approved UI/UX output, and (for
     list_unimplemented_planned_files) this run's approved plan.
+
+    ui_integration_manifest_json/ui_design_read_tracker are passed straight through to
+    build_coder_tools -- see that function's own docstring for what they're for
+    (list_unread_ui_designs's deterministic "did you actually look at the approved design"
+    self-check, backing CoderAgent._code_with_retries' own per-attempt UI-fidelity gate).
     """
-    tools = build_coder_tools(project_id, feature_id, code_plan_json)
+    tools = build_coder_tools(
+        project_id, feature_id, code_plan_json, ui_integration_manifest_json, ui_design_read_tracker
+    )
 
     return create_agent(
         model=get_agentic_chat_model(),

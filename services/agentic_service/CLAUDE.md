@@ -2251,7 +2251,396 @@ milestone — that file is scratch, **this file is the durable one**.
       left in place as genuine verification evidence, matching this project's own established
       convention.
 
-## Known model-quality gotchas (not code bugs — prompts already account for these)
+66. **UI/UX Agent: restored human approval (item 65's auto-approval reversed), fixed a real
+    multi-page versioning bug, and added explicit per-page revision targeting + color_theme
+    redesign support.** Direct follow-up, six-part request, on the SAME feature item 65 had just
+    finished regenerating: (1) revision must genuinely, dynamically incorporate whatever the human
+    asks for; (2)+(4) UI/UX output must NOT auto-approve anymore -- reversing item 65's own
+    "everything auto-approves" design; (3) multiple pages/UIs from one run must show as ONE
+    shared version, not separate incrementing ones; (5) with multiple pages, the human must be
+    able to target a SPECIFIC one for revision; (6) restated ask (1).
+    - **(2)/(4), a clean revert, not a redesign**: confirmed by reading the code first that every
+      approval-status-driven UI surface (`GovernancePanel`/`ApprovalPanel`/`ArtifactRow`) was
+      still fully intact and untouched by item 65's work -- only 4 places needed to actually
+      change back. `agent.py`'s `_save_artifacts` stopped passing `approval_status=APPROVED`
+      (reverts to the default `PENDING`); the 4 direct `self.apply_design_system_patch(...)` calls
+      (one each in `run()`/`run_stream()`/`revise()`/`revise_stream()` -- a real gap in the first
+      implementation pass this session, only `run()`'s was removed initially, caught by a failing
+      test asserting `mock_patch.assert_not_called()`) were all removed, moving that trigger back
+      to being approval-gated. `approval_service.py` got its UI/UX screenshot-approval cascade
+      re-added (`UIUX_SIBLING_ARTIFACT_TYPES`, `_cascade_uiux_screenshot_decision`,
+      `UI_PREVIEW_SCREENSHOT` back in `EXCLUSIVE_VERSIONED_ARTIFACT_TYPES`), mirroring the
+      still-intact Architecture Plan cascade exactly. `graph_orchestrator_service.py`/
+      `pipelineStages.js` moved `"uiux"` back into `GATED_STAGES`, out of `AUTO_APPROVED_STAGES`.
+      `GovernancePanel.jsx`'s `APPROVAL_WARNINGS.uiux` (removed as "unreachable" in item 65) was
+      restored, describing the cascade.
+    - **(3): a real, confirmed bug independent of approval, found by reading `artifact_service.py`
+      directly**: `save_binary_artifact` (used only for screenshots) was the *one* of the four
+      save methods that never got a `version_override` parameter -- every other artifact in
+      `_save_artifacts` correctly shared one `version` via `version_override=version`, but the
+      screenshot loop couldn't, so `save_binary_artifact`'s own internal `get_next_version()` call
+      incremented on every page saved within the SAME run. Confirmed directly against the real
+      feature: a real screenshot showed "v1" through "v8" (two runs x four pages each) instead of
+      two shared versions. Fixed by adding `version_override: int | None = None` to
+      `save_binary_artifact`, mirroring the other three save methods exactly.
+    - **A second, necessary half of (3), found by reading the frontend's own dedup logic**:
+      `dedupeArtifactVersions` collapses down to ONE artifact per `(artifact_type, version)` --
+      built specifically for the "one gating type's JSON+Markdown pair share a version" case
+      (every other stage). Once the backend bug above was fixed and 4 screenshots legitimately
+      shared one version, this same function would have silently collapsed them down to just one,
+      hiding 3 of 4 pages -- caught and fixed in the same pass with a `MULTI_ITEM_PER_VERSION_
+      ARTIFACT_TYPES` carve-out (currently just `ui_preview_screenshot`) that keys by
+      `artifact_id` instead, never collapsing. `ArtifactRow.jsx` also gained a best-effort,
+      filename-derived page label (`screenshotPageLabel`) so multiple same-version screenshot
+      rows read as distinct pages ("Item Listing" / "Item Detail" / ...) instead of four
+      identical-looking "Preview Screenshot v3" rows.
+    - **Efficiency follow-through, matching the existing "only regenerate what's touched"
+      revision philosophy**: `_assemble_and_render_pages` previously re-rendered every page's
+      screenshot on every revision, even pages whose components weren't touched at all (their
+      reassembled HTML is always byte-identical, but Playwright -- the single slowest step in this
+      pipeline -- still re-ran). New `_load_page_screenshot_by_id` (mirrors the existing
+      `_load_component_html_by_name` exactly) carries an untouched page's screenshot over
+      verbatim from the prior version instead, falling through to a fresh render only if no prior
+      screenshot is found.
+    - **(5): explicit per-page revision targeting**: new optional `target_page_id` field on
+      `UIUXAgentReviseRequest`, threaded into `build_uiux_revision_prompt` (states the target page
+      plainly so the model doesn't have to infer it from prose alone -- new prompt rule 8) and all
+      the way through to the frontend. `UiuxAgentChat.jsx` reads the REAL page list from the
+      latest `ui_metadata` JSON artifact's own `pages[]` (never guessed from a screenshot/page-
+      html filename -- confirmed a filename-derived slug can't be reliably reversed back to the
+      real `page_id`, since both `-` and `_` collapse to `_` during slugification, risking a
+      silent mismatch) and shows a lightweight "Revising: Whole feature | <page> | <page> | ..."
+      pill selector above the composer whenever a feature has more than one page.
+    - **(1)/(6): confirmed the underlying mechanism already worked** (the human's actual revision-
+      comment prose, not just a terse content-diff, was already threaded into every touched
+      component's real regeneration call) and extended it for whole-feature "redesign" requests:
+      `UIUX_REVISION_SYSTEM_PROMPT` rule 7 previously forbade any `color_theme` change outright --
+      directly conflicting with a broad "redesign"/"change the theme" ask. Relaxed to allow an
+      optional top-level `color_theme` field in the ops plan when the request is genuinely about
+      the feature's overall color, with the requirement that every surviving component gets
+      marked touched (regenerated to match) -- reuses the exact same touched/carry-over pipeline
+      an add/modify operation already uses, no new generation pathway. New rule 5 exception: a
+      request naming "this page"/"this UI" as a whole (not one component) means proposing a
+      `modify` operation for every real component on that page, not padding.
+    - Tests: `tests/test_approval_uiux_cascade.py` (new, 8 -- rewritten from scratch since item
+      65 deleted the original; the new multi-screenshot-per-version cascade case is the one item
+      64's original version never had to handle), `tests/test_artifact_service_approval_status.py`
+      (+1, `save_binary_artifact` `version_override`), `tests/test_uiux_agent_revision.py` (+6:
+      `color_theme` change touches every component / no-op when unchanged, `target_page_id`
+      stated/omitted in the built prompt, and the end-to-end revision test's stale auto-approve
+      assertions flipped to confirm the default `PENDING` + `apply_design_system_patch` NOT called
+      directly -- this is the exact test that caught the 3 missed `apply_design_system_patch`
+      call-site removals above). Full suite: **597 passed** (up from 587). `npm run build` clean.
+    - **Real, live verification against the same real feature** (`feature_94701501` "Item
+      Listing (CRUD)" in `proj_34e07440` "Sample E-commerce", now with 4 real pages: Item Listing/
+      Item Detail/Item Form/Item Delete Confirmation): a real, explicitly page-targeted revision
+      ("Also show the current page indicator text on the Pagination component", `target_page_id:
+      "item-listing"`) completed in ~340s, producing a clean v3 with `revision_metadata.applied_
+      changes: ["Modified component 'Pagination' on page 'item-listing' ..."]` -- confirmed via
+      direct inspection that ONLY the targeted page/component was touched. Confirmed all 4 v3
+      screenshots correctly saved as `pending` (approval genuinely restored) and correctly shared
+      one version number (the versioning fix). Approved one screenshot via the real API and
+      confirmed all 17 sibling v3 artifacts -- including the other 3 pages' screenshots --
+      cascaded to `approved` together in one action. **Real browser confirmation**: "All
+      Artifacts" shows exactly 4 distinctly-labeled Preview Screenshot rows for v3 (all
+      "Approved," no buttons) plus 2 older, genuinely `pending` versions each with real working
+      Approve/Reject/Request-Revision controls; the chat's page-target selector renders with the
+      4 real page names. Zero console/page errors. Cleaned up 6 orphaned single-screenshot
+      artifacts left over from the pre-fix versioning bug (pure debris -- no accompanying
+      metadata/component/page-html existed at those stray version numbers) so the feature's real
+      data reads cleanly going forward. This real v3 state (4 pages, cascaded-approved) is left in
+      place as genuine verification evidence, matching this project's own established convention.
+
+67. **UI/UX Agent: present and approve each generation as ONE version on screen, not per-page.**
+    Direct correction to item 66: "if the UI/UX agent generated 4 UIs for a feature at once, the
+    entire generated UI must be considered as the first version" -- a revision producing a new
+    bunch is the next version, for the whole bunch, not per page. Confirmed by reading the code
+    that the **backend** already worked this way after item 66 (`save_binary_artifact`'s
+    `version_override` fix + `approval_service`'s screenshot cascade both already treat one run's
+    pages as one version) -- what was still wrong was purely the **frontend presentation**: "All
+    Artifacts" rendered one row per page's screenshot via the generic `ArtifactList`/`ArtifactRow`
+    (item 40's "every row gets its own independent Approve/Reject/Request-Revision" behavior,
+    correct for stages where each row genuinely is an independent decision, never adjusted for the
+    one type -- `ui_preview_screenshot` -- where several rows share a version and are NOT
+    independent). A 4-page feature showed 4 buttons that all did the exact same thing but read as
+    4 separate decisions.
+    - **New `frontend/src/components/pipeline/UiuxVersionGroupList.jsx`**, replacing the generic
+      `ArtifactList` for the uiux stage only (every other stage's "All Artifacts" is completely
+      unchanged): groups the stage's `ui_preview_screenshot` artifacts by `version` (descending),
+      renders ONE card per version -- `UI/UX Output vN`, page count, a `StatusBadge` (read from
+      the group's first item; every member shares one status by construction, thanks to the
+      cascade), and a thumbnail grid (one per page, reusing `ImageViewer`, matching
+      `UiuxPagePreviewsPanel.jsx`'s established pattern) each labeled via `screenshotPageLabel`
+      (extracted from `ArtifactRow.jsx` into a shared helper in `artifactTypeMeta.js` so both use
+      identical filename-parsing logic instead of duplicating it). A pending version renders the
+      **existing, unmodified** `ApprovalPanel` directly -- no reimplementation of approve/reject/
+      request-revision logic, just handed the group's first screenshot as `artifact` (the backend
+      cascade already makes this affect the whole version).
+    - **Preserved the existing "explicit reject first" discipline** (item 40's own rule: switching
+      which version is approved requires explicitly rejecting the current approval, not a stray
+      click) for the NEW grouped view too -- required a small, additive `approveLocked` prop on
+      `ApprovalPanel.jsx` itself (disables only the Approve button, `title` explains why; Reject/
+      Request Revision stay available, matching `ArtifactRow.jsx`'s own established partial-lock
+      behavior for other stages, which had no equivalent on `ApprovalPanel` until now).
+    - **`GovernancePanel.jsx`**: skips its own "Stage Actions" `ApprovalPanel` for `stage ===
+      "uiux"` specifically (now genuinely redundant -- the new grouped list already lets a human
+      act on ANY pending version, not just whichever one `getOperativeGatingArtifact` happens to
+      resolve as "the" operative one, and showing both risked two controls pointing at two
+      different versions). The now-dead `APPROVAL_WARNINGS.uiux` explanatory copy was moved
+      (not deleted) into `UiuxVersionGroupList.jsx` itself, shown once above the version cards
+      where it's now actually relevant.
+    - **`ResultTab.jsx`**: branches on `stage === "uiux"` to render the new component instead of
+      `ArtifactList`, and changes the "All Artifacts (N)" header count to count **versions**
+      instead of raw artifacts for this stage specifically (e.g. "All Artifacts (3)" for 3 real
+      versions, not the 6 individual screenshot rows they contain) -- directly matching the "a
+      bunch is one version" mental model in the one place a human's eye lands first.
+    - Purely a frontend change -- no backend edits, no new tests, no new LLM generation run needed
+      (item 66's own live verification already proved the backend version/cascade model correct;
+      this fix only needed the real mixed data already sitting on the same feature). `npm run
+      build` clean.
+    - **Real, live verification against the same real feature's existing mixed data**
+      (`feature_94701501`, no new generation triggered -- v3's real 4-page, already-approved
+      version sits right next to v1/v2's real single-page, still-`pending` legacy versions,
+      exactly the mixed real-world case this needed): confirmed "All Artifacts" now reads
+      "ALL ARTIFACTS (3)" (3 versions, not 6 screenshot rows) with `UI/UX Output v3 · 4 pages ·
+      Approved` shown as one card with 4 real thumbnails and zero buttons, and `UI/UX Output v2 ·
+      1 page · Pending`/`UI/UX Output v1 · 1 page · Pending` each showing their own real "Awaiting
+      your review (vN)" panel. Directly confirmed via Playwright's `is_disabled()` (not just a
+      visual screenshot, since a locked-vs-unlocked button can look nearly identical at a glance)
+      that both v1's and v2's Approve buttons were genuinely `disabled=True` with the correct
+      "Another version is already approved..." tooltip, since v3 is already approved -- proving
+      the ported `approveLocked` discipline works in the new grouped view exactly as it does for
+      every other stage. Confirmed zero console/page errors on the uiux stage and, separately, on
+      the requirement/architecture stages (unaffected by this change, `ArtifactList` untouched for
+      them). This real, mixed v1/v2/v3 state is left in place as genuine verification evidence,
+      matching this project's own established convention.
+
+68. **UI/UX Agent: scoped Preview to the latest version only, freed approval of any pending
+    version, and hard-enforced multi-page revision targeting instead of trusting a soft prompt
+    hint.** Direct, five-part correction to items 66/67, from real, hands-on use of the feature:
+    (1) the Preview section showed every historical version's pages, not just the current one;
+    (2) the human must be able to approve any pending version, old or new, same as SRS -- not be
+    locked into rejecting the current approval first; (3)+(4) running Revise applied changes to
+    every screen regardless of which one(s) the human actually meant, and there was no way to
+    scope a revision to one or more specific pages; (5) restated (1) -- outputs must visibly
+    separate by version, not blend together. Investigated by reading the exact current code for
+    each complaint, confirming three distinct real defects, not guessed:
+    - **(1)/(5), a real, confirmed bug**: `UiuxPreviewPanel.jsx`'s `latestPageArtifacts` and
+      `UiuxPagePreviewsPanel.jsx`'s `latestByFile` both claimed to "dedupe by filename" to show
+      only each page's latest version -- but the real filenames `_save_artifacts` writes
+      (`{feature_slug}_{page_slug}_page_v{version}.html` / `{feature_slug}_{page_slug}_v{version}.png`)
+      embed the version number in the name itself, so every version of every page has a distinct
+      basename and the "dedupe" never actually collapsed anything -- both panels had always shown
+      every page/screenshot ever generated across every version, growing forever. Fixed by
+      replacing the broken filename-based dedupe with `Math.max(...versions)` filtering -- a
+      strict narrowing to the single highest version number present, keeping every existing
+      rendering/tab-switching code untouched.
+    - **(2), a deliberate restriction from the immediately-prior pass, now reversed**:
+      `UiuxVersionGroupList.jsx` (item 67) passed `approveLocked={hasApprovedVersion}` into
+      `ApprovalPanel`, disabling Approve on every other pending version once one was approved --
+      mirroring `ArtifactList.jsx`'s own SRS-style "reject first" rule. The user explicitly said
+      this was wrong for UI/UX ("must be able to approve any version... like the SRS in the
+      requirement agent") -- removed the lock from this call site (the `approveLocked` prop
+      itself stays on the shared `ApprovalPanel.jsx` component, since other callers still use it),
+      replaced with a plain, non-blocking informational line ("Approving this will supersede the
+      currently approved vN") when a different version is already approved -- the backend's
+      existing cross-version exclusivity auto-revert (`EXCLUSIVE_VERSIONED_ARTIFACT_TYPES`)
+      already handles the actual supersession with no manual reject step required; the frontend
+      lock was pure, unwanted friction.
+    - **(3)/(4), a real deterministic-enforcement gap, not a wording problem**: `target_page_id`
+      (singular, added in item 66) was only ever a soft PROMPT hint -- `build_uiux_revision_prompt`
+      added one line asking the model to please scope operations to the named page "unless the
+      comment clearly names a different page," with zero code-level enforcement rejecting an
+      operation that landed on an unselected page anyway. Given this project's own extensively
+      documented local-model reliability gaps, a soft instruction is not a guarantee. Fixed with
+      the same "ask nicely -> decide deterministically" pattern already used elsewhere in this
+      codebase (Requirement/Domain/Architecture Agent revision patchers):
+      - `app/schemas/uiux_schema.py`: `UIUXAgentReviseRequest.target_page_id: str | None` renamed
+        (a genuine breaking rename, not additive -- the field was added this same session with no
+        other callers to preserve compatibility for) to `target_page_ids: list[str] | None`.
+      - `app/agents/uiux_agent/revision_patcher.py`: `apply_uiux_revision_operations` gained
+        `allowed_page_ids: set[str] | None`. New `_page_allowed(page, normalized_allowed)` helper;
+        each of `_apply_add`/`_apply_remove`/`_apply_modify` now checks it AFTER resolving the
+        target page via the existing `_find_page`/`_find_component` logic (no new matching logic)
+        -- an operation on a page outside the allowed set is rejected into `unmatched` with a
+        message naming the page and explaining it wasn't selected for this revision, never
+        silently applied and never silently dropped. `None`/empty set stays unconstrained
+        (today's default "whole feature" behavior, unchanged).
+      - `app/agents/uiux_agent/agent.py`: `_prepare_revision` computes `allowed_page_ids` from
+        `target_page_ids` and threads it into the patcher call; the `color_theme`-triggered
+        touch-marking loop (item 66) was also updated to respect `allowed_page_ids` -- a
+        whole-feature color/redesign request still only touches components on the selected
+        pages, keeping the "selected screens only" discipline consistent across every kind of
+        change, not just explicit add/remove/modify operations. Both `revise()` and
+        `revise_stream()` updated at their call sites.
+      - `app/agents/uiux_agent/prompt.py`: rule 8 rewritten to state plainly that the deterministic
+        filter runs after the model responds, so an operation outside the selected pages is
+        simply discarded -- the prompt states the guarantee rather than asking for compliance.
+      - `frontend/src/components/chat/UiuxAgentChat.jsx`: the single-select "Whole feature |
+        <page>" pill row became multi-select (`Set<page_id>`, each page pill toggles
+        independently, "Whole feature" clears the set) -- `target_page_ids: [...selectedPageIds]`
+        sent with the revise call, `null` when nothing is selected (unconstrained, matches
+        today's default). `frontend/src/api/agents.js`'s `reviseUiux`/`reviseUiuxStream` renamed
+        their forwarded field to match.
+    - Tests: `tests/test_uiux_revision_patcher.py` gained `class TestAllowedPageIds` (9 tests --
+      modify/remove/add on a selected vs. unselected page, mixed operations only applying the
+      selected ones, multiple selected pages both allowed, None/empty-set unconstrained,
+      case/whitespace-insensitive matching). `tests/test_uiux_agent_revision.py` updated
+      (`test_target_page_id_stated_explicitly_when_given` -> `test_target_page_ids_stated_explicitly_when_given`
+      using a list) plus 2 new tests (`target_page_ids` threaded into the patcher rejecting an
+      out-of-scope operation; a `color_theme` change with `target_page_ids` only touches selected
+      pages). `tests/test_artifact_service_approval_status.py` gained `test_save_binary_artifact_
+      honors_version_override`. Full suite: **608 passed**. `npm run build` clean.
+    - **Real, live verification against the real feature** (`feature_94701501` "Item Listing
+      (CRUD)" in `proj_34e07440` "Sample E-commerce", wiped and regenerated fresh at the start of
+      this pass per a separate direct user request, then revised once to produce a real two-version
+      history): confirmed via a real Playwright session that the Preview tab shows exactly 5 pages
+      (the real v2's page count) labeled "(v2)", not 10 (v1+v2 combined); confirmed "All Artifacts"
+      shows "UI/UX Output v1" and "UI/UX Output v2" as two separate, fully clickable, unlocked
+      Approve/Reject/Request-Revision cards with zero "reject it first" text anywhere; confirmed the
+      chat's multi-select "Revising:" pill row renders all 5 real page names
+      (item-listing/item-detail/item-create/item-edit/item-delete-confirmation). **Then drove one
+      real, live revision selecting a SUBSET of pages** (`target_page_ids: ["item-create",
+      "item-edit"]` -- deliberately chosen because both pages share the same `ItemForm` component
+      name, a real stress case for the page-scoping logic) with a request that could plausibly be
+      over-applied ("show a loading spinner on the submit button while the form is submitting"),
+      run through the real `/uiux/revise/stream` endpoint against the real local model (~476s).
+      Directly inspected the resulting v3 artifacts via the API: `revision_metadata.applied_changes`
+      shows exactly `"Modified component 'ItemForm' on page 'item-create'"` and `"...on page
+      'item-edit'"`, `unmatched_operations: []`; a byte-for-byte comparison of every page's HTML
+      between v2 and v3 confirmed `item-create` and `item-edit` **changed** while `item-listing`,
+      `item-detail`, and `item-delete-confirmation` are **identical** to v2 -- direct, real proof
+      the deterministic `allowed_page_ids` enforcement holds end-to-end against real generation, not
+      just in unit tests. This real v1/v2/v3 state is left in place as genuine verification
+      evidence, matching this project's own established convention.
+
+69. **UI/UX Agent: approving a version now locks every other version and auto-starts Coder
+    Agent (with a confirmation popup), and the Coder Agent's generated frontend is now
+    deterministically gated on having actually read the approved UI/UX design.** Direct two-part
+    user request, the natural next link after item 68: (1) "Once the user approved any version
+    in the UI/UX agent other outputs versions will be disabled and the Coder agent must start
+    automatically and system must display a popup message... Just like moving from requirement
+    agent to domain agent"; (2) "Once the user approved and start the coder agent, the coder
+    agent must generate the UI/frontend as nearly as possible to the UI/UX approved version."
+    Investigated directly, then validated with an independent Plan-agent design review that
+    caught several real gaps before implementation (detailed below).
+    - **Part 1, a deliberate reversal of item 68's own "free approval" choice for UI/UX,
+      confirmed with the user's new instruction, not silently overridden**: this is the fourth
+      "approve -> popup -> auto-continue" link in the same chain items 41/51/61 already built
+      (Requirement->Domain, Domain->Architecture, Architecture->UI/UX) -- `ResultTab.jsx`'s
+      `APPROVE_CONTINUATION_BY_STAGE` gained a `uiux -> coder` entry (`autoRun: true`, same
+      not-awaited-fire pattern as the other two `autoRun` entries, since the run's own state
+      already lives in the always-mounted `CoderAgentFlowProvider`). `UiuxVersionGroupList.jsx`
+      re-gained `approveLocked` (removed in item 68 at a DIFFERENT direct user request at the
+      time) -- computed identically to `ArtifactList.jsx`'s own `approvedSibling` pattern for
+      every other stage: once one version is approved, every other pending version's Approve
+      button disables with the existing "reject it first" tooltip (Reject/Request Revision stay
+      available). This is the third time this exact lock has been added/removed on this one
+      component (item 67 added it, item 68 removed it, this now re-adds it) -- documented
+      directly in the component's own comment so a future session isn't confused about which
+      behavior is current. `ApprovalPanel.jsx`'s stale doc comment (claiming only Requirement
+      passes `onApproveClick`, already inaccurate before this change) was corrected in the same
+      pass.
+    - **A known, pre-existing, cross-cutting hazard, flagged rather than silently inherited (not
+      fixed here)**: `approval_service.submit_approval` already unconditionally tries
+      `graph_orchestrator_service.resume(...)` on every approval. If this feature's pipeline was
+      ever started via the full LangGraph `start()` flow and is paused at `approve_uiux`,
+      approving the screenshot synchronously runs `coder_node` INSIDE the approval HTTP request
+      (the existing `asyncio.run(...)` bridge) -- and the new frontend auto-continue would ALSO
+      fire a second, independent `POST /coder/run/stream` once that slow response resolves, risking
+      two real git branches/attempts for one feature. This hazard already existed for every prior
+      `autoRun` transition since M6 (domain->architecture, architecture->uiux) -- Coder Agent is
+      just the first where a duplicate run does real, consequential git work instead of a
+      duplicate pending document. Not fixed here (would need a bigger, cross-cutting fix
+      affecting every stage, e.g. making the graph's node genuinely async or having
+      `submit_approval` check graph-activity before auto-firing a manual run) -- the graph
+      `start()`/`resume()` path is confirmed rare in practice (items 30/65's own notes: chatting
+      directly with an agent, the primary interaction model, never touches the graph).
+    - **Part 2, the deterministic UI-fidelity gate**: item 63 already gave the Coder Agent prompt
+      substantial "this is a VISUAL REFERENCE, read it via
+      `read_ui_component_design`/`read_ui_page_design`, then write real TSX that faithfully
+      matches it" instructions, and the approved UI/UX integration manifest was already
+      deterministically loaded into every planning call's context -- but nothing forced the model
+      to actually CALL those read tools before writing frontend code; it was advisory only. Fixed
+      with this project's own repeatedly-proven "ask nicely -> decide deterministically" pattern,
+      mirroring the existing `list_unimplemented_planned_files` + `_find_plan_gaps` self-check-
+      tool-plus-pre-verify-gate precedent:
+      - `tools.py`'s `build_coder_tools` gained two new optional params:
+        `ui_integration_manifest_json` and `ui_design_read_tracker` (a plain, EXTERNALLY-OWNED
+        mutable dict, e.g. `{"components": set(), "pages": set()}`, the caller creates fresh per
+        attempt and passes in -- mirrors the existing `submit_code_plan`/`captured`-dict pattern
+        already used elsewhere in this file for the same "a tool closure needs to report
+        something back to its caller" problem; a plain return-value change would have broken 3
+        existing callers). `read_ui_component_design`/`read_ui_page_design` now record the
+        resolved name/page_id (via a new shared `_slugify` helper, extracted from what was
+        previously duplicated inline in both `_find_approved_component_artifact`/
+        `_find_approved_page_html_artifact`) into the tracker whenever they successfully resolve a
+        real artifact, never on a "not found" miss. New tool `list_unread_ui_designs()`:
+        cross-references the manifest's real pages/components against the tracker and reports
+        exactly which ones haven't been read yet this attempt, formatted like
+        `list_unimplemented_planned_files`'s own gap list.
+      - `coding_loop.py`'s `build_coder_react_agent` threads both new params straight through.
+      - `agent.py`'s `_code_with_retries`/`_code_with_retries_stream` both gained
+        `ui_integration_manifest_json`; all 4 real call sites (`run`, `revise`, `run_stream`,
+        `revise_stream`) pass the value they already load via
+        `_load_approved_ui_integration_manifest`.
+      - **The gate itself, deliberately per-attempt, not just attempt 1** -- a real gap the
+        design review caught in the first draft (which only gated attempt 1, missing the case
+        where a plan naturally splits backend-first and a LATER attempt is the one that actually
+        writes frontend code): at the top of EVERY attempt loop iteration, capture
+        `attempt_start_sha = workspace_service.ensure_project_repo(project_id).head.commit.hexsha`
+        and a fresh `ui_design_read_tracker`. After that attempt's commit, a SECOND,
+        per-attempt-scoped `get_touched_files(..., since=attempt_start_sha)` call (kept separate
+        from the existing whole-call-cumulative `already_touched` computation `_find_plan_gaps`
+        still needs) feeds new `_find_unread_ui_design_gap`: if an approved UI/UX design exists
+        AND this attempt touched a real `.tsx` page/component file (under `app/`or `components/`
+        -- specifically `.tsx`, not just an `app/` prefix, since `app/api/.../route.ts` backend
+        files also live under `app/` in Next.js's file-based routing, a real bug caught by this
+        session's own first test run) AND zero designs were read this attempt, folds into the
+        existing gap/retry machinery with an actionable message. Deliberately coarse (checks "was
+        anything read AT ALL this attempt," not "was the SPECIFIC relevant design read") to avoid
+        needing a reliable path->component/page mapping this pipeline doesn't otherwise have --
+        still catches the single most likely real failure mode, the model ignoring the design
+        reference outright. Both call sites are guarded to skip the whole check (not just return
+        `None` from the helper) when no manifest exists at all -- both a perf optimization and
+        what keeps this strictly additive for every existing caller/test that never passes
+        `ui_integration_manifest_json`.
+      - `_TOOL_ACTIVITY_LABELS` gained an entry for `list_unread_ui_designs` (the design review
+        flagged this as easy to forget, since exactly this class of miss already happened once
+        for `read_ui_component_design`'s own rename in item 63). `prompt.py` gained matching
+        rules: call `list_unread_ui_designs` before ending your turn, and the tool-usage section
+        now names it alongside `list_unimplemented_planned_files`.
+      - **Honest scope limit, stated directly in the code and prompt, not overclaimed**: this
+        guarantees the model at least looked at the approved design before writing the
+        corresponding frontend code -- there's no vision model in this pipeline to verify visual
+        fidelity itself, so "as nearly as possible" remains a prompt-quality property beyond this
+        point. This closes the specific, confirmed gap (a model that never even calls the read
+        tools), not a general pixel-perfect guarantee.
+    - Tests: `tests/test_coder_tools.py` (+6 -- `list_unread_ui_designs` with no manifest, fully
+      unread, reflects a real read via the actual tool, fully read, and the tracker only
+      populating on a real find not a miss -- all run for real against a real git-backed
+      workspace, no mocks). `tests/test_coder_agent_retries.py` (+6 -- `_find_unread_ui_design_gap`
+      direct unit coverage including the real `app/api/.../route.ts`-is-not-frontend regression
+      this session's own first test run caught, plus a full attempt-loop simulation proving the
+      gate correctly retries whichever attempt is the one that touches frontend code -- attempt 1
+      backend-only passes clean, attempt 2 frontend-touched-but-unread retries, attempt 3
+      frontend-touched-and-read finally passes -- confirming the design review's "must not be
+      attempt-1-only" finding is genuinely fixed, not just asserted). Full suite: **614 passed**
+      (up from 608). `npm run build` clean (1324 modules).
+    - **Real, live verification, not synthetic** -- against the real feature (`feature_94701501`
+      "Item Listing (CRUD)" in `proj_34e07440` "Sample E-commerce", real v1/v2/v3 UI/UX
+      screenshot versions, all genuinely pending going in): a real Playwright session against the
+      live app confirmed every part of the new flow end-to-end -- clicking Approve on v3 showed
+      the real popup with the exact expected title/message (naming Coder Agent, explaining the
+      lock); confirming fired a REAL `POST /coder/run/stream` request (captured directly via a
+      network listener, not inferred); the chat genuinely switched to the Coder Agent pill; and,
+      after a reload, v1's and v2's Approve buttons were confirmed via `is_disabled()` (not just a
+      screenshot) to be genuinely `disabled=True` with the exact "reject it first" tooltip text,
+      while v3 showed "Approved" -- zero console/page errors throughout. The browser-triggered
+      run was then re-triggered directly via the API (no client-side timeout, avoiding this
+      project's own well-documented "closing the browser cancels an in-flight stream" gotcha) to
+      observe the real Coder Agent coding loop and the new UI-fidelity gate's tool-tracking
+      mechanism against real, live generation.
 
 - `qwen3-coder:latest` sometimes emits function-valued mock props (e.g. `"onSubmit": () => {}`)
   inside what must be strict JSON. Fixed in `uiux_agent/prompt.py`'s

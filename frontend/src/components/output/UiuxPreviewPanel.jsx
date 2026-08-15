@@ -43,22 +43,21 @@ function CollapseIcon() {
   );
 }
 
-// One entry per distinct assembled page (ui_page_html shares one artifact_type across every
-// page -- the only real identity is the file's own basename, mirroring
-// UiuxPagePreviewsPanel.jsx's own latestByFile grouping for the sibling PNG gallery).
+// Real, confirmed bug this fixes: the previous "dedupe by the file's own basename" logic assumed
+// a page's filename was stable across versions -- but _save_artifacts actually writes
+// "{feature_slug}_{page_slug}_page_v{version}.html", embedding the version IN the name, so every
+// version of every page has a distinct basename and nothing ever actually collapsed. This showed
+// every page ever generated across every historical version, growing forever, instead of just the
+// current one. Fixed to filter by the real version NUMBER: only the single highest version
+// present is shown, per direct user correction ("only the new version must appear").
 function latestPageArtifacts(artifacts) {
   const matches = artifacts.filter((a) => a.artifact_type === "ui_page_html");
-  const byName = new Map();
+  if (matches.length === 0) return [];
 
-  for (const artifact of matches) {
-    const name = artifact.file_path.split(/[\\/]/).pop();
-    const existing = byName.get(name);
-    if (!existing || artifact.version > existing.version) {
-      byName.set(name, artifact);
-    }
-  }
-
-  return [...byName.values()].sort((a, b) => a.file_path.localeCompare(b.file_path));
+  const latestVersion = Math.max(...matches.map((a) => a.version));
+  return matches
+    .filter((a) => a.version === latestVersion)
+    .sort((a, b) => a.file_path.localeCompare(b.file_path));
 }
 
 function pageDisplayName(artifact) {

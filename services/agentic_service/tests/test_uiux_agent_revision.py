@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.agents.uiux_agent.agent import UIUXAgent
+from app.agents.uiux_agent.prompt import build_uiux_revision_prompt
 from app.agents.uiux_agent.schemas import UIUXAgentInput
 from app.schemas.uiux_schema import UIUXAgentReviseRequest
 
@@ -94,6 +95,77 @@ class TestPrepareRevision:
         assert patched["revision_metadata"]["no_changes_note"]
         # Original components untouched.
         assert patched["pages"][0]["components"] == CURRENT_METADATA["pages"][0]["components"]
+
+    def test_color_theme_change_touches_every_surviving_component(self, agent):
+        """A genuine color_theme change (UIUX_REVISION_SYSTEM_PROMPT rule 7) means every
+        surviving component needs regenerating to match the new theme, not just a metadata-field
+        edit -- reuses the same touched-components pipeline an add/modify operation already
+        uses."""
+        plan = {
+            "revision_summary": "Switched the accent color to emerald.",
+            "operations": [],
+            "color_theme": "emerald",
+        }
+
+        patched, touched = agent._prepare_revision(CURRENT_METADATA, plan, "make it emerald", "human_user")
+
+        assert patched["color_theme"] == "emerald"
+        assert touched == {"ItemListingTable", "Pagination"}
+        assert any("emerald" in change for change in patched["revision_metadata"]["applied_changes"])
+
+    def test_target_page_ids_threaded_into_patcher_rejects_out_of_scope_operation(self, agent):
+        """Real, confirmed gap this locks in: _prepare_revision previously never threaded
+        target_page_ids into the patcher at all, so the deterministic enforcement never actually
+        fired for a real revision -- only relying on the soft prompt hint."""
+        two_page_metadata = {
+            "pages": [
+                {"page_id": "item-listing-page", "components": [{"name": "ItemListingTable", "content_elements": ["a"]}]},
+                {"page_id": "item-detail-page", "components": [{"name": "ItemDetailCard", "content_elements": ["b"]}]},
+            ],
+            "color_theme": "indigo",
+        }
+        plan = {
+            "revision_summary": "x",
+            "operations": [
+                {"action": "modify", "component_name": "ItemDetailCard", "content_elements": ["changed"]}
+            ],
+        }
+
+        patched, touched = agent._prepare_revision(
+            two_page_metadata, plan, "change the detail card", "human_user",
+            target_page_ids=["item-listing-page"],
+        )
+
+        assert touched == set()
+        detail_page = next(p for p in patched["pages"] if p["page_id"] == "item-detail-page")
+        assert detail_page["components"][0]["content_elements"] == ["b"]
+        assert patched["revision_metadata"]["unmatched_operations"]
+
+    def test_color_theme_change_with_target_page_ids_only_touches_selected_pages(self, agent):
+        two_page_metadata = {
+            "pages": [
+                {"page_id": "item-listing-page", "components": [{"name": "ItemListingTable", "content_elements": ["a"]}]},
+                {"page_id": "item-detail-page", "components": [{"name": "ItemDetailCard", "content_elements": ["b"]}]},
+            ],
+            "color_theme": "indigo",
+        }
+        plan = {"revision_summary": "x", "operations": [], "color_theme": "emerald"}
+
+        patched, touched = agent._prepare_revision(
+            two_page_metadata, plan, "make the listing page emerald", "human_user",
+            target_page_ids=["item-listing-page"],
+        )
+
+        assert patched["color_theme"] == "emerald"
+        assert touched == {"ItemListingTable"}
+
+    def test_color_theme_unchanged_when_same_as_current(self, agent):
+        plan = {"revision_summary": "no-op", "operations": [], "color_theme": "indigo"}
+
+        patched, touched = agent._prepare_revision(CURRENT_METADATA, plan, "no real change", "human_user")
+
+        assert patched["color_theme"] == "indigo"
+        assert touched == set()
 
     def test_never_mutates_the_original_metadata(self, agent):
         import copy
@@ -211,7 +283,10 @@ async def test_revise_stream_end_to_end_only_touched_component_regenerated():
     preview_renderer so no real Mongo/disk/LLM/Playwright access happens. Confirms: streamed
     tokens are the small ops plan (not the whole document), the removed component is genuinely
     gone from the saved output, the untouched component's HTML is carried over byte-for-byte
-    (never regenerated), and every artifact is saved with approval_status=APPROVED."""
+    (never regenerated), every artifact is saved with the default PENDING approval_status (human
+    approval restored -- this stage no longer auto-approves), and apply_design_system_patch is
+    NOT called directly from this method anymore (that only happens via approval_service.py's
+    cascade once a human actually approves the Preview Screenshot)."""
 
     agent = UIUXAgent()
 
@@ -300,9 +375,43 @@ async def test_revise_stream_end_to_end_only_touched_component_regenerated():
     mock_generate.assert_not_awaited()
     mock_load_prior.assert_any_call("feature_revstream", 3, "ItemListingTable")
 
-    # Every save call was made with approval_status=APPROVED (the auto-approval design).
+    # No save call overrides approval_status anymore -- every artifact defaults to PENDING,
+    # requiring a real human decision (see approval_service.py's UI/UX cascade).
     assert saved_calls, "expected at least one artifact save call"
     for _kind, call_kwargs in saved_calls:
-        assert call_kwargs["approval_status"].name == "APPROVED"
+        assert "approval_status" not in call_kwargs
 
-    mock_patch.assert_called_once_with("feature_revstream", 4)
+    # apply_design_system_patch is no longer called directly from revise_stream() -- it's only
+    # ever triggered by approval_service.py once a human actually approves the output.
+    mock_patch.assert_not_called()
+
+
+class TestBuildUiuxRevisionPromptTargetPage:
+    """Real, explicit multi-page revision targeting (direct user correction): a human can pin
+    exactly which page(s) a revision is about when a feature has more than one -- selecting one
+    or more specific screens, not just a single page or the whole feature."""
+
+    def test_target_page_ids_stated_explicitly_when_given(self):
+        prompt = build_uiux_revision_prompt(
+            project={"project_name": "P", "project_type": "E-commerce"},
+            feature={"feature_name": "Item Listing"},
+            current_ui_metadata_json=CURRENT_METADATA,
+            revision_comment="make it more colorful",
+            revised_by="human_user",
+            target_page_ids=["item-listing-page", "item-detail-page"],
+        )
+
+        assert "item-listing-page" in prompt
+        assert "item-detail-page" in prompt
+        assert "rule 8" in prompt
+
+    def test_no_target_page_line_when_not_given(self):
+        prompt = build_uiux_revision_prompt(
+            project={"project_name": "P", "project_type": "E-commerce"},
+            feature={"feature_name": "Item Listing"},
+            current_ui_metadata_json=CURRENT_METADATA,
+            revision_comment="make it more colorful",
+            revised_by="human_user",
+        )
+
+        assert "rule 8" not in prompt

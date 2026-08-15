@@ -12,6 +12,16 @@ reported as unmatched -- it can never silently no-op inside an otherwise-plausib
 ui_metadata_json's shape is much shallower than the SRS/Architecture Plan (a list of pages, each
 with a list of components), so the patcher here only needs to handle one kind of item: a
 component entry, matched by (page_id, component_name).
+
+allowed_page_ids (see apply_uiux_revision_operations) is the deterministic enforcement for a
+real, confirmed gap: a human explicitly selecting one or more specific pages to revise was
+previously only a soft PROMPT HINT ("please scope your operations to this page") with no actual
+guarantee the model would honor it -- given this project's own extensively documented local-model
+reliability gaps, that let a revision meant for one screen silently touch others too. Every
+operation now gets checked against the selected set AFTER resolving which real page it targets
+(reusing the exact same _find_page/_find_component resolution, not a second matching pass), and
+is rejected into `unmatched` -- never silently applied and never silently dropped -- if it lands
+outside that set.
 """
 
 from __future__ import annotations
@@ -63,7 +73,7 @@ def _find_component(pages: list[dict], page_id: str | None, component_name: str)
 
 
 def apply_uiux_revision_operations(
-    ui_metadata_json: dict, operations: list[dict]
+    ui_metadata_json: dict, operations: list[dict], allowed_page_ids: set[str] | None = None
 ) -> tuple[dict, list[str], list[str]]:
     """
     Apply a small list of component-level revision operations to a copy of ui_metadata_json.
@@ -79,6 +89,10 @@ def apply_uiux_revision_operations(
             component)
         "covers_ui_expectations": list[str] (optional, for "add")
 
+    allowed_page_ids, when given (non-empty), restricts every operation to ONLY those pages --
+    see module docstring for why this is a hard, deterministic filter, not just a prompt hint.
+    None/empty means unconstrained (every page is a valid target, today's default behavior).
+
     Returns (patched_metadata, applied, unmatched) -- `applied`/`unmatched` are human-readable
     notes, never raised as exceptions: an operation this function can't confidently apply is
     reported, not guessed at.
@@ -87,6 +101,10 @@ def apply_uiux_revision_operations(
     patched = copy.deepcopy(ui_metadata_json)
     patched.setdefault("pages", [])
     pages: list[dict] = patched["pages"]
+
+    normalized_allowed = (
+        {_normalize(page_id) for page_id in allowed_page_ids} if allowed_page_ids else None
+    )
 
     applied: list[str] = []
     unmatched: list[str] = []
@@ -102,11 +120,11 @@ def apply_uiux_revision_operations(
 
         try:
             if action == "add":
-                _apply_add(pages, page_id, component_name, operation, applied, unmatched)
+                _apply_add(pages, page_id, component_name, operation, applied, unmatched, normalized_allowed)
             elif action == "remove":
-                _apply_remove(pages, page_id, component_name, applied, unmatched)
+                _apply_remove(pages, page_id, component_name, applied, unmatched, normalized_allowed)
             elif action == "modify":
-                _apply_modify(pages, page_id, component_name, operation, applied, unmatched)
+                _apply_modify(pages, page_id, component_name, operation, applied, unmatched, normalized_allowed)
             else:
                 unmatched.append(
                     f"Skipped operation with unsupported action '{action}' on '{component_name}'."
@@ -119,6 +137,12 @@ def apply_uiux_revision_operations(
     return patched, applied, unmatched
 
 
+def _page_allowed(page: dict, normalized_allowed: set[str] | None) -> bool:
+    if normalized_allowed is None:
+        return True
+    return _normalize(page.get("page_id", "")) in normalized_allowed
+
+
 def _apply_add(
     pages: list[dict],
     page_id: Any,
@@ -126,6 +150,7 @@ def _apply_add(
     operation: dict,
     applied: list[str],
     unmatched: list[str],
+    normalized_allowed: set[str] | None = None,
 ) -> None:
     if not component_name:
         unmatched.append("Skipped 'add' operation -- no component_name provided.")
@@ -136,6 +161,13 @@ def _apply_add(
         unmatched.append(
             f"Could not add '{component_name}' -- page_id {page_id!r} does not match any "
             "existing page."
+        )
+        return
+
+    if not _page_allowed(page, normalized_allowed):
+        unmatched.append(
+            f"Skipped 'add {component_name}' -- page '{page.get('page_id')}' is not one of the "
+            "pages selected for this revision."
         )
         return
 
@@ -173,6 +205,7 @@ def _apply_remove(
     component_name: str,
     applied: list[str],
     unmatched: list[str],
+    normalized_allowed: set[str] | None = None,
 ) -> None:
     if not component_name:
         unmatched.append("Skipped 'remove' operation -- no component_name provided.")
@@ -188,6 +221,14 @@ def _apply_remove(
         return
 
     page, index = match
+
+    if not _page_allowed(page, normalized_allowed):
+        unmatched.append(
+            f"Skipped 'remove {component_name}' -- page '{page.get('page_id')}' is not one of "
+            "the pages selected for this revision."
+        )
+        return
+
     removed = page["components"].pop(index)
     applied.append(f"Removed component '{removed.get('name', component_name)}' from page '{page.get('page_id')}'.")
 
@@ -199,6 +240,7 @@ def _apply_modify(
     operation: dict,
     applied: list[str],
     unmatched: list[str],
+    normalized_allowed: set[str] | None = None,
 ) -> None:
     if not component_name:
         unmatched.append("Skipped 'modify' operation -- no component_name provided.")
@@ -214,6 +256,14 @@ def _apply_modify(
         return
 
     page, index = match
+
+    if not _page_allowed(page, normalized_allowed):
+        unmatched.append(
+            f"Skipped 'modify {component_name}' -- page '{page.get('page_id')}' is not one of "
+            "the pages selected for this revision."
+        )
+        return
+
     component = dict(page["components"][index])
 
     content_elements = operation.get("content_elements")

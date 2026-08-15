@@ -307,8 +307,8 @@ targeted list of operations describing exactly what should change, and a separat
 step applies them.
 
 Hard rules:
-1. Output ONLY a single JSON object: {"revision_summary": "...", "operations": [...]}. No prose,
-   no markdown fences, no comments.
+1. Output ONLY a single JSON object: {"revision_summary": "...", "operations": [...],
+   "color_theme": "..." (omit unless rule 7 applies)}. No prose, no markdown fences, no comments.
 2. Each operation is one of:
    {"action": "add", "page_id": "existing-page-id", "component_name": "NewComponentName",
     "content_elements": ["real, specific content this component displays"],
@@ -327,18 +327,32 @@ Hard rules:
 5. Do not manufacture changes beyond what the human's comment genuinely implies. If the comment
    describes a single change, propose exactly one operation. If the comment is plural/describes
    several distinct changes, propose one operation per genuinely distinct change -- never pad the
-   list with unrelated or invented changes.
+   list with unrelated or invented changes. EXCEPTION: if the comment describes a REDESIGN of an
+   entire page/UI as a whole (e.g. "redesign this page", "make this page use a card layout", not
+   one named component), propose a "modify" operation for EVERY real component that page
+   currently has -- a page-wide redesign genuinely does touch every component on it, and that is
+   not padding.
 6. If the request cannot be matched to any real page/component in the current ui_metadata_json,
    or does not describe an actionable UI change at all, return an EMPTY "operations" list and
    explain why in "revision_summary" -- never guess.
-7. This agent does not change the feature's "color_theme" via this mechanism -- if a color/theme
-   change is requested, note it in "revision_summary" as something to address in
-   content_elements/component styling only, not by changing the top-level color_theme field.
+7. If the human's request is genuinely about the feature's overall color/theme (not one
+   component's own content), include a top-level "color_theme" field with the new value (a single
+   Tailwind color family name, e.g. "emerald", "blue", "rose") -- changing this means every
+   existing component gets regenerated to match, so ALSO propose a "modify" operation for every
+   real component across every page (content_elements unchanged is fine -- only the color needs
+   to change, which the regeneration step handles using the new color_theme automatically). Omit
+   "color_theme" entirely for any other kind of request.
+8. If told below which page_id(s) this revision is specifically targeting, scope EVERY operation
+   to ONLY those pages -- never propose an operation for any other page, even a page-wide
+   redesign (rule 5's exception) still only applies within the selected page(s). This is checked
+   deterministically after you respond, so an operation outside the selected pages will simply be
+   discarded -- get it right the first time.
 
 Return exactly this JSON shape:
 {
   "revision_summary": "short, human-readable summary of what will change and why",
-  "operations": [ ... ]
+  "operations": [ ... ],
+  "color_theme": "only present if rule 7 applies"
 }
 """
 
@@ -349,11 +363,18 @@ def build_uiux_revision_prompt(
     current_ui_metadata_json: dict,
     revision_comment: str,
     revised_by: str | None,
+    target_page_ids: list[str] | None = None,
 ) -> str:
     """
     Build the user prompt for a UI/UX revision's small operations plan -- shown the CURRENT
     ui_metadata_json (real page/component/content_elements/color_theme) so it can reference real
     component names, mirrors Requirement/Domain/Architecture Agent's own revision prompt shape.
+
+    target_page_ids, when given, is a human's explicit pin of which page(s)/UI(s) this revision is
+    about (surfaced via the frontend's multi-select page pills when a feature has more than one
+    page) -- stated plainly so the model doesn't have to infer it from the comment's prose alone.
+    This is a best-effort hint for the model; the real guarantee is the deterministic
+    allowed_page_ids filter in revision_patcher.py, applied after this plan comes back.
     """
 
     sections = [
@@ -369,6 +390,13 @@ def build_uiux_revision_prompt(
 
     if revised_by:
         sections.append(f"Requested by: {revised_by}")
+
+    if target_page_ids:
+        pages_text = ", ".join(f"'{page_id}'" for page_id in target_page_ids)
+        sections.append(
+            f"The human explicitly selected page_id(s) {pages_text} as the target of this "
+            "revision -- see rule 8."
+        )
 
     sections.extend(["", "Return the revision operations plan now, following the required JSON shape exactly."])
 
