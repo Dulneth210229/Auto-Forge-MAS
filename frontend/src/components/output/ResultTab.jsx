@@ -18,6 +18,7 @@ import ConfirmDialog from "../common/ConfirmDialog";
 import RequirementSrsOutputPanel from "./RequirementSrsOutputPanel";
 import SecurityReportView from "../security/SecurityReportView";
 import SecurityDecisionDialog from "../security/SecurityDecisionDialog";
+import QaReportView from "../qa/QaReportView";
 import { useWorkspaceSelection } from "../workspace/WorkspaceSelectionContext";
 import { useRequirementConversationFlowContext } from "../workspace/RequirementConversationFlowContext";
 import { useDomainAgentFlowContext } from "../workspace/DomainAgentFlowContext";
@@ -441,7 +442,7 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
 
   return (
     <div className="flex flex-col gap-5">
-      {stage !== "security" && (
+      {stage !== "security" && stage !== "qa" && (
       <div>
         <h3 className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wide mb-2">
           All Artifacts ({stage === "uiux" ? uiuxVersionCount : stageArtifacts.length})
@@ -588,6 +589,45 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
             </div>
           );
         })()
+      ) : stage === "qa" ? (
+        // Same reasoning as the security branch above, minus the approval popup entirely -- QA
+        // stays auto-approved (see pipelineStages.js's AUTO_APPROVED_STAGES), so there's no
+        // pending/approved distinction to render here, just the version dropdown plus
+        // QaReportView (which owns its own "Re-run" / "Send Failing Tests to Coder Agent" actions).
+        // Also fires the "Run QA Scan" empty state itself when `artifact` is null, same as
+        // SecurityReportView, so this branch fires regardless of versions.length too.
+        (() => {
+          const selectedQaArtifact = versions.find((v) => v.version === selectedVersion) || versions[0] || null;
+          return (
+            <div className="flex flex-col gap-4">
+              {versions.length > 0 && (
+                <div className="flex items-center justify-between">
+                  <select
+                    value={selectedVersion ?? ""}
+                    onChange={(e) => setSelectedVersion(Number(e.target.value))}
+                    className="text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md p-1.5 focus:outline-none focus:border-accent-500"
+                  >
+                    {versions.map((v) => (
+                      <option key={v.artifact_id} value={v.version} className="dark:bg-gray-800">
+                        v{v.version} -- {v.approval_status}
+                      </option>
+                    ))}
+                  </select>
+                  {selectedQaArtifact && (
+                    <a
+                      href={artifactDownloadUrl(selectedQaArtifact.artifact_id)}
+                      className="text-sm text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 font-semibold"
+                    >
+                      Download report
+                    </a>
+                  )}
+                </div>
+              )}
+
+              <QaReportView artifact={selectedQaArtifact} featureId={featureId} />
+            </div>
+          );
+        })()
       ) : versions.length === 0 ? (
         <p className="text-sm text-gray-400 dark:text-gray-500 italic">No output yet for this stage.</p>
       ) : (
@@ -667,7 +707,7 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
         </div>
       )}
 
-      {stage !== "security" && (
+      {stage !== "security" && stage !== "qa" && (
       <div className="pt-4 border-t border-gray-100 dark:border-gray-800">
         <h3 className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wide mb-2">Governance</h3>
         <GovernancePanel

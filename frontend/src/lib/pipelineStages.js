@@ -10,23 +10,26 @@ export const GATED_STAGES = ["requirement", "domain", "architecture", "uiux", "c
 
 export const AUTO_APPROVED_STAGES = ["security", "qa"];
 
-// Every real, selectable agent stage in pipeline order (excludes qa/deployment, which have no
-// agent implementation yet -- see PLACEHOLDER_STAGES below). Distinct from GATED_STAGES: this is
+// Every real, selectable agent stage in pipeline order (excludes deployment, which has no agent
+// implementation yet -- see PLACEHOLDER_STAGES below). Distinct from GATED_STAGES: this is
 // "which stages are real agents a human can chat with / see status for," not "which stages pause
-// for a human approval gate" -- uiux and security both belong here but not in GATED_STAGES.
-export const SELECTABLE_AGENT_STAGES = ["requirement", "domain", "architecture", "uiux", "coder", "security"];
+// for a human approval gate" -- uiux, security, and qa all belong here but not in GATED_STAGES.
+export const SELECTABLE_AGENT_STAGES = ["requirement", "domain", "architecture", "uiux", "coder", "security", "qa"];
 
 // Stages the human triggers directly via a "Run" button/form -- these are pass-through
 // no-ops inside the LangGraph itself (see agent.py's own run() methods, called outside the
 // graph). Everything else in GATED_STAGES runs automatically once the prior stage is approved.
-// "security" belongs here too -- it has no chat/revision flow, only a direct POST .../security/run
-// (re-run) trigger, same shape as requirement/architecture's manual runs.
-export const MANUAL_RUN_STAGES = ["requirement", "architecture", "security"];
+// "security"/"qa" belong here too -- a first run needs a direct POST .../run trigger, same shape
+// as requirement/architecture's manual runs (qa's own real chat is a SEPARATE capability from
+// this -- MANUAL_RUN_STAGES only affects the "Action Required" status badge, not which chat
+// component ChatPanel.jsx renders for a stage).
+export const MANUAL_RUN_STAGES = ["requirement", "architecture", "security", "qa"];
 
 // Stages with no real backend implementation yet -- shown greyed-out in the tracker. "security"
-// was removed from here once its real engine (scanners + LLM review + report) and API route
-// shipped -- "qa"/"deployment" remain genuinely unimplemented.
-export const PLACEHOLDER_STAGES = ["qa", "deployment"];
+// and "qa" were both removed from here once their real engines (scanners+LLM review, and
+// Unit/Integration/Regression test generation+execution) and API routes shipped -- "deployment"
+// remains genuinely unimplemented.
+export const PLACEHOLDER_STAGES = ["deployment"];
 
 export const STAGE_LABELS = {
   requirement: "Requirement",

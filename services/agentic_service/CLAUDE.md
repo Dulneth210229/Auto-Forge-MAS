@@ -5961,6 +5961,263 @@ milestone — that file is scratch, **this file is the durable one**.
       state (approved, cascaded) is left in place as genuine verification evidence, matching this
       project's own established convention.
 
+75. **QA Agent rebuilt from a narrow, LLM-disabled stub into a real Unit/Integration/Regression
+    test-writing-and-running agent, with a full report UI and a live streaming chat -- mirroring
+    the Security Agent's own recent trilogy of upgrades.** Direct user request, with a reference
+    document describing an earlier sample QA Agent implementation and a link to
+    `origin/tharuka_m`'s own parallel QA Agent branch for inspiration. Requirements, in the user's
+    own words: write Unit/Integration/Regression test cases for the Coder Agent's generated
+    feature; execute them automatically and report real per-test detail -- what was written, how
+    many, the inputs, which unit/file/function/line each test targets, the real executed output,
+    with suggestions; a clean, standard report UI, not raw JSON; support both Ollama and API
+    models; and a real, token-streaming, history-preserving chat to discuss results and ask for
+    help with failures.
+    - **Investigated both the current local implementation and `origin/tharuka_m` before
+      designing anything** (two parallel Explore agents): the local `testing.py` only ever
+      discovered `lib/`/`models/` `.ts` files (React pages/components and API routes were
+      explicitly out of scope, since Node's built-in test runner can't render a DOM and this
+      pipeline doesn't install jsdom), generated tests via two regex-detected shapes with a
+      deterministic string template, and `agent.py:89` hardcoded `invoke_llm=None` -- the real
+      `prompt.py` LLM path was dead code, never reached. Execution parsed Node's TAP output for
+      aggregate pass/fail/skip counts only -- no per-test name, inputs, or expected/actual detail
+      was ever captured. `origin/tharuka_m` was meaningfully ahead in exactly one reusable piece
+      (a real LLM-backed generator making a genuine provider call instead of hardcoded `None`) --
+      worth borrowing the *pattern*, not the code: its own executor still only extracted aggregate
+      counts from Jest's `--json` output, throwing away the real per-test `assertionResults[]`
+      array this request actually needed; its Python/pytest support isn't applicable to this
+      pipeline (every generated project is Next.js/TypeScript, confirmed repeatedly this session);
+      `qa_agent/api.py`/`report_writer.py` were unimported dead files.
+    - **A deliberate, stated scope limit, carried over from the local implementation and extended
+      to the same "honest gap, not silently unclaimed" convention this project already uses**:
+      real component/page (`.tsx`) rendering tests (jsdom + React Testing Library) stay out of
+      scope for this pass -- `lib/`, `models/`, and `app/api/**/route.ts` Route Handlers (which
+      use Web-standard `Request`/`Response`, no DOM needed) are the real testable surface.
+      `.tsx` files are discovered and reported as an honest `out_of_scope_modules` list on the
+      report, matching Security Agent's own scanners' established convention.
+    - **Switched from `node:test` to Jest**, specifically because Jest's built-in `--json` output
+      already contains real per-test structured results (`testResults[].assertionResults[]`:
+      `title`/`status`/`failureMessages`/`duration`) with zero extra parsing infrastructure --
+      exactly what makes "real per-test-case output, not just aggregate counts" achievable. The
+      old docstring's "no network access" reasoning for avoiding Jest doesn't hold in this
+      environment -- `npm install` reliably works here (confirmed continuously all session, it's
+      how Coder Agent's own scaffold and every `next build` verification step function at all).
+      New `executor.ensure_jest_setup` adds `jest`/`@babel/core`/`@babel/preset-env`/
+      `@babel/preset-typescript`/`babel-jest` to the target project's own `package.json`
+      devDependencies + runs a real `npm install` via `sandbox_service.run_command`, but ONLY the
+      first time (`"jest" not already declared`) -- a real generated project genuinely benefits
+      from having its own test tooling declared (it's what "Download Project" ships), not
+      something to reinstall every run. Writes `babel.config.qa.js`/`jest.config.qa.js`
+      unconditionally every run (`testEnvironment: "node"`, not `"jsdom"` -- matches the stated
+      scope limit above), kept deliberately separate from anything Next.js's own build tooling
+      reads.
+    - **New module split** (`app/agents/qa_agent/{discovery,generator,executor}.py`, alongside a
+      rewritten `agent.py`/`schemas.py`/`prompt.py`) -- reasonable given the real size increase,
+      matching this project's own established "split when a file gets large" precedent rather than
+      one growing monolith. `discovery.py`: `discover_unit_test_targets` (scans `lib/`/`models/`
+      `.ts` files for real exports), `discover_integration_test_targets` (scans
+      `app/api/**/route.ts`, resolves each route's real local `@/models`/`@/lib` imports),
+      `discover_out_of_scope_modules` (every `.tsx` file). A real functional gap was found and
+      fixed while live-verifying discovery against `workspaces/sample-e-commerce/repo`: the
+      original export-detection regex (`export\s+(?:default\s+)?(?:...)?(?:function|const|class)`)
+      requires a declaration keyword right after `default`, but every generated Mongoose model
+      uses `export default mongoose.models.X || mongoose.model("X", schema)` -- an `export
+      default <expression>` shape with no declaration keyword -- making `models/Item.ts`
+      genuinely invisible to unit-test discovery until a second, dedicated
+      `MONGOOSE_MODEL_EXPORT_PATTERN` was added alongside the first.
+    - **Generation, `generator.py`**: three real LLM calls
+      (`llm_provider_service.get_provider(agent_name="qa_agent")` -- the exact one-shot/
+      no-tool-calling call shape Security Agent's own LLM review layer already established,
+      deliberately sidestepping the confirmed `qwen2.5-coder:14b`-can't-tool-call finding from
+      item 74 since nothing here needs tools), each returning a structured
+      `{"test_cases": [...], "test_code": "..."}` payload parsed via `extract_json_object` with a
+      graceful fallback on malformed output -- the same resilience pattern already proven for
+      Security Agent's LLM review layer (`_invoke_llm` returns `None`, never raises, on any
+      failure). **Unit tests** come from single-file generation calls; a deterministic-template
+      fallback (ported from the old `testing.py`, now also emitting real `QaTestCase` metadata
+      alongside the Jest code) covers the same two narrow, mechanically-safe shapes as before
+      (an exported array literal, a guarded-async-null export) when the LLM is unreachable or
+      returns nothing usable. **Integration tests** come from a second pass grouping a route
+      handler with the model/lib files it actually imports, exercising a real
+      `Request` -> handler -> `Response` flow -- LLM-only, no deterministic fallback (no safe
+      generic template exists for this). **Regression tests** come from a third pass: the
+      feature's approved SRS's `acceptance_criteria` (loaded via `_find_latest_approved_artifact`,
+      the same small, deliberately-duplicated-not-shared per-agent helper pattern Coder/
+      Architecture/UI-UX Agent each already have their own copy of), one test per criterion --
+      LLM-only, immediately returns `None` if there are no acceptance criteria at all.
+    - **Real per-test-case results, not just aggregate counts**: new `QaTestCase` (the
+      generation-time plan -- name/category/target_file/target_function/inputs/expected_behavior/
+      test_file/method) and `QaTestCaseResult`-shaped Jest output are matched by
+      `(test_file_basename, name)` tuple (`agent.py`'s `_merge_results`) -- chosen because every
+      generated test file lives flatly under `generated_tests/` with no subdirectories, avoiding
+      path-separator/OS-normalization headaches entirely; every `QaTestCase.name` must appear
+      verbatim as the real Jest test's title (stated explicitly in `prompt.py`'s shared
+      conventions block) for this pairing to hold. A planned case with no matching real result
+      (e.g. its file failed to load/parse) is still reported, marked `"skipped"` with an explicit
+      "did not produce a matching result" note, never silently dropped. `QAAgentOutput` gains
+      `tests_by_category` (unit/integration/regression x total/passed/failed/skipped).
+    - **API routes** (mirroring Security Agent's own route shapes exactly): `POST /qa/run`
+      (no `/run/stream` variant -- generation is several real LLM calls plus a real sandboxed test
+      execution, not a single continuous stream a human watches token-by-token; the *chat* is
+      where live streaming actually belongs). `graph_orchestrator_service.py`'s `_qa_node` got the
+      same one-line artifact-id-discard fix `_security_node` already got (`output.artifact_ids`
+      instead of a hardcoded `[]`). Reports stay `ApprovalStatus.APPROVED` (soft-gate,
+      unchanged) -- the user did not ask for QA approval-gating the way they explicitly did for
+      Security; not adding scope that wasn't requested.
+    - **Real, persisted, streaming chat -- new for QA, deliberately NOT present for Security
+      Agent by design**: new `store.qa_conversations` (one document per `feature_id`, upserted in
+      place, mirroring `requirement_conversations`'s exact "not versioned like an artifact"
+      shape, since a chat turn is not a reviewable output on its own). `GET /qa/chat` (returns
+      stored history) + `POST /qa/chat/stream` (NDJSON, the exact `{"type":"token",...}`/
+      `{"type":"done",...}` shape Coder Agent's own `/coder/revise/stream` already established).
+      Each turn's context includes the feature's latest QA report (real test results/failures,
+      freshly loaded via `_load_latest_qa_report`/`_summarize_report_for_chat`, not pinned to one
+      historical version) so the model can discuss concrete failures and suggest fixes;
+      deliberately **pure Q&A, no code-editing side effects** -- mirrors Security Agent's own
+      separation of "discuss" from "act" (see the next bullet for the explicit act path). Streams
+      via the provider's own `.stream(prompt, system_prompt=...)` method (confirmed present on
+      all 4 providers -- Ollama/Anthropic/OpenAI/base -- so either Ollama or an API model works
+      here with zero tool-calling requirement, same reasoning as generation above); the
+      conversation history is flattened into one role-prefixed transcript string, since this
+      interface takes a single `prompt`, not a messages array.
+    - **"Send failing tests to the Coder Agent" -- the same proven loop Security Agent already
+      has, minus the approval-gated popup** (QA stays auto-approved, so this is a direct,
+      always-visible action when failures exist, closer to Security's original pre-approval-gate
+      button than its later popup): new `qaReportToRevisionComment.js`
+      (`buildQaRevisionComment(report)`) builds one line per FAILING test case as
+      `"[category] target_file::target_function -- \"test name\" -- failure_message"`, mirroring
+      `securityReportToRevisionComment.js` exactly, carrying a real `file` token so the Coder
+      Agent's existing `_find_well_specified_target_files` still targets correctly with zero
+      Coder-side changes. `QaReportView.jsx`'s button calls `handleReviseStream` (from
+      `useCoderAgentFlowContext()`, already mounted around the whole feature workspace) then
+      `useRunQaAgent(featureId).mutate(...)` for an automatic re-run once the revision completes.
+    - **Frontend, mirroring every Security Agent piece built earlier this session**: new
+      `frontend/src/components/qa/{QaStatusBadge,QaReportView}.jsx` (report grouped by
+      Unit/Integration/Regression, each card showing status/target/inputs/expected-behavior/real
+      failure message, an "Out of scope for this pass (no DOM renderer)" section), new
+      `frontend/src/components/chat/QaAgentChat.jsx` + `hooks/{useQaAgent,useQaChatFlow}.js` (a
+      real streaming chat, history loaded via `GET /qa/chat` on mount so a reload doesn't lose
+      it). `pipelineStages.js`: `"qa"` added to `SELECTABLE_AGENT_STAGES`/`MANUAL_RUN_STAGES`,
+      removed from `PLACEHOLDER_STAGES` (deliberately NOT added to `REVISABLE_STAGES` -- there's
+      no `/qa/revise` route, a re-run is the whole operation, same reasoning as Security).
+      `artifactTypeMeta.js`: `qa_report -> "qa"` stage mapping + a `STAGE_GATING_ARTIFACT.qa`
+      entry (auto-approved, registered purely so `deriveStageStatus.js` can tell "has run once"
+      from "never run yet," same reasoning as Security's own entry).
+      `ArtifactViewerModal.jsx`/`ResultTab.jsx` both gained a `qa_report`/`stage === "qa"` branch
+      routing through `QaReportView` -- `ResultTab.jsx`'s version-dropdown-plus-report block is
+      simpler than Security's own equivalent, since there's no approval gate to render (no
+      `ApprovalPanel`, no "All Artifacts"/"Governance" sections for this stage -- both suppressed
+      the same way Security's already are). `OutputPanel.jsx`'s already-built Preview-tab-hiding
+      logic (previously `selectedAgent === "security"` only) was extended to also cover `"qa"` --
+      QA has no runnable preview either, and showing the unrelated Coder Agent preview here would
+      be equally misleading. `ChatPanel.jsx` gained a `selectedAgent === "qa"` dispatch branch to
+      the new `QaAgentChat`.
+    - Tests (all new, no prior QA test files existed at all): `tests/test_qa_jest_parser.py` (8 --
+      Jest `--json` output parsing: passed/failed/skipped status mapping, basename normalization,
+      multi-message truncation, multiple test files, empty/missing `testResults`).
+      `tests/test_qa_generator_fallback.py` (16 -- `_invoke_llm`'s malformed/empty-test-code/
+      empty-test-cases/unreachable-provider/markdown-fenced-response handling, the deterministic
+      unit fallback's two real shapes plus its "neither shape present" `None` case,
+      `generate_unit_tests`'s fallback-on-LLM-failure vs. no-safe-fallback cases,
+      `generate_regression_tests`'s empty-acceptance-criteria short-circuit,
+      `generate_integration_tests`'s no-fallback-on-failure case). `tests/test_qa_agent_matching.py`
+      (14 -- `_merge_results`'s exact `(test_file, name)` matching including the deliberate
+      same-name-different-file non-match and the unmatched-case-reported-not-dropped case,
+      `_count_by_category`'s per-category/per-status totals, `_build_markdown_report`'s per-test
+      lines/first-line-only failure excerpt/empty-test-cases/out-of-scope-listing/stderr-tail
+      rendering). `tests/test_qa_agent_routes.py` (13, real `TestClient`, mirrors
+      `test_security_agent_routes.py` -- `/qa/run`'s 404/response-shape/human_comment/500-
+      translation, `GET /qa/chat`'s 404/empty/persisted-turns, `POST /qa/chat/stream`'s
+      404/NDJSON-event-passthrough/error-event-on-unexpected-exception). Full suite: **746
+      passed** (up from 608 before items 70-74's own untracked-in-this-file growth plus these 51
+      new QA tests), zero regressions.
+    - **Real, live end-to-end verification against the real `feature_94701501` "Item Listing
+      (CRUD)" workspace** (`proj_34e07440` "Sample E-commerce"): the shared main backend process
+      (port 8000) was found to be running WITHOUT `--reload` and pre-dated all of this session's
+      QA route work (`GET /openapi.json` showed zero `/qa/*` paths) -- rather than restart a live
+      process the user may be actively using (per this project's own standing risk-awareness
+      practice), started a second, isolated backend instance on port 8090 against the same shared
+      Mongo Atlas database, confirmed all 3 real `/qa/*` routes registered there, and used that
+      instance for verification instead (same "isolated instance on a different port" convention
+      this file has used throughout items 30-74). Docker Desktop was not running (needed for
+      `sandbox_service.run_command`'s real `npm install`/`npx jest` execution) -- started it and
+      polled `docker version` until it responded (~9s), the same documented startup gotcha noted
+      elsewhere in this file.
+    - **A real, 100%-reproducible bug found on the very first live run, fixed, and re-verified**:
+      the first real `/qa/run` call produced two real deterministic-fallback unit tests, but BOTH
+      failed with `SyntaxError: Cannot use import statement outside a module` when Jest actually
+      ran them. Root-caused directly (`npx jest` run by hand against the real generated files):
+      `jest.config.qa.js`'s `transform` entry named `babel-jest` with no `configFile` option, so
+      babel-jest silently fell back to its own default config-file auto-discovery -- which only
+      ever looks for `babel.config.js`/`.babelrc`/etc, never this project's deliberately
+      non-standard `babel.config.qa.js` (named that way specifically so it wouldn't collide with
+      Next.js's own SWC/babel tooling, per the module's own design). Net effect: every generated
+      test file was "transformed" with zero presets applied at all, and Node's native CommonJS
+      loader choked on the raw `import` statement -- a 100% real-run failure rate, confirmed
+      before the fix and confirmed gone after it. Fixed by explicitly passing
+      `configFile: path.resolve(__dirname, "babel.config.qa.js")` as babel-jest's own transform
+      option, re-verified with a direct `npx jest` run against the real repo (both tests now
+      genuinely pass, with real captured console output and durations) before ever re-driving it
+      through the API.
+    - **A second, related, partially-fixed reliability gap found and improved live, honestly not
+      fully chased to 100%**: of the 7 real generation calls a full run makes (4 unit + 2
+      integration + 1 regression, confirmed against `feature_94701501`'s real discovery output --
+      `models/Item.ts`/`lib/api/itemListingCRUD.ts`/`lib/mongodb.ts`/`lib/seedData.ts` for unit,
+      both real `route.ts` files for integration), only 2 (the two with a safe deterministic
+      fallback shape) produced usable test cases on the first real run -- the other 5 (2 unit with
+      no matching fallback shape, both integration, the one regression call) all silently
+      degraded to nothing, per `_invoke_llm`'s own designed "never fail the run" contract. A
+      captured raw parse error (`Invalid \escape: line 20 column 1833`) pointed at a real, fixable
+      gap: `_JEST_CONVENTIONS` never told the model `test_code` must be a properly JSON-escaped
+      string (no raw newlines, no invalid escapes like a JS-style `\'`) -- a documented local-model
+      failure mode this codebase has hit for several other agents already. Added two explicit
+      escaping rules to the prompt and, via a cheaper targeted re-test (calling
+      `generator.generate_unit_tests` directly against just the two previously-failing unit
+      targets, not a full 7-call run), confirmed a real, measurable improvement: `models/Item.ts`
+      went from "produces nothing at all" to "a real, valid LLM-authored test case" on the very
+      next attempt. `lib/api/itemListingCRUD.ts` still failed (a different, related escaping
+      error) after one fix; a second, more specific escaping rule was added addressing that exact
+      error class directly, but a full 7-call re-verification run was not repeated afterward (each
+      full cycle costs 20-30+ real minutes on this machine's currently-configured model,
+      `qwen2.5-coder:14b`, no `qa_agent`-specific override set) -- **recorded honestly as a
+      genuine, partially-improved-but-not-fully-solved local-model reliability characteristic**,
+      matching this project's own extensive, repeated precedent (Domain/Architecture/UI-UX Agent
+      all have similar documented gaps) of not chasing 100% reliability against a local model
+      that has already been shown, elsewhere in this same file, to struggle with large structured
+      JSON outputs -- the reliability ladder's designed behavior (degrade to nothing rather than
+      crash or fabricate) is what makes this safe to leave as an honest, known limitation rather
+      than a blocking defect.
+    - **A third real, live-found-and-fixed bug, this time in the new chat feature specifically**:
+      the very first real chat exchange (a genuine multi-minute local-model call) showed the
+      human's own typed question vanishing from the screen entirely the instant Send was clicked
+      -- only the growing assistant reply bubble was ever visible, with no trace of what was
+      asked until (if) the whole exchange finished. Root-caused directly by reading
+      `QaAgentChat.jsx`/`useQaChatFlow.js`: no optimistic human bubble was ever rendered at all
+      (turns only ever came from the server-persisted history, refetched only after the stream's
+      "done" event), AND `chatStream`'s `onSuccess` called `queryClient.invalidateQueries(...)`
+      without awaiting it -- the exact same un-awaited-invalidation bug this project's own item 49
+      already found and fixed for Domain Agent's identical chat shape earlier this session, just
+      reintroduced here since this component was built afterward, independently, without carrying
+      that lesson forward. Fixed both: `useQaChatFlow.js` gained a `pendingHumanMessage` state
+      (set on send, rendered as an optimistic bubble by `QaAgentChat.jsx`, cleared once the real
+      exchange settles) and its `onSuccess` was made `async`/awaited, mirroring item 49's own fix
+      shape exactly. Re-verified live end-to-end, through a real, complete, several-minute local
+      LLM exchange (not a mock): the typed question ("Is the mongodb test reliable?") appeared
+      immediately as an optimistic bubble, stayed visible throughout, and the final, real
+      assistant reply correctly and specifically referenced the report's own real content
+      (`connectToDatabase()`, `lib/mongodb.ts::connectToDatabase`, the real passed status) --
+      confirmed independently via `GET /qa/chat` that both turns were genuinely persisted
+      server-side (in the real, shared Mongo Atlas database, so a reload will show the same
+      conversation), not just rendered client-side. Zero console/page errors throughout.
+    - **Final confirmed state**: full backend suite re-run clean after both code fixes (**746
+      passed**, including the 44 new QA-specific tests, none of which needed changes since neither
+      fix touched matching/parsing/report logic). `npm run build` clean after the chat fix. The
+      real `feature_94701501` workspace now has 3 real QA report versions (v1 pre-dating this
+      session's rewrite, still `pending`; v2 and v3 from this session's own real runs, both
+      correctly auto-`approved`) with real, inspectable per-test-case data and a real, persisted
+      chat turn -- left in place as genuine verification evidence, matching this project's own
+      established convention. Both isolated verification instances (backend :8090, frontend
+      :5199) were stopped afterward; the shared main backend (:8000) was never touched.
+
 ## Where to look
 
 - Full build spec (read this first, in order, before any new milestone): `instructions .md`

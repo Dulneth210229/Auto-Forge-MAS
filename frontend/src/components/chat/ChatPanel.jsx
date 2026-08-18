@@ -14,6 +14,7 @@ import DomainAgentChat from "./DomainAgentChat";
 import ArchitectureAgentChat from "./ArchitectureAgentChat";
 import UiuxAgentChat from "./UiuxAgentChat";
 import CoderAgentChat from "./CoderAgentChat";
+import QaAgentChat from "./QaAgentChat";
 import LoadingSpinner from "../common/LoadingSpinner";
 import ErrorBanner from "../common/ErrorBanner";
 
@@ -203,6 +204,25 @@ export default function ChatPanel({ featureId }) {
         allArtifacts={allArtifacts}
         onViewArtifact={viewArtifact}
         isLoadingTimeline={graphLoading || artifactsLoading || eventsLoading}
+      />
+    );
+  }
+
+  // QA Agent: its own dedicated chat -- unlike Security (which has no chat/revise flow at all,
+  // per direct user request it stays a read-only report + decision popup), QA gets a real,
+  // token-streaming, history-preserving Q&A surface for discussing test results and failures --
+  // see QaAgentChat.jsx's own docstring. Runs a QA scan itself (via its own empty-state button)
+  // rather than through runMutationsByStage/reviseMutationsByStage (neither is registered for
+  // "qa" -- there's no revise() shape, just run() and chat()).
+  if (selectedAgent === "qa") {
+    return (
+      <QaAgentChat
+        featureId={featureId}
+        feature={feature}
+        runningStage={runningStage}
+        selectedAgent={selectedAgent}
+        selectAgent={selectAgent}
+        allArtifacts={allArtifacts}
       />
     );
   }

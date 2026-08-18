@@ -548,6 +548,15 @@ class MongoStore:
             id_field="document_id",
         )
 
+        # One document per feature_id, holding the QA Agent's chat turn history (a plain list of
+        # {role, content, created_at}) -- same "one document, upserted in place, not versioned
+        # like an artifact" shape as requirement_conversations above, since a chat turn is not a
+        # reviewable output on its own. See app/api/routes/agents.py's /qa/chat[/stream] routes.
+        self.qa_conversations = MongoCollectionProxy(
+            collection=self.database["qa_conversations"],
+            id_field="feature_id",
+        )
+
         self._create_indexes()
 
     def _create_indexes(self) -> None:
@@ -619,6 +628,11 @@ class MongoStore:
             unique=True,
         )
 
+        self.database["qa_conversations"].create_index(
+            [("feature_id", ASCENDING)],
+            unique=True,
+        )
+
         self.database["knowledge_documents"].create_index(
             [("document_id", ASCENDING)],
             unique=True,
@@ -643,6 +657,7 @@ class MongoStore:
         self.approvals.clear()
         self.stage_events.clear()
         self.requirement_conversations.clear()
+        self.qa_conversations.clear()
         self.knowledge_documents.clear()
 
     def close(self) -> None:

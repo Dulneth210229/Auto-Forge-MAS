@@ -2,9 +2,11 @@ import Modal from "../common/Modal";
 import { ARTIFACT_TYPE_LABELS } from "../../lib/artifactTypeMeta";
 import ArtifactContentView from "./ArtifactContentView";
 import SecurityReportView from "../security/SecurityReportView";
+import QaReportView from "../qa/QaReportView";
 
 export default function ArtifactViewerModal({ artifact, onClose }) {
   const isSecurityReport = artifact?.artifact_type === "security_report";
+  const isQaReport = artifact?.artifact_type === "qa_report";
 
   return (
     <Modal
@@ -21,6 +23,9 @@ export default function ArtifactViewerModal({ artifact, onClose }) {
         // `artifact.feature_id` is already present on every artifact record, same as the Result
         // panel's own usage.
         <SecurityReportView artifact={artifact} featureId={artifact.feature_id} />
+      ) : isQaReport ? (
+        // Same fix, same reasoning, for the QA report (QaReportView.jsx).
+        <QaReportView artifact={artifact} featureId={artifact.feature_id} />
       ) : (
         <ArtifactContentView artifact={artifact} />
       )}

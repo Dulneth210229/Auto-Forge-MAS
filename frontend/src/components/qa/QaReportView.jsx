@@ -1,0 +1,173 @@
+import { useState } from "react";
+import { useArtifactContent } from "../../hooks/useArtifacts";
+import { useRunQaAgent } from "../../hooks/useQaAgent";
+import { useCoderAgentFlowContext } from "../workspace/CoderAgentFlowContext";
+import { buildQaRevisionComment } from "../../lib/qaReportToRevisionComment";
+import QaStatusBadge from "./QaStatusBadge";
+import LoadingSpinner from "../common/LoadingSpinner";
+import ErrorBanner from "../common/ErrorBanner";
+
+const CATEGORIES = ["unit", "integration", "regression"];
+const CATEGORY_HEADING = { unit: "Unit", integration: "Integration", regression: "Regression" };
+
+function TestCaseRow({ tc }) {
+  const loc = tc.target_function ? `${tc.target_file}::${tc.target_function}` : tc.target_file;
+  return (
+    <div className="flex items-start gap-3 py-2.5 border-b border-gray-100 dark:border-gray-800 last:border-0">
+      <QaStatusBadge status={tc.status} />
+      <div className="min-w-0 flex-1">
+        <p className="text-sm text-gray-800 dark:text-gray-200 font-semibold">{tc.name}</p>
+        <p className="text-xs text-gray-400 dark:text-gray-500 font-mono mt-0.5">targets {loc}</p>
+        {tc.inputs && (
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            <span className="font-semibold">Inputs:</span> {tc.inputs}
+          </p>
+        )}
+        {tc.expected_behavior && (
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            <span className="font-semibold">Expected:</span> {tc.expected_behavior}
+          </p>
+        )}
+        {tc.failure_message && (
+          <pre className="text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-500/10 rounded p-2 mt-1.5 whitespace-pre-wrap overflow-x-auto">
+            {tc.failure_message}
+          </pre>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Renders a QA Agent report (the JSON artifact qa_agent/agent.py's run() saves), grouped into
+// Unit/Integration/Regression, each test case showing both halves: what it was written to
+// verify (target file/function, inputs, expected behavior) and what actually happened when it
+// ran (real status, real failure message). Mirrors SecurityReportView.jsx's shape, but QA stays
+// auto-approved (no approval gate), so "Send Failing Tests to Coder Agent" is a direct,
+// always-visible action here rather than living behind a decision popup.
+export default function QaReportView({ artifact, featureId }) {
+  const { data, isLoading, error } = useArtifactContent(artifact?.artifact_id ?? null);
+  const report = data?.content_json;
+  const runQa = useRunQaAgent(featureId);
+  const { handleReviseStream, reviseStream } = useCoderAgentFlowContext();
+  const [isSending, setIsSending] = useState(false);
+
+  if (!artifact) {
+    return (
+      <div className="flex flex-col items-start gap-3">
+        <p className="text-sm text-gray-400 dark:text-gray-500 italic">
+          No QA scan has been run yet for this feature.
+        </p>
+        <ErrorBanner error={runQa.error} fallback="Failed to run the QA scan." />
+        <button
+          type="button"
+          onClick={() => runQa.mutate({})}
+          disabled={runQa.isPending}
+          className="text-sm bg-accent-600 hover:bg-accent-700 disabled:opacity-50 text-white font-semibold px-3 py-1.5 rounded-md"
+        >
+          {runQa.isPending ? "Running..." : "Run QA Scan"}
+        </button>
+      </div>
+    );
+  }
+
+  if (isLoading) {
+    return <LoadingSpinner label="Loading QA report..." />;
+  }
+
+  if (error || !report) {
+    return <ErrorBanner error={error} fallback="Failed to load the QA report." />;
+  }
+
+  const testCases = report.test_cases || [];
+  const hasFailures = testCases.some((tc) => tc.status === "failed");
+  const byCategory = {};
+  for (const category of CATEGORIES) {
+    byCategory[category] = testCases.filter((tc) => tc.category === category);
+  }
+
+  const bannerStyle = hasFailures
+    ? "bg-red-50 dark:bg-red-500/10 border-red-200 dark:border-red-500/30 text-red-800 dark:text-red-300"
+    : "bg-green-50 dark:bg-green-500/10 border-green-200 dark:border-green-500/30 text-green-800 dark:text-green-300";
+
+  async function handleSendToCoder() {
+    setIsSending(true);
+    try {
+      await handleReviseStream({
+        revision_comment: buildQaRevisionComment(report),
+        revised_by: "qa_agent_report",
+      });
+      runQa.mutate({ human_comment: "Re-run after the Coder Agent's QA-driven revision." });
+    } finally {
+      setIsSending(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-5">
+      <div className={`rounded-lg border px-4 py-3 flex items-center justify-between gap-3 ${bannerStyle}`}>
+        <div>
+          <p className="text-sm font-bold">
+            {hasFailures ? "Some tests are failing -- review before proceeding." : "All tests passed."}
+          </p>
+          <p className="text-xs opacity-80 mt-0.5">
+            {report.tests_generated} test(s) written -- {report.tests_passed} passed, {report.tests_failed} failed,{" "}
+            {report.tests_skipped} skipped
+          </p>
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <button
+            type="button"
+            onClick={() => runQa.mutate({})}
+            disabled={runQa.isPending || isSending}
+            title="Re-write and re-run tests for the current code"
+            className="text-sm bg-white dark:bg-white/10 hover:bg-gray-50 dark:hover:bg-white/20 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 disabled:opacity-50 font-semibold px-3 py-1.5 rounded-md"
+          >
+            {runQa.isPending ? "Running..." : "Re-run QA Scan"}
+          </button>
+          {hasFailures && (
+            <button
+              type="button"
+              onClick={handleSendToCoder}
+              disabled={runQa.isPending || isSending || reviseStream.isPending}
+              className="text-sm bg-accent-600 hover:bg-accent-700 disabled:opacity-50 text-white font-semibold px-3 py-1.5 rounded-md"
+            >
+              {isSending || reviseStream.isPending ? "Sending..." : "Send Failing Tests to Coder Agent"}
+            </button>
+          )}
+        </div>
+      </div>
+
+      <ErrorBanner error={runQa.error || reviseStream.error} fallback="Failed to run the QA scan." />
+
+      {testCases.length === 0 ? (
+        <p className="text-sm text-gray-400 dark:text-gray-500 italic">No test cases were generated.</p>
+      ) : (
+        CATEGORIES.map((category) =>
+          byCategory[category].length === 0 ? null : (
+            <div key={category}>
+              <h4 className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wide mb-2">
+                {CATEGORY_HEADING[category]} ({byCategory[category].length})
+              </h4>
+              <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg px-3">
+                {byCategory[category].map((tc, i) => (
+                  <TestCaseRow key={`${tc.test_file}-${tc.name}-${i}`} tc={tc} />
+                ))}
+              </div>
+            </div>
+          )
+        )
+      )}
+
+      {report.out_of_scope_modules?.length > 0 && (
+        <div className="pt-4 border-t border-gray-100 dark:border-gray-800 text-xs text-gray-500 dark:text-gray-400">
+          <p className="font-semibold mb-1">Out of scope for this pass (no DOM renderer):</p>
+          <ul className="list-disc list-inside space-y-0.5">
+            {report.out_of_scope_modules.map((path) => (
+              <li key={path} className="font-mono">{path}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}

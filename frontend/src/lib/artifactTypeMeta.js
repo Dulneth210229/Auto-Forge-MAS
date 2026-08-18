@@ -47,6 +47,7 @@ export const ARTIFACT_TYPE_STAGE = {
   requirement_code_map: "coder",
   setup_instructions: "coder",
   security_report: "security",
+  qa_report: "qa",
 };
 
 // The single (artifact_type, artifact_format) pair that gates each stage's approval --
@@ -70,6 +71,9 @@ export const STAGE_GATING_ARTIFACT = {
   // it's never anything but auto-approved) from "never run yet" (shows Action Required, from
   // MANUAL_RUN_STAGES), not because a human ever makes a real approve/reject decision on it.
   security: { type: "security_report", format: "json" },
+  // Same reasoning as security above -- auto-approved, registered purely so deriveStageStatus.js
+  // can distinguish "has run at least once" from "never run yet."
+  qa: { type: "qa_report", format: "json" },
 };
 
 // Back-compat plain type map, still useful for "which stage does this artifact_type belong

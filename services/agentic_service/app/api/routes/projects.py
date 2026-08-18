@@ -156,6 +156,7 @@ def delete_project(project_id: str):
     )
     store.stage_events.collection.delete_many({"feature_id": {"$in": feature_ids}})
     store.requirement_conversations.collection.delete_many({"feature_id": {"$in": feature_ids}})
+    store.qa_conversations.collection.delete_many({"feature_id": {"$in": feature_ids}})
 
     for document in knowledge_document_service.list_documents(project_id):
         try:

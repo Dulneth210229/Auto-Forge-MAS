@@ -389,3 +389,19 @@ export async function reviseCoderStream(featureId, { revision_comment, revised_b
 export async function runSecurity(featureId, { human_comment } = {}, signal) {
   return postCancelable(`${base(featureId)}/security/run`, { human_comment }, signal);
 }
+
+// QA Agent -- run has no streaming variant either (real LLM calls + a real sandboxed test run,
+// not a single continuous reply worth watching token-by-token), but chat DOES stream, live Q&A
+// about the latest report (see qa_schema.py's own docstring for the "run vs. chat" split).
+export async function runQa(featureId, { human_comment } = {}, signal) {
+  return postCancelable(`${base(featureId)}/qa/run`, { human_comment }, signal);
+}
+
+export async function getQaChatHistory(featureId) {
+  const { data } = await apiClient.get(`${base(featureId)}/qa/chat`);
+  return data;
+}
+
+export async function qaChatStream(featureId, { message }, onEvent, signal) {
+  return streamNdjsonPost(`${API_BASE_URL}${base(featureId)}/qa/chat/stream`, { message }, onEvent, signal);
+}
