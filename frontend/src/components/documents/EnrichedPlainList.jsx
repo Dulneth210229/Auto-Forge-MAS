@@ -194,7 +194,7 @@ export default function EnrichedPlainList({ items, highlighted, field, canEdit, 
 
         if (!match) {
           return (
-            <div key={index} className="group pl-3 relative before:content-['\2022'] before:absolute before:left-0 before:text-gray-400">
+            <div key={index} className="group pl-3 relative before:content-['\\2022'] before:absolute before:left-0 before:text-gray-400">
               <p className="text-sm text-gray-700 dark:text-gray-300">{text}</p>
               {canEdit && field && <EditControls text={text} field={field} onEdit={onEdit} />}
             </div>

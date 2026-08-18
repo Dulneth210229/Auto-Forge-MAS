@@ -15,6 +15,7 @@ import UiuxVersionGroupList from "../pipeline/UiuxVersionGroupList";
 import ErrorBanner from "../common/ErrorBanner";
 import ConfirmDialog from "../common/ConfirmDialog";
 import RequirementSrsOutputPanel from "./RequirementSrsOutputPanel";
+import SecurityReportView from "../security/SecurityReportView";
 import { useWorkspaceSelection } from "../workspace/WorkspaceSelectionContext";
 import { useRequirementConversationFlowContext } from "../workspace/RequirementConversationFlowContext";
 import { useDomainAgentFlowContext } from "../workspace/DomainAgentFlowContext";
@@ -495,6 +496,12 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
         />
       ) : versions.length === 0 && isRequirementStage ? (
         <RequirementSrsOutputPanel />
+      ) : stage === "security" ? (
+        // Unlike every other stage, Security Agent has no chat/revise flow to trigger a first
+        // run from (see pipelineStages.js's MANUAL_RUN_STAGES/REVISABLE_STAGES) -- SecurityReportView
+        // itself renders the "Run Security Scan" empty-state action when `artifact` is null, so
+        // this branch (unlike the generic ones below) fires regardless of versions.length.
+        <SecurityReportView artifact={versions[0] || null} featureId={featureId} />
       ) : versions.length === 0 ? (
         <p className="text-sm text-gray-400 dark:text-gray-500 italic">No output yet for this stage.</p>
       ) : (

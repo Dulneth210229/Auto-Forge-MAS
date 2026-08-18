@@ -204,6 +204,17 @@ SECRET_RULES: list[tuple[str, str, str]] = [
 
 SECRET_SCAN_EXTENSIONS = SCANNABLE_EXTENSIONS | {".env", ".json", ".yml", ".yaml", ".md"}
 
+# Matches the exact glob every generated project's own .gitignore already uses for this file
+# family (".env*.local" -- .env.local, .env.production.local, etc.). These are the SANCTIONED,
+# gitignored place a real local secret belongs in this app's own architecture (this is precisely
+# what the Database Connection feature writes MONGODB_URI into, see workspace_service.py) --
+# scanning them for "hardcoded credentials" is a confirmed false positive in this specific
+# codebase, not a general secret-scanning best practice being relaxed: the file can never reach
+# version control in the first place, so the "risk of exposing credentials if committed" the
+# scanner's own message describes cannot actually happen here. `.env`/`.env.example` are still
+# scanned -- only the `*.local` family is this app's own designated real-secret store.
+_LOCAL_ENV_FILE_PATTERN = re.compile(r"^\.env.*\.local$")
+
 
 def scan_secrets(repo_path: Path) -> list[dict[str, Any]]:
     """
@@ -212,7 +223,9 @@ def scan_secrets(repo_path: Path) -> list[dict[str, Any]]:
     """
     findings: list[dict[str, Any]] = []
     for path in _walk_files(repo_path):
-        if path.suffix not in SECRET_SCAN_EXTENSIONS and path.name not in {".env", ".env.example", ".env.local"}:
+        if _LOCAL_ENV_FILE_PATTERN.match(path.name):
+            continue
+        if path.suffix not in SECRET_SCAN_EXTENSIONS and path.name not in {".env", ".env.example"}:
             continue
         try:
             text = path.read_text(encoding="utf-8", errors="ignore")

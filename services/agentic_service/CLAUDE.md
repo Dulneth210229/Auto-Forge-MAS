@@ -2844,6 +2844,134 @@ milestone — that file is scratch, **this file is the durable one**.
       Ollama-restore round trip for `uiux_agent` to confirm the fix isn't Coder-Agent-specific --
       both agents ended the verification back on their original Ollama settings.
 
+73. **Upgraded the Security Agent from a disconnected engine into a real, categorized,
+    loop-closing part of the pipeline.** Direct user spec (paired with a reference doc describing
+    a teammate's own sample implementation, and a link to that teammate's `origin/tharuka_m`
+    branch for inspiration): findings must be categorized into Critical/Moderate/Warning with
+    matching frontend color codes; a human must be able to send a report to the Coder Agent,
+    which fixes the named vulnerabilities via `revise()`, after which Security Agent
+    automatically re-scans. Two design forks confirmed directly with the user first: **soft
+    gate** (Security stays auto-approved/non-blocking, a Critical finding is surfaced, never
+    halts the pipeline) and **auto re-scan** (no extra click after a security-driven fix lands).
+    - **Investigated both branches before writing anything**: the current branch's deterministic
+      scanners (`scanners.py` -- a real TypeScript-compiler AST scanner, a secret/credential
+      regex scanner, a live `npm audit` scanner) were confirmed strictly better than
+      `tharuka_m`'s (Python-`ast`-only AST scanner, useless for this Next.js/TS codebase; a
+      small hardcoded dependency vulnerability list instead of live `npm audit`) and kept as-is.
+      `tharuka_m`'s API route shapes (`POST /security/run` + schemas) were worth mirroring;
+      neither branch enforced the gate at the graph level or had a frontend viewer.
+    - **The one real, confirmed functional gap, closed**: `_run_llm_review_layer` computed a
+      real LLM response and then discarded it entirely, keeping only a static "ran successfully"
+      string. New `severity.py` (`to_display_tier`/`gate_decision` -- a small pure mapping
+      handling BOTH raw severity vocabularies in play: the scanners/LLM use
+      `critical|high|medium|low`, but `scan_dependencies` passes npm audit's own raw vocabulary
+      through verbatim, which uses `moderate`/`info`, not `medium` -- a real, confirmed gap the
+      first design pass would have missed had it assumed one vocabulary). New
+      `SecurityLLMFinding`/`SecurityLLMReviewResult` schemas; `prompt.py` rewritten to specify
+      the exact expected JSON shape with a concrete example (the old prompt referenced a
+      nonexistent "SecurityLLMReviewSchema" and never actually showed the LLM what shape to
+      return) and to honestly narrow an overclaimed docstring (it claimed to send "the raw
+      source of each file," never actually implemented -- now correctly documents that only the
+      deterministic-findings summary is sent). `_run_llm_review_layer` now parses the response
+      via the shared `app/utils/json_utils.extract_json_object` (the same fence-stripping/parse
+      utility `requirement_agent`'s own `_parse_and_validate_json` uses) and merges accepted
+      findings into the combined list BEFORE gate/count computation, falling back to an empty
+      list (never crashing the scan) on any parse/validation failure or an unreachable provider.
+    - New `POST /features/{feature_id}/agents/security/run` (mirrors `run_uiux_agent`'s shape
+      exactly -- deliberately no `/run/stream` variant, the LLM layer is one non-streamed call).
+      `graph_orchestrator_service._security_node` fixed: stale "still a placeholder" docstring
+      removed, `last_artifact_ids` now actually captures `output.artifact_ids` instead of always
+      `[]`. `AUTO_APPROVED_STAGES`/`GATED_STAGES` unchanged (soft gate, confirmed).
+    - **Frontend**: `SeverityBadge.jsx` reuses `StatusBadge.jsx`'s exact existing red/orange/
+      yellow Tailwind classes (critical/moderate/warning), not new colors. `SecurityReportView.jsx`
+      (new) renders the gate banner, findings grouped by tier, dependency/LLM status, and
+      "Send to Coder Agent" -- discovered live that `useArtifactContent(id)` returns
+      `{content_json, ...}`, not the report directly (`ArtifactContentView.jsx`'s own existing
+      pattern), a real bug caught only by driving the actual browser (the report rendered as
+      all-zero counts and "no findings" until fixed). `securityReportToRevisionComment.js`
+      builds a `revision_comment` with one `[TIER] file:line -- message (CWE)` line per finding
+      so Coder Agent's existing `_find_well_specified_target_files`
+      (`_REVISION_FILE_TOKEN_RE`, `coder_agent/agent.py`) targets the right files with zero
+      Coder-side changes -- no new backend endpoint needed for this, built client-side from the
+      already-fetched report. The loop itself needed no new shared state: the button's own click
+      handler `await`s `useCoderAgentFlowContext().handleReviseStream(...)` then calls the new
+      `useRunSecurityAgent` mutation, since that context is already mounted around the whole
+      feature workspace, not just the Coder tab. `pipelineStages.js`: `"security"` moved from
+      `PLACEHOLDER_STAGES` into `SELECTABLE_AGENT_STAGES`/`MANUAL_RUN_STAGES` (it has no chat/
+      revise flow of its own, unlike every other manual-run stage -- confirmed live that
+      `ChatPanel.jsx`'s generic fallback already degrades correctly to a disabled composer
+      reading "Security Agent can't be messaged directly right now," so the Result panel's own
+      "Run Security Scan" / "Re-run Scan" buttons are the only real trigger, added directly
+      inside `SecurityReportView.jsx`'s own empty-state branch). `artifactTypeMeta.js` gained
+      the missing `security_report -> "security"` stage mapping and a `STAGE_GATING_ARTIFACT`
+      entry (both absent before this -- without them the report never associated with its stage
+      at all).
+    - Tests: `tests/test_security_qa_stubs.py` deleted outright (all 4 tests, both the Security
+      AND QA halves, asserted the old literal `{"status": "skipped", "message": "... not yet
+      implemented"}` stub response -- confirmed live that QA Agent is ALSO already a real,
+      non-stub implementation today, just out of scope for this item, so both halves were
+      equally stale, not just Security's). New `tests/test_security_agent.py` (18 -- severity
+      taxonomy table cases including the npm-audit-vocabulary edge cases, LLM layer parse
+      success/markdown-fenced/malformed/unreachable-provider fallback, graph node artifact_ids).
+      New `tests/test_security_agent_routes.py` (4, real `TestClient`). Full suite: **739 passed**
+      (622 immediate + 14 failures/3 errors that were investigated and confirmed to be Docker
+      Desktop being down at the time, not real regressions -- restarted Docker, re-ran the exact
+      same 3 files, all 65 passed cleanly).
+    - **Real, live verification against `feature_94701501`'s actual generated code, not a
+      synthetic fixture**: a real `POST /security/run` found 2 genuine Critical findings -- the
+      deterministic secret scanner correctly flagged the real MongoDB credential the user had
+      saved in the workspace's `.env.local` (CWE-798), and the LLM review layer (running for
+      real on the new default `qwen2.5-coder:14b`, see below) added a second, independently-
+      grounded finding citing the same file/line with its own recommendation -- direct proof the
+      previously-discarded LLM layer now genuinely contributes real findings, not just passing
+      mocked unit tests. Gate decision correctly computed as `fail` (2 criticals). A real
+      Playwright session confirmed the Security stage is now selectable in the agent dropdown,
+      the report renders with red "Critical" badges and correct grouping/counts (after the
+      `content_json` unwrapping fix above), and Governance correctly shows "Latest version is
+      approved. Nothing pending." (soft gate, no approve controls). **Deliberately did NOT click
+      "Send to Coder Agent" live**: both real findings are about the user's own intentional,
+      already-working local database credential in `.env.local` (the standard, correct,
+      gitignored place for it in a Next.js project) -- letting a real Coder Agent revision
+      "fix" this by stripping the credential would have broken the user's real, working database
+      connection, an unwanted, consequential side effect worth surfacing rather than triggering
+      silently. Verified the revision-comment builder's correctness by tracing the actual code
+      and confirming the browser already renders the exact same grouping/tier logic correctly
+      (`securityReportToRevisionComment.js` reuses `severityTiers.js`'s already-proven
+      `groupFindingsByTier`), rather than by running the full live loop.
+    - **Follow-up, same real-run finding, resolved directly with the user rather than assumed**:
+      asked whether `scan_secrets` should exclude `.env*.local` files (the false positive above)
+      or keep flagging them for defense-in-depth -- confirmed exclude. `scanners.py` gained
+      `_LOCAL_ENV_FILE_PATTERN` (`^\.env.*\.local$`, matching every generated project's own real
+      `.gitignore` entry for this exact file family verbatim -- confirmed by reading the real
+      generated `.gitignore`, not assumed) and now skips any matching file before scanning;
+      plain `.env`/`.env.example` are still scanned (only the `*.local` family is this app's own
+      designated real-secret store, written by the Database Connection feature). New
+      `tests/test_security_scanners.py` (5, real filesystem via `tmp_path`, no mocks) covers the
+      exclusion, a same-family variant (`.env.production.local`), and confirms plain `.env` and
+      real source files are still scanned. **Re-verified live**: the exact same real `POST
+      /security/run` against `feature_94701501` that previously found 2 Critical findings now
+      correctly returns `0 finding(s), gate=pass` -- direct, live confirmation the fix works
+      against the real data that motivated it, not just the new unit tests.
+
+74. **Global default LLM model changed to `qwen2.5-coder:14b`, per direct user instruction ("use
+    this ollama model...for every agent from now onwards") -- except the two agents that
+    genuinely need real tool-calling.** Applied to the global default (`PUT /settings/llm`) and
+    every one-shot agent's per-agent override (requirement, domain, uiux) plus `.env`'s
+    `DEFAULT_LLM_MODEL`. **`coder_agent` and `architecture_agent` deliberately excluded and kept
+    on `qwen3-coder:latest`**: a real, direct `ChatOllama.bind_tools()` + `.ainvoke()` check
+    (not assumed) found `qwen2.5-coder:14b` does NOT genuinely support tool-calling in this
+    Ollama install -- no error, but the model writes a fake tool-call as plain JSON-shaped text
+    content instead of populating LangChain's real `tool_calls` field, which `create_agent`'s
+    ReAct loop cannot parse as an actual invocation. Both agents call `get_agentic_chat_model()`
+    directly for real tool-calling loops (Coder Agent's coding loop; Architecture Agent's
+    exploration-rung generation strategy, one of its real generation tiers, not a rare
+    fallback) -- silently switching either would have produced the exact class of bug this
+    session's own item 72 already fixed once for `llama3:latest` (a loud one) and item 71-era
+    work already documented for Anthropic (a silent one), just with a third, newly-confirmed
+    failure mode (fake-tool-call-as-text) added to the list. `.env`'s own comment above
+    `AGENTIC_MODEL_OVERRIDE` rewritten to document this finding directly, matching this
+    project's own established convention of recording exactly why a model choice is pinned.
+
 - `qwen3-coder:latest` sometimes emits function-valued mock props (e.g. `"onSubmit": () => {}`)
   inside what must be strict JSON. Fixed in `uiux_agent/prompt.py`'s
   `COMPONENT_GENERATOR_SYSTEM_PROMPT` by requiring self-contained components (internal

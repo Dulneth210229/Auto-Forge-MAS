@@ -28,6 +28,7 @@ from app.agents.architecture_agent.agent import architecture_agent
 from app.agents.uiux_agent.agent import uiux_agent
 from app.agents.coder_agent.agent import coder_agent
 from app.agents.coder_agent.schemas import CoderAgentEnvSaveResult
+from app.agents.security_agent.agent import security_agent
 from app.core.enums import AgentName, ArtifactType, ArtifactFormat
 from app.schemas.agent_schema import AgentRunRequest, AgentRunResponse
 from app.services.artifact_service import artifact_service
@@ -51,6 +52,7 @@ from app.schemas.architecture_schema import (
 )
 from app.schemas.uiux_schema import UIUXAgentReviseRequest, UIUXAgentRunRequest
 from app.schemas.coder_schema import CoderAgentRunRequest, CoderAgentReviseRequest
+from app.schemas.security_schema import SecurityAgentRunRequest
 from app.services.in_memory_store import store
 from app.services.plantuml_service import plantuml_service
 from app.services.stage_event_service import stage_event_service
@@ -1021,6 +1023,48 @@ async def revise_coder_agent_stream(feature_id: str, request: CoderAgentReviseRe
             ) + "\n"
 
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")
+
+
+    # ----------------------------------------------------
+    # Security Agent
+    # ----------------------------------------------------
+@router.post("/security/run", response_model=AgentRunResponse)
+async def run_security_agent(feature_id: str, request: SecurityAgentRunRequest):
+    """
+    Run the Security Agent -- scans the Coder Agent's generated workspace (pattern/secret/
+    dependency layers plus an LLM review pass) and saves a versioned Critical/Moderate/Warning
+    report. No human approval is required after this (auto-approved, soft-gate stage -- see
+    security_agent/agent.py's own docstring): a Critical gate decision is clearly surfaced on the
+    report for a human to act on (e.g. via the frontend's "Send to Coder Agent" action, which
+    triggers a real Coder Agent revise() and then automatically re-runs this same route once that
+    revision completes), never used to block pipeline advancement itself.
+    """
+    _validate_feature(feature_id)
+    stage_event_service.record(feature_id, AgentName.SECURITY, "run", request.human_comment)
+
+    try:
+        output = await security_agent.run(feature_id=feature_id)
+
+        return AgentRunResponse(
+            feature_id=feature_id,
+            agent_name=AgentName.SECURITY,
+            status="completed",
+            message=output.message,
+            artifact_ids=output.artifact_ids,
+        )
+
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+    except Exception as error:
+        print("========== SECURITY AGENT ERROR ==========")
+        print(traceback.format_exc())
+        print("===========================================")
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Security Agent failed: {_readable_error(error)}"
+        )
 
 
 @router.post("/deployment/run", response_model=AgentRunResponse)

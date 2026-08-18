@@ -1,32 +1,37 @@
 """
 Security Agent.
 
-Real implementation, replacing the earlier placeholder that always returned
-{"status": "skipped"}. Runs three deterministic scan layers against the
-generated project's own workspace -- pattern-based static analysis (real
-TypeScript-compiler AST, not text matching), secret/credential scanning, and
-`npm audit` dependency scanning -- reduces the combined findings to a
-pass/fail gate decision, and saves a JSON + Markdown security report as a
-versioned artifact through the same artifact_service path every other agent
-uses. An optional fourth layer asks the configured LLM to review the
-deterministic findings against real source and add findings it can ground in
-what it was shown; if the LLM provider is unreachable, that layer is skipped
-and reported as skipped rather than silently omitted, and the deterministic
-findings (this stage's actual evidence) are unaffected either way.
+Runs three deterministic scan layers against the generated project's own workspace --
+pattern-based static analysis (real TypeScript-compiler AST, not text matching),
+secret/credential scanning, and `npm audit` dependency scanning -- reduces the combined findings
+(plus whatever the optional LLM review layer adds, see below) to a Critical/Moderate/Warning
+gate decision (severity.py), and saves a JSON + Markdown security report as a versioned artifact
+through the same artifact_service path every other agent uses. The report groups findings under
+those same three headings for a human (and, via the "send this report to the Coder Agent"
+frontend action, for the Coder Agent) to act on.
 
-Auto-approved stage: still runs without an interrupt() gate (see
-graph_orchestrator_service._security_node), consistent with the rest of the
-pipeline's design -- a human reviews the resulting report artifact after the
-fact rather than blocking pipeline advancement on it, since a failed gate is
-recorded on the feature record for a reviewer to see rather than silently
-merged past.
+The optional fourth layer asks the configured LLM to review the deterministic findings summary
+and propose additional, clearly-grounded findings; its JSON response is parsed against
+SecurityLLMReviewResult and merged into the combined findings BEFORE the gate/counts are
+computed. If the LLM provider is unreachable or returns something unparseable, that layer
+degrades to an empty findings list and a status note explaining why -- it never fails the whole
+scan, and the deterministic findings (this stage's actual evidence) are unaffected either way.
+
+Auto-approved, soft-gate stage: runs without an interrupt() gate (see
+graph_orchestrator_service._security_node) -- a Critical gate decision is clearly surfaced on the
+report and in the frontend, but never blocks pipeline advancement. A human decides whether to
+send the report to the Coder Agent (which automatically re-triggers this agent once that revision
+completes) or proceed anyway.
 """
 
 from datetime import datetime, timezone
 from pathlib import Path
 
+from pydantic import ValidationError
+
+from app.agents.security_agent import severity
 from app.agents.security_agent.prompt import SECURITY_AGENT_SYSTEM_PROMPT
-from app.agents.security_agent.schemas import SecurityAgentOutput
+from app.agents.security_agent.schemas import SecurityAgentOutput, SecurityLLMReviewResult
 from app.agents.security_agent.scanners import (
     scan_dangerous_patterns,
     scan_dependencies,
@@ -36,14 +41,10 @@ from app.core.enums import AgentName, ApprovalStatus, ArtifactFormat, ArtifactTy
 from app.services.artifact_service import artifact_service
 from app.services.in_memory_store import store
 from app.services.workspace_service import workspace_service
+from app.utils.json_utils import extract_json_object
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-# A finding at this severity or above fails the gate. Chosen to match npm's
-# own audit severity scale (info < low < moderate/medium < high < critical)
-# plus this agent's own pattern/secret rule severities.
-GATE_FAIL_SEVERITIES = {"critical", "high"}
 
 
 def _build_markdown_report(report: dict) -> str:
@@ -53,21 +54,31 @@ def _build_markdown_report(report: dict) -> str:
         f"Generated: {report['generated_at']}",
         f"Gate decision: **{report['gate_decision'].upper()}**",
         f"Total findings: {report['findings_count']} "
-        f"({report['critical_or_high_count']} critical/high)",
-        "",
-        "## Findings",
+        f"({report['critical_count']} critical, {report['moderate_count']} moderate, "
+        f"{report['warning_count']} warning)",
         "",
     ]
     if not report["findings"]:
-        lines.append("No findings from any scan layer.")
-    for finding in report["findings"]:
-        loc = f"{finding['file']}:{finding['line']}" if finding.get("line") else finding["file"]
-        lines.append(
-            f"- **[{finding['severity'].upper()}]** `{finding['rule_id']}` "
-            f"({finding['cwe']}) -- {loc} -- {finding['message']}"
-        )
+        lines += ["## Findings", "", "No findings from any scan layer."]
+    else:
+        findings_by_tier: dict[str, list[dict]] = {tier: [] for tier in severity.DISPLAY_TIERS}
+        for finding in report["findings"]:
+            findings_by_tier[severity.to_display_tier(finding.get("severity", "unknown"))].append(finding)
+
+        for tier in severity.DISPLAY_TIERS:
+            tier_findings = findings_by_tier[tier]
+            if not tier_findings:
+                continue
+            lines += [f"## {tier.capitalize()}", ""]
+            for finding in tier_findings:
+                loc = f"{finding['file']}:{finding['line']}" if finding.get("line") else finding["file"]
+                lines.append(
+                    f"- **[{finding['severity'].upper()}]** `{finding['rule_id']}` "
+                    f"({finding['cwe']}) -- {loc} -- {finding['message']}"
+                )
+            lines.append("")
+
     lines += [
-        "",
         "## Dependency scan",
         "",
         f"npm audit exit code: {report['dependency_scan']['audit_exit_code']}",
@@ -101,19 +112,22 @@ class SecurityAgent:
         secret_findings = scan_secrets(repo_path)
         dependency_result = scan_dependencies(project["project_id"], repo_path)
 
-        all_findings = pattern_findings + secret_findings + dependency_result["findings"]
-        critical_or_high = [f for f in all_findings if f["severity"] in GATE_FAIL_SEVERITIES]
-        gate_decision = "fail" if critical_or_high else "pass"
+        deterministic_findings = pattern_findings + secret_findings + dependency_result["findings"]
+        llm_review_status, llm_findings = await self._run_llm_review_layer(deterministic_findings)
+        all_findings = deterministic_findings + llm_findings
 
-        llm_review_status = await self._run_llm_review_layer(all_findings)
+        tier_counts = severity.count_by_tier(all_findings)
+        gate = severity.gate_decision(all_findings)
 
         report = {
             "project_name": project["project_name"],
             "feature_name": feature["feature_name"],
             "generated_at": datetime.now(timezone.utc).isoformat(),
-            "gate_decision": gate_decision,
+            "gate_decision": gate,
             "findings_count": len(all_findings),
-            "critical_or_high_count": len(critical_or_high),
+            "critical_count": tier_counts["critical"],
+            "moderate_count": tier_counts["moderate"],
+            "warning_count": tier_counts["warning"],
             "findings": all_findings,
             "dependency_scan": {
                 "audit_exit_code": dependency_result["audit_exit_code"],
@@ -142,20 +156,26 @@ class SecurityAgent:
 
         logger.info(
             "Security Agent finished for feature_id=%s: %d findings, gate=%s",
-            feature_id, len(all_findings), gate_decision,
+            feature_id, len(all_findings), gate,
         )
 
         return SecurityAgentOutput(
             security_report_json=report,
             status="completed",
-            gate_decision=gate_decision,
+            gate_decision=gate,
             findings_count=len(all_findings),
-            critical_or_high_count=len(critical_or_high),
+            critical_count=tier_counts["critical"],
+            moderate_count=tier_counts["moderate"],
+            warning_count=tier_counts["warning"],
             artifact_ids=[json_artifact.artifact_id, md_artifact.artifact_id],
-            message=f"{len(all_findings)} finding(s), gate={gate_decision}.",
+            message=f"{len(all_findings)} finding(s), gate={gate}.",
         )
 
-    async def _run_llm_review_layer(self, findings: list[dict]) -> str:
+    async def _run_llm_review_layer(self, findings: list[dict]) -> tuple[str, list[dict]]:
+        """Returns (status message, list of new SecurityFinding-shaped dicts). Never raises --
+        an unreachable provider or a malformed/unparseable response both degrade to an empty
+        findings list with an explanatory status, so the deterministic findings (this stage's
+        actual evidence) are always unaffected."""
         try:
             from app.services.llm_provider_service import llm_provider_service
 
@@ -164,17 +184,54 @@ class SecurityAgent:
                 f"- {f['rule_id']} ({f['severity']}) {f['file']}:{f.get('line')}: {f['message']}"
                 for f in findings
             ) or "No deterministic findings."
-            await provider.invoke_agent([
+            raw_output = await provider.invoke_agent([
                 {"role": "system", "content": SECURITY_AGENT_SYSTEM_PROMPT},
                 {"role": "user", "content": f"Deterministic findings so far:\n{summary}"},
             ])
-            return "LLM review layer ran successfully; see individual findings for any additions."
+
+            try:
+                parsed = extract_json_object(raw_output)
+                review = SecurityLLMReviewResult.model_validate(parsed)
+            except (ValueError, ValidationError) as parse_error:
+                logger.warning(
+                    "Security Agent LLM review layer returned unparseable output, skipping: %s",
+                    parse_error,
+                )
+                return (
+                    f"Skipped -- LLM response could not be parsed as the expected findings JSON "
+                    f"({type(parse_error).__name__}). The deterministic layers above are "
+                    f"unaffected and are this report's evidence.",
+                    [],
+                )
+
+            llm_findings = [
+                {
+                    "id": f"SEC-LLM:{index}",
+                    "rule_id": "SEC-LLM-REVIEW",
+                    "layer": "llm",
+                    "severity": item.severity,
+                    "cwe": item.cwe or "N/A",
+                    "file": item.file,
+                    "line": item.line,
+                    "message": (
+                        f"{item.title} -- {item.description} "
+                        f"Recommendation: {item.recommendation}"
+                    ).strip(),
+                }
+                for index, item in enumerate(review.additional_findings, start=1)
+            ]
+
+            status = f"LLM review layer ran successfully: {len(llm_findings)} additional finding(s)."
+            if review.notes:
+                status += f" Notes: {review.notes}"
+            return status, llm_findings
         except Exception as error:  # noqa: BLE001 -- an unreachable LLM must not fail the whole scan
             logger.warning("Security Agent LLM review layer unavailable, skipping: %s", error)
             return (
                 f"Skipped -- LLM provider unreachable in this run ({type(error).__name__}). "
                 f"The three deterministic layers above (pattern, secret, dependency) are "
-                f"unaffected and are this report's evidence."
+                f"unaffected and are this report's evidence.",
+                [],
             )
 
 

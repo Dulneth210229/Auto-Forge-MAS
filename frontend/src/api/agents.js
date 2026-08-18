@@ -383,3 +383,9 @@ export async function reviseCoderStream(featureId, { revision_comment, revised_b
     signal
   );
 }
+
+// Security Agent -- no revise/streaming variants (see security_schema.py's own docstring): a
+// re-run IS the whole operation.
+export async function runSecurity(featureId, { human_comment } = {}, signal) {
+  return postCancelable(`${base(featureId)}/security/run`, { human_comment }, signal);
+}

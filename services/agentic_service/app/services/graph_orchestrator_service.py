@@ -158,23 +158,20 @@ def _coder_node(state: FeaturePipelineState) -> dict[str, Any]:
 
 def _security_node(state: FeaturePipelineState) -> dict[str, Any]:
     """
-    Security Agent call. Still a placeholder (see app/agents/security_agent/
-    agent.py) that always returns {"status": "skipped"} without touching the
-    workspace -- calling it for real now (rather than a generic pass-through)
-    means the graph already has a real node target to route to, per the
-    doc's Milestone 7 instruction, so nothing here needs to change again
-    except the agent's own internals once it's implemented for real. Stays
-    auto-approved (no interrupt() gate) since there is no real output yet for
-    a human to review -- flip to a real gate the moment that changes.
+    Security Agent call -- runs the real scan (pattern/secret/dependency + LLM review layers,
+    see app/agents/security_agent/agent.py) and saves a versioned Critical/Moderate/Warning
+    report. Deliberately stays auto-approved (no interrupt() gate): this is a soft gate by
+    design -- a Critical finding is clearly surfaced on the report for a human to act on (e.g.
+    via the frontend's "Send to Coder Agent" action), never used to block pipeline advancement.
     """
     feature_id = state["feature_id"]
-    logger.info("Running Security Agent (placeholder) for feature_id=%s", feature_id)
+    logger.info("Running Security Agent for feature_id=%s", feature_id)
 
-    asyncio.run(security_agent.run(feature_id=feature_id))
+    output = asyncio.run(security_agent.run(feature_id=feature_id))
 
     return {
         "last_agent": "security",
-        "last_artifact_ids": [],
+        "last_artifact_ids": output.artifact_ids,
         "human_comment": None,
     }
 

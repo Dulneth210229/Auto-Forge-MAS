@@ -46,6 +46,7 @@ export const ARTIFACT_TYPE_STAGE = {
   code_manifest: "coder",
   requirement_code_map: "coder",
   setup_instructions: "coder",
+  security_report: "security",
 };
 
 // The single (artifact_type, artifact_format) pair that gates each stage's approval --
@@ -64,6 +65,11 @@ export const STAGE_GATING_ARTIFACT = {
   // (approval_service.py's _cascade_uiux_screenshot_decision).
   uiux: { type: "ui_preview_screenshot", format: "png" },
   coder: { type: "code_diff", format: "markdown" },
+  // Auto-approved (soft-gate) stage, like every security_report artifact itself -- registered
+  // here purely so deriveStageStatus.js can tell "has run at least once" (shows Approved, since
+  // it's never anything but auto-approved) from "never run yet" (shows Action Required, from
+  // MANUAL_RUN_STAGES), not because a human ever makes a real approve/reject decision on it.
+  security: { type: "security_report", format: "json" },
 };
 
 // Back-compat plain type map, still useful for "which stage does this artifact_type belong
