@@ -17,11 +17,16 @@ computed. If the LLM provider is unreachable or returns something unparseable, t
 degrades to an empty findings list and a status note explaining why -- it never fails the whole
 scan, and the deterministic findings (this stage's actual evidence) are unaffected either way.
 
-Auto-approved, soft-gate stage: runs without an interrupt() gate (see
-graph_orchestrator_service._security_node) -- a Critical gate decision is clearly surfaced on the
-report and in the frontend, but never blocks pipeline advancement. A human decides whether to
-send the report to the Coder Agent (which automatically re-triggers this agent once that revision
-completes) or proceed anyway.
+Requires real human approval, like every other gated stage: the saved report is PENDING, not
+auto-approved -- a human must explicitly approve it (ApprovalPanel/GovernancePanel, generic
+machinery every other stage already uses, needs no security-specific changes). Approving opens a
+frontend popup (SecurityDecisionDialog.jsx) offering "proceed anyway" or "send this report to the
+Coder Agent to fix" -- the latter triggers a real Coder Agent revision and then automatically
+re-runs this agent once that revision completes, producing a new PENDING report that must be
+approved again, naturally looping until the human proceeds or a re-scan comes back clean (gate
+decision "pass", nothing left to send). This still runs without a LangGraph interrupt() gate (see
+graph_orchestrator_service._security_node, in AUTO_APPROVED_STAGES) -- that only affects the
+graph's own start()/resume() flow, not this artifact-level approval requirement.
 """
 
 from datetime import datetime, timezone
@@ -143,7 +148,7 @@ class SecurityAgent:
             project=project, feature=feature,
             agent_name=AgentName.SECURITY, artifact_type=ArtifactType.SECURITY_REPORT,
             filename="security_report_v{version}.json", data=report,
-            approval_status=ApprovalStatus.APPROVED,
+            approval_status=ApprovalStatus.PENDING,
         )
         md_artifact = artifact_service.save_text_artifact(
             project=project, feature=feature,
@@ -151,7 +156,7 @@ class SecurityAgent:
             artifact_format=ArtifactFormat.MARKDOWN,
             filename="security_report_v{version}.md", content=markdown,
             version_override=json_artifact.version,
-            approval_status=ApprovalStatus.APPROVED,
+            approval_status=ApprovalStatus.PENDING,
         )
 
         logger.info(

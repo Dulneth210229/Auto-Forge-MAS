@@ -1,8 +1,6 @@
 import { useArtifactContent } from "../../hooks/useArtifacts";
 import { useRunSecurityAgent } from "../../hooks/useSecurityAgent";
-import { useCoderAgentFlowContext } from "../workspace/CoderAgentFlowContext";
 import { DISPLAY_TIERS, groupFindingsByTier, toDisplayTier } from "../../lib/severityTiers";
-import { buildSecurityRevisionComment } from "../../lib/securityReportToRevisionComment";
 import SeverityBadge from "./SeverityBadge";
 import LoadingSpinner from "../common/LoadingSpinner";
 import ErrorBanner from "../common/ErrorBanner";
@@ -41,10 +39,16 @@ function FindingRow({ finding }) {
 // the backend's severity.py). Rendered from ResultTab.jsx's `stage === "security"` branch instead
 // of the generic ArtifactContentView, since a flat JSON tree doesn't serve this report's own
 // "categorize and color-code" requirement the way a dedicated view does.
+//
+// Deliberately has NO "send to Coder Agent" action of its own -- the report now requires real
+// human approval (agent.py's run() saves it PENDING, not auto-approved), and choosing to send it
+// to the Coder Agent only happens through SecurityDecisionDialog.jsx, which opens right after
+// approving. Letting this view trigger that same action directly would let a human bypass
+// approval entirely, defeating the point of requiring it. "Re-run Scan" stays here since it's an
+// independent, non-approval-gated action (just re-scanning, not accepting/escalating anything).
 export default function SecurityReportView({ artifact, featureId }) {
   const { data, isLoading, error } = useArtifactContent(artifact?.artifact_id ?? null);
   const report = data?.content_json;
-  const { handleReviseStream, reviseStream } = useCoderAgentFlowContext();
   const runSecurity = useRunSecurityAgent(featureId);
 
   // No report exists yet (never scanned, or the feature has no generated code yet) -- unlike
@@ -80,17 +84,6 @@ export default function SecurityReportView({ artifact, featureId }) {
 
   const groups = groupFindingsByTier(report.findings || []);
   const hasFindings = (report.findings || []).length > 0;
-  const isSending = reviseStream.isPending || runSecurity.isPending;
-
-  async function handleSendToCoder() {
-    await handleReviseStream({
-      revision_comment: buildSecurityRevisionComment(report),
-      revised_by: "security_agent_report",
-    });
-    // Closes the loop: once the Coder Agent's security-driven revision finishes, automatically
-    // re-scan the new code (direct user decision -- see the plan's "auto re-scan" confirmation).
-    runSecurity.mutate({ human_comment: "Re-scan after the Coder Agent's security-driven revision." });
-  }
 
   return (
     <div className="flex flex-col gap-5">
@@ -102,30 +95,18 @@ export default function SecurityReportView({ artifact, featureId }) {
             {report.warning_count} warning
           </p>
         </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
-          <button
-            type="button"
-            onClick={() => runSecurity.mutate({})}
-            disabled={isSending}
-            title="Re-scan the current code without going through the Coder Agent"
-            className="text-sm bg-white dark:bg-white/10 hover:bg-gray-50 dark:hover:bg-white/20 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 font-semibold px-3 py-1.5 rounded-md"
-          >
-            {runSecurity.isPending ? "Scanning..." : "Re-run Scan"}
-          </button>
-          {hasFindings && (
-            <button
-              type="button"
-              onClick={handleSendToCoder}
-              disabled={isSending}
-              className="text-sm bg-accent-600 hover:bg-accent-700 disabled:opacity-50 text-white font-semibold px-3 py-1.5 rounded-md"
-            >
-              {isSending ? "Sending..." : "Send to Coder Agent"}
-            </button>
-          )}
-        </div>
+        <button
+          type="button"
+          onClick={() => runSecurity.mutate({})}
+          disabled={runSecurity.isPending}
+          title="Re-scan the current code without going through the Coder Agent"
+          className="text-sm bg-white dark:bg-white/10 hover:bg-gray-50 dark:hover:bg-white/20 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 disabled:opacity-50 font-semibold px-3 py-1.5 rounded-md flex-shrink-0"
+        >
+          {runSecurity.isPending ? "Scanning..." : "Re-run Scan"}
+        </button>
       </div>
 
-      <ErrorBanner error={reviseStream.error || runSecurity.error} fallback="Failed to send the report to the Coder Agent." />
+      <ErrorBanner error={runSecurity.error} fallback="Failed to run the security scan." />
 
       {!hasFindings ? (
         <p className="text-sm text-gray-400 dark:text-gray-500 italic">No findings from any scan layer.</p>

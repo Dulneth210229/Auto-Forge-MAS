@@ -1,4 +1,5 @@
 import clsx from "clsx";
+import { useEffect } from "react";
 import { useFeatureArtifacts } from "../../hooks/useArtifacts";
 import { useFeature } from "../../hooks/useFeatures";
 import { useWorkspaceSelection } from "../workspace/WorkspaceSelectionContext";
@@ -40,11 +41,26 @@ export default function OutputPanel({ featureId }) {
   const { data: artifacts, isLoading, error } = useFeatureArtifacts(featureId);
   const { data: feature } = useFeature(featureId);
 
+  // Preview always shows the Coder Agent's live app preview regardless of which stage is
+  // actually selected -- misleading (and, per direct user request, removed entirely rather than
+  // just disabled-with-tooltip like "Files") while looking at the Security stage, which has no
+  // runnable preview of its own at all.
+  const visibleTabs = selectedAgent === "security" ? TABS.filter((tab) => tab.key !== "preview") : TABS;
+
+  // If the user was already on "preview" and then switches to Security (whose tab bar no longer
+  // has a button for it), fall back to "result" rather than leaving the panel stuck showing a
+  // tab with no way to navigate back to it via the bar itself.
+  useEffect(() => {
+    if (selectedAgent === "security" && activeOutputTab === "preview") {
+      setActiveOutputTab("result");
+    }
+  }, [selectedAgent, activeOutputTab, setActiveOutputTab]);
+
   return (
     <div className="h-full flex flex-col bg-white dark:bg-gray-900 rounded-lg shadow-sm border border-gray-200 dark:border-gray-800">
       <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-800 flex-shrink-0 px-2">
         <div className="flex items-center">
-          {TABS.map((tab) => {
+          {visibleTabs.map((tab) => {
             const disabled = DISABLED_TABS.has(tab.key);
             return (
               <button

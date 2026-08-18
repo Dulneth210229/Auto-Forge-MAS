@@ -97,7 +97,16 @@ PATTERN_RULES: list[tuple[str, str, str, str, str, str]] = [
      "Dynamic bracket property access keyed directly by a request-controlled parameter name "
      "(e.g. obj[req.query.sort]) is an object-injection / prototype-pollution-adjacent pattern; "
      "the accessor should be validated against an explicit allow-list of field names."),
-    ("SEC-JS-007", "CallExpression", r"^(Math)$", "low", "CWE-338",
+    # AST_SCAN_JS's own emit() only ever captures the CALLEE's final segment for a property-access
+    # call (callee.name.text, see PropertyAccessExpression handling below) -- for `Math.random()`
+    # that's "random", never "Math". A real, confirmed bug found via live testing: the rule
+    # originally matched `^(Math)$`, which the emitted name for this exact call can never equal,
+    # so it silently never fired. Matches on "random" instead, consistent with every OTHER
+    # property-access rule in this list (SEC-JS-003/004/005 all match the method/property name,
+    # never the receiver) -- not a qualified "Math.random" match, since AST_SCAN_JS doesn't emit
+    # the receiver at all; accepted the same way those other rules accept matching on method name
+    # alone.
+    ("SEC-JS-007", "CallExpression", r"^(random)$", "low", "CWE-338",
      "Math.random() is not cryptographically secure; do not use it to generate tokens, IDs used "
      "as secrets, or password-reset codes."),
 ]

@@ -1,0 +1,78 @@
+{
+  "project_name": "Sample E-commerce",
+  "feature_name": "Item Listing (CRUD)",
+  "generated_at": "2026-08-18T12:30:41.753550+00:00",
+  "gate_decision": "fail",
+  "findings_count": 6,
+  "critical_count": 4,
+  "moderate_count": 2,
+  "warning_count": 0,
+  "findings": [
+    {
+      "id": "SEC-JS-001:lib\\_security_recheck2.tsx:5",
+      "rule_id": "SEC-JS-001",
+      "layer": "pattern",
+      "severity": "critical",
+      "cwe": "CWE-95",
+      "file": "lib\\_security_recheck2.tsx",
+      "line": 5,
+      "message": "eval() executes a string as code; any tainted input reaching it is arbitrary code execution."
+    },
+    {
+      "id": "SEC-JS-003:lib\\_security_recheck2.tsx:9",
+      "rule_id": "SEC-JS-003",
+      "layer": "pattern",
+      "severity": "high",
+      "cwe": "CWE-78",
+      "file": "lib\\_security_recheck2.tsx",
+      "line": 9,
+      "message": "child_process.exec/execSync runs a string through a shell; unsanitized input is OS command injection."
+    },
+    {
+      "id": "SEC-SECRET-AWS-KEY:lib\\_security_recheck2.tsx:12",
+      "rule_id": "SEC-SECRET-AWS-KEY",
+      "layer": "secret",
+      "severity": "critical",
+      "cwe": "CWE-798",
+      "file": "lib\\_security_recheck2.tsx",
+      "line": 12,
+      "message": "AWS access key ID literal"
+    },
+    {
+      "id": "SEC-LLM:1",
+      "rule_id": "SEC-LLM-REVIEW",
+      "layer": "llm",
+      "severity": "critical",
+      "cwe": "CWE-78",
+      "file": "lib_security_recheck2.tsx",
+      "line": 5,
+      "message": "Potential Code Injection via eval -- The use of eval() on line 5 can execute arbitrary code if the input is not properly sanitized. This poses a significant risk as it allows attackers to run malicious scripts. Recommendation: Avoid using eval() and instead use safer alternatives like JSON.parse() for parsing data. If dynamic code execution is necessary, ensure the input is strictly validated and sanitized."
+    },
+    {
+      "id": "SEC-LLM:2",
+      "rule_id": "SEC-LLM-REVIEW",
+      "layer": "llm",
+      "severity": "high",
+      "cwe": "CWE-78",
+      "file": "lib_security_recheck2.tsx",
+      "line": 9,
+      "message": "Potential OS Command Injection via child_process.exec/execSync -- The use of child_process.exec/execSync on line 9 can lead to OS command injection if the input is not properly sanitized. This allows attackers to execute arbitrary shell commands. Recommendation: Avoid using child_process.exec/execSync with unsanitized input. Use child_process.spawn() or other safer alternatives where possible, and ensure all inputs are strictly validated."
+    },
+    {
+      "id": "SEC-LLM:3",
+      "rule_id": "SEC-LLM-REVIEW",
+      "layer": "llm",
+      "severity": "critical",
+      "cwe": "CWE-798",
+      "file": "lib_security_recheck2.tsx",
+      "line": 12,
+      "message": "Hardcoded AWS Access Key ID -- An AWS access key ID is hardcoded on line 12. Hardcoding credentials in source code exposes them to security risks such as unauthorized access and potential data breaches. Recommendation: Remove the hardcoded AWS access key ID. Use environment variables or secure vaults to manage sensitive credentials."
+    }
+  ],
+  "dependency_scan": {
+    "audit_exit_code": 1,
+    "audit_ran_offline": true,
+    "dependency_summary": {}
+  },
+  "llm_review_status": "LLM review layer ran successfully: 3 additional finding(s). Notes: The project contains several critical security issues that need immediate attention, including code injection vulnerabilities and exposure of sensitive credentials."
+}

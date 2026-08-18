@@ -10,12 +10,14 @@ import ArchitectureDiagramsGallery from "../pipeline/ArchitectureDiagramsGallery
 import UiuxPagePreviewsPanel from "../pipeline/UiuxPagePreviewsPanel";
 import { LiveGenerationView } from "../pipeline/RequirementConversationParts";
 import GovernancePanel from "../pipeline/GovernancePanel";
+import ApprovalPanel from "../pipeline/ApprovalPanel";
 import ArtifactList from "../pipeline/ArtifactList";
 import UiuxVersionGroupList from "../pipeline/UiuxVersionGroupList";
 import ErrorBanner from "../common/ErrorBanner";
 import ConfirmDialog from "../common/ConfirmDialog";
 import RequirementSrsOutputPanel from "./RequirementSrsOutputPanel";
 import SecurityReportView from "../security/SecurityReportView";
+import SecurityDecisionDialog from "../security/SecurityDecisionDialog";
 import { useWorkspaceSelection } from "../workspace/WorkspaceSelectionContext";
 import { useRequirementConversationFlowContext } from "../workspace/RequirementConversationFlowContext";
 import { useDomainAgentFlowContext } from "../workspace/DomainAgentFlowContext";
@@ -358,6 +360,12 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
   // re-trigger a second, conflicting Coder Agent run once one is already building.
   const approveContinuation = APPROVE_CONTINUATION_BY_STAGE[stage];
   const [confirmingArtifactId, setConfirmingArtifactId] = useState(null);
+  // Security is a parallel special case, not another APPROVE_CONTINUATION_BY_STAGE entry -- every
+  // other entry's shape is "approve -> auto-run the next agent," but approving a security report
+  // needs to ask the human what to do next (proceed anyway, or send it to the Coder Agent to fix)
+  // rather than silently continuing -- see SecurityDecisionDialog.jsx's own docstring for why no
+  // further loop-tracking state is needed beyond this one id.
+  const [securityDecisionArtifactId, setSecurityDecisionArtifactId] = useState(null);
   // Optional MongoDB URI a human can supply right in the UI/UX-approval popup (one of two new
   // entry points for this, alongside the standalone Database Connection panel reachable from
   // FeatureListPanel -- see DatabaseConnectionPanel.jsx) -- only ever read/reset for the uiux
@@ -406,6 +414,20 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
     }
   }
 
+  // Security's own approve handler -- no confirmation dialog first (unlike every other gated
+  // stage, there's nothing to warn about before approving; the real decision point is the popup
+  // AFTER approval, not before it), just the real approval call, then open the decision popup.
+  async function handleSecurityApprove(artifactId, comment) {
+    await srsApproval.mutateAsync({ artifactId, status: "approved", reviewer_comment: comment ?? null });
+    setSecurityDecisionArtifactId(artifactId);
+  }
+
+  // Shared by every approve-trigger surface for this stage (the "All Artifacts" list's own
+  // per-row Approve button AND GovernancePanel's "Stage Actions" one) so approving from either
+  // place opens the same decision popup, not just one of them.
+  const onApproveClickForStage =
+    stage === "security" ? handleSecurityApprove : approveContinuation ? requestApproveConfirmation : undefined;
+
   const confirmingArtifact = confirmingArtifactId
     ? stageArtifacts.find((a) => a.artifact_id === confirmingArtifactId)
     : null;
@@ -419,6 +441,7 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
 
   return (
     <div className="flex flex-col gap-5">
+      {stage !== "security" && (
       <div>
         <h3 className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wide mb-2">
           All Artifacts ({stage === "uiux" ? uiuxVersionCount : stageArtifacts.length})
@@ -439,7 +462,7 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
             // no longer suppressed for any row of the gating type (see ArtifactList's docstring).
             gatingArtifactType={STAGE_GATING_ARTIFACT[stage]?.type ?? null}
             featureId={featureId}
-            onApproveClick={approveContinuation ? requestApproveConfirmation : undefined}
+            onApproveClick={onApproveClickForStage}
             activeArtifactType={activeArtifactType}
             activeArtifactId={effectiveActiveArtifact?.artifact_id}
             settingActive={setActiveSelection.isPending}
@@ -449,6 +472,7 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
           />
         )}
       </div>
+      )}
 
       {isRevising ? (
         <LiveGenerationView
@@ -501,7 +525,69 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
         // run from (see pipelineStages.js's MANUAL_RUN_STAGES/REVISABLE_STAGES) -- SecurityReportView
         // itself renders the "Run Security Scan" empty-state action when `artifact` is null, so
         // this branch (unlike the generic ones below) fires regardless of versions.length.
-        <SecurityReportView artifact={versions[0] || null} featureId={featureId} />
+        //
+        // Deliberately skips the generic "All Artifacts" full-list AND GovernancePanel further
+        // down (both suppressed for this stage, see their own render guards) -- a compact version
+        // dropdown plus one inline approval control replaces both, so picking a version and
+        // approving/rejecting it happen in the same place instead of two differently-resolved
+        // surfaces (direct user request).
+        (() => {
+          const selectedSecurityArtifact = versions.find((v) => v.version === selectedVersion) || versions[0] || null;
+          const securityApproveLocked = selectedSecurityArtifact
+            ? Boolean(
+                stageArtifacts.find(
+                  (a) =>
+                    a.artifact_type === "security_report" &&
+                    a.approval_status === "approved" &&
+                    a.artifact_id !== selectedSecurityArtifact.artifact_id
+                )
+              )
+            : false;
+
+          return (
+            <div className="flex flex-col gap-4">
+              {versions.length > 0 && (
+                <div className="flex items-center justify-between">
+                  <select
+                    value={selectedVersion ?? ""}
+                    onChange={(e) => setSelectedVersion(Number(e.target.value))}
+                    className="text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md p-1.5 focus:outline-none focus:border-accent-500"
+                  >
+                    {versions.map((v) => (
+                      <option key={v.artifact_id} value={v.version} className="dark:bg-gray-800">
+                        v{v.version} -- {v.approval_status}
+                      </option>
+                    ))}
+                  </select>
+                  {selectedSecurityArtifact && (
+                    <a
+                      href={artifactDownloadUrl(selectedSecurityArtifact.artifact_id)}
+                      className="text-sm text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 font-semibold"
+                    >
+                      Download report
+                    </a>
+                  )}
+                </div>
+              )}
+
+              {selectedSecurityArtifact &&
+                (selectedSecurityArtifact.approval_status === "pending" ? (
+                  <ApprovalPanel
+                    featureId={featureId}
+                    artifact={selectedSecurityArtifact}
+                    approveLocked={securityApproveLocked}
+                    onApproveClick={(comment) => handleSecurityApprove(selectedSecurityArtifact.artifact_id, comment)}
+                  />
+                ) : (
+                  <p className="text-xs text-gray-400 dark:text-gray-500">
+                    v{selectedSecurityArtifact.version} is {selectedSecurityArtifact.approval_status}.
+                  </p>
+                ))}
+
+              <SecurityReportView artifact={selectedSecurityArtifact} featureId={featureId} />
+            </div>
+          );
+        })()
       ) : versions.length === 0 ? (
         <p className="text-sm text-gray-400 dark:text-gray-500 italic">No output yet for this stage.</p>
       ) : (
@@ -581,6 +667,7 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
         </div>
       )}
 
+      {stage !== "security" && (
       <div className="pt-4 border-t border-gray-100 dark:border-gray-800">
         <h3 className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wide mb-2">Governance</h3>
         <GovernancePanel
@@ -588,9 +675,10 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
           featureId={featureId}
           allArtifacts={allArtifacts}
           stageArtifacts={stageArtifacts}
-          onApproveClick={approveContinuation ? requestApproveConfirmation : undefined}
+          onApproveClick={onApproveClickForStage}
         />
       </div>
+      )}
 
       {approveContinuation && (
         <ConfirmDialog
@@ -637,6 +725,12 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
           )}
         </ConfirmDialog>
       )}
+
+      <SecurityDecisionDialog
+        artifactId={securityDecisionArtifactId}
+        featureId={featureId}
+        onClose={() => setSecurityDecisionArtifactId(null)}
+      />
     </div>
   );
 }

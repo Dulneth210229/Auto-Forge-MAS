@@ -12,6 +12,8 @@ import pytest
 from app.agents.security_agent import severity
 from app.agents.security_agent.agent import SecurityAgent
 from app.agents.security_agent.schemas import SecurityAgentOutput
+from app.services.in_memory_store import store
+from app.utils.id_generator import generate_id
 
 
 class TestSeverityTaxonomy:
@@ -179,3 +181,64 @@ class TestSecurityNodeArtifactIds:
             "last_artifact_ids": ["artifact_json_1", "artifact_md_1"],
             "human_comment": None,
         }
+
+
+class TestSecurityReportRequiresApproval:
+    """Real, confirmed reversal: the report used to be auto-approved (ApprovalStatus.APPROVED,
+    a soft-gate design) -- direct user request now requires genuine human approval before the
+    proceed-or-send-to-Coder-Agent popup can ever appear. Regression guard so this doesn't
+    silently revert to auto-approved later."""
+
+    @pytest.fixture
+    def feature_id(self, tmp_path):
+        project_id = generate_id("project")
+        fid = generate_id("feature")
+        store.projects[project_id] = {"project_id": project_id, "project_name": "Approval Test"}
+        store.features[fid] = {
+            "feature_id": fid,
+            "project_id": project_id,
+            "feature_name": "Approval Test Feature",
+        }
+        # A real, existing (but otherwise empty) directory is all `run()` needs past its
+        # early-return check -- the three scanners themselves are mocked below, so no real repo
+        # content is required.
+        (tmp_path / "repo").mkdir()
+
+        yield fid
+
+        store.database["features"].delete_one({"feature_id": fid})
+        store.database["projects"].delete_one({"project_id": project_id})
+
+    @pytest.mark.asyncio
+    async def test_run_saves_the_report_as_pending_not_approved(self, feature_id, tmp_path):
+        agent = SecurityAgent()
+
+        with (
+            patch("app.agents.security_agent.agent.workspace_service.get_repo_path", return_value=tmp_path / "repo"),
+            patch("app.agents.security_agent.agent.scan_dangerous_patterns", return_value=[]),
+            patch("app.agents.security_agent.agent.scan_secrets", return_value=[]),
+            patch(
+                "app.agents.security_agent.agent.scan_dependencies",
+                return_value={
+                    "findings": [],
+                    "audit_exit_code": 0,
+                    "audit_ran_offline": True,
+                    "dependency_summary": {},
+                },
+            ),
+            patch(
+                "app.services.llm_provider_service.llm_provider_service.get_provider",
+                side_effect=RuntimeError("no provider needed for this test"),
+            ),
+        ):
+            output = await agent.run(feature_id=feature_id)
+
+        assert output.status == "completed"
+        assert len(output.artifact_ids) == 2
+
+        for artifact_id in output.artifact_ids:
+            saved = store.artifacts[artifact_id]
+            assert saved["approval_status"] == "pending", (
+                f"artifact {artifact_id} was saved as {saved['approval_status']!r} -- "
+                "the Security Report must require real human approval, not auto-approve."
+            )

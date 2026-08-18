@@ -1,0 +1,128 @@
+{
+  "project_name": "Sample E-commerce",
+  "feature_name": "Item Listing (CRUD)",
+  "generated_at": "2026-08-18T11:50:26.987505+00:00",
+  "gate_decision": "fail",
+  "findings_count": 11,
+  "critical_count": 3,
+  "moderate_count": 7,
+  "warning_count": 1,
+  "findings": [
+    {
+      "id": "SEC-JS-001:lib\\_security_scan_test.tsx:12",
+      "rule_id": "SEC-JS-001",
+      "layer": "pattern",
+      "severity": "critical",
+      "cwe": "CWE-95",
+      "file": "lib\\_security_scan_test.tsx",
+      "line": 12,
+      "message": "eval() executes a string as code; any tainted input reaching it is arbitrary code execution."
+    },
+    {
+      "id": "SEC-JS-002:lib\\_security_scan_test.tsx:17",
+      "rule_id": "SEC-JS-002",
+      "layer": "pattern",
+      "severity": "high",
+      "cwe": "CWE-95",
+      "file": "lib\\_security_scan_test.tsx",
+      "line": 17,
+      "message": "new Function(...) constructs and executes code from a string, the same risk class as eval()."
+    },
+    {
+      "id": "SEC-JS-003:lib\\_security_scan_test.tsx:23",
+      "rule_id": "SEC-JS-003",
+      "layer": "pattern",
+      "severity": "high",
+      "cwe": "CWE-78",
+      "file": "lib\\_security_scan_test.tsx",
+      "line": 23,
+      "message": "child_process.exec/execSync runs a string through a shell; unsanitized input is OS command injection."
+    },
+    {
+      "id": "SEC-JS-004:lib\\_security_scan_test.tsx:28",
+      "rule_id": "SEC-JS-004",
+      "layer": "pattern",
+      "severity": "medium",
+      "cwe": "CWE-79",
+      "file": "lib\\_security_scan_test.tsx",
+      "line": 28,
+      "message": "document.write() with dynamic content is a classic DOM-based XSS sink."
+    },
+    {
+      "id": "SEC-JS-005:lib\\_security_scan_test.tsx:33",
+      "rule_id": "SEC-JS-005",
+      "layer": "pattern",
+      "severity": "high",
+      "cwe": "CWE-79",
+      "file": "lib\\_security_scan_test.tsx",
+      "line": 33,
+      "message": "dangerouslySetInnerHTML bypasses React's default escaping; unsanitized HTML here is stored/DOM XSS."
+    },
+    {
+      "id": "SEC-JS-006:lib\\_security_scan_test.tsx:38",
+      "rule_id": "SEC-JS-006",
+      "layer": "pattern",
+      "severity": "medium",
+      "cwe": "CWE-915",
+      "file": "lib\\_security_scan_test.tsx",
+      "line": 38,
+      "message": "Dynamic bracket property access keyed directly by a request-controlled parameter name (e.g. obj[req.query.sort]) is an object-injection / prototype-pollution-adjacent pattern; the accessor should be validated against an explicit allow-list of field names."
+    },
+    {
+      "id": "SEC-JS-007:lib\\_security_scan_test.tsx:44",
+      "rule_id": "SEC-JS-007",
+      "layer": "pattern",
+      "severity": "low",
+      "cwe": "CWE-338",
+      "file": "lib\\_security_scan_test.tsx",
+      "line": 44,
+      "message": "Math.random() is not cryptographically secure; do not use it to generate tokens, IDs used as secrets, or password-reset codes."
+    },
+    {
+      "id": "SEC-SECRET-AWS-KEY:lib\\_security_scan_test.tsx:48",
+      "rule_id": "SEC-SECRET-AWS-KEY",
+      "layer": "secret",
+      "severity": "critical",
+      "cwe": "CWE-798",
+      "file": "lib\\_security_scan_test.tsx",
+      "line": 48,
+      "message": "AWS access key ID literal"
+    },
+    {
+      "id": "SEC-SECRET-GENERIC-KEY:lib\\_security_scan_test.tsx:51",
+      "rule_id": "SEC-SECRET-GENERIC-KEY",
+      "layer": "secret",
+      "severity": "critical",
+      "cwe": "CWE-798",
+      "file": "lib\\_security_scan_test.tsx",
+      "line": 51,
+      "message": "Hardcoded API key / secret / access token literal"
+    },
+    {
+      "id": "SEC-LLM:1",
+      "rule_id": "SEC-LLM-REVIEW",
+      "layer": "llm",
+      "severity": "high",
+      "cwe": "CWE-89",
+      "file": "lib_security_scan_test.tsx",
+      "line": 12,
+      "message": "Potential SQL Injection in Database Query -- If user input is directly used to construct a database query without proper sanitization or parameterized queries, it can lead to SQL injection attacks. This risk is similar to the code execution vulnerabilities found in other parts of the file. Recommendation: Use parameterized queries or prepared statements to safely incorporate user input into database queries."
+    },
+    {
+      "id": "SEC-LLM:2",
+      "rule_id": "SEC-LLM-REVIEW",
+      "layer": "llm",
+      "severity": "high",
+      "cwe": "CWE-502",
+      "file": "lib_security_scan_test.tsx",
+      "line": 17,
+      "message": "Insecure Deserialization of User Input -- If user input is deserialized without proper validation, it can lead to remote code execution. This risk is similar to the arbitrary code execution vulnerabilities found in other parts of the file. Recommendation: Validate and sanitize user input before deserializing it. Consider using safer serialization formats like JSON."
+    }
+  ],
+  "dependency_scan": {
+    "audit_exit_code": 1,
+    "audit_ran_offline": true,
+    "dependency_summary": {}
+  },
+  "llm_review_status": "LLM review layer ran successfully: 2 additional finding(s). Notes: The file contains multiple security vulnerabilities related to code execution, command injection, XSS, and secret management. It is crucial to address these issues to prevent potential attacks."
+}
