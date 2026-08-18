@@ -62,17 +62,33 @@ def get_agentic_chat_model(agent_name: str = "coder_agent") -> BaseChatModel:
         # context length, for the agentic path specifically.
         extra_kwargs["num_ctx"] = settings.AGENTIC_OLLAMA_NUM_CTX
 
-    temperature = override.get("temperature")
-    if temperature is None:
-        temperature = llm_settings.get("temperature", settings.LLM_TEMPERATURE)
+    if provider == "anthropic":
+        # Two real bugs confirmed via live testing when this path is switched to Anthropic
+        # (only ever tested against Ollama until now):
+        # 1. init_chat_model/ChatAnthropic has no knowledge of this app's own Settings object --
+        #    it only ever resolves credentials from a real ANTHROPIC_API_KEY *OS environment
+        #    variable*. A real call without this fails with "Could not resolve authentication
+        #    method" even though settings.ANTHROPIC_API_KEY is genuinely set (loaded from .env
+        #    into our own pydantic Settings object, which python-dotenv/pydantic-settings
+        #    deliberately does NOT also mirror into os.environ). Passed explicitly per-call
+        #    instead of exporting to os.environ globally, so this stays scoped to this one model
+        #    instance rather than mutating process-wide environment state.
+        # 2. `temperature` -- see below, the identical fix already made for the one-shot
+        #    AnthropicProvider (app/providers/anthropic_provider.py's own comment has the full
+        #    story: this model generation rejects the field outright with a 400, not just
+        #    ignores it).
+        extra_kwargs["api_key"] = settings.ANTHROPIC_API_KEY
 
     timeout = override.get("timeout_seconds")
     if timeout is None:
         timeout = llm_settings.get("timeout_seconds", settings.LLM_TIMEOUT_SECONDS)
 
-    return init_chat_model(
-        model_string,
-        temperature=temperature,
-        timeout=timeout,
-        **extra_kwargs,
-    )
+    chat_model_kwargs: dict = {"timeout": timeout, **extra_kwargs}
+
+    if provider != "anthropic":
+        temperature = override.get("temperature")
+        if temperature is None:
+            temperature = llm_settings.get("temperature", settings.LLM_TEMPERATURE)
+        chat_model_kwargs["temperature"] = temperature
+
+    return init_chat_model(model_string, **chat_model_kwargs)

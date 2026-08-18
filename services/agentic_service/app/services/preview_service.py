@@ -223,6 +223,39 @@ class PreviewService:
 
         return len(containers)
 
+    def find_running_feature_for_project(self, project_id: str) -> str | None:
+        """
+        Which feature (if any) of this project currently has a live preview running.
+        The service's own invariant -- two different features of the same project can never
+        preview at once (_find_conflicting_feature enforces this on start) -- guarantees at most
+        one candidate, so this is a safe, unambiguous "which one" lookup for a project-scoped
+        caller that doesn't have (and shouldn't need) a specific feature_id in hand, e.g. the
+        database-connection routes restarting whatever preview happens to be running after a
+        human changes the project's saved MongoDB URI.
+        """
+        for feature_id, session in self._sessions.items():
+            if session.project_id == project_id:
+                return feature_id
+        return None
+
+    def restart_if_running(self, feature_id: str) -> bool:
+        """
+        Restart this feature's live preview if one is currently running (a no-op, returns False,
+        if it's already stopped) -- used whenever something changed that a running preview
+        container needs to pick up (a new Coder Agent revision landing on the same feature, or a
+        human saving/clearing this project's MongoDB connection string) but isn't itself a human
+        explicitly clicking Stop. Was CoderAgent._maybe_restart_running_preview; relocated here
+        since it only ever touches preview_service and a second, non-CoderAgent caller
+        (the database-connection routes) now needs the identical logic -- better one real
+        implementation on the service that owns the state than a third reimplementation
+        elsewhere.
+        """
+        if self.get_status(feature_id)["status"] == "stopped":
+            return False
+
+        self.start_preview(feature_id)
+        return True
+
     def _find_conflicting_feature(self, project_id: str, exclude_feature_id: str) -> str | None:
         for other_feature_id, session in self._sessions.items():
             if other_feature_id == exclude_feature_id:

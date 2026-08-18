@@ -136,6 +136,17 @@ class OllamaModelsResponse(BaseModel):
     models: list[str] = Field(default_factory=list)
 
 
+class AnthropicModelsResponse(BaseModel):
+    """
+    Response for GET /settings/llm/anthropic/models -- the real, current model IDs Anthropic's
+    own GET /v1/models reports for this account (never a hardcoded list, same "always live"
+    precedent as OllamaModelsResponse). Empty if ANTHROPIC_API_KEY isn't configured -- a missing
+    key degrades this to "no Claude models to offer," not an error.
+    """
+
+    models: list[str] = Field(default_factory=list)
+
+
 class OllamaAvailableModel(BaseModel):
     """One locally-pulled model, from `GET /api/tags` -- available to run, but not necessarily
     currently loaded into memory."""

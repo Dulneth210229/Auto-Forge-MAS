@@ -11,17 +11,24 @@ const TONE_BUTTON_CLASSES = {
 // looks and behaves the same, instead of each caller inventing its own inline confirm/cancel
 // affordance. `tone="danger"` (default) is red, for destructive actions; `tone="primary"` is the
 // accent color, for a confirmation that's just a "this has a real side effect, are you sure"
-// pause rather than a warning against data loss.
+// pause rather than a warning against data loss. `children`, when provided (currently only the
+// UI/UX-approval popup's optional MongoDB URI field, see ResultTab.jsx), renders extra
+// interactive content between the message and the error banner -- every other caller simply
+// omits it. `confirmDisabled` additionally disables Confirm beyond the existing `confirming`
+// state, for a caller that needs to block confirming on invalid `children` input (e.g. a
+// malformed URI) without a full loading state.
 export default function ConfirmDialog({
   open,
   onClose,
   onConfirm,
   title = "Are you sure?",
   message,
+  children,
   confirmLabel = "Confirm",
   confirmingLabel = "Working...",
   cancelLabel = "Cancel",
   confirming = false,
+  confirmDisabled = false,
   error = null,
   errorFallback = "Something went wrong.",
   tone = "danger",
@@ -30,6 +37,7 @@ export default function ConfirmDialog({
     <Modal open={open} onClose={onClose} title={title}>
       <div className="flex flex-col gap-4">
         {message && <p className="text-sm text-gray-600 dark:text-gray-300">{message}</p>}
+        {children}
         <ErrorBanner error={error} fallback={errorFallback} />
         <div className="flex justify-end gap-2">
           <button
@@ -43,7 +51,7 @@ export default function ConfirmDialog({
           <button
             type="button"
             onClick={onConfirm}
-            disabled={confirming}
+            disabled={confirming || confirmDisabled}
             className={`${TONE_BUTTON_CLASSES[tone] || TONE_BUTTON_CLASSES.danger} disabled:opacity-50 text-white text-sm font-semibold py-1.5 px-3 rounded`}
           >
             {confirming ? confirmingLabel : confirmLabel}

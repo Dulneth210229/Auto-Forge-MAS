@@ -1,0 +1,174 @@
+{
+  "files": [
+    {
+      "path": "models/Item.ts",
+      "action": "create",
+      "description": "Replace the 9 separate one-field Mongoose models with a single cohesive Mongoose model representing one Item document with all required fields: id (String, unique), name (String, required), description (String, optional), price (Number, required, min 0.01), quantity (Number, required, min 0), category (String, required), imageUrl (String, optional), createdAt (Date, default Date.now), updatedAt (Date, default Date.now). Uses the existing mongoose.models.X || mongoose.model(...) guard.",
+      "maps_to": [
+        "Item",
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005",
+        "FR-006",
+        "FR-007",
+        "FR-008",
+        "FR-009",
+        "FR-010"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "app/api/item-listing-crud/route.ts",
+      "action": "modify",
+      "description": "Rewrite the API route handler to implement real CRUD operations against the new Item model, including GET (list with search/sort/pagination), POST (create), PUT (update), and DELETE (remove) operations. The handler must query the Item model via Mongoose when connectToDatabase() succeeds, and serve realistic seed-data-shaped fallback only when connectToDatabase() returns null.",
+      "maps_to": [
+        "/api/items",
+        "/api/items/:id",
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005",
+        "FR-006",
+        "FR-007",
+        "FR-008",
+        "FR-009",
+        "FR-010"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "app/api/item-listing-crud/[id]/route.ts",
+      "action": "create",
+      "description": "Create a separate route handler for single-item operations (GET, PUT, DELETE) to support item-level CRUD operations as required by the feature specification.",
+      "maps_to": [
+        "/api/items/:id",
+        "FR-002",
+        "FR-004",
+        "FR-005"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "app/item-listing-crud/page.tsx",
+      "action": "modify",
+      "description": "Update the frontend page to add real Create, Edit, and Delete actions with a form for create/edit covering the same fields validated on the backend, and a delete action with confirmation step per row, all wired via fetch to the new real endpoints.",
+      "maps_to": [
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005",
+        "FR-006",
+        "FR-007",
+        "FR-008",
+        "FR-009",
+        "FR-010"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "lib/api/itemListingCRUD.ts",
+      "action": "modify",
+      "description": "Update the frontend API client to include functions for all CRUD operations (create, update, delete) in addition to the existing fetch function, with proper error handling and response types.",
+      "maps_to": [
+        "/api/items",
+        "/api/items/:id",
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005",
+        "FR-006",
+        "FR-007",
+        "FR-008",
+        "FR-009",
+        "FR-010"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "models/ItemListingCRUDDataEntity1.ts",
+      "action": "delete",
+      "description": "Delete the 9 separate one-field Mongoose models that are replaced by the single Item model.",
+      "maps_to": [
+        "Item Listing (CRUD)DataEntity1"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "models/ItemListingCRUDDataEntity2.ts",
+      "action": "delete",
+      "description": "Delete the 9 separate one-field Mongoose models that are replaced by the single Item model.",
+      "maps_to": [
+        "Item Listing (CRUD)DataEntity2"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "models/ItemListingCRUDDataEntity3.ts",
+      "action": "delete",
+      "description": "Delete the 9 separate one-field Mongoose models that are replaced by the single Item model.",
+      "maps_to": [
+        "Item Listing (CRUD)DataEntity3"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "models/ItemListingCRUDDataEntity4.ts",
+      "action": "delete",
+      "description": "Delete the 9 separate one-field Mongoose models that are replaced by the single Item model.",
+      "maps_to": [
+        "Item Listing (CRUD)DataEntity4"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "models/ItemListingCRUDDataEntity5.ts",
+      "action": "delete",
+      "description": "Delete the 9 separate one-field Mongoose models that are replaced by the single Item model.",
+      "maps_to": [
+        "Item Listing (CRUD)DataEntity5"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "models/ItemListingCRUDDataEntity6.ts",
+      "action": "delete",
+      "description": "Delete the 9 separate one-field Mongoose models that are replaced by the single Item model.",
+      "maps_to": [
+        "Item Listing (CRUD)DataEntity6"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "models/ItemListingCRUDDataEntity7.ts",
+      "action": "delete",
+      "description": "Delete the 9 separate one-field Mongoose models that are replaced by the single Item model.",
+      "maps_to": [
+        "Item Listing (CRUD)DataEntity7"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "models/ItemListingCRUDDataEntity8.ts",
+      "action": "delete",
+      "description": "Delete the 9 separate one-field Mongoose models that are replaced by the single Item model.",
+      "maps_to": [
+        "Item Listing (CRUD)DataEntity8"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "models/ItemListingCRUDDataEntity9.ts",
+      "action": "delete",
+      "description": "Delete the 9 separate one-field Mongoose models that are replaced by the single Item model.",
+      "maps_to": [
+        "Item Listing (CRUD)DataEntity9"
+      ],
+      "actually_touched": true
+    }
+  ]
+}

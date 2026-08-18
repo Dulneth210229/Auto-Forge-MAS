@@ -109,6 +109,17 @@ plausible-looking feature into a broken one that a human has to catch by hand):
   `NextResponse.json({ error: ... }, { status: 400 })` with a clear message if
   not. Do not pass unvalidated request input straight into a database query or a
   password/crypto function.
+- Never index an object with a plain `string`-typed value (e.g. one read from
+  `searchParams.get(...)`, a request body field, or a function parameter typed
+  `string`) without a type assertion or a real index signature -- this is a
+  genuine, confirmed `next build` type-check failure, not a style nitpick. A
+  dynamic sort/filter field is the most common place this happens:
+  `return a[sort] > b[sort] ? 1 : -1;` where `sort: string` fails to compile
+  with "Element implicitly has an 'any' type ... No index signature with a
+  parameter of type 'string' was found." Fix it with a typed lookup instead,
+  e.g. `return a[sort as keyof typeof a] > b[sort as keyof typeof b] ? 1 : -1;`
+  (only valid if `sort` is guaranteed to be one of that type's real keys) or by
+  giving the object a real index signature.
 - Approved UI/UX output (`read_ui_component_design`/`read_ui_page_design`) is a
   static HTML+Tailwind VISUAL REFERENCE, not working code and not something to
   import. Read it to see the real structure/Tailwind classes/content the human

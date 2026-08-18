@@ -27,7 +27,7 @@ class "TaskCommentsErrorResponse" as CLS_RESPONSE_002 <<dto>> {
   +comment: Object
 }
 
-class "Comment" as CLS_ENTITY_001 <<entity>> {
+class "TaskCommentsData" as CLS_ENTITY_001 <<entity>> {
   +storesCommentText: String
   +author: String
   +taskId: String

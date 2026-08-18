@@ -49,3 +49,18 @@ def strip_uri_from_comment(text: str, uri: str) -> str | None:
 
 def is_uri_only(text: str, uri: str) -> bool:
     return strip_uri_from_comment(text, uri) is None
+
+
+_URI_CREDENTIALS_PATTERN = re.compile(r"^(mongodb(?:\+srv)?://)([^@/]+)@")
+
+
+def mask_mongodb_uri(uri: str) -> str:
+    """
+    Redact a MongoDB URI's username/password (if present) for display -- the read side of the
+    database-connection feature must never echo a raw credential back over the API, mirroring
+    this module's own stated philosophy above ("there is no reason to show a credential to a
+    planner once it's handled here") applied to a human reviewer instead. A URI with no
+    credentials (e.g. a bare local `mongodb://localhost:27017/mydb`) is returned unchanged --
+    there's nothing to redact.
+    """
+    return _URI_CREDENTIALS_PATTERN.sub(r"\1***:***@", uri)

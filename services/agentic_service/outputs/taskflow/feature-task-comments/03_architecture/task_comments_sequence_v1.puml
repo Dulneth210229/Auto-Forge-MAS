@@ -11,7 +11,7 @@ boundary "TaskCommentsBoundary" as BOUNDARY_001
 control "TaskCommentsController" as CONTROL_001
 control "TaskCommentsService" as CONTROL_002
 entity "TaskCommentsRepository" as ENTITY_001
-database "Comment" as DATABASE_001
+database "TaskCommentsData" as DATABASE_001
 
 ACTOR_001 -> BOUNDARY_001: Submit Task Comments request
 BOUNDARY_001 -> CONTROL_001: POST /api/task-comments(TaskCommentsRequest)

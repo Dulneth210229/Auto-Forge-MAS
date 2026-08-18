@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { usePreviewStatus, useStartPreview, useStopPreview } from "../../hooks/usePreview";
+import { useFeature } from "../../hooks/useFeatures";
 import { useWorkspaceSelection } from "../workspace/WorkspaceSelectionContext";
+import { slugify } from "../../lib/slugify";
 import LoadingSpinner from "../common/LoadingSpinner";
 
 function RefreshIcon() {
@@ -50,6 +52,7 @@ function CollapseIcon() {
 // backend's registry is in-memory (see usePreviewStatus).
 export default function PreviewPanel({ featureId }) {
   const { data: status, isLoading } = usePreviewStatus(featureId);
+  const { data: feature } = useFeature(featureId);
   const startPreview = useStartPreview(featureId);
   const stopPreview = useStopPreview(featureId);
   const { isPreviewExpanded, togglePreviewExpanded } = useWorkspaceSelection();
@@ -58,15 +61,21 @@ export default function PreviewPanel({ featureId }) {
   // the iframe's own perspective, meaning contentWindow.location.reload() would throw. A remount
   // is the one refresh mechanism that works regardless of origin.
   const [reloadKey, setReloadKey] = useState(0);
+  // Generated apps register every feature under `/{slugify(feature_name)}` (see
+  // app/utils/slugify.py / the FEATURE_LINKS nav registry in the generated app/page.tsx) -- this
+  // is what lets Preview open directly on THIS feature's own page instead of the generic
+  // multi-feature home nav page every project's root "/" actually is.
+  const featureRoute = feature?.feature_name ? `/${slugify(feature.feature_name)}` : "";
   // Tracks the route the user has actually navigated to inside the iframe, reported by the
   // generated app's PreviewRouteAnnouncer via postMessage (the iframe is cross-origin, so this
   // is the only way to know -- contentWindow.location is unreadable by browser design). Reset on
-  // every reload/new preview_url so a stale path from a previous session/port never lingers.
-  const [currentPath, setCurrentPath] = useState("");
+  // every reload/new preview_url back to the feature's own route (not "") so a stale path from a
+  // previous session/port never lingers, and the URL bar/iframe still starts on THIS feature.
+  const [currentPath, setCurrentPath] = useState(featureRoute);
 
   useEffect(() => {
-    setCurrentPath("");
-  }, [reloadKey, status?.preview_url]);
+    setCurrentPath(featureRoute);
+  }, [reloadKey, status?.preview_url, featureRoute]);
 
   useEffect(() => {
     if (!status?.preview_url) return undefined;
@@ -236,7 +245,7 @@ export default function PreviewPanel({ featureId }) {
           <iframe
             key={reloadKey}
             title="Live preview"
-            src={status.preview_url}
+            src={`${status.preview_url}${featureRoute}`}
             className="w-full h-full min-h-[500px]"
           />
         </div>

@@ -3,7 +3,7 @@ Unit tests for env_uri.py -- MongoDB URI detection/extraction from a human's
 free-text chat message. Pure functions, no LLM/Docker/git.
 """
 
-from app.agents.coder_agent.env_uri import extract_mongodb_uri, is_uri_only, strip_uri_from_comment
+from app.agents.coder_agent.env_uri import extract_mongodb_uri, is_uri_only, mask_mongodb_uri, strip_uri_from_comment
 
 
 def test_extract_returns_none_for_no_uri():
@@ -70,3 +70,20 @@ def test_is_uri_only_true_and_false():
     assert is_uri_only(uri, uri) is True
     assert is_uri_only(f"  {uri}  ", uri) is True
     assert is_uri_only(f"{uri} also add a loading spinner", uri) is False
+
+
+def test_mask_redacts_srv_uri_credentials():
+    masked = mask_mongodb_uri("mongodb+srv://myuser:s3cr3t@cluster0.abcde.mongodb.net/mydb?retryWrites=true")
+    assert masked == "mongodb+srv://***:***@cluster0.abcde.mongodb.net/mydb?retryWrites=true"
+    assert "myuser" not in masked
+    assert "s3cr3t" not in masked
+
+
+def test_mask_redacts_plain_mongodb_uri_credentials():
+    masked = mask_mongodb_uri("mongodb://admin:password123@localhost:27017/mydb")
+    assert masked == "mongodb://***:***@localhost:27017/mydb"
+
+
+def test_mask_leaves_a_credential_free_uri_unchanged():
+    uri = "mongodb://localhost:27017/mydb"
+    assert mask_mongodb_uri(uri) == uri

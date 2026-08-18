@@ -1,0 +1,206 @@
+{
+  "files": [
+    {
+      "path": "models/ItemListingCRUDDataEntity1.ts",
+      "action": "create",
+      "description": "Mongoose model for the Item Listing (CRUD)DataEntity1 entity (id field) with the required mongoose model guard to prevent OverwriteModelError",
+      "maps_to": [
+        "Item Listing (CRUD)DataEntity1",
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005",
+        "FR-006",
+        "FR-007",
+        "FR-008",
+        "FR-009",
+        "FR-010"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "models/ItemListingCRUDDataEntity2.ts",
+      "action": "create",
+      "description": "Mongoose model for the Item Listing (CRUD)DataEntity2 entity (name field) with the required mongoose model guard to prevent OverwriteModelError",
+      "maps_to": [
+        "Item Listing (CRUD)DataEntity2",
+        "FR-003"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "models/ItemListingCRUDDataEntity3.ts",
+      "action": "create",
+      "description": "Mongoose model for the Item Listing (CRUD)DataEntity3 entity (description field) with the required mongoose model guard to prevent OverwriteModelError",
+      "maps_to": [
+        "Item Listing (CRUD)DataEntity3",
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005",
+        "FR-006",
+        "FR-007",
+        "FR-008",
+        "FR-009",
+        "FR-010"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "models/ItemListingCRUDDataEntity4.ts",
+      "action": "create",
+      "description": "Mongoose model for the Item Listing (CRUD)DataEntity4 entity (price field) with the required mongoose model guard to prevent OverwriteModelError",
+      "maps_to": [
+        "Item Listing (CRUD)DataEntity4",
+        "FR-003"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "models/ItemListingCRUDDataEntity5.ts",
+      "action": "create",
+      "description": "Mongoose model for the Item Listing (CRUD)DataEntity5 entity (quantity field) with the required mongoose model guard to prevent OverwriteModelError",
+      "maps_to": [
+        "Item Listing (CRUD)DataEntity5",
+        "FR-003"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "models/ItemListingCRUDDataEntity6.ts",
+      "action": "create",
+      "description": "Mongoose model for the Item Listing (CRUD)DataEntity6 entity (category field) with the required mongoose model guard to prevent OverwriteModelError",
+      "maps_to": [
+        "Item Listing (CRUD)DataEntity6",
+        "FR-003"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "models/ItemListingCRUDDataEntity7.ts",
+      "action": "create",
+      "description": "Mongoose model for the Item Listing (CRUD)DataEntity7 entity (imageUrl field) with the required mongoose model guard to prevent OverwriteModelError",
+      "maps_to": [
+        "Item Listing (CRUD)DataEntity7",
+        "FR-003"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "models/ItemListingCRUDDataEntity8.ts",
+      "action": "create",
+      "description": "Mongoose model for the Item Listing (CRUD)DataEntity8 entity (createdAt field) with the required mongoose model guard to prevent OverwriteModelError",
+      "maps_to": [
+        "Item Listing (CRUD)DataEntity8",
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005",
+        "FR-006",
+        "FR-007",
+        "FR-008",
+        "FR-009",
+        "FR-010"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "models/ItemListingCRUDDataEntity9.ts",
+      "action": "create",
+      "description": "Mongoose model for the Item Listing (CRUD)DataEntity9 entity (updatedAt field) with the required mongoose model guard to prevent OverwriteModelError",
+      "maps_to": [
+        "Item Listing (CRUD)DataEntity9",
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005",
+        "FR-006",
+        "FR-007",
+        "FR-008",
+        "FR-009",
+        "FR-010"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "app/api/item-listing-crud/route.ts",
+      "action": "create",
+      "description": "Next.js Route Handler implementing GET for Item Listing (CRUD) with request validation before any handler logic to ensure data integrity",
+      "maps_to": [
+        "/api/item-listing-crud",
+        "/api/item-listing-crud",
+        "/api/item-listing-crud",
+        "/api/item-listing-crud",
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005",
+        "FR-006",
+        "FR-007",
+        "FR-008",
+        "FR-009",
+        "FR-010"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "lib/api/itemListingCRUD.ts",
+      "action": "create",
+      "description": "API service layer to encapsulate calls to the /api/item-listing-crud endpoint for fetching item listings",
+      "maps_to": [
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005",
+        "FR-006",
+        "FR-007",
+        "FR-008",
+        "FR-009",
+        "FR-010"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "app/item-listing-crud/page.tsx",
+      "action": "create",
+      "description": "Main page for the Item Listing (CRUD) feature displaying items in a table with search/filtering and pagination controls",
+      "maps_to": [
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005",
+        "FR-006",
+        "FR-007",
+        "FR-008",
+        "FR-009",
+        "FR-010"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "app/page.tsx",
+      "action": "modify",
+      "description": "Adding a link to the new Item Listing (CRUD) page from the home page navigation",
+      "maps_to": [
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005",
+        "FR-006",
+        "FR-007",
+        "FR-008",
+        "FR-009",
+        "FR-010"
+      ],
+      "actually_touched": true
+    }
+  ]
+}

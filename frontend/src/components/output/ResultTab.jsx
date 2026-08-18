@@ -4,6 +4,7 @@ import { ARTIFACT_TYPE_STAGE, STAGE_GATING_ARTIFACT, dedupeArtifactVersions } fr
 import { getEffectiveActiveArtifact } from "../../lib/activeArtifactSelection";
 import { artifactDownloadUrl, featureCodeDownloadUrl } from "../../api/client";
 import { declutterJsonForDisplay } from "../../lib/streamingJsonDisplay";
+import { looksLikeMongoUri } from "../../lib/mongoUri";
 import ArtifactContentView from "../artifacts/ArtifactContentView";
 import ArchitectureDiagramsGallery from "../pipeline/ArchitectureDiagramsGallery";
 import UiuxPagePreviewsPanel from "../pipeline/UiuxPagePreviewsPanel";
@@ -356,9 +357,16 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
   // re-trigger a second, conflicting Coder Agent run once one is already building.
   const approveContinuation = APPROVE_CONTINUATION_BY_STAGE[stage];
   const [confirmingArtifactId, setConfirmingArtifactId] = useState(null);
+  // Optional MongoDB URI a human can supply right in the UI/UX-approval popup (one of two new
+  // entry points for this, alongside the standalone Database Connection panel reachable from
+  // FeatureListPanel -- see DatabaseConnectionPanel.jsx) -- only ever read/reset for the uiux
+  // stage's own dialog instance, every other stage's dialog never renders the field at all.
+  const [mongoUriDraft, setMongoUriDraft] = useState("");
+  const mongoUriIsValid = looksLikeMongoUri(mongoUriDraft);
   const srsApproval = useApprovalMutation(featureId);
 
   function requestApproveConfirmation(artifactId) {
+    setMongoUriDraft("");
     setConfirmingArtifactId(artifactId);
   }
 
@@ -387,7 +395,12 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
       } else if (approveContinuation.nextAgent === "uiux") {
         handleRunUiuxStream({ use_enhanced_srs_if_available: true, human_comment: null });
       } else if (approveContinuation.nextAgent === "coder") {
-        handleRunCoderStream({ use_enhanced_srs_if_available: true, human_comment: null });
+        // Safe by construction: run()/run_stream() (always what this fires, since UI/UX -> Coder
+        // is always a FIRST run, never a revision) never short-circuit on a URI-only comment the
+        // way revise() does -- passing one here saves it via the existing extract_mongodb_uri
+        // call in run_stream() AND still runs the full plan/code/verify cycle using the
+        // URI-stripped remainder for planning.
+        handleRunCoderStream({ use_enhanced_srs_if_available: true, human_comment: mongoUriDraft.trim() || null });
       }
     }
   }
@@ -576,7 +589,10 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
         <ConfirmDialog
           open={Boolean(confirmingArtifactId)}
           onClose={() => {
-            if (!srsApproval.isPending) setConfirmingArtifactId(null);
+            if (!srsApproval.isPending) {
+              setConfirmingArtifactId(null);
+              setMongoUriDraft("");
+            }
           }}
           onConfirm={handleConfirmedApprove}
           title={approveContinuation.title}
@@ -585,9 +601,34 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
           confirmingLabel="Approving..."
           tone="primary"
           confirming={srsApproval.isPending}
+          confirmDisabled={stage === "uiux" && mongoUriDraft.trim().length > 0 && !mongoUriIsValid}
           error={srsApproval.error}
           errorFallback="Failed to submit approval decision."
-        />
+        >
+          {stage === "uiux" && (
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">
+                MongoDB connection string (optional)
+              </label>
+              <input
+                type="text"
+                value={mongoUriDraft}
+                onChange={(e) => setMongoUriDraft(e.target.value)}
+                placeholder="mongodb+srv://user:password@cluster0.xxx.mongodb.net/mydb"
+                className="w-full px-3 py-2 text-sm font-mono border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md focus:outline-none focus:border-accent-500"
+              />
+              {mongoUriDraft.trim().length > 0 && !mongoUriIsValid && (
+                <p className="text-xs text-red-600 dark:text-red-400 mt-1">
+                  Must start with mongodb:// or mongodb+srv://
+                </p>
+              )}
+              <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                Leave blank to keep serving seed data, or add/change it later from the Database
+                Connection panel.
+              </p>
+            </div>
+          )}
+        </ConfirmDialog>
       )}
     </div>
   );

@@ -1,0 +1,145 @@
+{
+  "files": [
+    {
+      "path": "app/api/item-listing-crud/route.ts",
+      "action": "modify",
+      "description": "Fix TypeScript type error at the sort comparator by typing the sort key as a union of valid sortable item fields (e.g. `type SortKey = 'name' | 'price' | 'quantity' | 'category' | 'createdAt' | 'updatedAt'`), validating the incoming sort query param against that union (falling back to a default like 'name' if invalid) before using it to index items in a[sort]/b[sort] on both comparator branches, so the collection GET/POST endpoints and item-level PUT/DELETE logic in this handler type-check and build successfully.",
+      "maps_to": [
+        "/api/item-listing-crud",
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005",
+        "FR-006",
+        "FR-007",
+        "FR-008",
+        "FR-009",
+        "FR-010"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "models/ItemListingCRUDDataEntity1.ts",
+      "action": "modify",
+      "description": "Unchanged Mongoose model for the id/unique-identifier data entity, kept as-is from prior implementation; re-listed for entity traceability.",
+      "maps_to": [
+        "Item Listing (CRUD)DataEntity1"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "models/ItemListingCRUDDataEntity2.ts",
+      "action": "modify",
+      "description": "Unchanged Mongoose model for the name field data entity, kept as-is from prior implementation; re-listed for entity traceability.",
+      "maps_to": [
+        "Item Listing (CRUD)DataEntity2"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "models/ItemListingCRUDDataEntity3.ts",
+      "action": "modify",
+      "description": "Unchanged Mongoose model for the description field data entity, kept as-is from prior implementation; re-listed for entity traceability.",
+      "maps_to": [
+        "Item Listing (CRUD)DataEntity3"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "models/ItemListingCRUDDataEntity4.ts",
+      "action": "modify",
+      "description": "Unchanged Mongoose model for the price field data entity, kept as-is from prior implementation; re-listed for entity traceability.",
+      "maps_to": [
+        "Item Listing (CRUD)DataEntity4"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "models/ItemListingCRUDDataEntity5.ts",
+      "action": "modify",
+      "description": "Unchanged Mongoose model for the quantity field data entity, kept as-is from prior implementation; re-listed for entity traceability.",
+      "maps_to": [
+        "Item Listing (CRUD)DataEntity5"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "models/ItemListingCRUDDataEntity6.ts",
+      "action": "modify",
+      "description": "Unchanged Mongoose model for the category field data entity, kept as-is from prior implementation; re-listed for entity traceability.",
+      "maps_to": [
+        "Item Listing (CRUD)DataEntity6"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "models/ItemListingCRUDDataEntity7.ts",
+      "action": "modify",
+      "description": "Unchanged Mongoose model for the imageUrl field data entity, kept as-is from prior implementation; re-listed for entity traceability.",
+      "maps_to": [
+        "Item Listing (CRUD)DataEntity7"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "models/ItemListingCRUDDataEntity8.ts",
+      "action": "modify",
+      "description": "Unchanged Mongoose model for the createdAt timestamp data entity, kept as-is from prior implementation; re-listed for entity traceability.",
+      "maps_to": [
+        "Item Listing (CRUD)DataEntity8"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "models/ItemListingCRUDDataEntity9.ts",
+      "action": "modify",
+      "description": "Unchanged Mongoose model for the updatedAt timestamp data entity, kept as-is from prior implementation; re-listed for entity traceability.",
+      "maps_to": [
+        "Item Listing (CRUD)DataEntity9"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "lib/api/itemListingCRUD.ts",
+      "action": "modify",
+      "description": "Unchanged frontend API client calling the item-listing-crud endpoint for list/create/update/delete operations, kept as-is from prior implementation; re-listed for endpoint/requirement traceability.",
+      "maps_to": [
+        "/api/item-listing-crud",
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "app/item-listing-crud/page.tsx",
+      "action": "modify",
+      "description": "Unchanged Client Component page rendering the item list/table with search, filters, sort, and pagination controls plus create/edit/delete UI, kept as-is from prior implementation; re-listed for UI requirement traceability.",
+      "maps_to": [
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005",
+        "FR-006",
+        "FR-007",
+        "FR-008",
+        "FR-009",
+        "FR-010"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "app/page.tsx",
+      "action": "modify",
+      "description": "Unchanged home page navigation link to /item-listing-crud inside the FEATURE_LINKS markers, kept as-is from prior implementation.",
+      "maps_to": [
+        "FR-001"
+      ],
+      "actually_touched": true
+    }
+  ]
+}

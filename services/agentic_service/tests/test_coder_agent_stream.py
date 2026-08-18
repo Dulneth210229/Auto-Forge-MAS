@@ -605,10 +605,14 @@ async def test_revise_stream_short_circuits_on_uri_only_comment(agent, feature_w
         patch("app.agents.coder_agent.agent.preview_service") as mock_preview,
         patch.object(agent.planner, "generate_via_exploration") as mock_generate,
     ):
-        mock_preview.get_status.return_value = {"status": "stopped", "preview_url": None, "started_at": None}
+        # restart_if_running (relocated onto preview_service itself) is the ONE call CoderAgent
+        # makes now -- its own no-op-when-stopped/restart-when-running logic is covered directly
+        # by test_preview_service.py.
+        mock_preview.restart_if_running.return_value = False
 
         events = await _collect(agent.revise_stream(feature_id, request))
 
+    mock_preview.restart_if_running.assert_called_once_with(feature_id)
     mock_workspace.write_env_local.assert_called_once_with(project_id, {"MONGODB_URI": uri})
     mock_generate.assert_not_called()
     mock_workspace.resume_feature_branch.assert_not_called()
@@ -635,13 +639,11 @@ async def test_revise_stream_short_circuit_restarts_running_preview(agent, featu
         patch("app.agents.coder_agent.agent.workspace_service"),
         patch("app.agents.coder_agent.agent.preview_service") as mock_preview,
     ):
-        mock_preview.get_status.return_value = {
-            "status": "running", "preview_url": "http://localhost:54321", "started_at": "now"
-        }
+        mock_preview.restart_if_running.return_value = True
 
         events = await _collect(agent.revise_stream(feature_id, request))
 
-    mock_preview.start_preview.assert_called_once_with(feature_id)
+    mock_preview.restart_if_running.assert_called_once_with(feature_id)
     phase_events = [e for e in events if e["type"] == "phase"]
     assert any(e["phase"] == "restarting_preview" for e in phase_events)
     assert "Restarting the live preview" in events[-1]["message"]

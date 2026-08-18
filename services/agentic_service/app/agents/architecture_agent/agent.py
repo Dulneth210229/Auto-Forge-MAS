@@ -156,6 +156,21 @@ MAX_CLASS_REPAIR_ATTEMPTS = 2
 SEQUENCE_DIAGRAM_RECURSION_LIMIT = 20
 CLASS_DIAGRAM_RECURSION_LIMIT = 20
 
+# Matches a single per-field SRS `data_requirements` string, e.g.
+# "price (number, required, minimum value 0.01)" -> ("price", "number, required, minimum
+# value 0.01"). requirement_schema.py documents data_requirements as "the concrete fields of
+# ONE coherent entity" -- this is what lets the deterministic fallback below parse a real field
+# name/type/required-ness out of each item instead of (the real bug this fixes) treating every
+# item as its own separate entity.
+DATA_FIELD_DEFINITION_PATTERN = re.compile(r"^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\(([^)]*)\)")
+
+# Matches a single per-endpoint SRS `api_expectations` string, e.g. "POST /api/items" ->
+# ("POST", "/api/items"). Without this, every endpoint silently defaulted to GET (a real,
+# confirmed bug: 4 distinct CRUD endpoints collapsed into 4 duplicate GETs).
+API_ENDPOINT_DEFINITION_PATTERN = re.compile(
+    r"^\s*(GET|POST|PUT|PATCH|DELETE)\s+(\S+)", re.IGNORECASE
+)
+
 
 class ArchitectureAgent:
     """
@@ -3354,8 +3369,9 @@ class ArchitectureAgent:
         endpoints = []
 
         for item in api_expectations:
-            endpoint = item.get("endpoint", "")
-            method = item.get("method", "GET")
+            parsed = self._parse_endpoint_definition(item.get("description", ""))
+            endpoint = item.get("endpoint") or (parsed[1] if parsed else "")
+            method = item.get("method") or (parsed[0] if parsed else "GET")
             payload = item.get("payload", item.get("purpose", ""))
             related_ids = self._infer_related_requirement_ids_from_text(
                 text=f"{endpoint} {method} {payload}",
@@ -3402,22 +3418,36 @@ class ArchitectureAgent:
 
         data_entities = []
 
-        for index, item in enumerate(data_requirements, start=1):
-            data_name = (
-                item.get("data_point")
-                or item.get("name")
-                or item.get("field")
-                or f"{feature_name}DataEntity{index}"
-            )
+        # data_requirements describes the fields of ONE coherent entity (see
+        # requirement_schema.py's own field description, and
+        # DATA_FIELD_DEFINITION_PATTERN's docstring above) -- every item is aggregated into a
+        # single entity's field list, never treated as its own separate entity. Earlier code
+        # looped `enumerate(data_requirements, start=1)` and created one entity PER ITEM, which
+        # for a real 9-field "Item" feature produced 9 disconnected one-field Mongoose
+        # collections instead of one real Item model -- a confirmed, live bug.
+        if data_requirements:
+            fields = []
+            combined_text_parts = []
+
+            for item in data_requirements:
+                description = item.get("description") or str(item)
+                combined_text_parts.append(description)
+                parsed_field = self._parse_field_definition(description)
+                if parsed_field:
+                    fields.append(parsed_field)
+                else:
+                    fields.extend(self._infer_fields_from_text(description))
+
+            combined_text = " ".join(combined_text_parts)
 
             data_entities.append({
-                "name": data_name,
-                "purpose": item.get("description", f"Support data handling for {feature_name}."),
-                "fields": self._infer_fields_from_text(item.get("description", str(item))),
+                "name": f"{self._pascal_case(feature_name)}Data",
+                "purpose": f"Core data entity for the {feature_name} feature.",
+                "fields": fields,
                 "relationships": [],
-                "indexes_or_constraints": self._infer_data_constraints_from_text(item.get("description", str(item))),
+                "indexes_or_constraints": self._infer_data_constraints_from_text(combined_text),
                 "related_requirements": self._infer_related_requirement_ids_from_text(
-                    text=str(item),
+                    text=combined_text,
                     requirement_items=functional_requirements
                 )
             })
@@ -3862,6 +3892,46 @@ class ArchitectureAgent:
             })
 
         return points
+
+    def _parse_field_definition(self, description: str) -> dict[str, Any] | None:
+        """
+        Parses one `data_requirements` item written as "name (details)", e.g.
+        "price (number, required, minimum value 0.01)" ->
+        {"name": "price", "type": "Number", "required": True}. Returns None when the text
+        doesn't match this shape, so the caller can fall back to _infer_fields_from_text.
+        """
+        match = DATA_FIELD_DEFINITION_PATTERN.match(description)
+        if not match:
+            return None
+
+        field_name, detail = match.group(1), match.group(2).lower()
+
+        if any(keyword in detail for keyword in ("number", "integer", "float", "decimal")):
+            field_type = "Number"
+        elif any(keyword in detail for keyword in ("timestamp", "date")):
+            field_type = "Date"
+        elif "boolean" in detail or re.search(r"\bbool\b", detail):
+            field_type = "Boolean"
+        else:
+            field_type = "String"
+
+        required = any(
+            keyword in detail for keyword in ("required", "auto-generated", "auto-updated")
+        )
+
+        return {"name": self._camel_case(field_name), "type": field_type, "required": required}
+
+    def _parse_endpoint_definition(self, description: str) -> tuple[str, str] | None:
+        """
+        Parses one `api_expectations` item written as "METHOD /path", e.g.
+        "POST /api/items" -> ("POST", "/api/items"). Returns None when the text doesn't start
+        with a real HTTP method, so the caller can fall back to its existing GET default.
+        """
+        match = API_ENDPOINT_DEFINITION_PATTERN.match(description)
+        if not match:
+            return None
+
+        return match.group(1).upper(), match.group(2)
 
     def _infer_fields_from_text(self, text: str) -> list[dict[str, Any]]:
         words = re.findall(r"[A-Za-z][A-Za-z0-9_ ]{1,30}", text)

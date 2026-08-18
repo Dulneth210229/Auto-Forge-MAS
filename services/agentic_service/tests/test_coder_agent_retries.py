@@ -331,6 +331,81 @@ async def test_design_gap_retries_the_attempt_that_touches_frontend_not_hardcode
 
 
 @pytest.mark.asyncio
+async def test_ui_design_read_tracker_persists_across_attempts_within_one_call(agent):
+    """
+    Locks in the deliberate, documented coarsening: the tracker is created ONCE per
+    _code_with_retries call, not reset per attempt -- once ANY attempt has read a relevant
+    design, a LATER attempt is free to touch a DIFFERENT frontend file it never itself read
+    (e.g. a nav-link patch made while fixing an unrelated bug) without tripping the gate again.
+    A real, live run confirmed the per-attempt-reset alternative was actively harmful (consumed
+    the run's last attempt on a redundant re-read requirement instead of a real fix reaching
+    verify()) -- this test proves the fix without needing Docker/a real LLM.
+    """
+    code_plan = {
+        "files": [
+            {"path": "app/widgets/page.tsx", "action": "create", "rationale": "r", "maps_to": []},
+            {"path": "app/page.tsx", "action": "modify", "rationale": "nav link", "maps_to": []},
+        ]
+    }
+    manifest = {"pages": [{"page_id": "widgets", "components": [{"name": "WidgetList"}]}]}
+
+    mock_react_agent = AsyncMock()
+    mock_react_agent.ainvoke.return_value = None
+
+    # Distinguish the CUMULATIVE call (since=MAIN_BRANCH, i.e. the literal "main") from the
+    # PER-ATTEMPT call (since=attempt_start_sha -- some opaque mocked value, never equal to
+    # "main") by the actual `since` value each call receives, mirroring the established pattern
+    # in test_revision_start_sha_prevents_a_no_op_attempt_from_falsely_passing above.
+    per_attempt_calls = {"n": 0}
+
+    def _fake_get_touched_files(project_id, feature_id, since="main"):
+        if since == "main":
+            # Cumulative view for _find_plan_gaps: both planned files are done, relative to
+            # main, throughout -- neither attempt ever un-does the other's work.
+            return _touched(["app/widgets/page.tsx", "app/page.tsx"])
+        per_attempt_calls["n"] += 1
+        if per_attempt_calls["n"] == 1:
+            # Attempt 1's own delta: both files newly created this attempt.
+            return _touched(["app/widgets/page.tsx", "app/page.tsx"])
+        # Attempt 2's own delta: ONLY the nav-link re-touch -- it never recreates the page.
+        return _touched(["app/page.tsx"])
+
+    build_calls = {"n": 0}
+
+    def _fake_build_coder_react_agent(project_id, feature_id, plan, ui_manifest=None, tracker=None):
+        build_calls["n"] += 1
+        # Only attempt 1 (the very first build call) actually reads the design -- attempt 2
+        # never calls a read tool at all, simulating exactly the real observed scenario.
+        if build_calls["n"] == 1 and tracker is not None:
+            tracker["pages"].add("widgets")
+        return mock_react_agent
+
+    verify_results = iter([{"passed": False, "steps": [{"name": "x", "status": "failed", "output": "boom"}]}, {"passed": True, "steps": []}])
+
+    with (
+        patch(
+            "app.agents.coder_agent.agent.build_coder_react_agent",
+            side_effect=_fake_build_coder_react_agent,
+        ),
+        patch("app.agents.coder_agent.agent.workspace_service") as mock_workspace,
+    ):
+        mock_workspace.commit_changes.return_value = True
+        mock_workspace.get_touched_files.side_effect = _fake_get_touched_files
+
+        with patch.object(agent.verifier, "verify", side_effect=lambda *a, **k: next(verify_results)) as mock_verify:
+            verify_result, attempts = await agent._code_with_retries(
+                "proj_x", "feature_x", code_plan, ui_integration_manifest_json=manifest
+            )
+
+    # Both attempts reached real verify() -- neither was blocked by the design gate, confirming
+    # attempt 2's re-touch of the nav-link file (with zero reads of its own) was correctly
+    # tolerated because attempt 1 already satisfied the gate for the whole run.
+    assert mock_verify.call_count == 2
+    assert attempts == 2
+    assert verify_result["passed"] is True
+
+
+@pytest.mark.asyncio
 async def test_commit_changes_failure_is_treated_as_a_failed_attempt_not_a_crash(agent):
     """commit_changes() itself is called unguarded on the normal path -- a real GitPython
     error there (e.g. a stale index.lock) previously crashed the whole run() call the same way

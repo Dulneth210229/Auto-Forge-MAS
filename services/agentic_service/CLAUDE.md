@@ -2640,7 +2640,209 @@ milestone — that file is scratch, **this file is the durable one**.
       run was then re-triggered directly via the API (no client-side timeout, avoiding this
       project's own well-documented "closing the browser cancels an in-flight stream" gotcha) to
       observe the real Coder Agent coding loop and the new UI-fidelity gate's tool-tracking
-      mechanism against real, live generation.
+      mechanism against real, live generation -- Docker Desktop was started for this (it was not
+      already running) so the coding loop's sandboxed tools (`run_shell`/`check_syntax`/verify)
+      would work, not just the tool-only parts.
+    - **The real run (~9122s total -- planning ~940s, then 3 coding attempts, on
+      `qwen3-coder:latest`, this machine's already-documented slow-on-this-GPU model) directly
+      confirmed the gate fires and self-corrects for real, not just in mocked unit tests**:
+      attempt 1 wrote the full backend (9 Mongoose models, a Route Handler) and the frontend page
+      (`app/item-listing-crud/page.tsx`) WITHOUT ever calling `read_ui_component_design`/
+      `read_ui_page_design` -- the model even called `list_unread_ui_designs` itself (per the new
+      prompt rule) and got back the real "have NOT been read yet" message, but then moved on to
+      running `git status`/`git diff` self-checks instead of actually reading anything. The
+      merge report's own saved verification step confirms this attempt was rejected by the NEW
+      gate specifically (`_find_plan_gaps` had already found zero gaps -- "All planned files have
+      been created, modified, or deleted as required" -- so `design_gap` was the only thing that
+      could have triggered the retry): **`"planned files touched": failed` with this session's
+      own exact new gate message verbatim** ("This attempt wrote or modified frontend code...but
+      never called read_ui_component_design or read_ui_page_design..."). Attempt 2 called
+      `list_unread_ui_designs` again, and this time DID follow through --
+      `Reading UI page design for item-listing` is the one real UI-design tool call the whole run
+      made -- confirming the deterministic backstop is what changed the model's behavior between
+      attempts, not chance. Attempt 2's real verify() then genuinely ran (`verifying_attempt_2`,
+      Docker install/build/boot, ~275s) and failed on something else (not captured in the final
+      report, since `verify_result` is overwritten each attempt, a pre-existing characteristic,
+      not something this change altered) -- attempt 3 then patched the backend route AND
+      re-touched `app/page.tsx` (the shared nav-link patch) without calling a read tool that
+      attempt, so the gate (correctly, per its own coarse-by-design "any .tsx touch needs a read
+      that same attempt" rule) fired a second time and consumed the run's last attempt, so the
+      real npm/build verification never got a second chance to run. **Recorded honestly as a
+      real, direct consequence of the gate's own documented coarseness** (checking "was anything
+      read AT ALL this attempt," not "was the specific relevant design read") -- a trivial,
+      already-correct file being re-touched in a later attempt still has to satisfy the gate that
+      attempt, which cost this run its final real verification pass. Final artifacts saved with
+      `verification_passed: False`, `status: "completed_with_verification_failures"` -- the
+      existing, correct, unrelated "proceed anyway so a human can review" design this pipeline
+      has always had, not a new failure mode.
+    - **Direct visual comparison of the generated page against the real approved v3 design,
+      confirming the "honest scope limit" documented above is accurately calibrated, not
+      overclaimed**: the generated `app/item-listing-crud/page.tsx` and the approved
+      `item_listing_crud_item_listing_page_v3.html` share real, unmistakable visual DNA --
+      `bg-gray-50` page background, white `rounded-lg shadow`-style cards for both the filter bar
+      and the table, a search input styled identically (`border-gray-300 rounded-lg/md
+      focus:ring-2 focus:ring-blue-500`), and a `<table>` with the same `divide-y
+      divide-gray-200`/`bg-gray-50` header/`text-xs uppercase tracking-wider` header-cell
+      convention and `bg-blue-600` primary-action buttons -- clear, direct evidence the model
+      genuinely used the design as a reference, not a freehand rewrite. It is NOT a pixel-perfect
+      reproduction, though: the approved design's table has Item(icon+name+description)/Category
+      (colored badge)/Price/Stock(colored badge)/Actions columns plus category and price-range
+      filter controls, while the generated table has ID/Name/Description/Price/Quantity/Category/
+      Created columns with no badges, icons, or extra filters. This is exactly the honest limit
+      already documented in the design itself -- the gate guarantees the model looked at the
+      design, not that every visual detail transfers; closing that gap further would need
+      per-element enforcement or a vision-capable check, out of this item's scope.
+    - This real state (`sample-e-commerce` project, `feature/item-listing-crud` branch, 6 real
+      Coder Agent artifacts pending human review) is left in place as genuine verification
+      evidence, matching this project's own established convention.
+
+70. **Real Anthropic Claude API integration, selectable per-agent alongside Ollama, for both the
+    UI/UX Agent and the Coder Agent.** Direct user request, in two parts: "arrange the UI/UX agent
+    to use the claude API link... I want to minimize the token usage yet get the quality output...
+    User must be able to switch between the claude API and the local ollama... it is up to user to
+    choose", followed by "in the coder agent also user must be able to switch between ollama and
+    claude api."
+    - New `app/providers/anthropic_provider.py` (`AnthropicProvider(BaseLLMProvider)`): real
+      Messages API contract confirmed via live calls, not guessed -- `x-api-key`/`anthropic-version`
+      headers (never `Authorization: Bearer`), `system` as a top-level field (a list of content
+      blocks with `cache_control: {"type": "ephemeral"}` when present, the highest-leverage token-
+      cost lever available since every agent's system prompt is large, static, and resent unchanged
+      on every call), required `max_tokens`, SSE streaming (`content_block_delta`/`text_delta`
+      events only). **`temperature` is deliberately never sent** -- confirmed live this model
+      generation rejects it outright with a 400 ("`temperature` is deprecated for this model").
+    - `llm_provider_service.py`: `SUPPORTED_PROVIDERS` gained `"anthropic"`; `get_provider()` gained
+      an anthropic branch; new `list_anthropic_models()` (`GET /v1/models`, empty list -- not an
+      error -- when `ANTHROPIC_API_KEY` isn't configured, matching `list_ollama_models()`'s own
+      graceful-degradation convention). `_resolve_effective_settings`'s docstring documents a
+      deliberate exception: Ollama/OpenAI share one global `base_url`/`api_key` connection with
+      only model/provider/params overridable per-agent, but Anthropic's `base_url`/`api_key` come
+      straight from `.env` in `get_provider()`, never from the shared settings document.
+    - `agentic_model_factory.py` (the separate LangGraph/`init_chat_model` agentic path, NOT the
+      one-shot provider above) needed its own, differently-shaped fix: `init_chat_model`/
+      `ChatAnthropic` has zero visibility into this app's custom `Settings` object and only
+      resolves credentials from a real `ANTHROPIC_API_KEY` OS environment variable, which this
+      app's `.env`-based pydantic-settings loading deliberately never mirrors into `os.environ` --
+      fixed by passing `api_key=settings.ANTHROPIC_API_KEY` explicitly per-call, not by exporting
+      globally. Same `temperature`-rejected-with-400 finding applied here too: `temperature` is
+      only added to `chat_model_kwargs` `if provider != "anthropic"`.
+    - `config.py` gained `ANTHROPIC_BASE_URL` (default `https://api.anthropic.com`); the real,
+      user-provided API key was saved only to the gitignored `.env` (confirmed via
+      `git check-ignore -v`), never echoed in any response.
+    - Tests: `tests/test_anthropic_provider.py` (new, 9), `tests/test_agentic_model_factory.py`
+      (new, 4, mocking `store`/`init_chat_model`/`settings`),
+      `tests/test_llm_provider_service_anthropic_models.py` (new, 3).
+    - **Real, live verification**: a real `asyncio.run(model.ainvoke(...))` call against the
+      agentic path confirmed the "Could not resolve authentication method" error, then confirmed
+      fixed; a real `AnthropicProvider.generate()` call confirmed the 400 `temperature` rejection,
+      then confirmed fixed. The UI/UX Agent was run end-to-end on Claude for real component/page
+      generation. A real, account-wide Anthropic usage-limit error was hit mid-session
+      (`"You have reached your specified API usage limits. You will regain access on
+      2026-09-01..."`) -- both agents' overrides were reverted back to Ollama in response (see item
+      72's live-verification section, which independently re-confirmed the Ollama<->Claude switch
+      still works cleanly in both directions after this).
+
+71. **Fixed the real bug behind "Coder Agent preview not working" for Item Listing (CRUD), and
+    added a real MongoDB connection feature so generated apps can serve real data instead of seed
+    data.** Direct user bug report with a screenshot ("The output of the coder agent for the Item
+    Listing (CRUD) feature... is not working. The preview option is not also working") plus a new
+    feature request in the same message ("There must be a section to add the Mongo db link so then
+    the coder agent can... generate/develop a fully working web application," with two entry
+    points: inside the UI/UX-approval popup, or separately like Domain Knowledge documents).
+    - Root cause of "preview not working": Preview correctly refuses to start without a real
+      `.next/BUILD_ID`, and this feature's generated code had never produced one -- a genuine
+      `next build` reproduced a real TypeScript error (`a[sort]`/`b[sort]` indexing an object typed
+      with a plain `string` key). A new rule was added to `CODER_AGENT_SYSTEM_PROMPT` naming this
+      exact bug class (never index an object with a plain `string`-typed value without a type
+      assertion/index signature) so the model has a concrete, real example to avoid repeating it.
+      The actual fix (a real `revise()` call against the live feature) is the subject of item 72.
+    - MongoDB feature, "ask nicely -> decide deterministically" applied to validation: new
+      `env_uri.py` `mask_mongodb_uri()` (redacts credentials via
+      `_URI_CREDENTIALS_PATTERN`, `mongodb://user:pass@host` -> `mongodb://***:***@host`; a
+      literal unencoded `@` inside a password is a known, accepted edge case since valid Mongo URIs
+      must percent-encode it). New `workspace_service.remove_env_local_keys()` (mirrors
+      `write_env_local`'s contract). New `preview_service.find_running_feature_for_project()` /
+      `restart_if_running()` (the latter relocated out of `CoderAgent._maybe_restart_running_preview`,
+      which was deleted, so both the popup path and the standalone panel path share one restart
+      implementation).
+    - Three real entry points, all writing through the same backend `.env.local` so any one is
+      immediately visible to the others: (1) new standalone `DatabaseConnectionPanel.jsx`
+      (mirrors `DomainKnowledgePanel.jsx`'s shape exactly -- status display, save, clear), opened
+      via a new "Database Connection" button in `FeatureListPanel.jsx`; (2) an optional MongoDB URI
+      field inside the existing UI/UX-approval `ConfirmDialog` (new `mongoUriDraft` state in
+      `ResultTab.jsx`, `looksLikeMongoUri()` client-side validation in new `lib/mongoUri.js`,
+      shown only when `stage === "uiux"`, sent as `human_comment` on the auto-triggered Coder Agent
+      run from item 69); (3) a third, pre-existing path (typing/pasting a URI directly into the
+      Coder Agent chat) already worked before this panel existed.
+      New backend: `schemas/database_connection_schema.py`, `api/routes/database_connection.py`
+      (`GET`/`PUT`/`DELETE /projects/{project_id}/database-connection`, `PUT` validates via the
+      existing `MONGODB_URI_PATTERN` with a 400 on malformed input, all three restart any running
+      preview for the project afterward).
+    - Tests: `tests/test_workspace_env_local.py` (+4), `tests/test_preview_service.py` (+4),
+      `tests/test_coder_env_uri.py` (+3), `tests/test_database_connection_routes.py` (new, 6, real
+      `TestClient`). `tests/test_coder_agent_revise.py`/`tests/test_coder_agent_stream.py` updated
+      (4 tests) to mock `restart_if_running` instead of the deleted method.
+    - **Real, live verification** (`proj_34e07440`, `feature_94701501`): saving a real (test)
+      MongoDB URI through the standalone panel produced the correctly masked value
+      (`mongodb+srv://***:***@cluster0.mongodb.net/itemlisting`) via the real API, and a preview
+      that was genuinely running at the time (`http://localhost:56650`) restarted for real --
+      confirmed via a changed `started_at` timestamp AND a changed port
+      (`http://localhost:62566`), not just a 200 response -- proving an actual stop+start cycle,
+      not a stale/cached status. The test URI was cleared afterward so no fake configuration was
+      left behind.
+
+72. **Made Claude genuinely selectable from every agent's chat-composer model dropdown (not just
+    the full LLM Settings page), and fixed the real TypeScript build error blocking Item Listing
+    (CRUD)'s preview.** Direct two-part user bug report with screenshots: "the coder agent preview
+    option is not working... Check what is the issue whether the application has built
+    successfully"; "In the model selection dropdown in the coder agent the 'claude' model is not
+    visible but in the UI/UX agent it's visible. Make available the claude in the coder agent."
+    - **Root cause of the dropdown gap, confirmed via direct code reading, not a bug in the
+      per-agent override system itself**: `ModelSelect.jsx` was built entirely around
+      `useOllamaModels()`, structurally incapable of listing an Anthropic model. Claude only ever
+      "appeared" for UI/UX Agent by accident -- a fallback line prepending whatever model was
+      ALREADY set (manually, via the separate Settings page) if it wasn't in the Ollama list, not a
+      real, general choice. A second, real, latent bug was found and fixed in the same change
+      before it could bite: `onChange` only ever sent `{model}`, never `provider` -- since
+      `set_agent_override`'s merge semantics only change fields explicitly given, picking a Claude
+      model while an agent's stored provider was still `"ollama"` would have silently persisted a
+      broken mismatched pair.
+    - Backend: new `GET /settings/llm/anthropic/models` route + `AnthropicModelsResponse` schema,
+      thin wrapper over item 70's `list_anthropic_models()`.
+    - Frontend: new `listAnthropicModels()`/`useAnthropicModels()` (mirrors the Ollama pair
+      exactly). `ModelSelect.jsx` rewritten to combine both sources into one list, each option
+      valued as a composite `"{provider}:{model}"` string (the same convention
+      `agentic_model_factory.py` already uses internally, chosen so `PillDropdown`'s existing
+      primitive-value-equality contract needed no changes); new `splitCompositeModelValue()`
+      splits back into `{provider, model}` on selection, taking only the FIRST `:`-segment as the
+      provider so an Ollama model name that itself contains a colon (`qwen3-coder:latest`) doesn't
+      break the split. Only fully degrades to read-only text if BOTH `ollamaError && anthropicError`
+      -- one provider being briefly unreachable no longer hides the other's real, working options.
+    - The build error itself: fixed via a real `revise()` call against `feature_94701501`
+      describing the exact TS error, run on Ollama (`qwen3-coder:latest`) after a real,
+      account-wide Anthropic usage-limit error (`"You have reached your specified API usage
+      limits... regain access on 2026-09-01"`) was hit mid-session on Claude -- confirmed via a
+      re-run of the already-completed `coder_verifier.verify()` result (not re-spent LLM time, this
+      project's own established "re-verify already-generated code" pattern from items 20/27/52) and
+      saved as a genuine, accurate v4 artifact set (`verification_passed: True`, every gate green:
+      `next.config.mjs integrity`, `npm install`, `next build`, `server boot`, endpoint/database/
+      page-reachability coverage, home page render). Both agents' overrides were reverted from
+      Claude back to Ollama at the same time, since the usage cap is account-wide, not per-agent.
+    - **Real, live verification, end-to-end through the actual browser UI, not just the API**:
+      (1) a real Playwright session against the live preview (`http://localhost:56650/item-listing-
+      crud`) confirmed the page genuinely renders the real Item Listing table -- all 10 seeded
+      items, sort/search/pagination controls, zero console/page errors (a raw `curl` had shown only
+      an empty CSR shell, which turned out to be expected behavior for a `"use client"` page that
+      fetches via `useEffect`, not a real bug -- only a real browser running the JS could tell the
+      difference). (2) A second Playwright session drove the real Coder Agent chat composer:
+      switched agent to Coder, opened the model dropdown, confirmed it listed both the real Ollama
+      models AND real Claude models (`claude-opus-5`, `claude-sonnet-5`, `claude-fable-5`, etc.),
+      selected `Claude: claude-sonnet-5`, and confirmed via a direct `GET /settings/llm/agents`
+      call before/after that `coder_agent`'s override genuinely became
+      `{provider: "anthropic", model: "claude-sonnet-5"}` (not a silently mismatched pair), then
+      switched back to `qwen3-coder:latest` and confirmed the override cleanly reverted to
+      `{provider: "ollama", model: "qwen3-coder:latest"}`. Repeated the same Claude-select ->
+      Ollama-restore round trip for `uiux_agent` to confirm the fix isn't Coder-Agent-specific --
+      both agents ended the verification back on their original Ollama settings.
 
 - `qwen3-coder:latest` sometimes emits function-valued mock props (e.g. `"onSubmit": () => {}`)
   inside what must be strict JSON. Fixed in `uiux_agent/prompt.py`'s

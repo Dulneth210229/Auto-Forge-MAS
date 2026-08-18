@@ -22,6 +22,14 @@ export async function listOllamaModels() {
   return data.models;
 }
 
+// Model IDs currently available on the configured Anthropic account -- the Claude-side
+// counterpart to listOllamaModels above, so the chat model-picker can offer real Claude models
+// too, not just whichever one happens to already be selected.
+export async function listAnthropicModels() {
+  const { data } = await apiClient.get("/settings/llm/anthropic/models");
+  return data.models;
+}
+
 // Live server status (reachability + which models are actually loaded into memory and their
 // VRAM residency) -- distinct from getLlmSettings, which only reflects what's configured.
 // Never throws for an unreachable server; the backend reports `reachable: false` in a normal

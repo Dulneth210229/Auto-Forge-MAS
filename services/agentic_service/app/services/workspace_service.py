@@ -735,6 +735,33 @@ class WorkspaceService:
             values[key.strip()] = value.strip()
         return values
 
+    def remove_env_local_keys(self, project_id: str, keys: list[str]) -> bool:
+        """
+        Remove `keys` from `.env.local` at the workspace root, if present -- the removal
+        counterpart to write_env_local (which only ever merges values in; there was no way to
+        take one back out). Same contract: a no-op (returns False) if the file doesn't exist or
+        none of `keys` are currently present; otherwise rewrites the file with those keys gone
+        and every other key preserved untouched. Does not delete the file itself even if it ends
+        up empty -- a project may still want an empty `.env.local` present for a future write.
+        """
+        self.ensure_project_repo(project_id)
+        env_path = self._repo_path(project_id) / ".env.local"
+
+        if not env_path.exists():
+            return False
+
+        existing = self.read_env_local(project_id)
+        remaining = {key: value for key, value in existing.items() if key not in keys}
+
+        if remaining == existing:
+            return False
+
+        env_path.write_text(
+            "\n".join(f"{key}={value}" for key, value in remaining.items()) + ("\n" if remaining else ""),
+            encoding="utf-8",
+        )
+        return True
+
     def _feature_branch_name(self, feature_id: str) -> str:
         return f"feature/{self._feature_slug(feature_id)}"
 

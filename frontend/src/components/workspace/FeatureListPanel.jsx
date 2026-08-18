@@ -5,6 +5,7 @@ import { useDeleteFeature, useFeatures } from "../../hooks/useFeatures";
 import { useWorkspaceSelection } from "./WorkspaceSelectionContext";
 import FeatureListItem from "./FeatureListItem";
 import DomainKnowledgePanel from "./DomainKnowledgePanel";
+import DatabaseConnectionPanel from "./DatabaseConnectionPanel";
 import CreateFeatureForm from "../features/CreateFeatureForm";
 import EditProjectModal from "../projects/EditProjectModal";
 import DeleteProjectModal from "../projects/DeleteProjectModal";
@@ -24,6 +25,7 @@ export default function FeatureListPanel({ projectId }) {
   const navigate = useNavigate();
   const [showCreate, setShowCreate] = useState(false);
   const [showKnowledge, setShowKnowledge] = useState(false);
+  const [showDatabaseConnection, setShowDatabaseConnection] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
   const [deletingFeature, setDeletingFeature] = useState(null);
@@ -57,12 +59,20 @@ export default function FeatureListPanel({ projectId }) {
           </div>
         </div>
         <p className="text-xs text-gray-400 dark:text-gray-500 truncate">{project?.target_stack}</p>
-        <button
-          onClick={() => setShowKnowledge(true)}
-          className="text-xs font-semibold text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 mt-2 inline-flex items-center gap-1"
-        >
-          Domain Knowledge
-        </button>
+        <div className="flex items-center gap-3 mt-2">
+          <button
+            onClick={() => setShowKnowledge(true)}
+            className="text-xs font-semibold text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 inline-flex items-center gap-1"
+          >
+            Domain Knowledge
+          </button>
+          <button
+            onClick={() => setShowDatabaseConnection(true)}
+            className="text-xs font-semibold text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 inline-flex items-center gap-1"
+          >
+            Database Connection
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto p-2">
@@ -110,6 +120,15 @@ export default function FeatureListPanel({ projectId }) {
 
       <Modal open={showKnowledge} onClose={() => setShowKnowledge(false)} title="Domain Knowledge" size="wide">
         <DomainKnowledgePanel projectId={projectId} />
+      </Modal>
+
+      <Modal
+        open={showDatabaseConnection}
+        onClose={() => setShowDatabaseConnection(false)}
+        title="Database Connection"
+        size="wide"
+      >
+        <DatabaseConnectionPanel projectId={projectId} />
       </Modal>
 
       <EditProjectModal project={project} open={showEdit} onClose={() => setShowEdit(false)} />

@@ -405,7 +405,7 @@ class CoderAgent:
         if uri:
             workspace_service.write_env_local(project["project_id"], {"MONGODB_URI": uri})
             if is_uri_only(request.revision_comment, uri):
-                restarted = self._maybe_restart_running_preview(feature_id)
+                restarted = preview_service.restart_if_running(feature_id)
                 message = (
                     "Database connection saved. Restarting the live preview to use your real data."
                     if restarted
@@ -862,7 +862,7 @@ class CoderAgent:
         if uri:
             workspace_service.write_env_local(project["project_id"], {"MONGODB_URI": uri})
             if is_uri_only(request.revision_comment, uri):
-                restarted = self._maybe_restart_running_preview(feature_id)
+                restarted = preview_service.restart_if_running(feature_id)
                 yield {"type": "phase", "phase": "database_connection_saved", "label": "Database connection saved."}
                 if restarted:
                     yield {
@@ -1085,6 +1085,9 @@ class CoderAgent:
         prior_failure_output = None
         already_touched: dict[str, list[str]] | None = None
         verify_result: dict[str, Any] = {"passed": False, "steps": []}
+        # See the identical comment in _code_with_retries -- created once for the whole call,
+        # not per-attempt.
+        ui_design_read_tracker: dict[str, set[str]] = {"components": set(), "pages": set()}
 
         for attempt in range(1, MAX_CODING_ATTEMPTS + 1):
             yield {
@@ -1094,7 +1097,6 @@ class CoderAgent:
             }
 
             attempt_start_sha = workspace_service.ensure_project_repo(project_id).head.commit.hexsha
-            ui_design_read_tracker: dict[str, set[str]] = {"components": set(), "pages": set()}
             react_agent = build_coder_react_agent(
                 project_id, feature_id, code_plan_json, ui_integration_manifest_json, ui_design_read_tracker
             )
@@ -1308,23 +1310,6 @@ class CoderAgent:
             and artifact.get("artifact_type") in [ArtifactType.CODE_PLAN, ArtifactType.CODE_PLAN.value]
             and artifact.get("artifact_format") in [ArtifactFormat.JSON, ArtifactFormat.JSON.value]
         ]
-
-    def _maybe_restart_running_preview(self, feature_id: str) -> bool:
-        """
-        Restarts the live preview ONLY if one is currently running/stale for
-        this feature -- never starts one from stopped. preview_service's own
-        design is explicit Start only, never automatic; this is a narrow,
-        deliberate exception scoped to "refresh an already-running preview
-        so it picks up a freshly-saved .env.local," never "launch a new one
-        as a side effect of a chat message." Returns whether a restart
-        actually happened.
-        """
-        status = preview_service.get_status(feature_id)
-        if status["status"] == "stopped":
-            return False
-
-        preview_service.start_preview(feature_id)  # already does stop+restart internally
-        return True
 
     def _collect_cumulative_plan_files(self, feature_id: str) -> list[dict[str, Any]]:
         """
@@ -1761,10 +1746,17 @@ class CoderAgent:
         prior_failure_output = None
         already_touched: dict[str, list[str]] | None = None
         verify_result: dict[str, Any] = {"passed": False, "steps": []}
+        # Created ONCE for the whole call, not per-attempt -- see _find_unread_ui_design_gap's
+        # own docstring for why. Once any attempt of this run has genuinely read a relevant
+        # design, that satisfies "did this run consult the approved design at all" for every
+        # later attempt too, even one that only re-touches an unrelated frontend file (e.g. a
+        # nav-link patch) while fixing something else -- a real run confirmed re-demanding a
+        # fresh read on every single attempt could consume the run's last attempt on repeated
+        # compliance instead of ever reaching a second real verify() call.
+        ui_design_read_tracker: dict[str, set[str]] = {"components": set(), "pages": set()}
 
         for attempt in range(1, MAX_CODING_ATTEMPTS + 1):
             attempt_start_sha = workspace_service.ensure_project_repo(project_id).head.commit.hexsha
-            ui_design_read_tracker: dict[str, set[str]] = {"components": set(), "pages": set()}
             react_agent = build_coder_react_agent(
                 project_id, feature_id, code_plan_json, ui_integration_manifest_json, ui_design_read_tracker
             )
@@ -1970,20 +1962,33 @@ class CoderAgent:
     ) -> str | None:
         """
         Deterministic backstop for the advisory list_unread_ui_designs self-check tool: if an
-        approved UI/UX design exists for this feature and THIS ATTEMPT (not a cumulative,
-        whole-call view -- see the per-attempt `since=attempt_start_sha` caller) wrote/modified a
-        frontend file (under app/ or components/, the Next.js scaffold's real frontend roots,
-        matching style_checker.check_component_styling's own established scan scope) without ever
-        calling read_ui_component_design/read_ui_page_design during that same attempt, treat it
-        like a plan gap and retry with an explicit instruction to read the design first -- rather
-        than trusting the prompt-only instruction alone, this codebase's own repeatedly-documented
-        "ask nicely -> decide deterministically" lesson. Deliberately coarse (checks "was anything
-        read at ALL this attempt," not "was the SPECIFIC relevant design read") to avoid needing a
-        reliable path->component/page mapping that doesn't otherwise exist in this pipeline; still
-        catches the single most likely real failure mode -- the model ignoring the design
-        reference outright. Scoped per-attempt (not just attempt 1) precisely because a plan can
-        naturally split backend-first, so whichever attempt is the one that actually writes
-        frontend code is the one required to have read the design, regardless of its number.
+        approved UI/UX design exists for this feature and THIS ATTEMPT (checked per-attempt via
+        the caller's `since=attempt_start_sha` -- a plan can naturally split backend-first, so
+        whichever attempt is the one that actually writes frontend code is the one this needs to
+        catch, regardless of its number) wrote/modified a frontend file (under app/ or
+        components/, the Next.js scaffold's real frontend roots, matching
+        style_checker.check_component_styling's own established scan scope) while
+        `ui_design_read_tracker` (an object the CALLER creates ONCE per whole `_code_with_retries`
+        call, not per attempt -- see that method's own comment) is still completely empty, treat
+        it like a plan gap and retry with an explicit instruction to read the design first --
+        rather than trusting the prompt-only instruction alone, this codebase's own
+        repeatedly-documented "ask nicely -> decide deterministically" lesson.
+
+        Deliberately coarse in TWO ways, both accepted tradeoffs, not oversights:
+        1. "Was anything read at ALL," not "was the SPECIFIC relevant design read" -- avoids
+           needing a reliable path->component/page mapping this pipeline doesn't otherwise have;
+           still catches the single most likely real failure mode, the model ignoring the design
+           reference outright.
+        2. Per-RUN, not per-attempt, since the tracker persists across every attempt of one call:
+           once ANY attempt has read a relevant design, every LATER attempt is free to touch a
+           DIFFERENT, never-read design (or re-touch an unrelated frontend file, e.g. a nav-link
+           patch, while fixing something else entirely) without tripping this check again. A real,
+           live run confirmed the per-attempt-reset alternative is actively harmful: a later
+           attempt trying to fix a genuine bug got rejected by this exact check for re-touching an
+           already-correct nav-link file without a fresh read that attempt, consuming the run's
+           last attempt before its real fix could ever reach a second real verify() call. Weaker
+           as a per-page/component guarantee, but matches what a human reviewer actually means by
+           "did this run consult the approved design" -- once, not every single time.
         """
         if not ui_integration_manifest_json or not ui_integration_manifest_json.get("pages"):
             return None

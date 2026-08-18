@@ -16,6 +16,8 @@ Why:
 
 import httpx
 
+from app.core.config import settings
+from app.providers.anthropic_provider import ANTHROPIC_API_VERSION, AnthropicProvider
 from app.providers.base_provider import BaseLLMProvider
 from app.providers.ollama_provider import OllamaProvider
 from app.providers.openai_provider import OpenAIProvider
@@ -28,6 +30,7 @@ from app.schemas.llm_schema import (
     OllamaRunningModel,
     OllamaStatusResponse,
 )
+
 from app.services.in_memory_store import store
 
 # Every agent that can have its own LLM override configured through the UI. Security/QA/
@@ -47,9 +50,6 @@ class LLMProviderService:
     Service for managing LLM configuration and provider creation.
     """
 
-    # "anthropic" is accepted here so the shared settings document (also read by
-    # agentic_model_factory) can be set to it. get_provider() below does not implement
-    # an AnthropicProvider yet -- only the agentic (tool-calling) path uses Anthropic today.
     SUPPORTED_PROVIDERS = {"ollama", "openai", "anthropic"}
 
     def get_settings(self) -> LLMSettings:
@@ -127,10 +127,17 @@ class LLMProviderService:
         Merge a per-agent override (if any) onto the global defaults -- pure, no I/O; `document`
         must already be a fetched `store.llm_settings.get_document()` result.
 
-        `base_url`/`api_key` are intentionally never overridable per-agent -- every provider this
-        app talks to (Ollama daemon, OpenAI-compatible endpoint) is one shared connection, and
-        per-agent overrides only ever need to change WHICH model/provider/generation parameters
-        are used, not where to connect.
+        `base_url`/`api_key` are intentionally never overridable per-agent for Ollama/OpenAI --
+        both are one shared connection (one Ollama daemon, one OpenAI-compatible endpoint) this
+        whole app talks to, and per-agent overrides only ever need to change WHICH model/
+        provider/generation parameters are used, not where to connect. Anthropic is the one
+        exception, and deliberately NOT handled here: get_provider() sources its base_url/api_key
+        from `settings.ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY` (.env) directly, never from this
+        shared document, for the same reason agentic_model_factory.py already treats Anthropic's
+        credential as a separate, provider-specific value rather than the shared field -- an
+        agent switched to Anthropic is deliberately using a categorically different connection
+        than whatever Ollama/OpenAI endpoint the shared fields point at, not a same-family model
+        swap the way choosing a different Ollama model is.
         """
         override = document.get("agent_overrides", {}).get(agent_name, {}) if agent_name else {}
 
@@ -173,6 +180,19 @@ class LLMProviderService:
                 timeout_seconds=current["timeout_seconds"],
             )
 
+        if provider_name == "anthropic":
+            # base_url/api_key come from .env (settings), not `current` -- see
+            # _resolve_effective_settings's own docstring for why Anthropic is the one
+            # exception to "base_url/api_key are shared, never per-agent."
+            return AnthropicProvider(
+                model=current["model"],
+                base_url=settings.ANTHROPIC_BASE_URL,
+                api_key=settings.ANTHROPIC_API_KEY,
+                temperature=current["temperature"],
+                max_tokens=current["max_tokens"],
+                timeout_seconds=current["timeout_seconds"],
+            )
+
         raise ValueError(f"Unsupported LLM provider: {provider_name}")
 
     async def list_ollama_models(self) -> list[str]:
@@ -193,6 +213,32 @@ class LLMProviderService:
         data = response.json()
 
         return [model["name"] for model in data.get("models", []) if model.get("name")]
+
+    async def list_anthropic_models(self) -> list[str]:
+        """
+        List the real, current model IDs available on the Anthropic account configured via
+        settings.ANTHROPIC_API_KEY (.env) -- same "always live, real, current" precedent as
+        list_ollama_models, confirmed via a real call to work exactly like Anthropic's own
+        documented `GET /v1/models` contract (`{"data": [{"id": "...", ...}, ...]}`).
+
+        Returns [] (never raises) when no key is configured -- a missing key means "nothing to
+        offer," not a hard failure the chat model-picker should block on.
+        """
+        if not settings.ANTHROPIC_API_KEY:
+            return []
+
+        headers = {
+            "x-api-key": settings.ANTHROPIC_API_KEY,
+            "anthropic-version": ANTHROPIC_API_VERSION,
+        }
+
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(f"{settings.ANTHROPIC_BASE_URL}/v1/models", headers=headers)
+
+        response.raise_for_status()
+        data = response.json()
+
+        return [model["id"] for model in data.get("data", []) if model.get("id")]
 
     async def get_ollama_status(self) -> OllamaStatusResponse:
         """
