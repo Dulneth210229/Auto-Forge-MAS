@@ -44,6 +44,18 @@ def _seed_artifact(feature_id: str, agent_name: str, artifact_type: str, file_pa
     return artifact_id
 
 
+@pytest.fixture(autouse=True)
+def _assume_tool_calling_supported():
+    """These pre-existing tests exercise the agentic revision-planning/coding path specifically
+    (mocking generate_via_exploration/_code_with_retries directly). Without this, the real,
+    unmocked model_capabilities.supports_tool_calling() probe runs against whatever Ollama server
+    happens to be configured in this environment -- unreachable in CI/local dev without a running
+    Ollama -- and its designed-safe default (False on any probe failure) silently routes these
+    tests into the new non-agentic batch coding path instead, which they never mock for."""
+    with patch("app.services.model_capabilities.supports_tool_calling", AsyncMock(return_value=True)):
+        yield
+
+
 @pytest.fixture
 def feature_with_prior_run(tmp_path):
     project_id = generate_id("project")

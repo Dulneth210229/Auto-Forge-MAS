@@ -36,7 +36,6 @@ from app.services.artifact_service import artifact_service
 from app.schemas.requirement_schema import (
     RequirementAgentRunRequest,
     RequirementAgentReviseRequest,
-    RequirementAgentFieldEditRequest,
 )
 from app.schemas.requirement_conversation_schema import (
     RequirementConversationConfirmRequest,
@@ -193,42 +192,6 @@ async def revise_requirement_agent_stream(feature_id: str, request: RequirementA
             ) + "\n"
 
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")
-
-
-@router.post("/requirement/edit", response_model=AgentRunResponse)
-async def edit_requirement_agent_fields(feature_id: str, request: RequirementAgentFieldEditRequest):
-    """
-    Apply direct field-by-field edits to the latest SRS -- no LLM call, deterministic
-    apply_revision_operations only. Backend counterpart to the field-by-field inline-edit UI
-    (business_goal/a single functional requirement/etc.), as opposed to /requirement/revise's
-    plain-English, LLM-mediated flow.
-    """
-
-    _validate_feature(feature_id)
-    stage_event_service.record(
-        feature_id,
-        AgentName.REQUIREMENT,
-        "edit",
-        f"Manual field edit ({len(request.operations)} operation(s))",
-        request.edited_by,
-    )
-
-    try:
-        return await requirement_agent.edit_fields(
-            feature_id=feature_id,
-            operations=[op.model_dump(exclude_none=True) for op in request.operations],
-            edited_by=request.edited_by,
-            base_artifact_id=request.base_artifact_id,
-        )
-
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error))
-
-    except Exception as error:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Requirement Agent field edit failed: {_readable_error(error)}"
-        )
 
 
 # ----------------------------------------------------------------------

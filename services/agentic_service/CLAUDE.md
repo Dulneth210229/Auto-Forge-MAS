@@ -6416,6 +6416,107 @@ milestone — that file is scratch, **this file is the durable one**.
       cumulative-plan-file entry that has never once corresponded to a real file across several
       attempts), out of this session's own scope.
 
+77. **Requirement Agent: removed direct inline SRS editing (chat-only going forward), fixed a
+    real `GovernancePanel.jsx` approve-lock gap, generalized the "Using X vN for Y Agent"
+    indicator to every stage, and fixed a real regression the immediately-prior Coder Agent
+    Phase C work (item 76) had introduced into 8 pre-existing tests.** Three direct user
+    requests, the third with a screenshot of the Domain Agent's own "Using SRS v20 for Domain
+    Agent" indicator as the reference example for generalizing it project-wide.
+    - **Inline editing removed, Domain Agent highlighting kept**: `EnrichedItemList.jsx`/
+      `EnrichedPlainList.jsx` were simplified to permanently read-only (edit/remove/add code
+      paths + `canEdit`/`onEdit` props stripped) rather than deleted outright -- both also render
+      Domain Agent's own enrichment highlighting (green "Added by Domain Agent" cards, items
+      42/45/49/50), a separate, valuable feature the user did NOT ask to remove; an Explore
+      agent's first-draft research report recommended deleting both files outright, caught and
+      corrected by directly reading them before finalizing the plan. `EditableScalarField.jsx`
+      (genuinely edit-only, no enrichment concept for a scalar field) deleted outright.
+      `SrsDocumentViewer.jsx`/`ArtifactContentView.jsx`/`ResultTab.jsx` had their
+      `featureId`/`editable`/`canEdit`/`onEdit` machinery stripped (permanently read-only now).
+      Backend: `RequirementAgent.edit_fields()`, the `POST /requirement/edit` route, and
+      `SrsFieldEditOperation`/`RequirementAgentFieldEditRequest` schemas deleted outright --
+      confirmed unused by anything else, including the chat-driven revision flow (item 57), which
+      shares `revision_patcher.apply_revision_operations` but is otherwise a fully separate code
+      path, left untouched.
+    - **`GovernancePanel.jsx` approve-lock gap**: its own "Stage Actions" `ApprovalPanel` call
+      never passed `approveLocked` at all, unlike `ArtifactList.jsx`'s already-correct per-row
+      computation (item 40) and `ResultTab.jsx`'s Security-stage special case. Fixed by computing
+      the identical `Boolean(approvedSibling)` check locally and passing it through -- mirrors
+      `ArtifactList.jsx`'s logic exactly, no new mechanism invented.
+    - **Generalized "Using X vN for Y Agent" indicator** (`OutputPanel.jsx`): replaced the old
+      2-entry `NEXT_AGENT_BY_ARTIFACT_TYPE` map with a stage-keyed
+      `PREVIOUS_STAGE_INPUTS_BY_STAGE` config supporting multiple pills per stage (Coder needs 2:
+      Architecture Plan + UI/UX Output), a fallback artifact type (Architecture stage: Enhanced
+      SRS if approved, else plain SRS, matching the real `srs_for_generation = enhanced_srs_json
+      or srs_json` backend logic), and a separate `NO_ARTIFACT_VERSION_LABEL_BY_STAGE` map for
+      Security/QA (which scan the live workspace directly, confirmed via their own backend code
+      -- no formal approved-artifact input exists for either) rendering an honest, non-versioned
+      label instead of a fabricated pill. `getEffectiveActiveArtifact`
+      (`frontend/src/lib/activeArtifactSelection.js`) needed zero changes -- already fully
+      generic over `(artifacts, activeSelection, artifactType, artifactFormat)`.
+    - **A real regression found in the pre-existing test suite, introduced by item 76's own
+      dispatch logic, not by this session's Requirement Agent work**: running the full backend
+      suite after the above changes surfaced 8 unexpected failures, all in
+      `test_coder_agent_stream.py`/`test_coder_agent_revise.py` -- item 76's new
+      `_run_coding_phase` dispatch (added to `run()`/`revise()`/`run_stream()`/`revise_stream()`)
+      unconditionally calls the real `model_capabilities.supports_tool_calling(...)`, but these
+      8 pre-existing tests (written before that dispatch existed) never mock it -- so it performs
+      a real Ollama capability probe, which fails/returns falsy whenever Ollama isn't reachable
+      in the current environment (confirmed directly: Ollama was NOT running at the time these
+      tests were run), silently routing them into the new, untested-by-them batch coding path
+      instead of the agentic path (`_code_with_retries`/`_code_with_retries_stream`) they were
+      written to exercise and assert against (e.g. checking for a `"coding_attempt_1_of_3"`
+      phase event, which only the agentic path emits). **Fixed with a new `autouse=True` fixture
+      at the top of each file** (`_assume_tool_calling_supported`) patching
+      `app.services.model_capabilities.supports_tool_calling` to always return `True` for the
+      whole file -- correct because every test in both files specifically exercises/asserts on
+      the agentic path, never the new batch path (which has its own dedicated, already-correctly-
+      mocked test file, `test_coder_agent_batch_generation.py`). **Any future pre-existing test
+      file that calls `CoderAgent.run()`/`revise()`/`run_stream()`/`revise_stream()` and assumes
+      the agentic path must mock `model_capabilities.supports_tool_calling` (or use this same
+      autouse-fixture pattern) — it is no longer a no-op default, and depends on live Ollama
+      reachability if left unmocked.** Full suite re-confirmed clean after the fix: **784
+      passed**, 0 failed.
+    - **Real, live verification** (isolated backend :8090 / frontend :5199, real LLM calls,
+      `qwen2.5-coder:14b`, real fresh project + feature "Wishlist Sharing"): generated and
+      approved a real SRS v1 via the API, ran a real Domain Agent enrichment with an explicit
+      human-provided schema comment, approved the resulting Enhanced SRS v1, and drove one real
+      chat-driven revision (`/requirement/revise`) producing a genuinely new, still-pending SRS
+      v2. Confirmed via direct DOM inspection (not just visual screenshots): zero pencil/edit
+      affordances anywhere in the FR/NFR/AC/user-story cards; the real Domain Agent enrichment
+      rendered as a green "ADDED BY DOMAIN AGENT" card with `Source: human_provided` citation
+      directly under Data Requirements, with `domain_improvements` still correctly rendered as a
+      read-only attachment (not a separate approvable row, item 42); the "Using SRS v1 for Domain
+      Agent" and "Using Enhanced SRS v1 for Architecture Agent" pills both rendered correctly;
+      Security/QA both correctly showed their honest "Scanning/Testing the latest generated code"
+      labels instead of a fabricated pill; and, with v1 approved and v2 pending, v2's real Approve
+      button was confirmed via `is_disabled()` to be genuinely `disabled=True` with the exact
+      "Another version is already approved -- reject it first..." tooltip, while its Reject/
+      Request Revision buttons remained genuinely enabled -- confirming `ArtifactList.jsx`'s
+      pre-existing lock (item 40) is unaffected and consistent with the newly-fixed
+      `GovernancePanel.jsx` computation. Test project/feature deleted via the real `DELETE
+      /projects/{id}` endpoint afterward; isolated backend/frontend processes stopped.
+
+78. **Real, reported rendering bug: a literal "\2022" appeared overlapping the text of every
+    plain-list SRS bullet (Scope, Out of Scope, Constraints, Risks, Dependencies, Data
+    Requirements, etc.), on the user's own real, live "Item Listing (CRUD)" feature.**
+    Root-caused directly in `frontend/src/components/documents/EnrichedPlainList.jsx`: the
+    bullet marker used a Tailwind arbitrary-value class, `before:content-['\\2022']` -- a
+    **double** backslash in the raw JSX source. Since a bare (non-`{}`-wrapped) JSX attribute
+    string is NOT run through JS string-escape processing (a JSX-spec quirk: `\n`/`\\` inside
+    `className="..."` are taken completely literally, unlike a normal JS string), both Tailwind's
+    build-time class scanner AND the runtime DOM `className` saw the identical literal text
+    `\\2022` -- so Tailwind faithfully generated `content: '\\2022'`, which CSS interprets as an
+    escaped literal backslash followed by the plain digits "2022" (visible text), not the intended
+    single-backslash CSS unicode escape `\2022` that renders as the bullet character "•". Fixed
+    by removing the stray extra backslash (`content-['\2022']`, single backslash -- the correct,
+    standard Tailwind syntax for a CSS content unicode escape). Confirmed no other occurrence of
+    this double-backslash pattern exists anywhere else in `frontend/src`. `npm run build` clean.
+    **Real, live verification directly against the exact reported feature**
+    (`proj_34e07440`/`feature_94701501`, via a read-only isolated frontend instance pointed at
+    the user's own live main backend, port 8000, no mutations): confirmed the literal text "2022"
+    no longer appears anywhere on the page, and a fresh screenshot shows every Scope/Out-of-
+    Scope/etc. bullet rendering as a clean "•" marker with no overlapping text.
+
 ## Where to look
 
 - Full build spec (read this first, in order, before any new milestone): `instructions .md`

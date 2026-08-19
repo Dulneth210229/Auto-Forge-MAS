@@ -55,6 +55,17 @@ function extractTraceLinks(contentJson) {
 export default function GovernancePanel({ stage, featureId, allArtifacts, stageArtifacts, onApproveClick }) {
   const gatingArtifact = getOperativeGatingArtifact(stage, allArtifacts);
   const isAwaitingReview = gatingArtifact?.approval_status === "pending";
+  // Real, reported bug: this panel's own Approve button never respected the same "once one
+  // version is approved, every other pending version's Approve is disabled" lock ArtifactList.jsx
+  // already enforces for the generic "All Artifacts" list -- a human could still approve a second
+  // SRS (or any other gating type) version from here even after another was already approved.
+  // Same computation ArtifactList.jsx uses: a sibling of the same artifact_type, already approved.
+  const approveLocked = Boolean(
+    gatingArtifact &&
+      stageArtifacts.some(
+        (a) => a.artifact_type === gatingArtifact.artifact_type && a.approval_status === "approved" && a.artifact_id !== gatingArtifact.artifact_id
+      )
+  );
 
   const { data: gatingContent } = useArtifactContent(
     gatingArtifact?.artifact_format === "json" ? gatingArtifact.artifact_id : null
@@ -88,6 +99,7 @@ export default function GovernancePanel({ stage, featureId, allArtifacts, stageA
               artifact={gatingArtifact}
               warning={APPROVAL_WARNINGS[stage]}
               onApproveClick={onApproveClick ? (comment) => onApproveClick(gatingArtifact.artifact_id, comment) : undefined}
+              approveLocked={approveLocked}
             />
           ) : (
             <p className="text-xs text-gray-400 dark:text-gray-500">

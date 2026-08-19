@@ -681,18 +681,11 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
                       (a) => a.artifact_type === "domain_improvements" && a.version === artifact.version
                     )
                   : null;
-              // Field-by-field inline editing is only offered for the SRS's own latest version --
-              // editing a historical version, or the Enhanced SRS artifact below, doesn't make
-              // sense (SrsDocumentViewer itself also gates on artifactType === "srs").
-              const isLatestSrsVersion =
-                isRequirementStage && artifact.version === versions[0]?.version;
               return (
                 <div>
                   <ArtifactContentView
                     artifact={artifact}
                     domainImprovementsArtifact={domainImprovements}
-                    featureId={featureId}
-                    editable={isLatestSrsVersion}
                   />
                   {stage === "architecture" && <ArchitectureDiagramsGallery allArtifacts={allArtifacts} />}
                   {domainImprovements && (

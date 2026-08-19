@@ -4,7 +4,8 @@ import { useFeatureArtifacts } from "../../hooks/useArtifacts";
 import { useFeature } from "../../hooks/useFeatures";
 import { useWorkspaceSelection } from "../workspace/WorkspaceSelectionContext";
 import { getEffectiveActiveArtifact } from "../../lib/activeArtifactSelection";
-import { ARTIFACT_TYPE_LABELS, ARTIFACT_TYPE_STAGE } from "../../lib/artifactTypeMeta";
+import { ARTIFACT_TYPE_LABELS } from "../../lib/artifactTypeMeta";
+import { STAGE_LABELS } from "../../lib/pipelineStages";
 import ResultTab from "./ResultTab";
 import PreviewPanel from "./PreviewPanel";
 import UiuxPreviewPanel from "./UiuxPreviewPanel";
@@ -21,13 +22,39 @@ const TABS = [
 // "preview" is live (see PreviewPanel).
 const DISABLED_TABS = new Set(["files"]);
 
-// artifact_type -> which downstream agent actually consumes it, for the "Using SRS vN for..."
-// indicator. Requirement -> Domain and Domain -> Architecture are both wired (direct user
-// request for the latter, mirroring the former) -- extend this map if another stage's handoff
-// gets the same pin-a-version treatment.
-const NEXT_AGENT_BY_ARTIFACT_TYPE = {
-  srs: "Domain Agent",
-  enhanced_srs: "Architecture Agent",
+// stage -> the real previous-stage artifact(s) it actually reads, for the "Using X vN for Y
+// Agent" indicator -- generalized (direct user request, with a screenshot of the original
+// Requirement->Domain-only version as the reference example) to every stage that has a real,
+// approved-artifact input. Confirmed against each agent's own real run()/revise() code, not
+// guessed:
+// - domain reads the approved SRS.
+// - architecture reads the approved Enhanced SRS when one exists, falling back to the plain SRS
+//   only if it doesn't (srs_for_generation = enhanced_srs_json or srs_json, at every real call
+//   site in architecture_agent/agent.py) -- resolved at render time below, never hardcoded to
+//   just one.
+// - uiux reads the approved Architecture Plan.
+// - coder reads BOTH the Architecture Plan and the UI/UX Integration Manifest independently (at
+//   every real call site in coder_agent/agent.py) -- the human-recognizable version to show for
+//   the latter is ui_preview_screenshot's (its real gating/cascade-anchored type since item 64;
+//   the manifest shares that exact version through the same approval cascade).
+const PREVIOUS_STAGE_INPUTS_BY_STAGE = {
+  domain: [{ artifactType: "srs" }],
+  architecture: [{ artifactType: "enhanced_srs", fallbackArtifactType: "srs" }],
+  uiux: [{ artifactType: "architecture_plan" }],
+  coder: [
+    { artifactType: "architecture_plan" },
+    { artifactType: "ui_preview_screenshot", artifactFormat: "png", label: "UI/UX Output" },
+  ],
+};
+
+// Security and QA scan the live generated workspace directly off disk (confirmed: neither
+// security_agent.py's nor qa_agent.py's run() ever calls a "find latest approved artifact"
+// lookup for their main input) -- there is no formal, approved-artifact version behind "what
+// they used" the way every other stage has one. An honest, plain, non-versioned label instead of
+// a pill, so this indicator never implies a version number that doesn't actually exist.
+const NO_ARTIFACT_VERSION_LABEL_BY_STAGE = {
+  security: "Scanning the latest generated code",
+  qa: "Testing the latest generated code",
 };
 
 // The right panel -- deliberately the largest of the three (see ResizableWorkspace's default
@@ -86,27 +113,54 @@ export default function OutputPanel({ featureId }) {
         </div>
 
         {(() => {
-          // Only the pill for whichever stage is currently selected -- rendering every configured
-          // entry in NEXT_AGENT_BY_ARTIFACT_TYPE simultaneously (the original behavior) would
-          // overflow the tab bar now that a second entry (Enhanced SRS) exists alongside SRS.
-          const artifactType = Object.keys(NEXT_AGENT_BY_ARTIFACT_TYPE).find(
-            (type) => ARTIFACT_TYPE_STAGE[type] === selectedAgent
-          );
-          if (!artifactType) return null;
+          const noArtifactLabel = NO_ARTIFACT_VERSION_LABEL_BY_STAGE[selectedAgent];
+          if (noArtifactLabel) {
+            return (
+              <span className="text-xs font-semibold text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-white/5 rounded-full px-3 py-1 whitespace-nowrap truncate">
+                {noArtifactLabel}
+              </span>
+            );
+          }
 
-          const nextAgentLabel = NEXT_AGENT_BY_ARTIFACT_TYPE[artifactType];
-          const effective = getEffectiveActiveArtifact(artifacts || [], feature?.active_artifact_selection, artifactType);
-          if (!effective) return null;
+          const descriptors = PREVIOUS_STAGE_INPUTS_BY_STAGE[selectedAgent];
+          if (!descriptors) return null;
 
-          const label = ARTIFACT_TYPE_LABELS[artifactType] || artifactType;
+          const agentLabel = `${STAGE_LABELS[selectedAgent] || selectedAgent} Agent`;
+
+          const pills = descriptors
+            .map((descriptor) => {
+              const format = descriptor.artifactFormat || "json";
+              let effective = getEffectiveActiveArtifact(
+                artifacts || [], feature?.active_artifact_selection, descriptor.artifactType, format
+              );
+              let resolvedType = descriptor.artifactType;
+              if (!effective && descriptor.fallbackArtifactType) {
+                effective = getEffectiveActiveArtifact(
+                  artifacts || [], feature?.active_artifact_selection, descriptor.fallbackArtifactType, format
+                );
+                resolvedType = descriptor.fallbackArtifactType;
+              }
+              if (!effective) return null;
+
+              const label = descriptor.label || ARTIFACT_TYPE_LABELS[resolvedType] || resolvedType;
+              return { key: resolvedType, label, version: effective.version };
+            })
+            .filter(Boolean);
+
+          if (pills.length === 0) return null;
 
           return (
-            <span
-              title={`${nextAgentLabel} will use ${label} v${effective.version} -- pin a different approved version from its row's radio button below.`}
-              className="text-xs font-semibold text-accent-700 dark:text-accent-400 bg-accent-50 dark:bg-accent-500/10 rounded-full px-3 py-1 whitespace-nowrap truncate"
-            >
-              Using {label} v{effective.version} for {nextAgentLabel}
-            </span>
+            <div className="flex items-center gap-1.5 flex-wrap justify-end">
+              {pills.map((pill) => (
+                <span
+                  key={pill.key}
+                  title={`${agentLabel} will use ${pill.label} v${pill.version} -- pin a different approved version from its row's radio button below.`}
+                  className="text-xs font-semibold text-accent-700 dark:text-accent-400 bg-accent-50 dark:bg-accent-500/10 rounded-full px-3 py-1 whitespace-nowrap truncate"
+                >
+                  Using {pill.label} v{pill.version} for {agentLabel}
+                </span>
+              ))}
+            </div>
           );
         })()}
       </div>

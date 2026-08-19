@@ -103,16 +103,6 @@ export async function reviseRequirementStream(featureId, { revision_comment, rev
   );
 }
 
-// Direct, no-LLM field-by-field edit -- deterministic apply_revision_operations only, so this is
-// a fast plain POST (no streaming needed, there's nothing to "type" live).
-export async function editRequirementFields(featureId, { operations, edited_by, base_artifact_id }, signal) {
-  return postCancelable(
-    `${base(featureId)}/requirement/edit`,
-    { operations, edited_by, base_artifact_id },
-    signal
-  );
-}
-
 // Requirement Agent conversational gap-filling loop -- additive, alongside run/revise above.
 export async function startRequirementConversation(featureId) {
   const { data } = await apiClient.post(`${base(featureId)}/requirement/conversation/start`);
