@@ -1,0 +1,89 @@
+{
+  "files": [
+    {
+      "path": "models/ItemListingCRUDDataEntity1.ts",
+      "action": "modify",
+      "description": "Remove the required id field from the Item model as per the human revision comment. The id field should not be required since MongoDB will generate the _id field automatically.",
+      "maps_to": [
+        "Item Listing (CRUD)DataEntity1",
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005",
+        "FR-006",
+        "FR-007",
+        "FR-008",
+        "FR-009",
+        "FR-010"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "app/api/item-listing-crud/route.ts",
+      "action": "modify",
+      "description": "Update the API route handler to remove any reference to the client-supplied id field during item creation and updates, ensuring that only MongoDB's auto-generated _id is used.",
+      "maps_to": [
+        "/api/item-listing-crud",
+        "/api/item-listing-crud",
+        "/api/item-listing-crud",
+        "/api/item-listing-crud",
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005",
+        "FR-006",
+        "FR-007",
+        "FR-008",
+        "FR-009",
+        "FR-010"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "app/item-listing-crud/page.tsx",
+      "action": "modify",
+      "description": "Update the frontend page to remove any handling of the id field in forms and item displays, since the id is now managed by MongoDB.",
+      "maps_to": [
+        "/api/item-listing-crud",
+        "/api/item-listing-crud",
+        "/api/item-listing-crud",
+        "/api/item-listing-crud",
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005",
+        "FR-006",
+        "FR-007",
+        "FR-008",
+        "FR-009",
+        "FR-010"
+      ],
+      "actually_touched": true
+    },
+    {
+      "path": "lib/api/itemListingCRUD.ts",
+      "action": "modify",
+      "description": "Update the API service functions to not expect or send a client-supplied id field, aligning with the backend changes.",
+      "maps_to": [
+        "/api/item-listing-crud",
+        "/api/item-listing-crud",
+        "/api/item-listing-crud",
+        "/api/item-listing-crud",
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005",
+        "FR-006",
+        "FR-007",
+        "FR-008",
+        "FR-009",
+        "FR-010"
+      ],
+      "actually_touched": true
+    }
+  ]
+}

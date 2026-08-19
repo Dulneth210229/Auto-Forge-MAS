@@ -6218,6 +6218,204 @@ milestone — that file is scratch, **this file is the durable one**.
       established convention. Both isolated verification instances (backend :8090, frontend
       :5199) were stopped afterward; the shared main backend (:8000) was never touched.
 
+76. **Coder Agent: a new deterministic hard gate that catches the real "Failed to save item"
+    bug class, a best-effort functional CRUD info-check, and a real non-agentic coding path so
+    `qwen2.5-coder:14b` becomes a genuinely usable, switchable model alongside qwen3-coder.**
+    Direct user report (with a screenshot of the real error) plus three related asks: the Coder
+    Agent's output for the real "Item Listing (CRUD)" feature wasn't fully complete (adding a
+    second item failed); `qwen2.5-coder:14b` doesn't support real tool-calling for Coder Agent
+    (already-confirmed, item 74) and the user wanted it usable anyway, switchable against
+    qwen3-coder; output should align with the feature/Architecture/UI-UX Agent's own output; and
+    Coder Agent must use `.env` to integrate the user's real MongoDB connection.
+    - **Investigated first** (3 parallel research passes + an independent Plan-agent review that
+      caught 3 real, material errors in the first draft plan before any code was written -- see
+      the plan file's own "corrected by review" section): root-caused the real bug directly
+      against the real generated files (`workspaces/sample-e-commerce/repo/`) --
+      `models/Item.ts`'s Mongoose schema declared a custom `id: {required: true, unique: true}`
+      field the generated create form never actually collected (defaulted to `id: ""` for every
+      new item), colliding on the unique index after the first create; the frontend then
+      discarded whatever real error the backend returned behind a hardcoded `"Failed to save
+      item"` string. Confirmed `.env`/MongoDB wiring (item 71) was already fully correct end-to-
+      end -- not the actual problem, though one real adjacent gap was found: a write silently
+      returning fake seed-data "success" when no DB is connected. Confirmed `verify.py` had a
+      real, structural gap -- no check anywhere ever exercises a real CRUD operation end-to-end,
+      only that the app compiles/boots/renders; `route_checker`/`plan_validator` only ever check
+      that a route FILE/plan-string exists, never what the code inside it does. Confirmed the
+      coding loop is fundamentally, unavoidably tool-calling-dependent (a live `create_agent`
+      ReAct loop over `write_file`/`apply_patch`/etc, with no capability-detection anywhere in
+      the codebase) -- but planning already has a fully working non-agentic path
+      (`CodePlanner.generate()`), so only the coding step itself needed a new alternative.
+    - **The independent review's 3 corrections, all folded into the final design** (none of the
+      original three ideas survived unchanged): (1) there is NO live, reachable server anywhere
+      during `verify()` except inside `render_checker`'s own `start_background_service`/
+      `stop_background_service` window -- the earlier "server boot" step's container is already
+      gone by the time any later check could reuse it; (2) the Architecture Plan is not a usable
+      source for endpoint/payload synthesis -- read directly, the real saved plan for this exact
+      feature lists its one real endpoint FOUR times, all method GET, zero POST entries, and its
+      `data_entities[].fields` are the entity's own free-text description tokenized into fake
+      field names (a field literally named `"non"`, from "non-empty"); (3) `apply_patch` cannot
+      be reused for a one-shot batch generator -- confirmed by reading it, it requires the target
+      file to already exist with an exact, uniquely-matching `find` string, a live read-then-
+      patch loop a single non-agentic call structurally doesn't have; a batch "modify" must be a
+      full-file overwrite instead.
+    - **\S1 -- the real, primary fix**: new `app/agents/coder_agent/schema_form_checker.py`
+      (`check_required_field_form_coverage`, modeled directly on the already-proven
+      `db_fallback_checker.check_db_null_guard_coverage` pattern), wired into `verify.py` as a
+      new **hard gate**: for each planned Mongoose model file, regex-extracts fields declared
+      `required: true` (excluding auto-managed `_id`/`createdAt`/`updatedAt`/`__v`), and checks
+      each one is referenced as a REAL editable input (`name="field"` JSX attribute, or an inline
+      `field: e.target.value` controlled-input assignment) in any planned frontend file --
+      deliberately NOT a bare object key like `field: ""`, since that is exactly the shape the
+      real bug's own buggy state initializer already had (a real design flaw caught by my own
+      first synthetic test of this checker, not just reasoned about). `CODER_AGENT_SYSTEM_PROMPT`
+      also gained three reinforcing rules: never require a client-supplied unique id (use
+      MongoDB's own `_id`, generate a separate human-readable code server-side if genuinely
+      needed); never swallow a real backend error behind a generic frontend message; a write must
+      return a real error (not fake seed-data success) when no database is connected.
+    - **\S2 -- a real, best-effort functional CRUD smoke test, informational only**: new
+      `app/agents/coder_agent/functional_checker.py`. Discovers POST endpoints by scanning
+      planned `app/api/**/route.ts` files directly (not the Architecture Plan, per the review's
+      correction #2); synthesizes a payload from the create form's OWN `useState({...})` state
+      shape (the same source of truth a human tester would use, and what would have reproduced
+      the real bug on a second create) with type inferred from each field's default-literal shape
+      -- skips (never guesses) any field it can't confidently infer. `render_checker.
+      check_runtime_render` gained an optional `on_server_ready` callback, invoked with the real,
+      live `base_url` while its own background service is still up (right before teardown) --
+      keeps `render_checker.py` itself decoupled from CRUD-specific knowledge while giving
+      `functional_checker.py` a real server to hit with zero extra container-start cost. Wired in
+      as `status: "info"`, never a hard gate -- deliberately, since a heuristic payload
+      synthesizer's false-failure surface (auth, enums, relational fields) is real and not yet
+      proven safe to block on; its value is independent, broad "does the endpoint even work"
+      coverage, not primary defense against the specific reported bug class (which \S1's
+      deterministic gate already handles reliably, and which a single create+read-back doesn't
+      itself reproduce the way a *second* create does).
+    - **\S3 -- a real non-agentic coding path**: new `app/services/model_capabilities.py`
+      (`supports_tool_calling(agent_name)`) -- Anthropic/OpenAI always `True`; Ollama probes the
+      configured server's real `POST /api/show` (`capabilities` array containing `"tools"`),
+      cached per `(base_url, model)` for the process lifetime, defaulting to `False` (the safer
+      direction) on any unreachable-server/unparseable-response failure. A new
+      `agent_overrides[agent].supports_tool_calling: bool | None` override field (`llm_schema.py`,
+      `llm_provider_service.set_agent_override`/`clear_agent_override`/`_agent_response`) is
+      checked FIRST as a human escape hatch. New `app/agents/coder_agent/batch_coder.py`: reuses
+      the code plan's already-validated `files[]` list (from the existing non-agentic
+      `CodePlanner.generate()`) as the authoritative "what to touch" list, and makes ONE
+      single-shot LLM call PER PLANNED FILE (never one giant call for the whole plan -- real
+      byte-count math against this project's own real generated features confirmed a combined
+      response would blow past this app's default `LLM_MAX_TOKENS` and truncate mid-file, the
+      same class of wall this project already hit for Domain/Architecture Agent's own combined-
+      schema attempts). Reuses `CODER_AGENT_SYSTEM_PROMPT`'s own hard rules verbatim (string-
+      split before its "Tool usage" section, so \S1's new rules and every existing Next.js/Mongo/
+      completeness rule apply automatically with no duplicated maintenance) via a new
+      `BATCH_CODE_GENERATOR_SYSTEM_PROMPT`. A page/component file's approved UI/UX design
+      reference is attached unconditionally to its own prompt (`_design_reference_for_file`,
+      reusing `tools.py`'s existing `_find_approved_component_artifact`/
+      `_find_approved_page_html_artifact` directly, not through the tool wrapper) -- arguably a
+      STRONGER guarantee than the agentic loop's own `list_unread_ui_designs` gate, since it's
+      never something the model has to remember to request. New `CoderAgent.
+      _code_with_batch_generation`/`_code_with_batch_generation_stream` (same
+      `MAX_CODING_ATTEMPTS` retry shape and `(verify_result, attempts)` return contract as
+      `_code_with_retries`, so every downstream caller needs zero changes) apply each file as a
+      plain write (never `apply_patch`, per review correction #3), commit, then run the existing,
+      unchanged `verify()` (getting \S1's hard gate and \S2's info check for free). New
+      `CoderAgent._run_coding_phase` is the single dispatch point `run()`/`revise()` (and the
+      streaming variants, via inline capability checks) call, choosing the agentic or batch path
+      automatically based on whichever model is currently selected for `coder_agent` in Settings
+      -- no separate manual toggle, exactly "user can switch... if user want." Honest, stated
+      scope limit: a one-shot per-file call has no mid-generation self-correction (no
+      `check_syntax`, no live workspace discovery) -- expected less reliable than the agentic
+      path for cross-file-discovery-heavy features, matching this project's own established
+      precedent that a non-agentic fallback rung is real and useful, never claimed equal quality.
+    - **A real, live mistake made and fixed during testing, recorded honestly**: an early version
+      of the `supports_tool_calling` override test called the real, shared `store.llm_settings`
+      directly with a naive `agent_overrides = {}` reset in its cleanup, which wiped the ENTIRE
+      real, live `agent_overrides` document in the shared MongoDB Atlas cluster -- not just the
+      one field under test -- destroying the real, intended `coder_agent`/`architecture_agent` ->
+      `qwen3-coder:latest` pins (item 74) with no prior backup. Caught immediately by checking the
+      live document's state right after; restored both overrides to their documented values via
+      the real `set_agent_override` call before doing anything else, confirmed restored via a
+      real `GET /settings/llm/agents` call, then rewrote the entire test file to mock `store`
+      exclusively (matching `test_model_capabilities.py`'s already-safe pattern) so it can never
+      touch the real shared store again. **Any future test touching `store.llm_settings.agent_
+      overrides` must mock the store, never reset the real document even "just in cleanup."**
+    - Tests (all new): `tests/test_coder_schema_form_checker.py` (11, including the exact real
+      bug reproduced from a hand-built fixture matching the real buggy code), `tests/
+      test_coder_functional_checker.py` (13, including a stubbed `urllib.request.urlopen` for the
+      HTTP half -- no real server needed for unit coverage), `tests/test_model_capabilities.py`
+      (9), `tests/test_coder_agent_batch_generation.py` (8, real tmp_path filesystem writes/
+      deletes, mocked LLM/verify), `tests/test_llm_provider_service_supports_tool_calling_
+      override.py` (5, store fully mocked per the lesson above), plus 2 new Docker+Playwright-
+      backed tests in `tests/test_render_checker.py` confirming `on_server_ready` is genuinely
+      invoked with a real, live, reachable `base_url` while the server is still up, and that a
+      raising callback is caught and reported rather than breaking the render check itself. Full
+      suite: **792 passed** (non-Docker) + the pre-existing 15 `test_coder_verify.py` (Docker-
+      backed, confirming the new gates integrate correctly into the full flow) + all 5 `test_
+      render_checker.py` tests, all passing, zero regressions.
+    - **Real, live, multi-round end-to-end verification against the actual, already-broken
+      `feature_94701501` workspace, run on an isolated backend instance (the shared main backend
+      was stale and never touched, matching this session's own established practice)**:
+      - Confirmed the new `schema_form_checker` hard gate fires against the REAL, unmodified
+        buggy code on disk with zero LLM involvement -- direct, immediate proof before ever
+        running a revision.
+      - **Real revision 1** (a natural, user-style comment, no file names given): completed with
+        `verification_passed: True` on attempt 1 -- but inspecting the real result showed the
+        fast-path planner's own keyword-matching scoped the revision to *only* `app/api/item-
+        listing-crud/route.ts`, correctly applying two of the three new prompt rules (real error
+        messages now surface; a DB-not-connected write now returns a real 503 instead of fake
+        success) but never touching `models/Item.ts`, where the actual structural fix belongs.
+        Confirmed empirically via a real live preview + real POST calls: every create still
+        failed, now with an honest error instead of a generic one.
+      - **Real revision 2** (explicit comment naming `models/Item.ts` directly): the real fix
+        landed correctly on disk (confirmed directly: `id` genuinely removed from the schema,
+        `types/itemListingCRUD.ts` updated to `_id`, most of `page.tsx` updated too) -- but
+        `verification_passed: False`, because the plan's OWN file list named a stale, non-
+        existent placeholder (`models/ItemListingCRUDDataEntity1.ts`, from the Architecture
+        Plan's own messy auto-generated entity naming, item 24/27's already-documented gotcha)
+        instead of the real file, so the deterministic `list_unimplemented_planned_files` gap-
+        check blocked `verify()` from ever running at all across all 3 attempts, even though the
+        real code fix was correct. Direct file inspection also found 3 real leftover `.id`
+        references in `page.tsx` (an incomplete find-and-replace) that this same blocked-`verify()`
+        would ordinarily have caught via `next build`'s real TypeScript check.
+      - **Real revision 3** (a precise comment naming the exact 3 leftover lines): the fix landed
+        correctly (confirmed: all 6 real `_id` references present, zero stray `.id`) -- but hit
+        the SAME stale-cumulative-plan-file gap again (a genuine, pre-existing planning-system
+        limitation, NOT something built this session, worth flagging separately for a future
+        pass), so `verify()` never ran a third time either.
+      - **Final empirical proof, independent of the blocked `verification_passed` flag**: rebuilt
+        the app directly (`sandbox_service.run_command("npm run build")`, real exit code 0),
+        restarted the preview, and found the first real create now succeeded (201, real `_id`
+        returned) but every create AFTER the first still failed with a NEW, different, genuinely
+        informative error: `E11000 duplicate key error ... index: id_1 dup key: { id: null }` --
+        a real, live MongoDB collection still carrying a STALE unique index from before the
+        schema fix (confirmed directly via `pymongo`: `id_1`, unique, on the real `items`
+        collection). This is a database-schema-migration concern, not a code-generation defect --
+        no application code fix can remove an index that already exists in the live database.
+        Asked the user directly (two real decisions, both answered): dropped the real stale
+        `id_1` index on their live MongoDB collection (confirmed empty of real data beforehand --
+        only my own test items), and per their explicit choice, did NOT run a further revision
+        for the separately-found, still-broken `[id]/route.ts` (the single-item GET/PUT/DELETE
+        route, which still queries by the now-nonexistent `id` field) -- left as a known,
+        precisely-diagnosed remaining item instead. **Final confirmation, real and complete**:
+        4 consecutive real creates via the actual running preview, all HTTP 201 with real distinct
+        `_id`s, all 4 correctly appearing on a real subsequent list call. All test data (the
+        preview session's real writes, twice) was cleaned up from the real database afterward via
+        direct `pymongo` deletes, confirmed empty each time.
+    - **Known, precisely-diagnosed remaining item, left for the user's own follow-up (not fixed
+      this session, per their explicit choice)**: `app/api/item-listing-crud/[id]/route.ts` still
+      queries `Item.findOne({ id: params.id })`/`findOneAndUpdate`/`findOneAndDelete` by the now-
+      removed `id` field -- viewing, editing, or deleting one specific item by its real `_id` will
+      currently always 404. A future revision naming this exact file and asking it to match
+      `_id` instead of `id` (mirroring revision 3's own precise, targeted comment shape) should
+      resolve it in one pass.
+    - **Known, separate, pre-existing planning-system gap surfaced by this verification, not
+      something built this session and not fixed here**: once an Architecture Plan's own
+      `data_entities` naming is messy (word-salad-derived fake entity names, item 24/27's already-
+      documented gotcha), a later revision's plan can persistently reference a stale/non-existent
+      file across multiple revisions in a row (via `_collect_cumulative_plan_files`'s own
+      "union every prior plan's files forever" design, item 21) -- blocking `verify()` from ever
+      running even when the actual code fix is correct. Worth a future look (e.g. skipping a
+      cumulative-plan-file entry that has never once corresponded to a real file across several
+      attempts), out of this session's own scope.
+
 ## Where to look
 
 - Full build spec (read this first, in order, before any new milestone): `instructions .md`
