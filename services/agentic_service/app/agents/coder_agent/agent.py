@@ -37,6 +37,7 @@ from typing import Any, AsyncGenerator
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.errors import GraphRecursionError
 
+from app.agents.coder_agent import batch_coder
 from app.agents.coder_agent.coding_loop import build_coder_react_agent, build_task_message
 from app.agents.coder_agent.diff_builder import (
     build_code_manifest,
@@ -55,13 +56,14 @@ from app.agents.coder_agent.prompt import (
     build_code_planner_user_prompt,
 )
 from app.agents.coder_agent.schemas import CoderAgentEnvSaveResult, CoderAgentInput, CoderAgentOutput
-from app.agents.coder_agent.tools import search_workspace_content
+from app.agents.coder_agent.tools import _resolve_within, search_workspace_content
 from app.agents.coder_agent.verify import coder_verifier
 from app.core.enums import AgentName, ApprovalStatus, ArtifactFormat, ArtifactType
 from app.schemas.coder_schema import CoderAgentReviseRequest, CoderAgentRunRequest
 from app.services.artifact_service import artifact_service
 from app.services.in_memory_store import store
 from app.services.llm_provider_service import llm_provider_service
+from app.services import model_capabilities
 from app.services.project_memory_service import project_memory_service
 from app.services.preview_service import preview_service
 from app.services.workspace_service import MAIN_BRANCH, workspace_service
@@ -315,13 +317,13 @@ class CoderAgent:
             project["project_id"]
         ).head.commit.hexsha
 
-        verify_result, coding_attempts = await self._code_with_retries(
+        verify_result, coding_attempts = await self._run_coding_phase(
             project["project_id"],
             feature_id,
             code_plan_json,
-            revision_start_sha=revision_start_sha,
-            original_request=human_comment_for_planning,
-            ui_integration_manifest_json=ui_integration_manifest_json,
+            revision_start_sha,
+            human_comment_for_planning,
+            ui_integration_manifest_json,
         )
 
         diff = workspace_service.diff_against_main(project["project_id"], feature_id)
@@ -510,13 +512,13 @@ class CoderAgent:
             keyword_hint_files=keyword_hint_files,
         )
 
-        verify_result, coding_attempts = await self._code_with_retries(
+        verify_result, coding_attempts = await self._run_coding_phase(
             project["project_id"],
             feature_id,
             code_plan_json,
-            revision_start_sha=revision_start_sha,
-            original_request=revision_comment_for_planning,
-            ui_integration_manifest_json=ui_integration_manifest_json,
+            revision_start_sha,
+            revision_comment_for_planning,
+            ui_integration_manifest_json,
         )
 
         diff = workspace_service.diff_against_main(project["project_id"], feature_id)
@@ -751,15 +753,31 @@ class CoderAgent:
         ).head.commit.hexsha
 
         result_holder: dict[str, Any] = {}
-        async for event in self._code_with_retries_stream(
-            project["project_id"],
-            feature_id,
-            code_plan_json,
-            result_holder,
-            revision_start_sha=revision_start_sha,
-            original_request=human_comment_for_planning,
-            ui_integration_manifest_json=ui_integration_manifest_json,
-        ):
+        if await model_capabilities.supports_tool_calling(AgentName.CODER.value):
+            coding_stream = self._code_with_retries_stream(
+                project["project_id"],
+                feature_id,
+                code_plan_json,
+                result_holder,
+                revision_start_sha=revision_start_sha,
+                original_request=human_comment_for_planning,
+                ui_integration_manifest_json=ui_integration_manifest_json,
+            )
+        else:
+            logger.info(
+                "coder_agent's current model does not support real tool-calling -- using the "
+                "non-agentic batch coding path for feature_id=%s", feature_id,
+            )
+            coding_stream = self._code_with_batch_generation_stream(
+                project["project_id"],
+                feature_id,
+                code_plan_json,
+                result_holder,
+                revision_start_sha=revision_start_sha,
+                original_request=human_comment_for_planning,
+            )
+
+        async for event in coding_stream:
             yield event
 
         verify_result = result_holder["verify_result"]
@@ -992,15 +1010,31 @@ class CoderAgent:
             return
 
         result_holder: dict[str, Any] = {}
-        async for event in self._code_with_retries_stream(
-            project["project_id"],
-            feature_id,
-            code_plan_json,
-            result_holder,
-            revision_start_sha=revision_start_sha,
-            original_request=revision_comment_for_planning,
-            ui_integration_manifest_json=ui_integration_manifest_json,
-        ):
+        if await model_capabilities.supports_tool_calling(AgentName.CODER.value):
+            coding_stream = self._code_with_retries_stream(
+                project["project_id"],
+                feature_id,
+                code_plan_json,
+                result_holder,
+                revision_start_sha=revision_start_sha,
+                original_request=revision_comment_for_planning,
+                ui_integration_manifest_json=ui_integration_manifest_json,
+            )
+        else:
+            logger.info(
+                "coder_agent's current model does not support real tool-calling -- using the "
+                "non-agentic batch coding path for feature_id=%s", feature_id,
+            )
+            coding_stream = self._code_with_batch_generation_stream(
+                project["project_id"],
+                feature_id,
+                code_plan_json,
+                result_holder,
+                revision_start_sha=revision_start_sha,
+                original_request=revision_comment_for_planning,
+            )
+
+        async for event in coding_stream:
             yield event
 
         verify_result = result_holder["verify_result"]
@@ -1733,6 +1767,158 @@ class CoderAgent:
                 validation_feedback = str(error)
 
         raise last_error
+
+    async def _run_coding_phase(
+        self,
+        project_id: str,
+        feature_id: str,
+        code_plan_json: dict[str, Any],
+        revision_start_sha: str | None,
+        original_request: str | None,
+        ui_integration_manifest_json: dict[str, Any] | None,
+    ) -> tuple[dict[str, Any], int]:
+        """
+        Single dispatch point shared by run()/revise() -- checks whether coder_agent's currently
+        selected model genuinely supports real tool-calling
+        (model_capabilities.supports_tool_calling, see that module's own docstring for the full
+        detection story) and routes to the real, iterative agentic coding loop if so, or the
+        non-agentic batch generator (batch_coder.py, see its own module docstring for the honest
+        scope tradeoff) if not. Fully automatic based on whichever model is currently selected for
+        coder_agent in Settings -- no separate manual mode toggle.
+        """
+        if await model_capabilities.supports_tool_calling(AgentName.CODER.value):
+            return await self._code_with_retries(
+                project_id, feature_id, code_plan_json,
+                revision_start_sha=revision_start_sha, original_request=original_request,
+                ui_integration_manifest_json=ui_integration_manifest_json,
+            )
+
+        logger.info(
+            "coder_agent's current model does not support real tool-calling -- using the "
+            "non-agentic batch coding path for feature_id=%s", feature_id,
+        )
+        return await self._code_with_batch_generation(
+            project_id, feature_id, code_plan_json,
+            revision_start_sha=revision_start_sha, original_request=original_request,
+        )
+
+    async def _code_with_batch_generation(
+        self,
+        project_id: str,
+        feature_id: str,
+        code_plan_json: dict[str, Any],
+        revision_start_sha: str | None = None,
+        original_request: str | None = None,
+    ) -> tuple[dict[str, Any], int]:
+        """
+        Non-agentic counterpart to _code_with_retries -- see batch_coder.py's own module
+        docstring for the full design and its honest scope limit. Same outer MAX_CODING_ATTEMPTS
+        retry shape and (verify_result, attempts_used) return contract as the agentic path, so
+        every caller downstream of this (diffing, artifact-saving, merge-report building) needs
+        zero changes regardless of which coding path actually ran.
+        """
+        workspace_root = workspace_service.get_repo_path(project_id)
+        prior_failure_output: str | None = None
+        verify_result: dict[str, Any] = {"passed": False, "steps": []}
+
+        for attempt in range(1, MAX_CODING_ATTEMPTS + 1):
+            written_paths: list[str] = []
+            missing_paths: list[str] = []
+
+            for file_entry in code_plan_json.get("files", []) or []:
+                path = file_entry.get("path", "")
+                action = file_entry.get("action")
+
+                if action == "delete":
+                    target = workspace_root / path
+                    if target.exists():
+                        target.unlink()
+                    written_paths.append(path)
+                    continue
+
+                target = _resolve_within(workspace_root, path)
+                current_content = target.read_text(encoding="utf-8") if target.exists() else None
+
+                content = await batch_coder.generate_file_content(
+                    feature_id, file_entry, current_content, written_paths, prior_failure_output
+                )
+
+                if content is None:
+                    missing_paths.append(path)
+                    logger.warning(
+                        "Batch coding attempt %d/%d for feature_id=%s: no content produced for %s",
+                        attempt, MAX_CODING_ATTEMPTS, feature_id, path,
+                    )
+                    continue
+
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content, encoding="utf-8")
+                written_paths.append(path)
+
+            try:
+                workspace_service.commit_changes(
+                    project_id, feature_id, message=f"Coder Agent batch attempt {attempt}: {feature_id}"
+                )
+            except Exception as commit_error:
+                logger.exception(
+                    "Batch coding attempt %d/%d for feature_id=%s: commit_changes itself failed",
+                    attempt, MAX_CODING_ATTEMPTS, feature_id,
+                )
+                missing_paths.append(f"(commit failed: {commit_error})")
+
+            if missing_paths:
+                prior_failure_output = (
+                    "The previous batch attempt failed to produce content for these planned "
+                    "file(s), fix them this time:\n" + "\n".join(f"- {path}" for path in missing_paths)
+                )
+                verify_result = {
+                    "passed": False,
+                    "steps": [{"name": "batch file generation", "status": "failed", "output": prior_failure_output}],
+                }
+                continue
+
+            verify_result = self.verifier.verify(project_id, feature_id, code_plan_json, original_request)
+
+            if verify_result["passed"]:
+                return verify_result, attempt
+
+            logger.warning(
+                "Batch coding attempt %d/%d failed verification for feature_id=%s",
+                attempt, MAX_CODING_ATTEMPTS, feature_id,
+            )
+            prior_failure_output = self._summarize_verify_failure(verify_result)
+
+        return verify_result, MAX_CODING_ATTEMPTS
+
+    async def _code_with_batch_generation_stream(
+        self,
+        project_id: str,
+        feature_id: str,
+        code_plan_json: dict[str, Any],
+        result_holder: dict[str, Any],
+        revision_start_sha: str | None = None,
+        original_request: str | None = None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """
+        Streaming counterpart to _code_with_batch_generation. There is no meaningful token-level
+        streaming for a sequence of one-shot, non-agentic file-generation calls (unlike the
+        agentic loop's live tool activity) -- this wraps the real, already-verified
+        _code_with_batch_generation logic with one "phase" event announcing the mode, then
+        populates result_holder exactly like _code_with_retries_stream does, so callers can
+        dispatch between the two without any other change.
+        """
+        yield {
+            "type": "phase",
+            "phase": "batch_coding",
+            "label": "coder_agent's current model doesn't support real tool-calling -- writing "
+            "each planned file with a direct, non-agentic generation call instead...",
+        }
+        verify_result, coding_attempts = await self._code_with_batch_generation(
+            project_id, feature_id, code_plan_json,
+            revision_start_sha=revision_start_sha, original_request=original_request,
+        )
+        result_holder["verify_result"] = verify_result
+        result_holder["coding_attempts"] = coding_attempts
 
     async def _code_with_retries(
         self,

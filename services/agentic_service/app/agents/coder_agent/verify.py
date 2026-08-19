@@ -39,12 +39,30 @@ a hard gate) versus left as unreachable/placeholder logic
 (route_checker.scan_for_placeholder_stubs, informational only -- see that
 module's docstring for why it never gates passed).
 
+A third gate closes a real, reported gap neither of the above two can: a Route Handler can exist,
+export a recognized method, and never crash the null-guard branch, while still being impossible
+for any real client to satisfy -- e.g. a Mongoose model requiring a field no generated form ever
+collects (confirmed as the real root cause of a live "Failed to save item" bug: a required, unique
+`id` field the create form never set, silently colliding after the first item).
+schema_form_checker.check_required_field_form_coverage is a hard gate for exactly this: every
+required Mongoose field must be referenced by at least one planned frontend file.
+
 A further gate closes the frontend mirror of that same gap: a page can
 compile and have a file under app/ while still being unreachable by a
 human, because nothing links to it (nav_checker.check_page_reachability,
 a hard gate -- confirmed real bug, pre-migration: every feature built so far
 added a route but never a link, so the app's home page never changed no
 matter what was actually built).
+
+While render_checker's own live server is up (the one and only window during verify() where a
+real, reachable server exists at all -- see that module's own docstring), functional_checker.
+check_crud_functionality reuses it for a real POST-then-GET exercise against a planned create
+endpoint, synthesizing a payload from the create form's own state shape. Deliberately
+informational-only, never a hard gate (see that module's own docstring for the honest reasons a
+heuristic payload synthesizer isn't yet trusted to block a run) -- its real value is independent,
+broad "does the endpoint even work" coverage; the reported bug's own exact class (a required field
+no form can ever supply) is caught reliably and deterministically by the separate,
+hard-gated schema/form field coverage check above instead.
 
 One last check closes the gap neither static check above can: a page can
 compile, exist under app/, AND be linked, while still crashing at runtime
@@ -77,9 +95,11 @@ from app.agents.coder_agent.db_fallback_checker import (
     check_db_null_guard_coverage,
     scan_for_db_fallback_quality,
 )
+from app.agents.coder_agent.functional_checker import check_crud_functionality
 from app.agents.coder_agent.nav_checker import check_page_reachability
 from app.agents.coder_agent.render_checker import RenderCheckError, check_runtime_render
 from app.agents.coder_agent.route_checker import check_route_coverage, scan_for_placeholder_stubs
+from app.agents.coder_agent.schema_form_checker import check_required_field_form_coverage
 from app.services.sandbox_service import sandbox_service
 from app.services.workspace_service import workspace_service
 
@@ -221,6 +241,10 @@ class CoderVerifier:
         steps.append(db_null_guard_step)
         passed = passed and db_null_guard_step["status"] != "failed"
 
+        schema_form_coverage_step = self._build_schema_form_coverage_step(workspace_root, code_plan_json)
+        steps.append(schema_form_coverage_step)
+        passed = passed and schema_form_coverage_step["status"] != "failed"
+
         page_reachability_results = check_page_reachability(workspace_root)
         page_reachability_step = self._build_page_reachability_step(page_reachability_results)
         steps.append(page_reachability_step)
@@ -230,15 +254,20 @@ class CoderVerifier:
             reachable_routes = [
                 item["route"] for item in page_reachability_results if item["status"] == "reachable"
             ]
-            home_page_step, feature_page_step = self._build_runtime_render_steps(project_id, reachable_routes)
+            home_page_step, feature_page_step, crud_check_step = self._build_runtime_render_steps(
+                project_id, reachable_routes, workspace_root, code_plan_json
+            )
         else:
             skip_output = "Skipped because the app did not build successfully."
             home_page_step = {"name": "home page render", "status": "skipped", "output": skip_output}
             feature_page_step = {"name": "feature page render", "status": "skipped", "output": skip_output}
+            crud_check_step = {"name": "CRUD functional smoke test", "status": "info", "output": skip_output}
 
         steps.append(home_page_step)
         steps.append(feature_page_step)
         passed = passed and home_page_step["status"] != "failed"
+
+        steps.append(crud_check_step)
 
         steps.append(self._build_placeholder_stub_step(workspace_root, touched_paths))
         steps.append(self._build_db_fallback_quality_step(workspace_root, touched_paths))
@@ -325,6 +354,26 @@ class CoderVerifier:
             "output": "These Route Handlers call connectToDatabase() but have no branch guarding "
             "against a null (no-database-configured) result -- this crashes instead of serving "
             "seed data:\n" + "\n".join(lines),
+        }
+
+    def _build_schema_form_coverage_step(self, workspace_root, code_plan_json: dict[str, Any]) -> dict[str, str]:
+        results = check_required_field_form_coverage(workspace_root, code_plan_json)
+
+        if not results:
+            return {
+                "name": "schema/form field coverage",
+                "status": "passed",
+                "output": "Every required Mongoose field found is referenced by at least one "
+                "planned frontend file (or no planned model/frontend files to check).",
+            }
+
+        lines = [f"- \"{item['field']}\" (required in {item['model_file']})" for item in results]
+        return {
+            "name": "schema/form field coverage",
+            "status": "failed",
+            "output": "These Mongoose schema fields are marked required but no planned frontend "
+            "file ever sets them -- a client can never satisfy the request, so every create/update "
+            "using this model will fail:\n" + "\n".join(lines),
         }
 
     def _build_db_fallback_quality_step(self, workspace_root, touched_paths: list[str]) -> dict[str, str]:
@@ -453,10 +502,13 @@ class CoderVerifier:
         }
 
     def _build_runtime_render_steps(
-        self, project_id: str, reachable_routes: list[str]
-    ) -> tuple[dict[str, str], dict[str, str]]:
+        self, project_id: str, reachable_routes: list[str], workspace_root, code_plan_json: dict[str, Any]
+    ) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+        def on_server_ready(base_url: str) -> dict[str, Any]:
+            return {"results": check_crud_functionality(workspace_root, code_plan_json, base_url)}
+
         try:
-            result = check_runtime_render(project_id, reachable_routes)
+            result = check_runtime_render(project_id, reachable_routes, on_server_ready=on_server_ready)
         except RenderCheckError as error:
             home_page_step = {"name": "home page render", "status": "failed", "output": str(error)}
             feature_page_step = {
@@ -465,7 +517,13 @@ class CoderVerifier:
                 "output": "Skipped: the runtime-render check's preview server never became reachable, "
                 "so feature pages could not be checked either.",
             }
-            return home_page_step, feature_page_step
+            crud_check_step = {
+                "name": "CRUD functional smoke test",
+                "status": "info",
+                "output": "Skipped: the runtime-render check's preview server never became reachable, "
+                "so the functional check could not run either.",
+            }
+            return home_page_step, feature_page_step, crud_check_step
 
         home_page_step = {
             "name": "home page render",
@@ -496,7 +554,39 @@ class CoderVerifier:
                 "output": summary + "\n".join(lines),
             }
 
-        return home_page_step, feature_page_step
+        crud_check_step = self._build_crud_functional_step(result.get("crud_check"))
+
+        return home_page_step, feature_page_step, crud_check_step
+
+    def _build_crud_functional_step(self, crud_check: dict[str, Any] | None) -> dict[str, str]:
+        if not crud_check or not crud_check.get("results"):
+            return {
+                "name": "CRUD functional smoke test",
+                "status": "info",
+                "output": "No functional check result available.",
+            }
+
+        results = crud_check["results"]
+        # Informational by design -- see functional_checker.py's own module docstring for why a
+        # heuristic payload synthesizer isn't yet trusted as a hard gate; the exact bug class this
+        # check exists to help with is caught reliably by the separate, hard-gated
+        # schema/form field coverage step instead.
+        lines = [
+            f"- {item.get('endpoint') or '(n/a)'}: {item['status']} -- {item['output']}"
+            for item in results
+        ]
+        failed = [item for item in results if item["status"] == "failed"]
+        summary = (
+            f"{len(failed)} of {len(results)} synthesized CRUD check(s) failed "
+            "(does not fail verification, review before approving):\n"
+            if failed
+            else "\n"
+        )
+        return {
+            "name": "CRUD functional smoke test",
+            "status": "info",
+            "output": summary + "\n".join(lines),
+        }
 
     def _build_placeholder_stub_step(self, workspace_root, touched_paths: list[str]) -> dict[str, str]:
         findings = scan_for_placeholder_stubs(workspace_root, touched_paths)

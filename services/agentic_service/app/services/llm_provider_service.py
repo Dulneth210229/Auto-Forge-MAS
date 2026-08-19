@@ -297,6 +297,7 @@ class LLMProviderService:
             effective[field] != getattr(global_settings, field)
             for field in ("provider", "model", "temperature", "max_tokens", "timeout_seconds")
         )
+        raw_override = document.get("agent_overrides", {}).get(agent_name, {})
         return AgentLLMSettingsResponse(
             agent_name=agent_name,
             provider=effective["provider"],
@@ -305,6 +306,7 @@ class LLMProviderService:
             max_tokens=effective["max_tokens"],
             timeout_seconds=effective["timeout_seconds"],
             is_override=is_override,
+            supports_tool_calling_override=raw_override.get("supports_tool_calling"),
         )
 
     def list_agent_overrides(self) -> list[AgentLLMSettingsResponse]:
@@ -344,7 +346,7 @@ class LLMProviderService:
         all_overrides = dict(document.get("agent_overrides", {}))
         current_override = dict(all_overrides.get(agent_name, {}))
 
-        for field in ("provider", "model", "temperature", "max_tokens", "timeout_seconds"):
+        for field in ("provider", "model", "temperature", "max_tokens", "timeout_seconds", "supports_tool_calling"):
             value = getattr(request, field)
             if value is not None:
                 current_override[field] = value.lower() if field == "provider" else value

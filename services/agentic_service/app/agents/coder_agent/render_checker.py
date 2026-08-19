@@ -45,7 +45,7 @@ import concurrent.futures
 import time
 import urllib.error
 import urllib.request
-from typing import Any
+from typing import Any, Callable
 
 from playwright.sync_api import sync_playwright
 
@@ -66,7 +66,11 @@ class RenderCheckError(Exception):
     """Raised when the runtime-render check itself could not run (infra failure, not a page defect)."""
 
 
-def check_runtime_render(project_id: str, reachable_routes: list[str]) -> dict[str, Any]:
+def check_runtime_render(
+    project_id: str,
+    reachable_routes: list[str],
+    on_server_ready: Callable[[str], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """
     Serves the built .next output and checks the home page plus every given
     route for JS errors / a non-2xx/3xx HTTP response.
@@ -75,10 +79,25 @@ def check_runtime_render(project_id: str, reachable_routes: list[str]) -> dict[s
     those are worth checking here -- an unreachable route's render state
     isn't actionable for a human anyway).
 
+    on_server_ready: optional callback invoked with the real, live base_url
+    (e.g. "http://localhost:54321") while this function's own background
+    service is still up, right before it's torn down -- this is the ONE
+    window during verify() where a real, reachable server exists at all (the
+    earlier "server boot" step's server is gone by the time this function
+    ever runs, see verify.py's own module docstring). Lets a caller (e.g.
+    functional_checker.check_crud_functionality) run a real HTTP exercise
+    against the app without starting a second server. This module stays
+    decoupled from what the callback actually does -- a plain callback, not
+    an import -- its return value (any JSON-serializable dict) is passed
+    through verbatim under this function's own result as "crud_check". A
+    raising callback is treated as a soft failure (caught, reported, never
+    lets an unrelated check's bug take down the render check itself).
+
     Returns:
         {
             "home_page": {"status": "passed"|"failed", "output": str},
             "feature_pages": [{"route": str, "status": "passed"|"failed", "output": str}, ...],
+            "crud_check": dict | None,  # on_server_ready's own return value, or None if not given
         }
 
     Raises RenderCheckError if the preview server itself never became
@@ -95,10 +114,16 @@ def check_runtime_render(project_id: str, reachable_routes: list[str]) -> dict[s
     this function's signature or its callers.
     """
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        return executor.submit(_check_runtime_render_on_worker_thread, project_id, reachable_routes).result()
+        return executor.submit(
+            _check_runtime_render_on_worker_thread, project_id, reachable_routes, on_server_ready
+        ).result()
 
 
-def _check_runtime_render_on_worker_thread(project_id: str, reachable_routes: list[str]) -> dict[str, Any]:
+def _check_runtime_render_on_worker_thread(
+    project_id: str,
+    reachable_routes: list[str],
+    on_server_ready: Callable[[str], dict[str, Any]] | None,
+) -> dict[str, Any]:
     service = sandbox_service.start_background_service(
         project_id=project_id,
         command=NEXT_START_COMMAND,
@@ -117,7 +142,14 @@ def _check_runtime_render_on_worker_thread(project_id: str, reachable_routes: li
             {"route": route, **_check_page(base_url, route)} for route in reachable_routes if route != "/"
         ]
 
-        return {"home_page": home_result, "feature_pages": feature_results}
+        crud_check = None
+        if on_server_ready is not None:
+            try:
+                crud_check = on_server_ready(base_url)
+            except Exception as error:  # noqa: BLE001 -- a caller's own check must never break this one
+                crud_check = {"status": "failed", "output": f"CRUD check raised unexpectedly: {error}"}
+
+        return {"home_page": home_result, "feature_pages": feature_results, "crud_check": crud_check}
 
     finally:
         sandbox_service.stop_background_service(container)

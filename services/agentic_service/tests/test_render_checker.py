@@ -87,6 +87,42 @@ def test_check_runtime_render_works_when_called_from_a_running_event_loop(built_
     assert result["home_page"]["status"] == "passed"
 
 
+def test_on_server_ready_callback_is_invoked_with_a_real_reachable_base_url(built_project):
+    """
+    Real, live proof of the mechanism functional_checker.py's own CRUD smoke test relies on --
+    on_server_ready is called with the real base_url WHILE the background service is still up
+    (before its own teardown), and its return value flows through under result["crud_check"].
+    """
+    calls: list[str] = []
+
+    def _on_server_ready(base_url: str) -> dict:
+        import urllib.request
+
+        # A real request against the real, still-running server, confirming the URL passed in
+        # is genuinely live at the moment this callback runs, not a URL for an already-torn-down
+        # or not-yet-started server.
+        response = urllib.request.urlopen(base_url, timeout=5)
+        calls.append(base_url)
+        return {"status": "passed", "output": f"real check saw HTTP {response.status}"}
+
+    result = check_runtime_render(built_project, reachable_routes=[], on_server_ready=_on_server_ready)
+
+    assert len(calls) == 1
+    assert calls[0].startswith("http://localhost:")
+    assert result["crud_check"] == {"status": "passed", "output": "real check saw HTTP 200"}
+
+
+def test_on_server_ready_exception_is_caught_and_reported_not_propagated(built_project):
+    def _raising_callback(base_url: str) -> dict:
+        raise RuntimeError("a bug in the caller's own check")
+
+    result = check_runtime_render(built_project, reachable_routes=[], on_server_ready=_raising_callback)
+
+    assert result["home_page"]["status"] == "passed"  # unrelated to the crud_check callback failing
+    assert result["crud_check"]["status"] == "failed"
+    assert "a bug in the caller's own check" in result["crud_check"]["output"]
+
+
 def test_sandbox_background_service_publishes_a_reachable_port(built_project):
     service = sandbox_service.start_background_service(
         project_id=built_project,

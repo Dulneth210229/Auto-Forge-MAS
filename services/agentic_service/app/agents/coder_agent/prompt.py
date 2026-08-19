@@ -90,6 +90,11 @@ not a real MongoDB URI has ever been configured for this workspace):
 - Once a real MongoDB connection IS configured, this exact same null-guard branch
   is what makes every route automatically start serving real data -- do not write
   a separate "demo mode" vs. "real mode" toggle; the branch already is the toggle.
+- This fallback is for READS (GET) only. A WRITE (POST/PUT/DELETE) handler's
+  null-guard branch must return a real error (e.g.
+  `NextResponse.json({ error: "Database not connected." }, { status: 503 })`),
+  never a fake "success" built from seed data -- a write must never claim to
+  have persisted something it never actually wrote to a real database.
 
 Completeness and correctness rules (violating these is exactly what turns a
 plausible-looking feature into a broken one that a human has to catch by hand):
@@ -109,6 +114,21 @@ plausible-looking feature into a broken one that a human has to catch by hand):
   `NextResponse.json({ error: ... }, { status: 400 })` with a clear message if
   not. Do not pass unvalidated request input straight into a database query or a
   password/crypto function.
+- Never give a Mongoose schema a `required: true` (or `required: true, unique:
+  true`) field that the create/edit form does not, and cannot, actually set --
+  a confirmed real bug: a custom `id` field the form never collected, silently
+  submitted as `""` on every create, colliding on its own unique index after
+  the first item and failing every create after that. Use MongoDB's own `_id`
+  (ObjectId) as the entity's real identifier unless the feature genuinely
+  needs a separate, human-readable code -- and if it does, generate that value
+  SERVER-SIDE inside the Route Handler (e.g. a real UUID or a short-id
+  library), never as a field the form is expected to supply.
+- A frontend `catch` block handling a failed save/update/delete must parse and
+  show (or at minimum log) the response body's real `error` detail -- the
+  backend already returns `{"error": "..."}` on failure, per the rule above.
+  Never discard it behind a generic hardcoded string like `"Failed to save
+  item"`; a human debugging a real failure needs the real reason, not a
+  message that could mean anything.
 - Never index an object with a plain `string`-typed value (e.g. one read from
   `searchParams.get(...)`, a request body field, or a function parameter typed
   `string`) without a type assertion or a real index signature -- this is a
@@ -193,6 +213,40 @@ Tool usage:
   incomplete logic you left, per the rules above). Do not call any more tools
   once the plan is fully implemented.
 """
+
+# Reuses every one of CODER_AGENT_SYSTEM_PROMPT's own hard technical/completeness rules verbatim
+# (Next.js conventions, the Mongoose guard, error-handling/validation rules, the database-
+# availability/write-fallback split, the schema/form required-field rule, UI-fidelity framing,
+# etc.) -- one source of truth for what "correct, complete Next.js code" means regardless of
+# which coding path produced it. Only the framing before those rules and the "Tool usage" section
+# after them differ, since batch_coder.py's own generator (see app/agents/coder_agent/
+# batch_coder.py's module docstring for why this path exists at all) has no tools, no live
+# filesystem access, and writes exactly one file's complete content per call.
+BATCH_CODE_GENERATOR_SYSTEM_PROMPT = (
+    """
+You are the Coder Agent, in single-file, NO-TOOL-CALLING mode -- your model does not support real
+tool-calling, so instead of exploring the workspace and writing files yourself, you are given
+everything you need for exactly ONE planned file in this message, and must return that one file's
+complete, real content as a small JSON response. You have no filesystem access of your own.
+
+"""
+    + CODER_AGENT_SYSTEM_PROMPT.split("Tool usage:")[0].strip()
+    + """
+
+Your response format (this mode has no tools -- this JSON object IS your entire output):
+- Return ONLY this JSON object, no prose before or after it:
+  {"content": "the file's COMPLETE real content -- valid source code for its own file type,
+  JSON-escaped as a single string (every real newline as \\n, every double-quote as \\", every
+  literal backslash doubled) -- never a diff, never a partial snippet, the ENTIRE file exactly as
+  it should exist on disk"}
+- If the given action is "modify", your returned content REPLACES the current file shown to you
+  entirely -- you are not patching, you are writing the whole new file, so carry over everything
+  from the current version you are not deliberately changing.
+- If an approved UI/UX design reference was given for this file, follow the UI-fidelity rule
+  above exactly as if you had called `read_ui_component_design`/`read_ui_page_design` yourself --
+  it is given to you directly here because this mode has no tool call to request it with.
+"""
+)
 
 
 _CODE_PLANNER_SHARED_HARD_RULES = """
