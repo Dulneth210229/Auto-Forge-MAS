@@ -6517,6 +6517,169 @@ milestone — that file is scratch, **this file is the durable one**.
     no longer appears anywhere on the page, and a fresh screenshot shows every Scope/Out-of-
     Scope/etc. bullet rendering as a clean "•" marker with no overlapping text.
 
+79. **Coder Agent: threaded the real SRS + Architecture Plan `implementation_plan` into the
+    actual coding step (not just planning), stopped a raw MongoDB `_id` from leaking into
+    generated UIs, gave every generated app a persistent nav/footer shell, made the live preview
+    responsive on laptop screens, and added an informational SRS-coverage check.** Direct user
+    report against the real, live "Item Listing (CRUD)" feature (`proj_34e07440`/
+    `feature_94701501`), five parts: a raw ObjectId shown as a table "ID" column; the output
+    generally feeling incomplete relative to the feature, with an explicit ask to check whether
+    the Architecture Plan's `implementation_plan` actually reaches the Coder Agent; the live
+    Preview option not responsive on a laptop screen; no nav bar/footer on the generated app; and
+    a general ask to identify what would make Coder Agent output more reliably satisfy the SRS
+    and the approved UI/UX design.
+    - **Root cause, confirmed by direct investigation before writing any plan**: `coder_agent/
+      prompt.py`'s planning-context builder already passed the full SRS + `architecture_plan_json
+      ["implementation_plan"]` into the PLANNING prompt (builds the terse `code_plan_json`), but
+      `coding_loop.build_task_message` -- the message actually given to the step that WRITES file
+      content -- only ever received that terse plan (`files: [{path, action, rationale,
+      maps_to}]`, confirmed genuinely short strings by the planner's own prompt contract and every
+      real test fixture). The coding step had no tool to read the SRS/Architecture Plan either.
+      `batch_coder.py`'s non-agentic per-file path (item 76) had the identical gap. This is the
+      single biggest cause of "doesn't match the feature" output -- the step doing the actual
+      writing had no idea what a planned file was supposed to DO beyond its own filename.
+    - **Fix (`prompt.py`)**: new `_match_implementation_plan_entries_for_file`/
+      `_match_srs_requirements_for_file` mechanically extract only the `implementation_plan`
+      sub-entries and SRS requirements a given code_plan file's `path`/`maps_to` actually
+      reference (never the whole document); `build_implementation_spec_section` (agentic path,
+      one combined block covering every planned file, built once per attempt) and
+      `build_implementation_spec_for_single_file` (batch path, per-file) assemble these into a
+      capped (`MAX_IMPLEMENTATION_SPEC_CHARS = 8_000`, mirrors `diff_builder.MAX_DIFF_TEXT_CHARS`'s
+      own truncate-with-label precedent) section always including the SRS's `ui_expectations`
+      verbatim (cross-cutting) plus each file's matched slice. Deliberately **inlined, not a new
+      tool** -- a `read_implementation_spec` tool would need its own hard gate (mirroring
+      `list_unread_ui_designs`) to guarantee it's actually called per file, reproducing the exact
+      "no obligation to look" gap being fixed, and risks the same large-tool-result-in-a-long-
+      conversation pattern behind the documented Ollama `num_ctx` truncation gotcha.
+      `coding_loop.build_task_message` gained an `implementation_spec_section` param;
+      `batch_coder._build_user_content`/`generate_file_content` gained a matching
+      `implementation_spec` param. Threaded end-to-end: `_run_coding_phase`/`_code_with_retries
+      (_stream)`/`_code_with_batch_generation(_stream)` all gained `srs_json`/
+      `architecture_plan_json` params; `run()`/`revise()`/`run_stream()`/`revise_stream()` pass
+      through whichever SRS variable was already used for that call's own `plan_validator.validate`
+      (`srs_for_planning` for `run()`/`run_stream()`, which already resolves the Enhanced-SRS
+      fallback; plain `srs_json` for `revise()`/`revise_stream()`, matching each method's own
+      existing planning-context precedent).
+    - **Fix, the `_id` leak + UI-fidelity depth** (`prompt.py`): new rule directly after the
+      existing `_id`-as-identifier rule (item 76) -- `_id` is for edit/delete links and routing
+      ONLY, never a visible table column/label a human sees; if the approved design shows an
+      identifier column at all, it's a human-readable value the design itself defines. Strengthened
+      the existing UI-fidelity rule: mirror the design's exact visible field/column set, don't add
+      a field the design doesn't show (even if the Mongoose model has more fields -- `_id`,
+      timestamps, metadata) and don't omit one it does show -- the design decides what a human
+      sees, not the schema. Both rules land before `CODER_AGENT_SYSTEM_PROMPT`'s `"Tool usage:"`
+      split point, so `BATCH_CODE_GENERATOR_SYSTEM_PROMPT` inherits them automatically.
+    - **Fix, persistent nav/footer** (`workspace_service.py`): confirmed via direct investigation
+      that `NEXTJS_APP_LAYOUT` (`app/layout.tsx`) was a bare shell with zero persistent chrome --
+      only `app/page.tsx` (Home) had its own local nav, so any OTHER route rendered with nothing
+      at all, exactly matching the report. Also confirmed UI/UX Agent's `layout_regions` schema
+      field (`uiux_agent/prompt.py`) was 100% unused/decorative anywhere in the codebase (grepped
+      the whole directory), and that `integration_manifest_builder.py`/component reuse have no
+      cross-page shared-shell concept at all -- concluded a persistent nav/footer is squarely a
+      Coder Agent SCAFFOLD-level (deterministic) responsibility, not a new UI/UX Agent mechanism,
+      and removed `layout_regions` as confirmed-dead schema surface. `NEXTJS_APP_LAYOUT` now wraps
+      `{children}` in a minimal header (app name linking to `/`) + footer, plus an explicit
+      `viewport` export. New idempotent backfill `_upgrade_layout_for_persistent_nav_footer`,
+      mirroring `_upgrade_layout_for_preview_route_announcer`'s exact anchor-based pattern
+      (confirmed its real anchor/replacement text by reading it directly first) -- anchors on the
+      literal `"<PreviewRouteAnnouncer />\n        {children}\n      </body>"` block, present in
+      every layout regardless of whether the announcer upgrade just ran in the same call or was
+      already there; no-ops with a logged warning if the anchor's missing or a `<header` tag
+      already exists. Wired into `_backfill_nextjs_scaffold_upgrades` right after the announcer
+      upgrade. `CODER_AGENT_SYSTEM_PROMPT` already forbade touching `app/layout.tsx` at all (item
+      63) -- the persistent shell is safe from being overwritten by feature generation with no new
+      rule needed.
+    - **Fix, preview responsiveness**: `PreviewPanel.jsx`'s hardcoded `min-h-[500px]` (on both the
+      iframe wrapper and the iframe itself) relaxed to `min-h-[350px] lg:min-h-[500px]` -- the one
+      concrete fixed-size finding after confirming no other fixed pixel widths exist anywhere in
+      the AutoForge-side layout chain (`ResizableWorkspace.jsx` is percentage-based,
+      `AppShell.jsx` correctly uses `h-screen`/`flex-1 min-h-0 overflow-hidden`, `index.css` has
+      zero media queries, `index.html` has a correct viewport meta tag). New
+      `CODER_AGENT_SYSTEM_PROMPT` rule: never use a fixed pixel width on a page's top-level
+      container or anything wider than a small icon; wrap a wide table in `overflow-x-auto`
+      rather than letting it overflow.
+    - **New informational-only spec-fidelity checker** (`ui_expectations_checker.py`, new module,
+      mirroring `functional_checker.py`'s "explicitly heuristic, never a hard gate" convention and
+      `verify.py`'s existing `_build_relevance_scan_step` word-overlap/stopword-filter idiom):
+      `scan_ui_expectations_coverage` flags an SRS `ui_expectations` bullet with zero plausible
+      textual trace in this attempt's touched `.tsx`/`.jsx` files -- deliberately never a hard
+      gate (a legitimate implementation routinely uses different words than the SRS bullet, e.g.
+      "Live search input with debouncing" implemented as `SearchBar`/`useDebounce` shares no
+      literal words). Wired into `CoderVerifier.verify()` as a new `ui_expectations` param -> new
+      `_build_ui_expectations_coverage_step`, `status="info"`, threaded from both real
+      `self.verifier.verify(...)` call sites using `srs_json.get("ui_expectations")` (the same
+      `srs_json` already threaded for the main fix above).
+    - Tests: `tests/test_coder_prompt.py` (+13: both matching helpers, both spec-builders
+      including char-cap truncation, substring locks for all 3 new/strengthened prompt rules),
+      `tests/test_coder_coding_loop_task_message.py` (+3), `tests/test_coder_agent_batch_generation.py`/
+      `tests/test_coder_agent_retries.py` (fixed 6 pre-existing mock signatures that didn't accept
+      the new kwargs -- a real, expected test-fixture update, not a regression), new
+      `tests/test_coder_ui_expectations_checker.py` (8) + `tests/test_coder_ui_expectations_step.py`
+      (5, mirrors `test_coder_relevance_scan.py`'s exact no-Docker precedent),
+      `tests/test_workspace_preview_route_announcer.py` (+4: fresh-scaffold header/footer/viewport
+      presence, backfill onto a pre-upgrade layout, missing-anchor no-op, idempotency; 1
+      pre-existing test's assertion updated since {children} is now wrapped in `<main>` rather
+      than sitting bare in `<body>`), `tests/test_uiux_metadata_validator.py` (removed
+      `layout_regions` from its fixture -- confirmed pure cleanup, the validator never asserted on
+      it). Full suite: **818 passed** (fast) + all **15** real Docker-backed `test_coder_verify.py`
+      tests passing end-to-end (confirming the new informational step integrates cleanly with a
+      real npm-install/build/server-boot cycle, ~1h54m real Docker time). `npm run build` clean.
+    - **Real, live verification against the exact reported feature**, not just unit tests: a real
+      streamed `revise()` call (`qwen3-coder:latest`, ~27 real minutes: ~4.5min planning via the
+      well-specified fast path since the file was named explicitly, then 3 coding attempts) --
+      directly confirmed on disk afterward that the raw `_id`/ObjectId table column and header are
+      genuinely gone from `app/item-listing-crud/page.tsx` (table now reads Name/Price/Quantity/
+      Category/Actions; `_id` only remains in its correct internal uses -- the React `key`,
+      edit/delete routing), and that the real, already-existing `app/layout.tsx` was correctly,
+      automatically backfilled with the new persistent header/footer live during this same run.
+      **Two honest, separate findings from this real run, recorded rather than hidden**: (1) this
+      attempt's `verification_passed: false` -- but the cause was the pre-existing (item 69)
+      `list_unread_ui_designs` hard gate (the model modified frontend code without calling
+      `read_ui_component_design`/`read_ui_page_design` first this run), a known, already-
+      documented local-model tool-compliance characteristic, not a regression from this session's
+      own changes; (2) this real feature's own Architecture Plan happens to be one of the
+      already-documented crude, deterministic-fallback-generated ones (items 24/27 -- each model
+      field split into its own fake "DataEntity", all 4 endpoint entries collapsed to duplicate
+      `GET /api/item-listing-crud`), so `_match_implementation_plan_entries_for_file`'s matching
+      found little useful detail to thread through FOR THIS SPECIFIC FEATURE specifically -- the
+      mechanism itself is confirmed correct and fully unit-tested against well-formed fixtures,
+      but its real-world benefit depends on the underlying Architecture Plan actually being
+      well-formed, which is a separate, already out-of-scope, pre-existing gap this item does not
+      newly introduce or attempt to fix. `[id]/route.ts` was also observed to still query by a
+      plain `id` field rather than `_id` (the same known remaining item documented in item 76) --
+      untouched by this revision since it wasn't part of what was asked. This real state (6 new
+      Coder Agent artifacts, `verification_passed: false`, pending human review) is left in place
+      as genuine verification evidence, matching this project's own established convention.
+
+80. **Requirement Agent conversation: the deterministic quality gate flagged a well-annotated,
+    detailed `data_requirements` field spec as "vague" purely for being long.** Direct, real user
+    report: submitted `"name — string, required (user's full name or display name)"` (a format
+    directly suggested as a good answer shape) and the conversation got stuck on "Not ready to
+    confirm yet: Data requirement ... reads like a vague sentence, not a concrete field name,"
+    with no way to proceed except the "Confirm anyway" override.
+    - **Root cause, confirmed directly** (`conversation_quality_gate.py`): the `data_requirements`
+      check was a bare `len(str(field).split()) > _VAGUE_FIELD_WORD_LIMIT` (6 words) -- it
+      couldn't distinguish "detailed because of a helpful type/constraint annotation" from
+      "vague because it's a rambling sentence." The reported example is 10 tokens purely from its
+      `— string, required (...)` annotation, tripping the same limit meant to catch something
+      like "the full name of the user who is registering."
+    - **Fix**: new `_looks_like_a_structured_field_spec` -- an entry is treated as a legitimate,
+      non-vague structured spec (skipping the word-count check entirely) if it has an early
+      field-name-like token followed by a separator (`name — ...`, `email: ...`) or a bare
+      `field (note)` shape, AND its first word isn't a sentence-starter ("the", "a", "this", etc.)
+      -- an entry with neither trait still falls through to the original word-count heuristic, so
+      a genuinely vague, unstructured description is still caught exactly as before.
+    - Tests: `tests/test_requirement_conversation.py` (+2 -- the exact reported example plus two
+      similarly-shaped variants no longer flagged; a genuinely vague, unstructured, article-led
+      description of the same rough length still correctly flagged, confirming the fix narrows
+      the false positive rather than disabling the check). Full suite: **820 passed** (up from
+      818, following item 79's own count).
+    - **Real, live remediation**: the user's own live main backend (`--reload`, port 8000) was
+      cleanly restarted (its full reloader/worker process tree stopped and relaunched identically)
+      at their explicit request so the fix took effect in their active session immediately,
+      confirmed via a clean `Application startup complete` log and the frontend's own real
+      requests succeeding against the fresh process right after.
+
 ## Where to look
 
 - Full build spec (read this first, in order, before any new milestone): `instructions .md`

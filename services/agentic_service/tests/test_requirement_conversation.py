@@ -144,6 +144,36 @@ def test_quality_gate_flags_vague_data_requirement():
     assert any("vague sentence" in r for r in result.reasons)
 
 
+def test_quality_gate_does_not_flag_a_well_annotated_structured_field_spec():
+    # Real, reported bug: a detailed, well-formed field spec ("name -- type, notes") was flagged
+    # as "vague" purely for exceeding a plain word count, even though the extra words are a type
+    # annotation and a clarifying note, not sentence padding.
+    ba_input = dict(CONCRETE_BA_INPUT)
+    ba_input["data_requirements"] = [
+        "name — string, required (user's full name or display name)",
+        "email: string, required, unique, valid email format",
+        "createdAt (auto-generated timestamp)",
+    ]
+
+    srs_json, defaulted_fields = project_ba_input_to_srs_shape(PROJECT, FEATURE, ba_input)
+    result = assess(srs_json, defaulted_fields, FEATURE["feature_description"])
+
+    assert not any("vague sentence" in r for r in result.reasons)
+
+
+def test_quality_gate_still_flags_a_long_field_description_with_no_structure():
+    # A genuinely vague, unstructured description (no field-name-then-separator shape) must
+    # still be caught -- the fix narrows the false positive, it doesn't disable the check.
+    ba_input = dict(CONCRETE_BA_INPUT)
+    ba_input["data_requirements"] = ["the full name of the user who is registering for an account"]
+
+    srs_json, defaulted_fields = project_ba_input_to_srs_shape(PROJECT, FEATURE, ba_input)
+    result = assess(srs_json, defaulted_fields, FEATURE["feature_description"])
+
+    assert result.ready is False
+    assert any("vague sentence" in r for r in result.reasons)
+
+
 def test_quality_gate_passes_when_tier1_and_business_goal_are_all_answered():
     srs_json, defaulted_fields = project_ba_input_to_srs_shape(PROJECT, FEATURE, CONCRETE_BA_INPUT)
 
