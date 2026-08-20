@@ -60,6 +60,7 @@ def build_task_message(
     prior_failure_output: str | None = None,
     already_touched: dict[str, list[str]] | None = None,
     original_request: str | None = None,
+    implementation_spec_section: str | None = None,
 ) -> str:
     """
     Format the validated plan (+ optional prior verification failure, for a
@@ -78,6 +79,13 @@ def build_task_message(
     rationale against what was actually asked, instead of blindly executing
     a possibly-misparsed plan step. The plan is still the authoritative HOW;
     this is a cross-check, not a replacement for it.
+
+    implementation_spec_section, when given, is the bounded, per-file-scoped
+    slice of the approved SRS + Architecture Plan implementation_plan built by
+    prompt.build_implementation_spec_section -- the plan's own maps_to/rationale
+    are deliberately terse (short IDs/paths only, see
+    _CODE_PLANNER_SHARED_HARD_RULES), so without this the coding loop has no
+    idea what a planned file is actually supposed to DO beyond its own name.
     """
     sections = [
         "Implement the following pre-approved, pre-validated code plan.",
@@ -96,6 +104,18 @@ def build_task_message(
         )
 
     sections.extend(["", json.dumps(code_plan_json, indent=2, default=str)])
+
+    if implementation_spec_section:
+        sections.extend(
+            [
+                "",
+                "Real spec detail for the planned files above (from the approved SRS + "
+                "Architecture Plan implementation_plan -- the plan's own rationale/maps_to are "
+                "deliberately short IDs, this is what each file is actually supposed to do; "
+                "follow its exact endpoint/model/page detail where given):",
+                implementation_spec_section,
+            ]
+        )
 
     if already_touched:
         touched_paths = sorted(

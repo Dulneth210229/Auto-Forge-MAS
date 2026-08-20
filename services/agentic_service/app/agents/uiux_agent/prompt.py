@@ -67,7 +67,6 @@ Return exactly this JSON shape:
       "route": "/url-path",
       "actors": ["Role from user_roles"],
       "covers_requirements": ["FR-001", "US-001", "AC-001"],
-      "layout_regions": ["header", "main", "footer"],
       "components": [
         {
           "name": "ComponentName",

@@ -241,12 +241,12 @@ export default function PreviewPanel({ featureId }) {
       )}
 
       {isRunningOrStale ? (
-        <div className="flex-1 min-h-[500px] border border-gray-200 dark:border-gray-800 rounded-md overflow-hidden bg-white">
+        <div className="flex-1 min-h-[350px] lg:min-h-[500px] border border-gray-200 dark:border-gray-800 rounded-md overflow-hidden bg-white">
           <iframe
             key={reloadKey}
             title="Live preview"
             src={`${status.preview_url}${featureRoute}`}
-            className="w-full h-full min-h-[500px]"
+            className="w-full h-full min-h-[350px] lg:min-h-[500px]"
           />
         </div>
       ) : (

@@ -32,7 +32,7 @@ async def test_batch_generation_writes_all_planned_files_and_passes(agent, tmp_p
         "app/item-listing-crud/page.tsx": "export default function Page() { return null; }",
     }
 
-    async def _fake_generate(feature_id, file_entry, current_content, sibling_files, prior_failure):
+    async def _fake_generate(feature_id, file_entry, current_content, sibling_files, prior_failure, implementation_spec=None):
         return generated_content[file_entry["path"]]
 
     with (
@@ -58,7 +58,7 @@ async def test_batch_generation_writes_all_planned_files_and_passes(agent, tmp_p
 async def test_batch_generation_retries_and_feeds_real_failure_back(agent, tmp_path):
     calls = []
 
-    async def _fake_generate(feature_id, file_entry, current_content, sibling_files, prior_failure):
+    async def _fake_generate(feature_id, file_entry, current_content, sibling_files, prior_failure, implementation_spec=None):
         calls.append((file_entry["path"], prior_failure))
         if file_entry["path"] == "app/item-listing-crud/page.tsx" and len(calls) <= 2:
             return None  # fails on attempt 1
@@ -112,7 +112,7 @@ async def test_batch_generation_modify_action_passes_current_content_to_generato
 
     captured = {}
 
-    async def _fake_generate(feature_id, file_entry, current_content, sibling_files, prior_failure):
+    async def _fake_generate(feature_id, file_entry, current_content, sibling_files, prior_failure, implementation_spec=None):
         captured["current_content"] = current_content
         return "new content"
 
@@ -132,7 +132,7 @@ async def test_batch_generation_modify_action_passes_current_content_to_generato
 
 @pytest.mark.asyncio
 async def test_batch_generation_exhausts_attempts_when_verify_never_passes(agent, tmp_path):
-    async def _fake_generate(feature_id, file_entry, current_content, sibling_files, prior_failure):
+    async def _fake_generate(feature_id, file_entry, current_content, sibling_files, prior_failure, implementation_spec=None):
         return "content"
 
     with (
@@ -155,7 +155,7 @@ async def test_batch_generation_exhausts_attempts_when_verify_never_passes(agent
 
 @pytest.mark.asyncio
 async def test_batch_generation_commit_failure_is_treated_as_a_failed_attempt_not_a_crash(agent, tmp_path):
-    async def _fake_generate(feature_id, file_entry, current_content, sibling_files, prior_failure):
+    async def _fake_generate(feature_id, file_entry, current_content, sibling_files, prior_failure, implementation_spec=None):
         return "content"
 
     with (

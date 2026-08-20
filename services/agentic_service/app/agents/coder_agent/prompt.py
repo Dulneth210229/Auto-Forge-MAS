@@ -61,6 +61,14 @@ up at runtime, not at compile time -- these are not optional style preferences):
 - Never set `typescript.ignoreBuildErrors` or `eslint.ignoreDuringBuilds` in
   `next.config.mjs` to work around a real type/lint error -- fix the actual error
   instead. This is checked deterministically and will fail verification.
+- Responsive by default, no exceptions: never use a fixed pixel width (e.g.
+  `w-[800px]`, inline `style={{ width: "800px" }}`) on a page's top-level
+  container or any element wider than a small icon/avatar -- use fluid/
+  responsive Tailwind utilities instead (`w-full`, `max-w-*`, `flex`/`grid`
+  with `sm:`/`md:`/`lg:` breakpoints where the layout benefits). Any table wide
+  enough to need horizontal scroll on a small viewport must be wrapped in
+  `<div className="overflow-x-auto">` rather than being allowed to overflow the
+  page.
 
 Database availability fallback (unconditional -- applies on every run, whether or
 not a real MongoDB URI has ever been configured for this workspace):
@@ -123,6 +131,13 @@ plausible-looking feature into a broken one that a human has to catch by hand):
   needs a separate, human-readable code -- and if it does, generate that value
   SERVER-SIDE inside the Route Handler (e.g. a real UUID or a short-id
   library), never as a field the form is expected to supply.
+- MongoDB's `_id` (per the rule above) is an internal identifier for edit/
+  delete links and routing ONLY -- never render it as a visible table column,
+  list field, or label a human sees (e.g. no "ID" column showing a raw
+  ObjectId string like "6a85cde40dc527b081a49e90"). If the approved UI/UX
+  design shows an identifier column at all, it is a human-readable value the
+  design itself defines (e.g. a short code, a name) -- reproduce THAT, never
+  `_id`.
 - A frontend `catch` block handling a failed save/update/delete must parse and
   show (or at minimum log) the response body's real `error` detail -- the
   backend already returns `{"error": "..."}` on failure, per the rule above.
@@ -148,7 +163,12 @@ plausible-looking feature into a broken one that a human has to catch by hand):
   literally copy-pasteable `className` values), but the JSX structure, component
   boundaries, props, state, and real data-wiring (fetch calls, event handlers) are
   yours to design properly for a working Next.js app. NEVER embed the raw HTML
-  directly (e.g. via `dangerouslySetInnerHTML`) -- write proper JSX.
+  directly (e.g. via `dangerouslySetInnerHTML`) -- write proper JSX. Mirror the
+  design's exact visible field/column set: do not add a field/column it does
+  not show (even if the underlying Mongoose model has more fields -- `_id`,
+  internal timestamps, metadata) and do not omit one it does show. The model's
+  schema may be a superset of what the design displays; the design, not the
+  schema, decides what a human sees.
 - Never create a page under `app/` without also adding a corresponding `<Link>`
   reachable from `app/page.tsx`'s `HomePage` (directly, or via a list/index page
   it links to, for parameterized routes) -- an unreachable page is exactly the
@@ -572,6 +592,183 @@ def _build_shared_planner_context_sections(
         )
 
     return sections
+
+
+# The planning prompt above already shows the full SRS + implementation_plan -- but that only
+# ever informs the terse code_plan_json (files: [{path, action, rationale, maps_to}], deliberately
+# short strings only, see _CODE_PLANNER_SHARED_HARD_RULES's maps_to rules). The actual CODING step
+# (coding_loop.build_task_message / batch_coder.py's per-file prompt) previously received ONLY
+# that terse plan -- no field-level endpoint/model detail, no SRS acceptance criteria/ui
+# expectations at all. This is the confirmed root cause of "the generated app doesn't match the
+# feature": the coding step had no way to know what a planned file was actually supposed to DO,
+# only that it should exist. The helpers below build a bounded, per-file-scoped slice of the real
+# spec for the coding step -- deliberately NOT a new tool (a `read_implementation_spec` tool would
+# need its own hard gate, mirroring list_unread_ui_designs, to guarantee it's actually called per
+# file, reproducing the same "no obligation to look" gap; and repeated large tool results risk the
+# same Ollama num_ctx truncation class of bug already documented for this agent). Inlining once,
+# capped by MAX_IMPLEMENTATION_SPEC_CHARS (mirrors diff_builder.MAX_DIFF_TEXT_CHARS's own
+# truncate-with-label precedent), needs no new enforcement machinery.
+MAX_IMPLEMENTATION_SPEC_CHARS = 8_000
+
+# A file's own requirement context always includes at least this many requirements even when
+# maps_to has no requirement-ID-shaped entry at all -- a file should never get zero context.
+_SRS_FALLBACK_REQUIREMENT_COUNT = 3
+
+
+def _match_implementation_plan_entries_for_file(
+    file_entry: dict[str, Any], implementation_plan: dict[str, Any]
+) -> dict[str, Any]:
+    """
+    Mechanically extract only the implementation_plan sub-entries this ONE code_plan file
+    entry's path/maps_to actually reference -- never the whole implementation_plan. Matches:
+    backend.files[] by .path == file_entry["path"]; backend.endpoints[] by .path in maps_to (or
+    in a matched file's own implements_endpoints); backend.models[] by .name in maps_to;
+    frontend.pages[] by .path == path or .route in maps_to; frontend.services[] by
+    .path == path. Returns {} when nothing matches (e.g. a config/scaffold file with no real
+    spec entry of its own).
+    """
+    path = file_entry.get("path")
+    maps_to = [m for m in file_entry.get("maps_to", []) if isinstance(m, str)]
+    backend = implementation_plan.get("backend", {}) if isinstance(implementation_plan, dict) else {}
+    frontend = implementation_plan.get("frontend", {}) if isinstance(implementation_plan, dict) else {}
+
+    matched_files = [
+        f for f in backend.get("files", []) if isinstance(f, dict) and f.get("path") == path
+    ]
+
+    endpoint_paths = set(maps_to)
+    for f in matched_files:
+        endpoint_paths.update(f.get("implements_endpoints") or [])
+    matched_endpoints = [
+        e for e in backend.get("endpoints", []) if isinstance(e, dict) and e.get("path") in endpoint_paths
+    ]
+
+    matched_models = [
+        m for m in backend.get("models", []) if isinstance(m, dict) and m.get("name") in maps_to
+    ]
+
+    matched_pages = [
+        p
+        for p in frontend.get("pages", [])
+        if isinstance(p, dict) and (p.get("path") == path or p.get("route") in maps_to)
+    ]
+
+    matched_services = [
+        s for s in frontend.get("services", []) if isinstance(s, dict) and s.get("path") == path
+    ]
+
+    result: dict[str, Any] = {}
+    if matched_files:
+        result["backend_file"] = matched_files
+    if matched_endpoints:
+        result["endpoints"] = matched_endpoints
+    if matched_models:
+        result["models"] = matched_models
+    if matched_pages:
+        result["pages"] = matched_pages
+    if matched_services:
+        result["services"] = matched_services
+    return result
+
+
+def _match_srs_requirements_for_file(file_entry: dict[str, Any], srs_json: dict[str, Any]) -> list[dict[str, Any]]:
+    """
+    functional_requirements/acceptance_criteria entries whose "id" appears in this file's
+    maps_to. Falls back to the first _SRS_FALLBACK_REQUIREMENT_COUNT functional requirements if
+    maps_to has no requirement-ID-shaped string at all -- a file should never get zero
+    requirement context just because its plan entry only named an endpoint/entity.
+    """
+    maps_to = set(file_entry.get("maps_to", []) or [])
+    all_requirements = [
+        item
+        for item in (srs_json.get("functional_requirements", []) or []) + (srs_json.get("acceptance_criteria", []) or [])
+        if isinstance(item, dict)
+    ]
+    matched = [item for item in all_requirements if item.get("id") in maps_to]
+    if matched:
+        return matched
+    return [
+        item
+        for item in (srs_json.get("functional_requirements", []) or [])
+        if isinstance(item, dict)
+    ][:_SRS_FALLBACK_REQUIREMENT_COUNT]
+
+
+def build_implementation_spec_for_single_file(
+    file_entry: dict[str, Any], srs_json: dict[str, Any], architecture_plan_json: dict[str, Any]
+) -> str:
+    """
+    The real spec detail relevant to ONE planned file -- its matched implementation_plan
+    sub-entries + matched SRS requirements + the SRS's ui_expectations (always, cross-cutting).
+    Used by batch_coder.py's per-file, no-tool-calling prompt, where inlining is the only option.
+    Returns "" when there is nothing to show (e.g. srs_json/architecture_plan_json both empty).
+    """
+    implementation_plan = architecture_plan_json.get("implementation_plan") or {}
+    matched_plan = _match_implementation_plan_entries_for_file(file_entry, implementation_plan)
+    matched_requirements = _match_srs_requirements_for_file(file_entry, srs_json)
+    ui_expectations = srs_json.get("ui_expectations") or []
+
+    parts: list[str] = []
+    if ui_expectations:
+        parts.append("SRS UI expectations (apply project-wide, not just to this file):")
+        parts.append(json.dumps(ui_expectations, indent=2, default=str))
+    if matched_requirements:
+        parts.append("Relevant SRS requirements for this file:")
+        parts.append(json.dumps(matched_requirements, indent=2, default=str))
+    if matched_plan:
+        parts.append("Relevant Architecture implementation_plan detail for this file:")
+        parts.append(json.dumps(matched_plan, indent=2, default=str))
+
+    if not parts:
+        return ""
+
+    text = "\n".join(parts)
+    if len(text) > MAX_IMPLEMENTATION_SPEC_CHARS:
+        text = text[:MAX_IMPLEMENTATION_SPEC_CHARS] + "\n... (truncated)"
+    return text
+
+
+def build_implementation_spec_section(
+    code_plan_json: dict[str, Any], srs_json: dict[str, Any], architecture_plan_json: dict[str, Any]
+) -> str:
+    """
+    ONE combined block covering every file in code_plan_json's own matched spec detail, for the
+    AGENTIC coding path (coding_loop.build_task_message) -- the loop shares one long conversation
+    across every file, so this is built once per attempt, not per file. SRS ui_expectations is
+    included once at the top (cross-cutting); each file then gets its own matched requirements +
+    implementation_plan slice. Capped by MAX_IMPLEMENTATION_SPEC_CHARS so total growth stays
+    bounded and proportional to the plan's own size, never the whole SRS/implementation_plan
+    dumped wholesale. Returns "" when there is nothing to show.
+    """
+    implementation_plan = architecture_plan_json.get("implementation_plan") or {}
+    ui_expectations = srs_json.get("ui_expectations") or []
+    files = code_plan_json.get("files", []) if isinstance(code_plan_json, dict) else []
+
+    parts: list[str] = []
+    if ui_expectations:
+        parts.append("SRS UI expectations (apply project-wide, to every page/component you write):")
+        parts.append(json.dumps(ui_expectations, indent=2, default=str))
+
+    for file_entry in files:
+        if not isinstance(file_entry, dict):
+            continue
+        matched_plan = _match_implementation_plan_entries_for_file(file_entry, implementation_plan)
+        matched_requirements = _match_srs_requirements_for_file(file_entry, srs_json)
+        if not matched_plan and not matched_requirements:
+            continue
+        parts.append(f"For {file_entry.get('path')}:")
+        if matched_requirements:
+            parts.append(json.dumps({"requirements": matched_requirements}, indent=2, default=str))
+        if matched_plan:
+            parts.append(json.dumps(matched_plan, indent=2, default=str))
+
+    if not parts:
+        return ""
+
+    text = "\n".join(parts)
+    if len(text) > MAX_IMPLEMENTATION_SPEC_CHARS:
+        text = text[:MAX_IMPLEMENTATION_SPEC_CHARS] + "\n... (truncated)"
+    return text
 
 
 def _build_cumulative_touched_files_section(coverage_baseline_files: list[dict[str, Any]]) -> list[str]:

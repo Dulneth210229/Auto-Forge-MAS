@@ -97,6 +97,7 @@ from app.agents.coder_agent.db_fallback_checker import (
 )
 from app.agents.coder_agent.functional_checker import check_crud_functionality
 from app.agents.coder_agent.nav_checker import check_page_reachability
+from app.agents.coder_agent.ui_expectations_checker import scan_ui_expectations_coverage
 from app.agents.coder_agent.render_checker import RenderCheckError, check_runtime_render
 from app.agents.coder_agent.route_checker import check_route_coverage, scan_for_placeholder_stubs
 from app.agents.coder_agent.schema_form_checker import check_required_field_form_coverage
@@ -158,17 +159,22 @@ class CoderVerifier:
         feature_id: str,
         code_plan_json: dict[str, Any],
         original_request: str | None = None,
+        ui_expectations: list[str] | None = None,
     ) -> dict[str, Any]:
         """
         Returns {"passed": bool, "steps": [{"name", "status", "output"}]}.
         status is one of "passed", "failed", "skipped" (and, for the
-        placeholder-stub/db-fallback-quality/relevance scans, "info" -- a
+        placeholder-stub/db-fallback-quality/relevance/ui-expectations scans, "info" -- a
         status that never affects `passed`).
 
         original_request, when given, is the human's own literal words (the
         human_comment/revision_comment this code_plan_json was generated
         from) -- used only for the informational relevance scan below, never
         for anything that gates `passed`.
+
+        ui_expectations, when given, is the approved SRS's own ui_expectations list -- used only
+        for the informational ui_expectations coverage scan (see ui_expectations_checker.py's
+        own module docstring for why this is deliberately never a hard gate).
         """
         steps: list[dict[str, str]] = []
         passed = True
@@ -272,6 +278,7 @@ class CoderVerifier:
         steps.append(self._build_placeholder_stub_step(workspace_root, touched_paths))
         steps.append(self._build_db_fallback_quality_step(workspace_root, touched_paths))
         steps.append(self._build_relevance_scan_step(workspace_root, touched_paths, original_request))
+        steps.append(self._build_ui_expectations_coverage_step(workspace_root, touched_paths, ui_expectations))
 
         return {"passed": passed, "steps": steps}
 
@@ -474,6 +481,42 @@ class CoderVerifier:
             "status": "info",
             "output": f"{len(matched)}/{len(words)} distinctive request word(s) found in the touched "
             "files.",
+        }
+
+    def _build_ui_expectations_coverage_step(
+        self, workspace_root, touched_paths: list[str], ui_expectations: list[str] | None
+    ) -> dict[str, str]:
+        """
+        Informational-only signal that a bullet from the approved SRS's ui_expectations list has
+        no plausible textual trace anywhere in this attempt's own touched frontend files -- see
+        ui_expectations_checker.py's own module docstring for why this can only ever be a nudge
+        for a human reviewer, never a hard gate.
+        """
+        if not ui_expectations:
+            return {
+                "name": "ui_expectations coverage",
+                "status": "info",
+                "output": "No SRS ui_expectations available to check against.",
+            }
+
+        gaps = scan_ui_expectations_coverage(workspace_root, touched_paths, ui_expectations)
+
+        if not gaps:
+            return {
+                "name": "ui_expectations coverage",
+                "status": "info",
+                "output": f"All {len(ui_expectations)} SRS ui_expectations bullet(s) have at least "
+                "some plausible trace in the touched frontend files (or were too short/generic to "
+                "check).",
+            }
+
+        lines = [f"- {gap['expectation']}" for gap in gaps]
+        return {
+            "name": "ui_expectations coverage",
+            "status": "info",
+            "output": "These SRS ui_expectations bullets have no obvious trace in the frontend "
+            "files touched this attempt -- worth a human double-check, not necessarily missing "
+            "(a legitimate implementation can use entirely different words):\n" + "\n".join(lines),
         }
 
     def _build_page_reachability_step(self, results: list[dict[str, str]]) -> dict[str, str]:

@@ -63,7 +63,8 @@ async def test_graph_recursion_error_feedback_asks_for_efficiency_on_next_attemp
     captured_messages = []
 
     def _fake_build_task_message(
-        code_plan_json, prior_failure_output=None, already_touched=None, original_request=None
+        code_plan_json, prior_failure_output=None, already_touched=None, original_request=None,
+        implementation_spec_section=None,
     ):
         captured_messages.append(prior_failure_output)
         return "task message"

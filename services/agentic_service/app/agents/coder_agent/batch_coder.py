@@ -74,6 +74,7 @@ def _build_user_content(
     current_content: str | None,
     sibling_files_written: list[str],
     prior_failure_output: str | None,
+    implementation_spec: str | None = None,
 ) -> str:
     path = file_entry.get("path", "")
     parts = [
@@ -96,6 +97,13 @@ def _build_user_content(
     if design_reference:
         parts.append(f"Approved UI/UX design reference for this file:\n```html\n{design_reference}\n```")
 
+    if implementation_spec:
+        parts.append(
+            "Real spec detail for this file (from the approved SRS + Architecture Plan "
+            "implementation_plan -- rationale/maps_to above are deliberately short IDs, this is "
+            "what this file is actually supposed to do):\n" + implementation_spec
+        )
+
     if prior_failure_output:
         parts.append(f"The previous attempt's real failure -- fix this in your response:\n{prior_failure_output}")
 
@@ -108,17 +116,22 @@ async def generate_file_content(
     current_content: str | None,
     sibling_files_written: list[str],
     prior_failure_output: str | None = None,
+    implementation_spec: str | None = None,
 ) -> str | None:
     """
     One single-shot LLM call for exactly one planned file. Returns the file's real, complete
     content, or None on any failure/malformed/empty response -- never raises. A None result is
     treated by the caller (CoderAgent._code_with_batch_generation) exactly like a planned file
     that was never touched, feeding into the same retry machinery every other coding path uses.
+
+    implementation_spec, when given, is the bounded, per-file spec slice built by
+    prompt.build_implementation_spec_for_single_file -- see that function's own docstring for why
+    this exists (the plan's own rationale/maps_to are deliberately terse).
     """
     from app.services.llm_provider_service import llm_provider_service
 
     user_content = _build_user_content(
-        feature_id, file_entry, current_content, sibling_files_written, prior_failure_output
+        feature_id, file_entry, current_content, sibling_files_written, prior_failure_output, implementation_spec
     )
 
     try:

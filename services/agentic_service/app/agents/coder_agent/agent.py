@@ -54,6 +54,8 @@ from app.agents.coder_agent.prompt import (
     CODE_PLANNER_SYSTEM_PROMPT,
     build_code_plan_repair_prompt,
     build_code_planner_user_prompt,
+    build_implementation_spec_for_single_file,
+    build_implementation_spec_section,
 )
 from app.agents.coder_agent.schemas import CoderAgentEnvSaveResult, CoderAgentInput, CoderAgentOutput
 from app.agents.coder_agent.tools import _resolve_within, search_workspace_content
@@ -324,6 +326,8 @@ class CoderAgent:
             revision_start_sha,
             human_comment_for_planning,
             ui_integration_manifest_json,
+            srs_json=srs_for_planning,
+            architecture_plan_json=architecture_plan_json,
         )
 
         diff = workspace_service.diff_against_main(project["project_id"], feature_id)
@@ -519,6 +523,8 @@ class CoderAgent:
             revision_start_sha,
             revision_comment_for_planning,
             ui_integration_manifest_json,
+            srs_json=srs_json,
+            architecture_plan_json=architecture_plan_json,
         )
 
         diff = workspace_service.diff_against_main(project["project_id"], feature_id)
@@ -762,6 +768,8 @@ class CoderAgent:
                 revision_start_sha=revision_start_sha,
                 original_request=human_comment_for_planning,
                 ui_integration_manifest_json=ui_integration_manifest_json,
+                srs_json=srs_for_planning,
+                architecture_plan_json=agent_input.architecture_plan_json,
             )
         else:
             logger.info(
@@ -775,6 +783,8 @@ class CoderAgent:
                 result_holder,
                 revision_start_sha=revision_start_sha,
                 original_request=human_comment_for_planning,
+                srs_json=srs_for_planning,
+                architecture_plan_json=agent_input.architecture_plan_json,
             )
 
         async for event in coding_stream:
@@ -1019,6 +1029,8 @@ class CoderAgent:
                 revision_start_sha=revision_start_sha,
                 original_request=revision_comment_for_planning,
                 ui_integration_manifest_json=ui_integration_manifest_json,
+                srs_json=srs_json,
+                architecture_plan_json=architecture_plan_json,
             )
         else:
             logger.info(
@@ -1032,6 +1044,8 @@ class CoderAgent:
                 result_holder,
                 revision_start_sha=revision_start_sha,
                 original_request=revision_comment_for_planning,
+                srs_json=srs_json,
+                architecture_plan_json=architecture_plan_json,
             )
 
         async for event in coding_stream:
@@ -1092,6 +1106,8 @@ class CoderAgent:
         revision_start_sha: str | None = None,
         original_request: str | None = None,
         ui_integration_manifest_json: dict[str, Any] | None = None,
+        srs_json: dict[str, Any] | None = None,
+        architecture_plan_json: dict[str, Any] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """
         Streaming counterpart to _code_with_retries -- identical retry/gap-detection/verify
@@ -1122,6 +1138,9 @@ class CoderAgent:
         # See the identical comment in _code_with_retries -- created once for the whole call,
         # not per-attempt.
         ui_design_read_tracker: dict[str, set[str]] = {"components": set(), "pages": set()}
+        implementation_spec_section = build_implementation_spec_section(
+            code_plan_json, srs_json or {}, architecture_plan_json or {}
+        )
 
         for attempt in range(1, MAX_CODING_ATTEMPTS + 1):
             yield {
@@ -1135,7 +1154,8 @@ class CoderAgent:
                 project_id, feature_id, code_plan_json, ui_integration_manifest_json, ui_design_read_tracker
             )
             task_message = build_task_message(
-                code_plan_json, prior_failure_output, already_touched, original_request
+                code_plan_json, prior_failure_output, already_touched, original_request,
+                implementation_spec_section=implementation_spec_section,
             )
             hit_recursion_limit = False
             attempt_error: str | None = None
@@ -1776,6 +1796,8 @@ class CoderAgent:
         revision_start_sha: str | None,
         original_request: str | None,
         ui_integration_manifest_json: dict[str, Any] | None,
+        srs_json: dict[str, Any] | None = None,
+        architecture_plan_json: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], int]:
         """
         Single dispatch point shared by run()/revise() -- checks whether coder_agent's currently
@@ -1785,12 +1807,18 @@ class CoderAgent:
         non-agentic batch generator (batch_coder.py, see its own module docstring for the honest
         scope tradeoff) if not. Fully automatic based on whichever model is currently selected for
         coder_agent in Settings -- no separate manual mode toggle.
+
+        srs_json/architecture_plan_json, when given, are threaded into whichever coding path runs
+        so the real spec (not just the terse code_plan_json) reaches the step that actually
+        writes file content -- see build_implementation_spec_section/_for_single_file's own
+        docstrings in prompt.py for why this exists.
         """
         if await model_capabilities.supports_tool_calling(AgentName.CODER.value):
             return await self._code_with_retries(
                 project_id, feature_id, code_plan_json,
                 revision_start_sha=revision_start_sha, original_request=original_request,
                 ui_integration_manifest_json=ui_integration_manifest_json,
+                srs_json=srs_json, architecture_plan_json=architecture_plan_json,
             )
 
         logger.info(
@@ -1800,6 +1828,7 @@ class CoderAgent:
         return await self._code_with_batch_generation(
             project_id, feature_id, code_plan_json,
             revision_start_sha=revision_start_sha, original_request=original_request,
+            srs_json=srs_json, architecture_plan_json=architecture_plan_json,
         )
 
     async def _code_with_batch_generation(
@@ -1809,6 +1838,8 @@ class CoderAgent:
         code_plan_json: dict[str, Any],
         revision_start_sha: str | None = None,
         original_request: str | None = None,
+        srs_json: dict[str, Any] | None = None,
+        architecture_plan_json: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], int]:
         """
         Non-agentic counterpart to _code_with_retries -- see batch_coder.py's own module
@@ -1816,6 +1847,10 @@ class CoderAgent:
         retry shape and (verify_result, attempts_used) return contract as the agentic path, so
         every caller downstream of this (diffing, artifact-saving, merge-report building) needs
         zero changes regardless of which coding path actually ran.
+
+        srs_json/architecture_plan_json, when given, feed
+        prompt.build_implementation_spec_for_single_file per planned file -- see that function's
+        own docstring for why (the plan's own rationale/maps_to are deliberately terse).
         """
         workspace_root = workspace_service.get_repo_path(project_id)
         prior_failure_output: str | None = None
@@ -1839,8 +1874,12 @@ class CoderAgent:
                 target = _resolve_within(workspace_root, path)
                 current_content = target.read_text(encoding="utf-8") if target.exists() else None
 
+                implementation_spec = build_implementation_spec_for_single_file(
+                    file_entry, srs_json or {}, architecture_plan_json or {}
+                )
                 content = await batch_coder.generate_file_content(
-                    feature_id, file_entry, current_content, written_paths, prior_failure_output
+                    feature_id, file_entry, current_content, written_paths, prior_failure_output,
+                    implementation_spec=implementation_spec,
                 )
 
                 if content is None:
@@ -1877,7 +1916,10 @@ class CoderAgent:
                 }
                 continue
 
-            verify_result = self.verifier.verify(project_id, feature_id, code_plan_json, original_request)
+            verify_result = self.verifier.verify(
+                project_id, feature_id, code_plan_json, original_request,
+                ui_expectations=(srs_json or {}).get("ui_expectations"),
+            )
 
             if verify_result["passed"]:
                 return verify_result, attempt
@@ -1898,6 +1940,8 @@ class CoderAgent:
         result_holder: dict[str, Any],
         revision_start_sha: str | None = None,
         original_request: str | None = None,
+        srs_json: dict[str, Any] | None = None,
+        architecture_plan_json: dict[str, Any] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """
         Streaming counterpart to _code_with_batch_generation. There is no meaningful token-level
@@ -1916,6 +1960,7 @@ class CoderAgent:
         verify_result, coding_attempts = await self._code_with_batch_generation(
             project_id, feature_id, code_plan_json,
             revision_start_sha=revision_start_sha, original_request=original_request,
+            srs_json=srs_json, architecture_plan_json=architecture_plan_json,
         )
         result_holder["verify_result"] = verify_result
         result_holder["coding_attempts"] = coding_attempts
@@ -1928,6 +1973,8 @@ class CoderAgent:
         revision_start_sha: str | None = None,
         original_request: str | None = None,
         ui_integration_manifest_json: dict[str, Any] | None = None,
+        srs_json: dict[str, Any] | None = None,
+        architecture_plan_json: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], int]:
         prior_failure_output = None
         already_touched: dict[str, list[str]] | None = None
@@ -1940,6 +1987,13 @@ class CoderAgent:
         # fresh read on every single attempt could consume the run's last attempt on repeated
         # compliance instead of ever reaching a second real verify() call.
         ui_design_read_tracker: dict[str, set[str]] = {"components": set(), "pages": set()}
+        # Also computed ONCE, not per-attempt -- invariant across retries (same rationale as the
+        # tracker above), and gives every attempt the real SRS/implementation_plan detail the
+        # plan's own terse rationale/maps_to never carry (see prompt.build_implementation_spec_
+        # section's own docstring).
+        implementation_spec_section = build_implementation_spec_section(
+            code_plan_json, srs_json or {}, architecture_plan_json or {}
+        )
 
         for attempt in range(1, MAX_CODING_ATTEMPTS + 1):
             attempt_start_sha = workspace_service.ensure_project_repo(project_id).head.commit.hexsha
@@ -1947,7 +2001,8 @@ class CoderAgent:
                 project_id, feature_id, code_plan_json, ui_integration_manifest_json, ui_design_read_tracker
             )
             task_message = build_task_message(
-                code_plan_json, prior_failure_output, already_touched, original_request
+                code_plan_json, prior_failure_output, already_touched, original_request,
+                implementation_spec_section=implementation_spec_section,
             )
             hit_recursion_limit = False
             attempt_error: str | None = None
@@ -2092,7 +2147,8 @@ class CoderAgent:
                 continue
 
             verify_result = self.verifier.verify(
-                project_id, feature_id, code_plan_json, original_request
+                project_id, feature_id, code_plan_json, original_request,
+                ui_expectations=(srs_json or {}).get("ui_expectations"),
             )
 
             if verify_result["passed"]:
