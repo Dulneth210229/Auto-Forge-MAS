@@ -200,37 +200,73 @@ class ArchitectureUseCaseModeler:
     ) -> list[dict[str, Any]]:
         """
         Build actors from SRS roles and SDS context.
+
+        Each candidate carries a stereotype ("human" | "system", per the agilemodeling.com
+        rule "use <<system>> to indicate a non-human/system actor") and an optional
+        `generalizes` (parent actor name, for a real "Admin is-a User"-style actor
+        generalization -- resolved to a real relationship in _build_relationships). The LLM's
+        own `specification["actors"]` entries (dicts, may carry an explicit stereotype/
+        generalizes) are considered first, so an explicit LLM choice wins on a name collision
+        with an auto-inferred candidate below; SRS user_roles / SDS context_view.actors default
+        to "human"; SDS context_view.external_systems default to "system" (an external system a
+        feature integrates with is exactly the non-human-actor case this stereotype exists for).
         """
 
-        actor_candidates: list[Any] = []
-        actor_candidates.extend(self._as_list(specification.get("actors")))
-        actor_candidates.extend(self._as_list(srs_json.get("user_roles")))
+        actor_records: list[dict[str, str]] = []
+
+        for candidate in self._as_list(specification.get("actors")):
+            name = self._extract_name(candidate)
+            if not name or self._is_technical_actor(name):
+                continue
+            stereotype = "human"
+            generalizes = ""
+            if isinstance(candidate, dict):
+                if str(candidate.get("stereotype", "")).strip().lower() == "system":
+                    stereotype = "system"
+                generalizes = str(candidate.get("generalizes", "")).strip()
+            actor_records.append({"name": self._title_case(name), "stereotype": stereotype, "generalizes": generalizes})
+
+        for candidate in self._as_list(srs_json.get("user_roles")):
+            name = self._extract_name(candidate)
+            if not name or self._is_technical_actor(name):
+                continue
+            actor_records.append({"name": self._title_case(name), "stereotype": "human", "generalizes": ""})
 
         context_view = self._get_design_view(sds_json, "context_view")
-        actor_candidates.extend(self._as_list(context_view.get("actors")))
-        actor_candidates.extend(self._as_list(context_view.get("external_systems")))
 
-        names: list[str] = []
-
-        for candidate in actor_candidates:
+        for candidate in self._as_list(context_view.get("actors")):
             name = self._extract_name(candidate)
-            if not name:
+            if not name or self._is_technical_actor(name):
                 continue
-            if self._is_technical_actor(name):
-                continue
-            if name.lower() not in [item.lower() for item in names]:
-                names.append(self._title_case(name))
+            actor_records.append({"name": self._title_case(name), "stereotype": "human", "generalizes": ""})
 
-        if not names:
-            names = ["User"]
+        for candidate in self._as_list(context_view.get("external_systems")):
+            name = self._extract_name(candidate)
+            if not name or self._is_technical_actor(name):
+                continue
+            actor_records.append({"name": self._title_case(name), "stereotype": "system", "generalizes": ""})
+
+        seen_names_lower: set[str] = set()
+        deduped: list[dict[str, str]] = []
+        for record in actor_records:
+            key = record["name"].lower()
+            if key in seen_names_lower:
+                continue
+            seen_names_lower.add(key)
+            deduped.append(record)
+
+        if not deduped:
+            deduped = [{"name": "User", "stereotype": "human", "generalizes": ""}]
 
         actors = []
-        for index, name in enumerate(names, start=1):
+        for index, record in enumerate(deduped, start=1):
             actors.append({
                 "id": f"ACT-{index:03d}",
-                "name": name,
+                "name": record["name"],
                 "type": "primary" if index == 1 else "secondary",
-                "description": f"{name} interacts with the feature to achieve a user goal.",
+                "stereotype": record["stereotype"],
+                "generalizes": record["generalizes"],
+                "description": f"{record['name']} interacts with the feature to achieve a user goal.",
             })
 
         return actors
@@ -268,7 +304,13 @@ class ArchitectureUseCaseModeler:
             if category not in {"main", "included", "extension"}:
                 category = "included"
 
-            use_case = self._new_use_case(name, description, category, related)
+            participating_actors_raw = item.get("participating_actors", [])
+            if not isinstance(participating_actors_raw, list):
+                participating_actors_raw = [participating_actors_raw] if participating_actors_raw else []
+            participating_actors = [str(v).strip() for v in participating_actors_raw if str(v).strip()]
+            generalizes = str(item.get("generalizes", "")).strip()
+
+            use_case = self._new_use_case(name, description, category, related, participating_actors, generalizes)
 
             if category == "main":
                 main.append(use_case)
@@ -297,7 +339,7 @@ class ArchitectureUseCaseModeler:
                 feature_name,
                 f"Main user goal for the {feature_name} feature.",
                 "main",
-                self._collect_ids(srs_json.get("functional_requirements", [])),
+                self._all_requirement_ids(srs_json),
             ))
 
         # A feature-level diagram has exactly one main goal -- if the LLM
@@ -336,11 +378,11 @@ class ArchitectureUseCaseModeler:
             item = primary_items[0]
             name = self._extract_name(item) or feature_name
             description = self._extract_description(item) or f"Main user goal for the {feature_name} feature."
-            related = self._extract_related_ids(item) or self._collect_ids(srs_json.get("functional_requirements", []))
+            related = self._extract_related_ids(item) or self._all_requirement_ids(srs_json)
         else:
             name = feature_name
             description = self._get_text(srs_json, "business_goal") or f"Main user goal for the {feature_name} feature."
-            related = self._collect_ids(srs_json.get("functional_requirements", []))
+            related = self._all_requirement_ids(srs_json)
 
         return [{
             "id": "UC-001",
@@ -499,22 +541,68 @@ class ArchitectureUseCaseModeler:
     ) -> list[dict[str, Any]]:
         """
         Build UML relationships with correct direction.
+
+        Actor-to-use-case associations are built per use case's own `participating_actors`
+        (see _new_use_case) -- an actor is only associated with a use case it genuinely appears
+        in, per agilemodeling.com's "indicate an association between an actor and a use case if
+        the actor appears within the use case logic" rule, rather than the old behavior of
+        hardwiring every actor to only the single main use case regardless of which sub-flow it
+        actually participates in. A use case with no explicit participating_actors falls back to
+        "every actor" ONLY if it's the main use case -- this preserves the exact prior behavior
+        for the deterministic fallback path (which never sets participating_actors) and for any
+        LLM output that omits the field, while an included/extension use case with no explicit
+        actors simply gets no direct association (still reachable via its include/extend edge
+        from the main use case, which is itself associated with every actor).
+
+        Use-case-to-use-case and actor-to-actor generalization relationships are built from each
+        record's own `generalizes` field (previously a structurally dead code path -- the
+        renderer/validator already supported "generalization" as a relationship type, but nothing
+        upstream ever produced one).
         """
 
         if not main_use_cases:
             return []
 
         base_uc_id = main_use_cases[0]["id"]
-        relationships: list[dict[str, Any]] = []
+        all_use_cases = main_use_cases + included_use_cases + extension_use_cases
+        actor_name_to_id = {self._normalize_words(actor["name"]): actor["id"] for actor in actors}
+        use_case_name_to_id = {self._normalize_words(uc["name"]): uc["id"] for uc in all_use_cases}
 
-        for actor in actors:
+        relationships: list[dict[str, Any]] = []
+        associated_pairs: set[tuple[str, str]] = set()
+
+        def add_association(actor_id: str, use_case_id: str) -> None:
+            key = (actor_id, use_case_id)
+            if key in associated_pairs:
+                return
+            associated_pairs.add(key)
             relationships.append({
-                "from": actor["id"],
-                "to": base_uc_id,
+                "from": actor_id,
+                "to": use_case_id,
                 "type": "association",
                 "label": "",
                 "related_requirements": [],
             })
+
+        for use_case in all_use_cases:
+            matched_any = False
+            for actor_name in use_case.get("participating_actors", []):
+                actor_id = actor_name_to_id.get(self._normalize_words(actor_name))
+                if actor_id:
+                    add_association(actor_id, use_case["id"])
+                    matched_any = True
+
+            if not matched_any and use_case.get("category") == "main":
+                for actor in actors:
+                    add_association(actor["id"], use_case["id"])
+
+        # Defensive: if nothing was associated at all (should not happen given the main-use-case
+        # fallback above, but a real main_use_cases[0] always exists per the guard clause), fall
+        # back to the original unconditional behavior rather than shipping a diagram with no
+        # actor edges at all.
+        if not relationships:
+            for actor in actors:
+                add_association(actor["id"], base_uc_id)
 
         for included in included_use_cases:
             relationships.append({
@@ -533,6 +621,34 @@ class ArchitectureUseCaseModeler:
                 "label": "",
                 "related_requirements": extension.get("related_requirements", []),
             })
+
+        for use_case in all_use_cases:
+            parent_name = use_case.get("generalizes", "")
+            if not parent_name:
+                continue
+            parent_id = use_case_name_to_id.get(self._normalize_words(parent_name))
+            if parent_id and parent_id != use_case["id"]:
+                relationships.append({
+                    "from": use_case["id"],
+                    "to": parent_id,
+                    "type": "generalization",
+                    "label": "",
+                    "related_requirements": [],
+                })
+
+        for actor in actors:
+            parent_name = actor.get("generalizes", "")
+            if not parent_name:
+                continue
+            parent_id = actor_name_to_id.get(self._normalize_words(parent_name))
+            if parent_id and parent_id != actor["id"]:
+                relationships.append({
+                    "from": actor["id"],
+                    "to": parent_id,
+                    "type": "generalization",
+                    "label": "",
+                    "related_requirements": [],
+                })
 
         return relationships
 
@@ -664,13 +780,30 @@ class ArchitectureUseCaseModeler:
 
         return best_goal
 
-    def _new_use_case(self, name: str, description: str, category: str, related: list[str]) -> dict[str, Any]:
+    def _new_use_case(
+        self,
+        name: str,
+        description: str,
+        category: str,
+        related: list[str],
+        participating_actors: list[str] | None = None,
+        generalizes: str = "",
+    ) -> dict[str, Any]:
         return {
             "id": "",  # assigned later
             "name": self._clean_use_case_name(name),
             "description": description or name,
             "category": category,
             "related_requirements": self._unique([str(item) for item in related if item]),
+            # Which actor(s) genuinely appear in THIS use case's own logic (see the
+            # agilemodeling.com rule this satisfies) -- may be empty; _build_relationships
+            # falls back to associating every actor with the main use case only, matching this
+            # module's prior, always-safe default behavior.
+            "participating_actors": self._unique([str(item) for item in (participating_actors or []) if item]),
+            # Parent use case NAME for a real "significantly different business logic variant"
+            # generalization relationship (resolved to a real relationship in
+            # _build_relationships) -- empty string means no generalization.
+            "generalizes": str(generalizes or "").strip(),
         }
 
     # Standalone filler words that would otherwise survive gentle truncation
@@ -829,6 +962,11 @@ class ArchitectureUseCaseModeler:
         existing["related_requirements"] = self._unique(
             existing.get("related_requirements", []) + new_item.get("related_requirements", [])
         )
+        existing["participating_actors"] = self._unique(
+            existing.get("participating_actors", []) + new_item.get("participating_actors", [])
+        )
+        if not existing.get("generalizes") and new_item.get("generalizes"):
+            existing["generalizes"] = new_item["generalizes"]
 
         existing_description = str(existing.get("description", ""))
         new_description = str(new_item.get("description", ""))
@@ -956,6 +1094,26 @@ class ArchitectureUseCaseModeler:
             if item_id:
                 ids.append(item_id)
         return self._unique(ids)
+
+    def _all_requirement_ids(self, srs_json: dict[str, Any]) -> list[str]:
+        """
+        Every functional requirement, acceptance criterion, and validation
+        rule id in this SRS -- used to seed the fallback main use case's own
+        related_requirements so it alone can satisfy full FR/AC/VR
+        traceability coverage (UseCaseQualityValidator._validate_traceability
+        checks all three kinds unconditionally, but only functional
+        requirements naturally become their own included/extension use
+        cases in this deterministic fallback path -- an acceptance criterion
+        with no error/optional wording, or a validation rule the LLM
+        specification never echoed back, would otherwise never be cited
+        anywhere and fail that check even though the fallback is supposed to
+        always produce a passing model).
+        """
+        return self._unique(
+            self._collect_ids(srs_json.get("functional_requirements", []))
+            + self._collect_ids(srs_json.get("acceptance_criteria", []))
+            + self._collect_ids(srs_json.get("validation_rules", []))
+        )
 
     def _is_technical_actor(self, name: str) -> bool:
         lowered = self._normalize_words(name)

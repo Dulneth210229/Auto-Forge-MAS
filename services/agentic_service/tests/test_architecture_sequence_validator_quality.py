@@ -101,3 +101,49 @@ class TestLoopFragmentBalance:
         srs_json = {"functional_requirements": [{"id": "FR-001"}]}
 
         validator.validate(srs_json, sequence_json)
+
+    def test_par_start_requires_matching_end(self):
+        validator = SequenceDiagramValidator()
+        sequence_json = _base_sequence_json([
+            {"kind": "message", "from": "P1", "to": "P2", "message": "Submit request", "related_requirements": ["FR-001"]},
+            {"kind": "par_start", "condition": "Notify and audit concurrently"},
+            {"kind": "message", "from": "P2", "to": "P3", "message": "Send notification", "related_requirements": ["FR-001"]},
+        ])
+        srs_json = {"functional_requirements": [{"id": "FR-001"}]}
+
+        try:
+            validator.validate(srs_json, sequence_json)
+            assert False, "expected SequenceDiagramValidationError for an unclosed par fragment"
+        except SequenceDiagramValidationError as error:
+            assert "unclosed combined fragment" in str(error)
+
+    def test_balanced_par_and_break_fragments_do_not_raise(self):
+        validator = SequenceDiagramValidator()
+        sequence_json = _base_sequence_json([
+            {"kind": "break_start", "condition": "Validation fails"},
+            {"kind": "message", "from": "P2", "to": "P1", "message": "Return validation error", "related_requirements": ["FR-001"]},
+            {"kind": "end"},
+            {"kind": "par_start", "condition": "Notify and audit concurrently"},
+            {"kind": "message", "from": "P2", "to": "P3", "message": "Send notification", "related_requirements": ["FR-001"]},
+            {"kind": "message", "from": "P2", "to": "P3", "message": "Write audit entry", "related_requirements": ["FR-001"]},
+            {"kind": "end"},
+        ])
+        srs_json = {"functional_requirements": [{"id": "FR-001"}]}
+
+        validator.validate(srs_json, sequence_json)
+
+    def test_unrecognized_interaction_kind_is_still_rejected(self):
+        # Confirms the validator's own allowlist (via FRAGMENT_OPENER_KINDS) stays strict --
+        # a genuinely unrecognized kind must still be rejected, not silently accepted.
+        validator = SequenceDiagramValidator()
+        sequence_json = _base_sequence_json([
+            {"kind": "message", "from": "P1", "to": "P2", "message": "Submit request", "related_requirements": ["FR-001"]},
+            {"kind": "critical_start", "condition": "Something"},
+        ])
+        srs_json = {"functional_requirements": [{"id": "FR-001"}]}
+
+        try:
+            validator.validate(srs_json, sequence_json)
+            assert False, "expected SequenceDiagramValidationError for an unrecognized kind"
+        except SequenceDiagramValidationError as error:
+            assert "Invalid sequence interaction kind" in str(error)

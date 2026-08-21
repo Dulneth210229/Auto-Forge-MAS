@@ -9,14 +9,19 @@ Rules applied:
 - Boundary/control/entity/database/external participants use UML stereotypes.
 - Messages are rendered in the provided order.
 - Return messages use dashed arrows; async messages use an open arrowhead.
-- Optional/alternative/error/repeated flows are rendered using UML combined
-  fragments (alt/opt/loop).
+- Optional/alternative/error/repeated/concurrent/early-exit flows are rendered using UML combined
+  fragments (alt/opt/loop/par/break).
 """
 
 from __future__ import annotations
 
 import re
 from typing import Any
+
+from app.agents.architecture_agent.sequence_fragment_kinds import ALL_INTERACTION_KINDS
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class ArchitectureSequencePlantUMLBuilder:
@@ -70,6 +75,16 @@ class ArchitectureSequencePlantUMLBuilder:
                 lines.append(f"loop {condition}")
                 continue
 
+            if kind == "par_start":
+                condition = self._safe_label(interaction.get("condition", "Concurrent"))
+                lines.append(f"par {condition}")
+                continue
+
+            if kind == "break_start":
+                condition = self._safe_label(interaction.get("condition", "Break"))
+                lines.append(f"break {condition}")
+                continue
+
             if kind == "else":
                 condition = self._safe_label(interaction.get("condition", "Else"))
                 lines.append(f"else {condition}")
@@ -78,6 +93,15 @@ class ArchitectureSequencePlantUMLBuilder:
             if kind == "end":
                 lines.append("end")
                 continue
+
+            # Anything else is a genuinely unrecognized kind -- previously silently dropped here
+            # with no trace, while sequence_validator.py would separately reject it as "Invalid
+            # sequence interaction kind" if it ever reached that stage (a real, confirmed
+            # inconsistency). Both files now import ALL_INTERACTION_KINDS from the same shared
+            # module, so this branch should be unreachable in practice; logging instead of
+            # silently continuing makes it visible immediately if that ever drifts.
+            if kind not in ALL_INTERACTION_KINDS:
+                logger.warning("Skipping unrecognized sequence interaction kind: %s", kind)
 
         lines.append("")
         lines.append("@enduml")

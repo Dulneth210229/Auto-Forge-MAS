@@ -26,6 +26,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from app.agents.architecture_agent.sequence_fragment_kinds import FRAGMENT_OPENER_KINDS
+
 
 class ArchitectureSequenceModeler:
     """
@@ -57,8 +59,70 @@ class ArchitectureSequenceModeler:
             # generation rung including repair failed).
             participants, interactions = self._build_fallback(srs_json, sds_json)
 
+        interactions = self._sanitize_fragment_balance(interactions)
+
         feature_name = self._feature_name(srs_json, sds_json)
         return self._finalize(feature_name, specification, participants, interactions)
+
+    def _sanitize_fragment_balance(self, interactions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """
+        Deterministic backstop guaranteeing the interactions list this
+        modeler returns is always structurally well-formed -- confirmed real
+        failure mode: an LLM-authored specification can (and, on a real live
+        run for the Login/Signup feature, did) produce an "end" that closes
+        an alt fragment BEFORE its own "else", e.g. alt_start -> ... -> end
+        -> else -> ... -> end. SequenceDiagramValidator's own fragment-
+        balance check correctly rejects this, but the reactive repair loop
+        (_complete_sequence_model) is bounded by MAX_SEQUENCE_REPAIR_ATTEMPTS
+        and, per its own documented contract, never raises once attempts are
+        exhausted -- it proceeds with whatever it has. A genuinely unbalanced
+        diagram then reaches the PlantUML CLI renderer, which fails with a
+        FATAL, uncaught error ("Some diagram description contains errors"),
+        crashing the entire Architecture Agent run rather than degrading
+        gracefully. Sanitizing here, at the one place every path (LLM
+        specification, repair-rebuilt, fallback) funnels through before
+        `_finalize`, guarantees SequenceDiagramValidator's own balance check
+        can never actually fail downstream -- an "else" with no genuinely
+        open alt fragment, or an "end" with nothing open to close, is
+        structurally invalid and is dropped rather than rendered; any
+        fragment still open at the very end is force-closed with a synthetic
+        "end" so the diagram is always PlantUML-renderable. This trades a
+        small amount of semantic precision (a dropped else/end pair loses
+        its intended branch grouping, degrading to plain top-level messages)
+        for the one guarantee that actually matters here: the run completes.
+        """
+        sanitized: list[dict[str, Any]] = []
+        open_fragments: list[str] = []
+
+        for interaction in interactions:
+            kind = interaction.get("kind")
+
+            if kind in FRAGMENT_OPENER_KINDS:
+                open_fragments.append(kind)
+                sanitized.append(interaction)
+                continue
+
+            if kind == "else":
+                if not open_fragments or open_fragments[-1] != "alt_start":
+                    continue  # no genuinely open alt to attach this else to -- drop it
+                sanitized.append(interaction)
+                continue
+
+            if kind == "end":
+                if not open_fragments:
+                    continue  # nothing open to close -- drop the dangling end
+                open_fragments.pop()
+                sanitized.append(interaction)
+                continue
+
+            sanitized.append(interaction)
+
+        # Force-close any fragment the specification never closed at all.
+        while open_fragments:
+            open_fragments.pop()
+            sanitized.append({"kind": "end"})
+
+        return sanitized
 
     def _finalize(
         self,
@@ -98,7 +162,7 @@ class ArchitectureSequenceModeler:
 
         allowed_types = {"actor", "boundary", "control", "entity", "database", "external"}
         allowed_message_types = {"sync", "async", "return", "self"}
-        allowed_fragment_kinds = {"alt_start", "else", "opt_start", "loop_start", "end"}
+        allowed_fragment_kinds = FRAGMENT_OPENER_KINDS | {"else", "end"}
 
         participants: list[dict[str, Any]] = []
         name_to_id: dict[str, str] = {}

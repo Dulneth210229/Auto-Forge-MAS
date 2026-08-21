@@ -60,8 +60,10 @@ from app.agents.architecture_agent.prompt import (
     CLASS_REPAIR_SYSTEM_PROMPT,
     SEQUENCE_DIAGRAM_AGENTIC_SYSTEM_PROMPT,
     CLASS_DIAGRAM_AGENTIC_SYSTEM_PROMPT,
+    USECASE_DIAGRAM_AGENTIC_SYSTEM_PROMPT,
     DIAGRAM_FOCUSED_BOTH_SYSTEM_PROMPT,
     DIAGRAM_FOCUSED_CLASS_ONLY_SYSTEM_PROMPT,
+    USECASE_DIAGRAM_FOCUSED_SYSTEM_PROMPT,
     build_agentic_architecture_user_prompt,
     build_architecture_user_prompt,
     build_architecture_plan_revision_prompt,
@@ -71,14 +73,17 @@ from app.agents.architecture_agent.prompt import (
     build_class_repair_prompt,
     build_sequence_diagram_user_prompt,
     build_class_diagram_user_prompt,
+    build_usecase_diagram_user_prompt,
     build_diagram_focused_both_prompt,
     build_diagram_focused_class_only_prompt,
+    build_usecase_diagram_focused_prompt,
     ARCHITECTURE_REVISION_SYSTEM_PROMPT,
 )
 from app.agents.architecture_agent.tools import build_architecture_planning_tools
 from app.agents.architecture_agent.diagram_tools import (
     build_sequence_diagram_tools,
     build_class_diagram_tools,
+    build_usecase_diagram_tools,
 )
 from app.agents.architecture_agent.schemas import (
     ArchitectureAgentInput,
@@ -148,13 +153,14 @@ MAX_USECASE_REPAIR_ATTEMPTS = 2
 MAX_SEQUENCE_REPAIR_ATTEMPTS = 2
 MAX_CLASS_REPAIR_ATTEMPTS = 2
 
-# Recursion limits for the two dedicated diagram-generation agentic loops.
+# Recursion limits for the three dedicated diagram-generation agentic loops.
 # Smaller than ARCHITECTURE_PLANNING_RECURSION_LIMIT because each loop
 # covers one narrow artifact (read context once or twice, draft, validate,
 # fix, submit) rather than a whole architecture plan -- treat these as a
 # hypothesis validated by real E2E runs, not a settled number.
 SEQUENCE_DIAGRAM_RECURSION_LIMIT = 20
 CLASS_DIAGRAM_RECURSION_LIMIT = 20
+USECASE_DIAGRAM_RECURSION_LIMIT = 20
 
 # Matches a single per-field SRS `data_requirements` string, e.g.
 # "price (number, required, minimum value 0.01)" -> ("price", "number, required, minimum
@@ -515,7 +521,12 @@ class ArchitectureAgent:
                 raw_output = json.dumps(parsed, indent=2, default=str)
 
         yield {"type": "phase", "phase": "usecase", "label": "Building the use case model..."}
-        parsed = await self._complete_usecase_model(agent_input, parsed)
+        # attempt_agentic=False -- same rationale _complete_diagram_models'
+        # own call right below already applies: a human is synchronously
+        # watching this stream, so skip the expensive agentic tool-using
+        # tier and go straight to whatever the main plan call already
+        # embedded (still real, feature-grounded content, not a template).
+        parsed = await self._complete_usecase_model(agent_input, parsed, attempt_agentic=False)
 
         yield {"type": "phase", "phase": "diagrams", "label": "Generating sequence and class diagrams..."}
         # attempt_agentic=False, no diagram_generation_state -- same rationale
@@ -605,7 +616,7 @@ class ArchitectureAgent:
         try:
             exploration_output = await self._generate_raw_output_via_exploration(agent_input)
             parsed = self._parse_and_validate_output(exploration_output, srs_for_generation, feature_name)
-            parsed = await self._complete_usecase_model(agent_input, parsed)
+            parsed = await self._complete_usecase_model(agent_input, parsed, diagram_generation_state)
             parsed = await self._complete_diagram_models(agent_input, parsed, diagram_generation_state)
             self._validate_full_output(agent_input, parsed)
 
@@ -654,7 +665,7 @@ class ArchitectureAgent:
 
         try:
             parsed = self._parse_and_validate_output(raw_output, srs_for_generation, feature_name)
-            parsed = await self._complete_usecase_model(agent_input, parsed)
+            parsed = await self._complete_usecase_model(agent_input, parsed, diagram_generation_state)
             parsed = await self._complete_diagram_models(agent_input, parsed, diagram_generation_state)
             self._validate_full_output(agent_input, parsed)
 
@@ -683,7 +694,7 @@ class ArchitectureAgent:
 
             try:
                 parsed = self._parse_and_validate_output(repaired_output, srs_for_generation, feature_name)
-                parsed = await self._complete_usecase_model(agent_input, parsed)
+                parsed = await self._complete_usecase_model(agent_input, parsed, diagram_generation_state)
                 parsed = await self._complete_diagram_models(agent_input, parsed, diagram_generation_state)
                 self._validate_full_output(agent_input, parsed)
                 raw_output = repaired_output
@@ -695,13 +706,23 @@ class ArchitectureAgent:
                     agent_input=agent_input,
                     reason=str(second_error)
                 )
-                parsed = await self._complete_usecase_model(agent_input, parsed)
                 # The plan text itself already needed the deterministic
                 # fallback (the model failed at least twice) -- this is
-                # supposed to be the fast, reliable safety net, so skip the
-                # expensive agentic diagram tier here (attempt_agentic=
-                # False); still get real, feature-grounded diagrams via the
-                # focused single-shot tier instead of a fixed template.
+                # supposed to be the fast, reliable safety net, so this
+                # rung skips BOTH the expensive agentic tier AND the
+                # focused single-shot fallback for the use case model
+                # (attempt_agentic=False, attempt_focused_fallback left at
+                # its default False -- making yet another LLM call from the
+                # rung whose whole purpose is "the LLM already failed
+                # twice" would defeat its purpose, same rationale the
+                # pre-existing repair loop below already uses). Still reuses
+                # a cached result from an earlier rung's successful agentic
+                # attempt via diagram_generation_state, if one exists.
+                # Diagrams keep their own existing focused-fallback tier
+                # unconditionally, per _complete_diagram_models' own design.
+                parsed = await self._complete_usecase_model(
+                    agent_input, parsed, diagram_generation_state, attempt_agentic=False,
+                )
                 parsed = await self._complete_diagram_models(
                     agent_input, parsed, diagram_generation_state, attempt_agentic=False
                 )
@@ -934,6 +955,63 @@ class ArchitectureAgent:
 
         return parsed
 
+    async def _generate_usecase_diagram_via_exploration(
+        self,
+        agent_input: ArchitectureAgentInput,
+        architecture_plan_json: dict[str, Any],
+        feature_name: str,
+    ) -> dict[str, Any]:
+        """
+        Dedicated, narrow agentic (tool-using) generation step for JUST the use case diagram
+        specification -- exact structural mirror of _generate_sequence_diagram_via_exploration/
+        _generate_class_diagram_via_exploration, gives use case diagrams the same reliability
+        tier the other two already had (previously the one diagram type still stuck on the older
+        single-shot-embedded-in-the-main-plan-call pipeline, with zero LLM involvement at all on
+        every revise() call -- see _complete_usecase_model's own docstring for the full fix).
+
+        Returns the parsed usecase_specification_json dict; raises if the loop ended without a
+        submission -- the caller falls through to whatever the main plan call already produced,
+        or the focused single-shot fallback.
+        """
+
+        srs_for_modeling = agent_input.enhanced_srs_json or agent_input.srs_json
+
+        tools, captured = build_usecase_diagram_tools(
+            srs_json=srs_for_modeling,
+            architecture_plan_json=architecture_plan_json,
+            usecase_modeler=self.usecase_modeler,
+            usecase_validator=self.usecase_validator,
+        )
+
+        agent = create_agent(
+            model=get_agentic_chat_model(agent_name=AgentName.ARCHITECTURE.value),
+            tools=tools,
+            system_prompt=USECASE_DIAGRAM_AGENTIC_SYSTEM_PROMPT,
+        )
+
+        user_prompt = build_usecase_diagram_user_prompt(feature_name)
+
+        try:
+            await agent.ainvoke(
+                {"messages": [{"role": "user", "content": user_prompt}]},
+                config={"recursion_limit": USECASE_DIAGRAM_RECURSION_LIMIT},
+            )
+        except GraphRecursionError:
+            pass  # handled uniformly below -- "usecase_json" simply won't be captured
+
+        if "usecase_json" not in captured:
+            raise ValueError(
+                "Use case diagram exploration ended without calling "
+                "submit_usecase_specification (stopped early or hit the "
+                f"exploration turn limit of {USECASE_DIAGRAM_RECURSION_LIMIT})."
+            )
+
+        parsed = self._extract_json_object(captured["usecase_json"])
+        if not isinstance(parsed, dict):
+            raise ValueError("Submitted use case specification was not a JSON object.")
+
+        return parsed
+
     async def _complete_diagram_models(
         self,
         agent_input: ArchitectureAgentInput,
@@ -1084,7 +1162,10 @@ class ArchitectureAgent:
     async def _complete_usecase_model(
         self,
         agent_input: ArchitectureAgentInput,
-        parsed: dict[str, Any]
+        parsed: dict[str, Any],
+        diagram_generation_state: dict[str, Any] | None = None,
+        attempt_agentic: bool = True,
+        attempt_focused_fallback: bool = False,
     ) -> dict[str, Any]:
         """
         Build the final use case model using the dedicated modeler, then run
@@ -1100,6 +1181,22 @@ class ArchitectureAgent:
         ArchitectureUseCaseModeler so that actors, use cases, relationships,
         and notes are normalized using feature-independent UML rules.
 
+        `diagram_generation_state` is the SAME shared dict a caller threads
+        through every `_complete_diagram_models` call within one
+        run()/revise() invocation (see that method's own docstring) --
+        reused here under the new "usecase_attempted"/
+        "usecase_specification_json" keys, not a second state dict. When
+        `attempt_agentic` is true and the agentic use case exploration
+        hasn't already been attempted this invocation, it's tried first;
+        any failure falls through to whatever specification `parsed`
+        already carries (never discarded). When `attempt_focused_fallback`
+        is true and the specification is still empty afterward, one
+        focused, non-agentic single-shot call is made instead of jumping
+        straight to the deterministic fallback -- this is what gives
+        revise() real LLM-grounded use case content instead of always
+        regenerating from the empty-specification template with zero LLM
+        involvement.
+
         Never raises for a QUALITY validation failure -- once repair
         attempts are exhausted (or skipped, see below) it just returns the
         best model it has, and lets the existing _validate_full_output ->
@@ -1108,12 +1205,58 @@ class ArchitectureAgent:
         checks may still raise, unchanged.
         """
 
+        if diagram_generation_state is None:
+            diagram_generation_state = {}
+
         srs_for_modeling = agent_input.enhanced_srs_json or agent_input.srs_json
         feature_name = agent_input.feature.get("feature_name", "Feature")
+        architecture_plan_json = parsed["architecture_plan_json"]
+        feature_id = agent_input.feature.get("feature_id")
 
-        usecase_specification_json = parsed.get("usecase_specification_json")
+        usecase_specification_json = diagram_generation_state.get("usecase_specification_json")
+        if not isinstance(usecase_specification_json, dict) or not usecase_specification_json:
+            usecase_specification_json = parsed.get("usecase_specification_json")
         if not isinstance(usecase_specification_json, dict):
             usecase_specification_json = {}
+
+        if (
+            attempt_agentic
+            and not diagram_generation_state.get("usecase_attempted")
+            and not usecase_specification_json.get("use_cases")
+        ):
+            diagram_generation_state["usecase_attempted"] = True
+
+            try:
+                usecase_specification_json = await self._generate_usecase_diagram_via_exploration(
+                    agent_input, architecture_plan_json, feature_name,
+                )
+                diagram_generation_state["usecase_specification_json"] = usecase_specification_json
+            except Exception as error:
+                logger.warning(
+                    "Agentic use case diagram exploration failed for feature_id=%s: %s",
+                    feature_id, error,
+                )
+
+        if attempt_focused_fallback and not usecase_specification_json.get("use_cases"):
+            try:
+                provider = llm_provider_service.get_provider(agent_name=AgentName.ARCHITECTURE.value)
+                raw_output = await provider.invoke_agent([
+                    {"role": "system", "content": USECASE_DIAGRAM_FOCUSED_SYSTEM_PROMPT},
+                    {"role": "user", "content": build_usecase_diagram_focused_prompt(
+                        feature_name=feature_name,
+                        srs_json=srs_for_modeling,
+                        architecture_plan_json=architecture_plan_json,
+                    )},
+                ])
+                candidate = self._extract_json_object(raw_output)
+                if isinstance(candidate, dict) and candidate.get("use_cases"):
+                    usecase_specification_json = candidate
+                    diagram_generation_state["usecase_specification_json"] = usecase_specification_json
+            except Exception as error:
+                logger.warning(
+                    "Focused single-shot use case diagram generation failed for feature_id=%s: %s",
+                    feature_id, error,
+                )
 
         usecase_analysis_json, usecase_json = self.usecase_modeler.build(
             srs_json=srs_for_modeling,
@@ -1851,7 +1994,17 @@ class ArchitectureAgent:
         }
 
         yield {"type": "phase", "phase": "usecase", "label": "Updating the use case model..."}
-        parsed = await self._complete_usecase_model(agent_input, parsed)
+        # revise() always uses an empty usecase specification (only the plan
+        # text itself is revised by the LLM) -- attempt_focused_fallback=True
+        # is what gives the use case diagram a real, feature-grounded LLM
+        # generation attempt here instead of always rebuilding from the
+        # empty-specification deterministic template with zero LLM
+        # involvement (the confirmed real gap this whole change fixes).
+        # attempt_agentic=False skips only the expensive agentic tool-using
+        # tier, since a human is synchronously watching this stream.
+        parsed = await self._complete_usecase_model(
+            agent_input, parsed, attempt_agentic=False, attempt_focused_fallback=True,
+        )
 
         yield {"type": "phase", "phase": "diagrams", "label": "Regenerating sequence and class diagrams..."}
         parsed = await self._complete_diagram_models(agent_input, parsed, attempt_agentic=False)
@@ -2050,16 +2203,22 @@ class ArchitectureAgent:
             "architecture_plan_json": revised_architecture_plan_json,
             "usecase_specification_json": {},
         }
-        parsed = await self._complete_usecase_model(agent_input, parsed)
         # revise() always uses an empty usecase specification (only the plan
-        # text itself is revised by the LLM), but diagrams still get a real,
-        # feature-grounded generation attempt via the focused single-shot
-        # tier -- attempt_agentic=False skips only the expensive agentic
-        # tool-using tier, since a human is synchronously waiting on what's
-        # usually a small plan-text edit, not the potentially long diagram
-        # exploration. No diagram_generation_state is threaded through since
-        # revise() only calls this once (no cascading rungs to memoize
-        # across).
+        # text itself is revised by the LLM) -- attempt_focused_fallback=True
+        # is what gives the use case diagram a real, feature-grounded LLM
+        # generation attempt here instead of always rebuilding from the
+        # empty-specification deterministic template with zero LLM
+        # involvement (the confirmed real gap this whole change fixes).
+        parsed = await self._complete_usecase_model(
+            agent_input, parsed, attempt_agentic=False, attempt_focused_fallback=True,
+        )
+        # Diagrams still get a real, feature-grounded generation attempt via
+        # the focused single-shot tier -- attempt_agentic=False skips only
+        # the expensive agentic tool-using tier, since a human is
+        # synchronously waiting on what's usually a small plan-text edit,
+        # not the potentially long diagram exploration. No
+        # diagram_generation_state is threaded through since revise() only
+        # calls this once (no cascading rungs to memoize across).
         parsed = await self._complete_diagram_models(agent_input, parsed, attempt_agentic=False)
 
         # This still tolerates a heuristic-validator failure (proceed with a

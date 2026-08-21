@@ -49,11 +49,39 @@ class ClassDiagramValidator:
     # not a real, feature-specific structural element.
     GENERIC_ATTRIBUTE_NAMES = {"id", "value", "field", "data"}
 
+    # Cheap, deterministic, essentially-unambiguous naming convention -- a class whose name ends
+    # in one of these suffixes has a real, confirmed real-world mismatch risk: a real live run
+    # (documented in this project's own working notes) produced "TaskSearchController" labeled
+    # <<entity>> and "TaskSearchService" labeled <<control>> -- swapped from what their own names
+    # imply. Unlike the sequence diagram's "was a control structure needed" judgment call, this is
+    # NOT a heuristic worth leaving to a prompt instruction alone -- the suffix-to-stereotype
+    # mapping is genuine, near-universal convention with essentially no false-positive risk, so it
+    # is enforced as a hard gate here, feeding the existing class-repair loop with no new wiring.
+    STEREOTYPE_NAME_SUFFIXES: dict[str, set[str]] = {
+        "controller": {"control"},
+        "handler": {"control"},
+        "service": {"control", "service"},
+        "manager": {"control", "service"},
+        "repository": {"repository"},
+        "repo": {"repository"},
+        "dao": {"repository"},
+        "dto": {"dto"},
+        "request": {"dto"},
+        "response": {"dto"},
+        "payload": {"dto"},
+    }
+
+    # A control/service/repository class with zero operations is exactly as suspicious as a
+    # dto/entity class with zero attributes (see _validate_class_quality) -- these stereotypes
+    # exist to DO something, not just hold data.
+    OPERATION_REQUIRED_STEREOTYPES = {"control", "service", "repository"}
+
     def validate(self, srs_json: dict[str, Any], class_json: dict[str, Any]) -> None:
         errors: list[str] = []
         errors.extend(self._validate_structure(class_json))
         errors.extend(self._validate_classes(class_json))
         errors.extend(self._validate_class_quality(class_json))
+        errors.extend(self._validate_stereotype_naming_consistency(class_json))
         errors.extend(self._validate_relationships(class_json))
         errors.extend(self._validate_multiplicity(class_json))
         errors.extend(self._validate_traceability(srs_json, class_json))
@@ -145,6 +173,10 @@ class ClassDiagramValidator:
         which defaulted to a single "id: String" field whenever it couldn't
         infer real fields from free text. A class with a genuine mix of
         real and generic-named fields is not flagged.
+
+        Also flags a control/service/repository class with zero operations --
+        these stereotypes exist to DO something, so a class with none is just
+        as suspicious as a dto/entity with no attributes.
         """
         errors: list[str] = []
 
@@ -153,10 +185,20 @@ class ClassDiagramValidator:
                 continue
 
             stereotype = str(class_item.get("stereotype", "")).strip().lower()
+            name = str(class_item.get("name", "")).strip()
+
+            if stereotype in self.OPERATION_REQUIRED_STEREOTYPES:
+                operations = class_item.get("operations", [])
+                if isinstance(operations, list) and not operations:
+                    errors.append(
+                        f"{stereotype.title()} class '{name}' has no operations -- a "
+                        f"control/service/repository class with nothing to do is not a "
+                        f"useful class diagram element."
+                    )
+
             if stereotype not in ("dto", "entity"):
                 continue
 
-            name = str(class_item.get("name", "")).strip()
             attributes = class_item.get("attributes", [])
             if not isinstance(attributes, list):
                 continue
@@ -180,6 +222,37 @@ class ClassDiagramValidator:
                     f"{stereotype.title()} class '{name}' only has placeholder attributes "
                     f"({sorted(attribute_names)}) -- add real, feature-specific fields."
                 )
+
+        return errors
+
+    def _validate_stereotype_naming_consistency(self, class_json: dict[str, Any]) -> list[str]:
+        """
+        A class name ending in a well-known role suffix (Controller/Service/Repository/DTO/...)
+        must be stereotyped consistently with that name -- see STEREOTYPE_NAME_SUFFIXES's own
+        comment for why this is a hard gate, not a soft nudge. A name with no recognized suffix
+        (e.g. a genuine domain entity name like "Item") is never flagged -- this check only fires
+        when the name ITSELF already claims a specific role.
+        """
+        errors: list[str] = []
+
+        for class_item in class_json.get("classes", []):
+            if not isinstance(class_item, dict):
+                continue
+
+            name = str(class_item.get("name", "")).strip()
+            stereotype = str(class_item.get("stereotype", "")).strip().lower()
+            normalized_name = self._normalize(name)
+            if not normalized_name:
+                continue
+
+            for suffix, allowed_stereotypes in self.STEREOTYPE_NAME_SUFFIXES.items():
+                if normalized_name.endswith(suffix) and stereotype not in allowed_stereotypes:
+                    expected = " or ".join(sorted(allowed_stereotypes))
+                    errors.append(
+                        f"Class '{name}' is named like a {suffix} but is stereotyped "
+                        f"'{stereotype or '(none)'}' -- expected {expected}."
+                    )
+                    break
 
         return errors
 

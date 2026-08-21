@@ -23,6 +23,7 @@ from langchain_core.tools import BaseTool, tool
 
 from app.agents.architecture_agent.class_validator import ClassDiagramValidationError
 from app.agents.architecture_agent.sequence_validator import SequenceDiagramValidationError
+from app.agents.architecture_agent.usecase_validator import UseCaseValidationError
 
 # After this many failed validate calls without reaching "VALID", the tool's
 # own return text nudges the model to submit its current best draft instead
@@ -218,4 +219,103 @@ def build_class_diagram_tools(
         read_finalized_sequence_names,
         validate_class_draft,
         submit_class_specification,
+    ], captured
+
+
+def build_usecase_diagram_tools(
+    srs_json: dict[str, Any],
+    architecture_plan_json: dict[str, Any],
+    usecase_modeler: Any,
+    usecase_validator: Any,
+) -> tuple[list[BaseTool], dict[str, Any]]:
+    """
+    Build the dedicated use-case-diagram generation tools -- gives use case diagrams the same
+    agentic, tool-using reliability tier sequence/class diagrams already have (see
+    build_sequence_diagram_tools/build_class_diagram_tools above), previously the one diagram
+    type still stuck on the older single-shot-embedded-in-the-main-plan-call pipeline.
+
+    Includes one tool the sequence/class toolsets don't need: read_user_roles_and_stories --
+    actor stereotype/generalization and per-use-case participating_actors both need real SRS
+    role/story context this feature's own read_functional_requirements/read_acceptance_criteria
+    don't carry.
+
+    Returns (tools, captured): `captured` is the dict submit_usecase_specification writes into
+    (key "usecase_json"); the caller reads it after the agent loop ends.
+    """
+
+    captured: dict[str, Any] = {}
+    failed_validate_attempts = {"count": 0}
+
+    @tool
+    def read_functional_requirements() -> str:
+        """Return this feature's real SRS functional requirements as JSON text."""
+        return json.dumps(srs_json.get("functional_requirements", []), indent=2, default=str)
+
+    @tool
+    def read_acceptance_criteria() -> str:
+        """Return this feature's real SRS acceptance criteria as JSON text."""
+        return json.dumps(srs_json.get("acceptance_criteria", []), indent=2, default=str)
+
+    @tool
+    def read_interface_and_data_context() -> str:
+        """Return the approved architecture plan's real API endpoints, request/response models, and data entities as JSON text."""
+        return json.dumps(_interface_and_data_context(architecture_plan_json), indent=2, default=str)
+
+    @tool
+    def read_user_roles_and_stories() -> str:
+        """Return this feature's real SRS user_roles and user_stories as JSON text -- ground actor stereotype/generalization and per-use-case participating_actors in these."""
+        return json.dumps(
+            {
+                "user_roles": srs_json.get("user_roles", []),
+                "user_stories": srs_json.get("user_stories", []),
+            },
+            indent=2,
+            default=str,
+        )
+
+    @tool
+    def validate_usecase_draft(specification_json: str) -> str:
+        """Validate a draft usecase_specification_json (as a JSON string) and return "VALID" or the exact validation errors to fix."""
+        try:
+            draft = json.loads(specification_json)
+        except json.JSONDecodeError as error:
+            return f"Invalid JSON: {error}"
+
+        if not isinstance(draft, dict):
+            return "Draft must be a JSON object."
+
+        try:
+            usecase_analysis_json, usecase_json = usecase_modeler.build(
+                srs_json=srs_json,
+                sds_json=architecture_plan_json,
+                usecase_specification_json=draft,
+            )
+            usecase_validator.validate(srs_json, architecture_plan_json, usecase_analysis_json, usecase_json)
+        except UseCaseValidationError as error:
+            failed_validate_attempts["count"] += 1
+            message = str(error)
+            if failed_validate_attempts["count"] >= VALIDATE_NUDGE_THRESHOLD:
+                message += (
+                    " -- further validation attempts are unlikely to help; submit your "
+                    "current best draft now via submit_usecase_specification."
+                )
+            return message
+        except Exception as error:
+            return f"Could not build/validate this draft: {error}"
+
+        return "VALID"
+
+    @tool
+    def submit_usecase_specification(specification_json: str) -> str:
+        """Submit your final usecase_specification_json (as a JSON string) exactly once, when confident."""
+        captured["usecase_json"] = specification_json
+        return "Use case specification submitted."
+
+    return [
+        read_functional_requirements,
+        read_acceptance_criteria,
+        read_interface_and_data_context,
+        read_user_roles_and_stories,
+        validate_usecase_draft,
+        submit_usecase_specification,
     ], captured
