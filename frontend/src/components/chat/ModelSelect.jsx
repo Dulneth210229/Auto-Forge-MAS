@@ -4,7 +4,6 @@ import {
   useAgentLlmSettings,
   useUpdateAgentLlmSettings,
 } from "../../hooks/useLlmSettings";
-import { PLACEHOLDER_STAGES } from "../../lib/pipelineStages";
 import PillDropdown from "./PillDropdown";
 
 // Model picker for the chat composer, styled as a pill next to AgentSelect (matching Cursor's
@@ -32,7 +31,6 @@ function splitCompositeModelValue(value) {
 
 export default function ModelSelect({ agentStage }) {
   const agentName = `${agentStage}_agent`;
-  const isSelectable = !PLACEHOLDER_STAGES.includes(agentStage);
 
   const { data: ollamaModels, isLoading: ollamaLoading, error: ollamaError } = useOllamaModels();
   const { data: anthropicModels, isLoading: anthropicLoading, error: anthropicError } = useAnthropicModels();
@@ -40,12 +38,6 @@ export default function ModelSelect({ agentStage }) {
   const updateOverride = useUpdateAgentLlmSettings();
 
   const currentSetting = agentSettings?.find((a) => a.agent_name === agentName);
-
-  if (!isSelectable) {
-    return (
-      <span className="text-xs text-gray-400 dark:text-gray-600 rounded-full px-3 py-1.5">Not available</span>
-    );
-  }
 
   // Only fully degrade to read-only text if BOTH sources failed -- one provider being briefly
   // unreachable (or simply not configured, e.g. no ANTHROPIC_API_KEY yet) shouldn't hide the

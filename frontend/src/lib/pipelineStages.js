@@ -10,8 +10,7 @@ export const GATED_STAGES = ["requirement", "domain", "architecture", "uiux", "c
 
 export const AUTO_APPROVED_STAGES = ["security", "qa"];
 
-// Every real, selectable agent stage in pipeline order (excludes deployment, which has no agent
-// implementation yet -- see PLACEHOLDER_STAGES below). Distinct from GATED_STAGES: this is
+// Every real, selectable agent stage in pipeline order. Distinct from GATED_STAGES: this is
 // "which stages are real agents a human can chat with / see status for," not "which stages pause
 // for a human approval gate" -- uiux, security, and qa all belong here but not in GATED_STAGES.
 export const SELECTABLE_AGENT_STAGES = ["requirement", "domain", "architecture", "uiux", "coder", "security", "qa"];
@@ -25,12 +24,6 @@ export const SELECTABLE_AGENT_STAGES = ["requirement", "domain", "architecture",
 // component ChatPanel.jsx renders for a stage).
 export const MANUAL_RUN_STAGES = ["requirement", "architecture", "security", "qa"];
 
-// Stages with no real backend implementation yet -- shown greyed-out in the tracker. "security"
-// and "qa" were both removed from here once their real engines (scanners+LLM review, and
-// Unit/Integration/Regression test generation+execution) and API routes shipped -- "deployment"
-// remains genuinely unimplemented.
-export const PLACEHOLDER_STAGES = ["deployment"];
-
 export const STAGE_LABELS = {
   requirement: "Requirement",
   domain: "Domain",
@@ -39,7 +32,6 @@ export const STAGE_LABELS = {
   coder: "Coder",
   security: "Security",
   qa: "QA",
-  deployment: "Deployment",
 };
 
 // Cosmetic framing only -- who this stage's output is "for," not a real permission system.
@@ -53,7 +45,6 @@ export const STAGE_ROLE_LABELS = {
   coder: "Tech Lead",
   security: "Security Engineer",
   qa: "QA Engineer",
-  deployment: "DevOps Engineer",
 };
 
 // Stages with a real POST .../revise endpoint.

@@ -33,9 +33,9 @@ from app.schemas.llm_schema import (
 
 from app.services.in_memory_store import store
 
-# Every agent that can have its own LLM override configured through the UI. Security/QA/
-# Deployment are still stubs with no real LLM call to configure, so they're excluded here --
-# same reasoning the frontend already uses to grey them out as "not yet implemented."
+# Every agent that can have its own LLM override configured through the UI. Security/QA are
+# real, LLM-backed agents now (see CLAUDE.md items 73/75) but aren't wired into this override
+# list yet -- a separate, pre-existing gap, not something this list's own name implies.
 OVERRIDABLE_AGENTS = [
     "requirement_agent",
     "domain_agent",

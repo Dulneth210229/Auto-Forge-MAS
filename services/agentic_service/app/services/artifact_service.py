@@ -55,7 +55,6 @@ class ArtifactService:
         AgentName.CODER: "05_code",
         AgentName.SECURITY: "06_security",
         AgentName.QA: "07_qa",
-        AgentName.DEPLOYMENT: "08_deployment",
     }
 
     def create_feature_artifact_root(self,project_name: str,feature_name: str) -> Path:

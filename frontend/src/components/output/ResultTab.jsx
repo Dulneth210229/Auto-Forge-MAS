@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { listGatingArtifactVersions } from "../../lib/deriveStageStatus";
-import { ARTIFACT_TYPE_STAGE, STAGE_GATING_ARTIFACT, dedupeArtifactVersions } from "../../lib/artifactTypeMeta";
+import {
+  ARTIFACT_TYPE_STAGE,
+  STAGE_GATING_ARTIFACT,
+  ARTIFACT_TYPE_LABELS,
+  dedupeArtifactVersions,
+} from "../../lib/artifactTypeMeta";
+import { STAGE_LABELS } from "../../lib/pipelineStages";
 import { getEffectiveActiveArtifact } from "../../lib/activeArtifactSelection";
 import { artifactDownloadUrl, featureCodeDownloadUrl } from "../../api/client";
 import { declutterJsonForDisplay } from "../../lib/streamingJsonDisplay";
@@ -16,6 +22,7 @@ import UiuxVersionGroupList from "../pipeline/UiuxVersionGroupList";
 import ErrorBanner from "../common/ErrorBanner";
 import ConfirmDialog from "../common/ConfirmDialog";
 import RequirementSrsOutputPanel from "./RequirementSrsOutputPanel";
+import VersionSelect from "./VersionSelect";
 import SecurityReportView from "../security/SecurityReportView";
 import SecurityDecisionDialog from "../security/SecurityDecisionDialog";
 import QaReportView from "../qa/QaReportView";
@@ -126,6 +133,45 @@ const UNLISTED_ARTIFACT_TYPES = [
 // the instant a newer one exists (there's nothing to compare/choose between, unlike the gating
 // code_diff's own version history), so only the latest is kept.
 const LATEST_VERSION_ONLY_ARTIFACT_TYPES = ["setup_instructions"];
+
+// stage -> the real previous-stage artifact(s) it actually reads, for the "Using X vN for Y
+// Agent" indicator -- generalized (direct user request, with a screenshot of the original
+// Requirement->Domain-only version as the reference example) to every stage that has a real,
+// approved-artifact input. Confirmed against each agent's own real run()/revise() code, not
+// guessed:
+// - domain reads the approved SRS.
+// - architecture reads the approved Enhanced SRS when one exists, falling back to the plain SRS
+//   only if it doesn't (srs_for_generation = enhanced_srs_json or srs_json, at every real call
+//   site in architecture_agent/agent.py) -- resolved at render time below, never hardcoded to
+//   just one.
+// - uiux reads the approved Architecture Plan.
+// - coder reads BOTH the Architecture Plan and the UI/UX Integration Manifest independently (at
+//   every real call site in coder_agent/agent.py) -- the human-recognizable version to show for
+//   the latter is ui_preview_screenshot's (its real gating/cascade-anchored type since item 64;
+//   the manifest shares that exact version through the same approval cascade).
+//
+// Moved here from OutputPanel.jsx's own tab-bar header (direct user request: this indicator was
+// cluttering the tab row next to Result/Files/Preview -- it now renders inline in the Result
+// tab's own content instead, see the render block below).
+const PREVIOUS_STAGE_INPUTS_BY_STAGE = {
+  domain: [{ artifactType: "srs" }],
+  architecture: [{ artifactType: "enhanced_srs", fallbackArtifactType: "srs" }],
+  uiux: [{ artifactType: "architecture_plan" }],
+  coder: [
+    { artifactType: "architecture_plan" },
+    { artifactType: "ui_preview_screenshot", artifactFormat: "png", label: "UI/UX Output" },
+  ],
+};
+
+// Security and QA scan the live generated workspace directly off disk (confirmed: neither
+// security_agent.py's nor qa_agent.py's run() ever calls a "find latest approved artifact"
+// lookup for their main input) -- there is no formal, approved-artifact version behind "what
+// they used" the way every other stage has one. An honest, plain, non-versioned label instead of
+// a pill, so this indicator never implies a version number that doesn't actually exist.
+const NO_ARTIFACT_VERSION_LABEL_BY_STAGE = {
+  security: "Scanning the latest generated code",
+  qa: "Testing the latest generated code",
+};
 
 function keepLatestVersionOnly(artifacts, types) {
   const latestVersionByType = {};
@@ -442,6 +488,58 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
 
   return (
     <div className="flex flex-col gap-5">
+      {(() => {
+        const noArtifactLabel = NO_ARTIFACT_VERSION_LABEL_BY_STAGE[stage];
+        if (noArtifactLabel) {
+          return (
+            <span className="self-start text-xs font-semibold text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-white/5 rounded-full px-3 py-1 whitespace-nowrap truncate">
+              {noArtifactLabel}
+            </span>
+          );
+        }
+
+        const descriptors = PREVIOUS_STAGE_INPUTS_BY_STAGE[stage];
+        if (!descriptors) return null;
+
+        const agentLabel = `${STAGE_LABELS[stage] || stage} Agent`;
+
+        const pills = descriptors
+          .map((descriptor) => {
+            const format = descriptor.artifactFormat || "json";
+            let effective = getEffectiveActiveArtifact(
+              allArtifacts, feature?.active_artifact_selection, descriptor.artifactType, format
+            );
+            let resolvedType = descriptor.artifactType;
+            if (!effective && descriptor.fallbackArtifactType) {
+              effective = getEffectiveActiveArtifact(
+                allArtifacts, feature?.active_artifact_selection, descriptor.fallbackArtifactType, format
+              );
+              resolvedType = descriptor.fallbackArtifactType;
+            }
+            if (!effective) return null;
+
+            const label = descriptor.label || ARTIFACT_TYPE_LABELS[resolvedType] || resolvedType;
+            return { key: resolvedType, label, version: effective.version };
+          })
+          .filter(Boolean);
+
+        if (pills.length === 0) return null;
+
+        return (
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {pills.map((pill) => (
+              <span
+                key={pill.key}
+                title={`${agentLabel} will use ${pill.label} v${pill.version} -- pin a different approved version from its row's radio button below.`}
+                className="text-xs font-semibold text-accent-700 dark:text-accent-400 bg-accent-50 dark:bg-accent-500/10 rounded-full px-3 py-1 whitespace-nowrap truncate"
+              >
+                Using {pill.label} v{pill.version} for {agentLabel}
+              </span>
+            ))}
+          </div>
+        );
+      })()}
+
       {stage !== "security" && stage !== "qa" && (
       <div>
         <h3 className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wide mb-2">
@@ -549,17 +647,7 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
             <div className="flex flex-col gap-4">
               {versions.length > 0 && (
                 <div className="flex items-center justify-between">
-                  <select
-                    value={selectedVersion ?? ""}
-                    onChange={(e) => setSelectedVersion(Number(e.target.value))}
-                    className="text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md p-1.5 focus:outline-none focus:border-accent-500"
-                  >
-                    {versions.map((v) => (
-                      <option key={v.artifact_id} value={v.version} className="dark:bg-gray-800">
-                        v{v.version} -- {v.approval_status}
-                      </option>
-                    ))}
-                  </select>
+                  <VersionSelect versions={versions} selectedVersion={selectedVersion} onChange={setSelectedVersion} />
                   {selectedSecurityArtifact && (
                     <a
                       href={artifactDownloadUrl(selectedSecurityArtifact.artifact_id)}
@@ -602,17 +690,7 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
             <div className="flex flex-col gap-4">
               {versions.length > 0 && (
                 <div className="flex items-center justify-between">
-                  <select
-                    value={selectedVersion ?? ""}
-                    onChange={(e) => setSelectedVersion(Number(e.target.value))}
-                    className="text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md p-1.5 focus:outline-none focus:border-accent-500"
-                  >
-                    {versions.map((v) => (
-                      <option key={v.artifact_id} value={v.version} className="dark:bg-gray-800">
-                        v{v.version} -- {v.approval_status}
-                      </option>
-                    ))}
-                  </select>
+                  <VersionSelect versions={versions} selectedVersion={selectedVersion} onChange={setSelectedVersion} />
                   {selectedQaArtifact && (
                     <a
                       href={artifactDownloadUrl(selectedQaArtifact.artifact_id)}
@@ -633,17 +711,7 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
       ) : (
         <div>
           <div className="flex items-center justify-between mb-3">
-            <select
-              value={selectedVersion ?? ""}
-              onChange={(e) => setSelectedVersion(Number(e.target.value))}
-              className="text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md p-1.5 focus:outline-none focus:border-accent-500"
-            >
-              {versions.map((v) => (
-                <option key={v.artifact_id} value={v.version} className="dark:bg-gray-800">
-                  v{v.version} -- {v.approval_status}
-                </option>
-              ))}
-            </select>
+            <VersionSelect versions={versions} selectedVersion={selectedVersion} onChange={setSelectedVersion} />
             <div className="flex items-center gap-3">
               {(() => {
                 const artifact = versions.find((v) => v.version === selectedVersion) || versions[0];

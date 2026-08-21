@@ -27,7 +27,6 @@ class AgentName(str, Enum):
     CODER = "coder_agent"
     SECURITY = "security_agent"
     QA = "qa_agent"
-    DEPLOYMENT = "deployment_agent"
 
 
 class ArtifactType(str, Enum):
@@ -65,7 +64,6 @@ class ArtifactType(str, Enum):
 
     UI_DESIGN = "ui_design"
     CODE = "code"
-    DEPLOYMENT = "deployment"
 
 
 class ArtifactFormat(str, Enum):

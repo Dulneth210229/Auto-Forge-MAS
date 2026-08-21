@@ -9,7 +9,6 @@ Later, each endpoint will call the real agent class:
 - ArchitectureAgent
 - UIUXAgent
 - CoderAgent
-- DeploymentAgent
 
 At this foundation step, we only verify the API structure.
 """
@@ -1102,19 +1101,3 @@ async def qa_chat_stream(feature_id: str, request: QAChatMessageRequest):
             yield json.dumps({"type": "error", "message": f"QA chat failed: {_readable_error(error)}"}) + "\n"
 
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")
-
-
-@router.post("/deployment/run", response_model=AgentRunResponse)
-def run_deployment_agent(feature_id: str, request: AgentRunRequest):
-    """
-    Placeholder endpoint for Deployment Agent.
-    """
-    _validate_feature(feature_id)
-
-    return AgentRunResponse(
-        feature_id=feature_id,
-        agent_name=AgentName.DEPLOYMENT,
-        status="not_implemented_yet",
-        message="Deployment Agent endpoint is ready. Real logic will be added later.",
-        artifact_ids=[]
-    )

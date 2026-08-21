@@ -1,6 +1,10 @@
 import { createContext, useContext, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { SELECTABLE_AGENT_STAGES } from "../../lib/pipelineStages";
+import { useGraphStatus } from "../../hooks/usePipeline";
+import { useFeatureArtifacts } from "../../hooks/useArtifacts";
+import { deriveStageStatus } from "../../lib/deriveStageStatus";
+import { deriveCurrentStage } from "../../lib/deriveCurrentStage";
 
 const WorkspaceSelectionContext = createContext(null);
 
@@ -35,6 +39,24 @@ export function WorkspaceSelectionProvider({ featureId, onSelectFeature, childre
   // state. Reset whenever the feature changes (selectFeature below), same as the other UI-only
   // fields, so switching features never leaves a stale fullscreen preview covering the new one.
   const [isPreviewExpanded, setIsPreviewExpanded] = useState(false);
+
+  // "How far can the human currently navigate in the agent picker" -- computed once here (not
+  // per-leaf-component) since this context is already the shared home for "what are the three
+  // sibling panels looking at right now." React Query dedupes these against whatever ResultTab/
+  // OutputPanel/FeatureListItem already fetch for the same featureId, so this is a cache read,
+  // not an extra network request. Mirrors FeatureListItem.jsx's own established
+  // graphStatus+artifacts -> stageStatuses -> deriveCurrentStage pipeline exactly.
+  const { data: graphStatus } = useGraphStatus(featureId);
+  const { data: artifacts } = useFeatureArtifacts(featureId);
+  const stageStatuses = {};
+  for (const stage of SELECTABLE_AGENT_STAGES) {
+    stageStatuses[stage] = deriveStageStatus({ stage, graphStatus, artifacts: artifacts || [] });
+  }
+  // deriveCurrentStage returns undefined once every stage is APPROVED (a fully-completed
+  // feature) -- fall back to the LAST stage, not the first, so a finished pipeline never gates
+  // anything (the naive `|| "requirement"` fallback would incorrectly re-lock everything down).
+  const currentStage =
+    deriveCurrentStage(graphStatus, stageStatuses) ?? SELECTABLE_AGENT_STAGES[SELECTABLE_AGENT_STAGES.length - 1];
 
   function setAgentQueryParam(stage) {
     setSearchParams(
@@ -75,12 +97,13 @@ export function WorkspaceSelectionProvider({ featureId, onSelectFeature, childre
       viewArtifact: setViewingArtifact,
       isPreviewExpanded,
       togglePreviewExpanded: () => setIsPreviewExpanded((v) => !v),
+      currentStage,
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- setAgentQueryParam/onSelectFeature
     // are recreated every render (setSearchParams identity, prop from parent); including them
     // would invalidate this memo every render and defeats its purpose. featureId/selectedAgent/etc
     // are the only values that actually need to trigger a new value object.
-    [featureId, selectedAgent, selectedModel, activeOutputTab, viewingArtifact, isPreviewExpanded]
+    [featureId, selectedAgent, selectedModel, activeOutputTab, viewingArtifact, isPreviewExpanded, currentStage]
   );
 
   return <WorkspaceSelectionContext.Provider value={value}>{children}</WorkspaceSelectionContext.Provider>;

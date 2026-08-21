@@ -6843,6 +6843,106 @@ milestone — that file is scratch, **this file is the durable one**.
         confirmed fixed against their own real project, not a synthetic reproduction. Preview
         stopped afterward to avoid leaving a container running.
 
+82. **AutoForge frontend polish: relocated the "Using X vN for Y Agent" pills, removed Deployment
+    Agent entirely, forward-gated the chat's agent picker to the pipeline's current reachable
+    stage, and modernized the version dropdown.** Four direct user requests. Investigated
+    directly (own reading + one Plan-agent validation pass, which resolved three open design
+    questions and caught a real edge-case bug before it was written). Plan file:
+    `C:\Users\ASUS\.claude\plans\soft-petting-star.md` at time of writing.
+    - **Relocate the pills** (`frontend/src/components/output/OutputPanel.jsx` /
+      `ResultTab.jsx`): the "Using Architecture Plan vN for Coder Agent" style indicator (item
+      77's generalized version) previously rendered inside the Output panel's TAB BAR, next to
+      Result/Files/Preview -- moved verbatim (both `PREVIOUS_STAGE_INPUTS_BY_STAGE`/
+      `NO_ARTIFACT_VERSION_LABEL_BY_STAGE` maps and the render IIFE) into `ResultTab.jsx`'s own
+      content, rendered above "All Artifacts" -- reuses the `feature` variable `ResultTab.jsx`
+      already fetches for an unrelated purpose (active-artifact-selection pinning), no new fetch.
+      `OutputPanel.jsx`'s tab bar is now just the tab buttons.
+    - **Remove Deployment Agent completely** (a permanent stub since M7, confirmed via direct
+      grep to have zero references in `graph_orchestrator_service.py` -- never wired into the
+      LangGraph at all, safe to delete outright): backend --
+      `app/agents/deployment_agent/` (whole dir), `AgentName.DEPLOYMENT`/`ArtifactType.DEPLOYMENT`
+      (`app/core/enums.py`), the `POST /deployment/run` placeholder route
+      (`app/api/routes/agents.py`), the `AgentName.DEPLOYMENT: "08_deployment"` folder mapping
+      (`app/services/artifact_service.py`), plus a stale comment fix in
+      `app/services/llm_provider_service.py` (also corrected: that comment claimed Security/QA
+      were still stubs too, which hasn't been true since items 73/75 -- `OVERRIDABLE_AGENTS`
+      still doesn't include them, a real, separate, pre-existing gap left honestly noted rather
+      than silently fixed, since adding Security/QA LLM-override support was never asked for
+      here). Frontend -- `frontend/src/lib/pipelineStages.js`'s `PLACEHOLDER_STAGES` deleted
+      entirely (not left as an empty array -- its only two consumers are both touched by this
+      same change, and an empty array would leave `ModelSelect.jsx`'s fallback branch as
+      permanently dead code), plus `STAGE_LABELS.deployment`/`STAGE_ROLE_LABELS.deployment`;
+      `AgentSelect.jsx`'s `DISPLAY_STAGES = [...STAGE_SEQUENCE, "deployment"]` splice deleted
+      (the only reason deployment ever appeared in the agent picker); `ModelSelect.jsx`'s
+      `isSelectable`/dead-branch deleted.
+    - **Forward-gate the agent picker** (`frontend/src/components/chat/AgentSelect.jsx` /
+      `components/workspace/WorkspaceSelectionContext.jsx`): direct user request -- while still
+      on, say, the Coder Agent stage (not yet approved), a human should not be able to jump
+      straight to Security/QA's chat. Centralized "what stage is currently reachable" in
+      `WorkspaceSelectionContext` (mounted once per open workspace, already the shared home for
+      "what are the three sibling panels looking at right now") rather than the leaf
+      `AgentSelect` -- reuses the exact `useGraphStatus`+`useFeatureArtifacts` ->
+      `deriveStageStatus` -> `deriveCurrentStage` pipeline already proven in
+      `FeatureListItem.jsx`, React-Query-cache-deduped against whatever `ResultTab`/`OutputPanel`
+      already fetch for the same feature, so this adds no new network request. `AgentSelect`
+      disables every `SELECTABLE_AGENT_STAGES` option whose index exceeds the current stage's --
+      stages at or before current stay freely selectable, so revisiting an earlier agent's chat
+      history is never blocked, only forward-jumping past the pipeline's frontier is.
+      **A real edge-case bug caught by the Plan-agent review before this was ever written**:
+      `deriveCurrentStage` returns `undefined` once every stage is APPROVED (a fully-completed
+      feature) -- the naive `|| "requirement"` fallback (copied from `FeatureListItem.jsx`'s own
+      pre-existing use of this same function) would have incorrectly RE-LOCKED the picker down to
+      only Requirement for a finished feature. Fixed with
+      `deriveCurrentStage(...) ?? SELECTABLE_AGENT_STAGES.at(-1)` instead -- once every real stage
+      is approved, nothing is gated. Applied the identical, now-corrected fallback to
+      `FeatureListItem.jsx`'s own pre-existing instance of the exact same bug while touching this
+      pattern (a fully-completed feature's list-row status was misreporting as "Requirement" --
+      a one-line, low-risk consistency fix directly adjacent to this change, not new scope).
+    - **Modernize the version dropdown** (`frontend/src/components/chat/PillDropdown.jsx`, new
+      `frontend/src/components/output/VersionSelect.jsx`): three near-identical raw `<select>`
+      elements in `ResultTab.jsx` (shown as plain text, e.g. "v4 -- pending") replaced with a new
+      `VersionSelect` built on the existing `PillDropdown` (already used by `AgentSelect`/
+      `ModelSelect`, a custom rounded-popup picker instead of a native select). `PillDropdown`
+      gained a `direction: "up" | "down" = "up"` prop (only the popup's positioning classes
+      change; both existing call sites keep their current upward-opening behavior unchanged) --
+      `VersionSelect` uses `direction="down"` since it sits near the panel TOP, not the bottom
+      composer bar. Each version option's label is now `vN` plus a real, color-coded
+      `StatusBadge` (pending/approved/rejected/revision_requested) instead of plain text.
+      **A real specificity risk found and fixed while implementing this, flagged in advance by
+      the Plan-agent review**: `PillDropdown`'s trigger button hardcoded `max-w-[160px]` directly
+      in its base className string, with `triggerClassName` appended AFTER it -- two equal-
+      specificity Tailwind utility classes in one string do not reliably resolve by JSX
+      left-to-right order (Tailwind's generated CSS order depends on build-wide first-discovery
+      order, not per-file string position), so a caller's own `max-w-*` override was not
+      guaranteed to actually win. Fixed by moving `max-w-[160px]` OUT of the base string entirely
+      and into `triggerClassName`'s own prop DEFAULT -- a caller passing its own value is now the
+      only max-w class ever present for that instance, no conflict possible.
+    - Backend test suite unaffected by the frontend work; re-run after the Deployment Agent
+      removal to confirm zero breakage (it was never exercised by any real test -- no fixture
+      updates needed). Full suite: **883 passed** (unchanged count from item 81 -- pure removal,
+      no new backend tests needed). `npm run build` clean (1341 modules).
+    - **Real, live verification against the real Finodil "Login and Signup" feature**
+      (`proj_2ba24bc0`/`feature_917b691e`, genuinely at the Coder Agent stage with 4 real Coder
+      Agent versions -- the same feature items 79-81 worked on), through an actual browser, not
+      just the API: confirmed via screenshot that the tab bar (Result/Files/Preview) now shows
+      only tab buttons, with "Using Architecture Plan v3 for Coder Agent"/"Using UI/UX Output v1
+      for Coder Agent" rendering directly under the Result content instead, right above "All
+      Artifacts"; confirmed "Deployment" appears nowhere on the page and the live backend's own
+      OpenAPI schema has zero `/deployment` paths (`GET /openapi.json`, grepped directly);
+      confirmed via `is_disabled()` (not just a screenshot) that opening the agent picker while
+      on the Coder stage shows Security/QA genuinely `disabled=True` while Requirement/Domain/
+      Architecture/UI-UX/Coder stay enabled, screenshot-confirmed visually greyed-out too;
+      confirmed the version dropdown opens downward with real colored status badges per version
+      (v4/v3/v2/v1, all "Pending" for this real in-progress feature), and that clicking a
+      different version (v1) genuinely swaps the rendered merge-report content (v1's real,
+      pre-Docker-fix "Sandbox unavailable" failure text, correctly different from v4's real
+      "Verification: PASSED") while the "Download report" link stays present -- a functional
+      check, not just a visual one. Separately confirmed the Requirement stage (which has no
+      "Using X" pill by design) renders with no visual gap/artifact where the pill would have
+      been, and that stage remained freely selectable in the picker despite the feature's current
+      stage being Coder (revisiting an earlier stage is never blocked). Zero console/page errors
+      across every screenshot taken.
+
 ## Where to look
 
 - Full build spec (read this first, in order, before any new milestone): `instructions .md`
