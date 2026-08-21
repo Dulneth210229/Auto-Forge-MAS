@@ -50,6 +50,23 @@ def test_prompt_requires_blanket_use_client_rule():
     assert "Route Handlers (`route.ts`) are server-only" in CODER_AGENT_SYSTEM_PROMPT
 
 
+def test_prompt_requires_named_import_for_connect_to_database():
+    # Real, confirmed build failure: the coding loop wrote `import connectToDatabase from
+    # "@/lib/mongodb"` (a default import) against a function that's actually a NAMED export --
+    # `next build` failed with "does not contain a default export."
+    assert 'import { connectToDatabase } from "@/lib/mongodb";' in CODER_AGENT_SYSTEM_PROMPT
+    assert "does not contain a default export" in CODER_AGENT_SYSTEM_PROMPT
+
+
+def test_prompt_requires_installing_a_genuinely_needed_undeclared_dependency():
+    # Real, confirmed bug: the coding loop imported `bcryptjs` in two Route Handlers without
+    # ever installing it (package.json never declared it, new_dependencies was empty), and the
+    # old prompt actively discouraged `run_shell` from installing anything not pre-declared by
+    # planning -- `next build` correctly failed with "Module not found: Can't resolve 'bcryptjs'".
+    assert "npm install <package>@<version> --save" in CODER_AGENT_SYSTEM_PROMPT
+    assert "Module not found" in CODER_AGENT_SYSTEM_PROMPT
+
+
 def test_prompt_pins_next_14_synchronous_params_contract():
     assert "PLAIN OBJECT" in CODER_AGENT_SYSTEM_PROMPT
     assert "do NOT `await` them" in CODER_AGENT_SYSTEM_PROMPT

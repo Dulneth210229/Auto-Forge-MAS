@@ -6680,6 +6680,169 @@ milestone — that file is scratch, **this file is the durable one**.
       confirmed via a clean `Application startup complete` log and the frontend's own real
       requests succeeding against the fresh process right after.
 
+81. **Requirement Agent chat-composer fix + Architecture Agent brought to UML/agilemodeling.com
+    standards (use case actor stereotype/generalization/participating-actors, sequence Par/Break
+    fragments + a shared fragment-kinds source of truth, class stereotype-naming hard gate), plus
+    a real sequence-diagram-rendering crash found and fixed live, and a real Coder Agent build
+    broken by two confirmed bugs, found and fixed live against the user's real Finodil project.**
+    Direct user request (verbatim, with a screenshot of the SRS-confirm chat composer vanishing):
+    fix the chat composer disappearing during SRS generation; bring the Architecture Agent's use
+    case diagrams into UML/international-standards compliance per
+    agilemodeling.com/style/usecasediagram.htm (actor/use-case relationships, stereotypes,
+    generalization, full functional-requirement coverage); add missing sequence-diagram control
+    structures (explicitly Par, "etc" implying more as needed); enhance the class diagram; then
+    generate a genuinely new Architecture Plan (all three diagrams) for the real Finodil "Login
+    and Signup" feature. Plan approved in plan mode; most of Parts A-D were implemented in the
+    prior (compacted) portion of this session -- this segment finished Part B's last piece,
+    found and fixed one more real bug the live deliverable run surfaced, then pivoted to a
+    second, separately-reported real bug (Coder Agent preview broken) in the same session.
+    - **Part B finish -- `_complete_usecase_model` rewritten to accept `diagram_generation_state`/
+      `attempt_agentic`/`attempt_focused_fallback`, mirroring `_complete_diagram_models`'s own
+      established shape exactly** (reuses the SAME shared state dict, new
+      `"usecase_attempted"`/`"usecase_specification_json"` keys, no second state dict): agentic
+      exploration attempted at most once per outer call when not already cached, falling through
+      to whatever `parsed` already carries on failure (never discarded); `attempt_focused_fallback`
+      gates one non-agentic focused single-shot call for the use case model specifically, mirroring
+      the diagram tiers' own focused-fallback rung. All 7 real call sites in `agent.py` updated per
+      the validated rung-by-rung design: `_generate_architecture_output`'s exploration/single-shot/
+      repair rungs pass `diagram_generation_state` with the new params at their defaults (agentic
+      `True`); the true last-resort deterministic-fallback rung gets `attempt_agentic=False` only
+      (matching the pre-existing repair-loop rationale: don't call the LLM again from the rung
+      whose whole purpose is "the LLM already failed twice" -- deliberately asymmetric with
+      diagrams' own tier-2-always-runs design, a considered choice not an oversight);
+      `run_stream()` gets `attempt_agentic=False` explicitly (a human is synchronously watching);
+      `revise()`/`revise_stream()` get `attempt_agentic=False, attempt_focused_fallback=True` --
+      this is the actual fix for the confirmed real gap where `revise()` previously always
+      regenerated the use case diagram from the empty-specification deterministic template with
+      zero LLM involvement.
+    - New test files, mirroring the sequence/class diagram tooling's own established coverage
+      exactly: `tests/test_architecture_usecase_diagram_tools.py` (9 -- the new
+      `build_usecase_diagram_tools`'s read/validate/submit tools, including the new
+      `read_user_roles_and_stories` tool and the real 4-positional-arg
+      `usecase_validator.validate()` call inside `validate_usecase_draft`), `tests/
+      test_architecture_usecase_diagram_exploration.py` (10 -- `_generate_usecase_diagram_via_
+      exploration`'s submission/no-submission/recursion-limit contracts, and the full
+      `_complete_usecase_model` rung matrix: agentic-succeeds, agentic-fails-fallback-disabled,
+      agentic-fails-fallback-enabled, `attempt_agentic=False` variants, an already-embedded
+      specification surviving untouched, and cross-call memoization).
+    - **A real, confirmed bug found only by the live Finodil deliverable run, not by any of the
+      above unit tests**: the real Architecture Agent run for Login and Signup produced an
+      LLM-authored sequence specification whose `end` closed an `alt` fragment BEFORE its own
+      `else` (`alt_start -> ... -> end -> else -> ... -> end`) -- `SequenceDiagramValidator`
+      correctly rejects this shape, but the reactive repair loop (item 26) is bounded by
+      `MAX_SEQUENCE_REPAIR_ATTEMPTS` and, per its own established contract, never raises once
+      attempts are exhausted -- it proceeds with whatever it has. The still-unbalanced diagram
+      then reached the PlantUML CLI renderer, which failed with a FATAL, uncaught error ("Some
+      diagram description contains errors"), crashing the entire Architecture Agent run with no
+      artifacts saved at all -- worse than a quality miss, a hard stop. Fixed with a new
+      deterministic backstop, `ArchitectureSequenceModeler._sanitize_fragment_balance`, called at
+      the one place every path (LLM specification, repair-rebuilt, fallback) funnels through
+      before `_finalize`: walks the final `interactions` list with a fragment-kind stack (reusing
+      `sequence_fragment_kinds.FRAGMENT_OPENER_KINDS`), drops an `else` with no genuinely open
+      `alt_start` and drops an `end` with nothing open to close (exactly the malformed shape
+      above -- the dangling `else`/its now-unmatched trailing `end` are both stripped, degrading
+      to plain top-level messages rather than crashing), and force-closes any fragment still open
+      at the very end with a synthetic `end`. This guarantees `SequenceDiagramValidator`'s own
+      balance check can never actually fail downstream of this point -- a small, deliberate
+      trade of semantic precision (a dropped branch loses its intended grouping) for the one
+      guarantee that matters: the run completes. New `TestFragmentBalanceSanitizer` (5 tests in
+      `tests/test_architecture_sequence_modeler.py`) covers the exact real bug shape, a
+      well-formed alt/else/end left untouched, a never-closed fragment force-closed, a dangling
+      end with nothing open dropped, and correct behavior across nested fragments.
+    - Full backend suite after both fixes: **881 passed** (up from 876 after Part B's own finish,
+      then +5 for the sanitizer). `npm run build` clean (Part A's composer fix, already
+      implemented in the prior segment, needed no further changes).
+    - **Live backend restart, explicitly confirmed with the user first** (`AskUserQuestion`,
+      "Yes, restart it now"): the live main backend's `--reload` watcher (which watches the
+      WHOLE `agentic_service` directory, not just `app/`) had only logged one real reload event
+      despite the many files this segment (and the prior, compacted portion) touched -- too
+      risky to trust for the actual deliverable run, so the reloader/worker process tree was
+      stopped and relaunched identically before generating anything for real.
+    - **Real, live deliverable verification against the user's own real Finodil project**
+      (`proj_2ba24bc0`, feature `feature_917b691e` "Login and Signup", real approved SRS +
+      Enhanced SRS already in place): re-ran the real Architecture Agent multiple times to
+      produce the actual requested deliverable. `POST /architecture/run/stream` (single-shot
+      rung only, per `run_stream`'s own design) landed on the true deterministic-fallback rung
+      twice in a row -- confirmed via each `human_approval_note`'s own honest anemic-DTO caveat,
+      not a code bug -- with the currently-configured global model (`qwen2.5-coder:14b`, no
+      per-agent override set for `architecture_agent` on this live system, a real configuration
+      drift from item 74's own documented intent) failing single-shot generation of the large
+      combined plan schema, a known, already-extensively-documented class of local-model
+      limitation (items 24/26/27). Temporarily set a real `architecture_agent` override to
+      `qwen3-coder:latest` (matching item 74's own documented intended pin) and re-ran via the
+      full agentic-first ladder (`POST /architecture/run`, non-streaming) -- this is the run that
+      hit the sequence-fragment-balance crash above; after the sanitizer fix, a subsequent
+      attempt again landed on the deterministic fallback rung (the single-shot/repair rungs
+      still failing schema validation against this real, large SRS+Enhanced-SRS combination --
+      an honest, separately-documented, out-of-scope local-model reliability limit, not this
+      session's own regression) but this time completed successfully end-to-end, saving a real
+      v3 Architecture Plan with all 8 artifacts (Plan JSON+MD, use case/sequence/class diagrams
+      PUML+PNG). Directly inspected the real generated use case diagram: actor `<<system>>`
+      stereotype correctly rendered on a non-human actor (mechanically confirming Part B's fix is
+      live and working) -- though, honestly noted, the underlying use-case NAMES on this
+      particular fallback-path run were still garbled sentence fragments, a SEPARATE,
+      already-documented (item 25) deterministic-fallback naming-quality gap this session's own
+      scope never touched (Parts B/C/D are about relationships/stereotypes/fragments/naming-
+      consistency, not the fallback's own name-cleaning quality). This real v3 state is left in
+      place as genuine, honestly-mixed verification evidence (a real, confirmed fix mechanically
+      present, alongside a real, separately-tracked, unrelated quality gap also visible in the
+      same output) rather than cherry-picked for a cleaner story.
+    - **A second, separately-reported real bug, mid-session: "I can not run the coder agent
+      output in the preview section it shows an error"** (`No build found for this feature yet --
+      run the Coder Agent (or a revision) first, then try previewing again`), with a screenshot
+      showing the Coder Agent chat itself reporting a completed v1 run. Root-caused directly via
+      the real, saved v1 merge report: `next build`/`npm install` both failed with `"Sandbox
+      unavailable: could not reach Docker daemon"` -- Docker Desktop was not running when the
+      original coding loop's `verify()` ran, so `.next/BUILD_ID` never existed, and Preview's own
+      documented refusal (item 52: "Start refuses (409) if no `.next/BUILD_ID` exists yet") was
+      working exactly as designed, just on code that had never actually been built. Started
+      Docker Desktop, then re-verified the SAME already-generated code directly (no re-planning,
+      no re-invoking the LLM -- matching this project's own long-established "re-verify already-
+      generated code" precedent, items 20/27/52/72): `npm install` now passed, but `next build`
+      failed for real, revealing two genuine, confirmed code bugs the original coding loop had
+      introduced and Docker's outage had hidden from ever surfacing:
+      1. `app/api/auth/login/route.ts` and `app/api/auth/signup/route.ts` both `import bcrypt
+         from "bcryptjs"` for password hashing, but `bcryptjs` was never declared in
+         `package.json` (the plan's own `new_dependencies` was empty) -- `Module not found:
+         Can't resolve 'bcryptjs'`. Root cause, confirmed by reading `CODER_AGENT_SYSTEM_PROMPT`
+         directly: the `run_shell` tool-usage rule explicitly told the model NOT to install
+         anything beyond the plan's own `new_dependencies`, actively discouraging exactly the
+         self-correction (`npm install bcryptjs --save`) that would have fixed this on its own.
+      2. Both route files also `import connectToDatabase from "@/lib/mongodb"` (a default
+         import), but the real scaffold's `lib/mongodb.ts` exports it as a NAMED export
+         (`export async function connectToDatabase(...)`) -- `next build` correctly failed with
+         "does not contain a default export." The prompt named the function and its
+         null-vs-throw behavior correctly but never stated its exact import syntax.
+      - **Fixed both directly** (added `bcryptjs`/`@types/bcryptjs` to `package.json`; corrected
+        both route files' import to `import { connectToDatabase } from "@/lib/mongodb";`),
+        committed as a real git commit on the feature branch, matching item 23's own "small,
+        mechanical, real fix applied directly rather than through a slow revise() cycle"
+        precedent -- and **hardened `CODER_AGENT_SYSTEM_PROMPT` at the root** so a future feature
+        doesn't repeat either mistake: the `run_shell` rule now explicitly instructs installing a
+        genuinely-needed undeclared package via `npm install <package>@<version> --save` (the
+        tool's own allowlist, confirmed by reading `tools.py`'s `ALLOWED_SHELL_COMMANDS = {"npm",
+        "npx", "node"}`, already permits this -- only the prompt was discouraging it) rather than
+        writing an import for a package that was never installed; the `lib/mongodb.ts` connect-
+        helper rule now states its exact named-import syntax explicitly and names the real,
+        confirmed build error a default import produces. New tests locking both rules in `tests/
+        test_coder_prompt.py` (+2). Full suite: **883 passed** (up from 881).
+      - **Re-verified for real, iteratively, after each fix** (three full `npm install` + `next
+        build` cycles against the real, live Docker daemon): the bcryptjs fix alone still left
+        the named-import bug (a distinct, second real error); after both fixes, verification
+        passed **cleanly end-to-end** -- `next build`, `server boot (next start + /api/health)`,
+        `page reachability`, and `home page render` all passed, plus an informational `feature
+        page render` step confirming `/login-and-signup` itself "responded with HTTP 200 and no
+        JS errors." Saved as v4 (v2/v3 -- the intermediate, honestly-failing snapshots from
+        before each fix -- left in place as real evidence, not cleaned up, matching this
+        project's own established convention). **Confirmed live through the actual browser, not
+        just status codes**: started the real preview (`POST /features/{id}/preview/start`,
+        real Docker container, real assigned port), navigated to it with Playwright, and
+        screenshotted a genuinely rendered, styled "Sign in to your account" form (email/password
+        fields, Sign In button, a working "Don't have an account? Sign up" link) with zero
+        console/page errors -- the user's exact reported symptom (Preview refusing to start) is
+        confirmed fixed against their own real project, not a synthetic reproduction. Preview
+        stopped afterward to avoid leaving a container running.
+
 ## Where to look
 
 - Full build spec (read this first, in order, before any new milestone): `instructions .md`

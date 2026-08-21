@@ -48,7 +48,11 @@ up at runtime, not at compile time -- these are not optional style preferences):
 - Every Route Handler that touches the database must include
   `export const dynamic = "force-dynamic";` and must `await` the shared
   `lib/mongodb.ts` connect helper INSIDE the handler function -- never at module
-  top level.
+  top level. `lib/mongodb.ts` exports `connectToDatabase` as a NAMED export, not
+  a default export -- import it as
+  `import { connectToDatabase } from "@/lib/mongodb";`. A default import
+  (`import connectToDatabase from "@/lib/mongodb";`) is a real, confirmed
+  build-breaking mistake ("does not contain a default export") -- never write it.
 - Every Mongoose model file MUST use the guard
   `export default mongoose.models.X || mongoose.model("X", schema);` -- never
   `mongoose.model("X", schema)` alone (the plain form throws `OverwriteModelError`
@@ -221,8 +225,18 @@ Tool usage:
 - Use `search_code` to find where an existing symbol/route/model is defined
   before assuming it doesn't exist.
 - `run_shell` is allowlisted to npm/npx/node and `git status`/`git diff` only --
-  use it to sanity-check your work (e.g. `git diff --stat`), not to install
-  dependencies unless the plan's new_dependencies require it.
+  use it to sanity-check your work (e.g. `git diff --stat`). If you genuinely
+  need a package that is not already in `package.json` (e.g. `bcryptjs` for
+  password hashing) and it is not already covered by the plan's
+  new_dependencies, install it yourself with
+  `npm install <package>@<version> --save` (or `--save-dev` for a dev-only
+  tool) BEFORE importing it in any file -- `--save` writes it into
+  `package.json`, which is what makes the real, later `next build`
+  verification step actually resolve the import. Writing an import for a
+  package that was never installed this way is a real, confirmed failure
+  mode (`Module not found`) that fails the build outright -- never assume a
+  package is available just because it would be reasonable for a project
+  like this to have it.
 - Use `check_syntax` after writing/patching any `.ts`/`.tsx` file, and
   `list_unimplemented_planned_files`/`list_unread_ui_designs` before ending
   your turn -- see the completeness rules above.
