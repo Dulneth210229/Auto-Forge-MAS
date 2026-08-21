@@ -4,11 +4,18 @@ import ErrorBanner from "../common/ErrorBanner";
 import ConfirmDialog from "../common/ConfirmDialog";
 import {
   ARTIFACT_TYPE_LABELS,
+  ARTIFACT_TYPE_STAGE,
   NON_APPROVABLE_ARTIFACT_TYPES,
   screenshotPageLabel,
 } from "../../lib/artifactTypeMeta";
-import { useApprovalMutation } from "../../hooks/useApprovalMutation";
+import { useApprovalMutation, useRevokeApprovalMutation } from "../../hooks/useApprovalMutation";
 import { useDeleteArtifact } from "../../hooks/useArtifacts";
+
+// Mirrors GovernancePanel.jsx's own REVOKE_WARNINGS -- only the coder stage's code_diff artifact
+// has a real, consequential side effect (a git merge) worth naming before revoking its approval.
+const REVOKE_WARNING_BY_STAGE = {
+  coder: "This will attempt to reverse the git merge into main (via a real git revert) and restore the feature branch, so you can request changes.",
+};
 
 // Per-artifact approve/reject/request-revision -- every pending/rejected version of every
 // artifact_type gets its own inline controls here, full stop. This used to be suppressed for
@@ -39,8 +46,10 @@ export default function ArtifactRow({
   const [showRevise, setShowRevise] = useState(false);
   const [revisionComment, setRevisionComment] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [confirmingRevoke, setConfirmingRevoke] = useState(false);
   const approval = useApprovalMutation(featureId);
   const deleteArtifact = useDeleteArtifact(featureId);
+  const revokeApproval = useRevokeApprovalMutation(featureId);
 
   async function submitRevision(event) {
     event.preventDefault();
@@ -58,6 +67,9 @@ export default function ArtifactRow({
   // Approved artifacts are permanent history (matches the backend's own refusal to delete them) --
   // only an unapproved (pending/rejected/revision_requested) version can ever be removed.
   const canDelete = artifact.approval_status !== "approved";
+  // The counterpart to canDelete -- only an APPROVED row is ever meaningful to revoke, and only
+  // where there's a real featureId/decision to act on (mirrors showInlineApproval's own gating).
+  const canRevoke = Boolean(featureId) && artifact.approval_status === "approved" && !isNonApprovableType;
   // Only an approved version is a meaningful pipeline input -- the backend refuses to pin
   // anything else, so the radio button only ever appears where it could actually be selected.
   const canSelectActive = showActiveSelector && artifact.approval_status === "approved";
@@ -109,6 +121,15 @@ export default function ArtifactRow({
               Revise
             </button>
           )}
+          {canRevoke && (
+            <button
+              onClick={() => setConfirmingRevoke(true)}
+              title="Revoke this approval and return to Pending review"
+              className="text-gray-400 dark:text-gray-500 hover:text-red-600 dark:hover:text-red-400 text-sm font-semibold"
+            >
+              Revoke
+            </button>
+          )}
           {canDelete && (
             <button
               onClick={() => setConfirmingDelete(true)}
@@ -120,6 +141,29 @@ export default function ArtifactRow({
           )}
         </div>
       </div>
+
+      <ConfirmDialog
+        open={canRevoke && confirmingRevoke}
+        onClose={() => {
+          if (!revokeApproval.isPending) setConfirmingRevoke(false);
+        }}
+        onConfirm={() =>
+          revokeApproval.mutate(
+            { artifactId: artifact.artifact_id },
+            { onSuccess: () => setConfirmingRevoke(false) }
+          )
+        }
+        title={`Revoke approval for v${artifact.version}?`}
+        message={
+          REVOKE_WARNING_BY_STAGE[ARTIFACT_TYPE_STAGE[artifact.artifact_type]] ||
+          `This returns ${ARTIFACT_TYPE_LABELS[artifact.artifact_type] || artifact.artifact_type} v${artifact.version} to Pending review, and any real artifact/diagram cascaded along with this approval reverts with it.`
+        }
+        confirmLabel="Revoke approval"
+        confirmingLabel="Revoking..."
+        confirming={revokeApproval.isPending}
+        error={revokeApproval.error}
+        errorFallback="Failed to revoke the approval."
+      />
 
       <ConfirmDialog
         open={canDelete && confirmingDelete}

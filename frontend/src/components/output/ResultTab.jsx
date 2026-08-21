@@ -32,6 +32,7 @@ import { useDomainAgentFlowContext } from "../workspace/DomainAgentFlowContext";
 import { useArchitectureAgentFlowContext } from "../workspace/ArchitectureAgentFlowContext";
 import { useUiuxAgentFlowContext } from "../workspace/UiuxAgentFlowContext";
 import { useCoderAgentFlowContext } from "../workspace/CoderAgentFlowContext";
+import { useSecurityAgentFlowContext } from "../workspace/SecurityAgentFlowContext";
 import { useFeature, useSetActiveArtifactSelection } from "../../hooks/useFeatures";
 import { useApprovalMutation } from "../../hooks/useApprovalMutation";
 
@@ -86,6 +87,18 @@ const APPROVE_CONTINUATION_BY_STAGE = {
     title: "Approve this UI/UX version and start Coder Agent?",
     message: (version) =>
       `Approving v${version} locks it as the UI/UX design this feature builds from -- every other version is locked from approval until you reject this one. Coder Agent will start automatically and build the real frontend + backend to match this design as closely as possible -- watch it live in the Result panel.`,
+  },
+  // Coder -> Security is the fifth link, and the first that comes through this dialog at all --
+  // previously the Coder Agent's own approve button skipped this popup entirely (no entry existed
+  // here), so its real, serious warning was only ever visible in GovernancePanel's fine print, not
+  // at the moment of actually clicking Approve. Direct user request: name the merge consequence
+  // here too, then auto-start a real vulnerability scan.
+  coder: {
+    nextAgent: "security",
+    autoRun: true,
+    title: "Approve this Coder Agent output and start Security Agent?",
+    message: (version) =>
+      `Approving v${version} runs a real git merge --no-ff into main and permanently deletes the feature branch (see the warning below -- this part cannot be undone by re-running anything, only by explicitly revoking this approval afterward). Security Agent will then start automatically and scan the merged code for vulnerabilities -- watch it live in the Result panel.`,
   },
 };
 
@@ -420,6 +433,11 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
   const [mongoUriDraft, setMongoUriDraft] = useState("");
   const mongoUriIsValid = looksLikeMongoUri(mongoUriDraft);
   const srsApproval = useApprovalMutation(featureId);
+  // Shared with SecurityReportView.jsx (see SecurityAgentFlowContext's own docstring) -- read
+  // unconditionally regardless of stage, same as every other agent's flow-context hook above, so
+  // handleConfirmedApprove can auto-start a scan from the coder-approval branch below.
+  const { runSecurity } = useSecurityAgentFlowContext();
+  const isSecurityGenerating = stage === "security" && runSecurity.isPending;
 
   function requestApproveConfirmation(artifactId) {
     setMongoUriDraft("");
@@ -457,6 +475,11 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
         // call in run_stream() AND still runs the full plan/code/verify cycle using the
         // URI-stripped remainder for planning.
         handleRunCoderStream({ use_enhanced_srs_if_available: true, human_comment: mongoUriDraft.trim() || null });
+      } else if (approveContinuation.nextAgent === "security") {
+        // Security Agent has no streaming route (a scan is one plain POST) -- runSecurity is the
+        // shared SecurityAgentFlowContext instance, so SecurityReportView's own Run/Re-run button
+        // and the isSecurityGenerating view below both observe this exact same pending state.
+        runSecurity.mutate({});
       }
     }
   }
@@ -475,8 +498,13 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
   const onApproveClickForStage =
     stage === "security" ? handleSecurityApprove : approveContinuation ? requestApproveConfirmation : undefined;
 
+  // allArtifacts, not stageArtifacts -- a real bug found live: code_diff (the Coder stage's own
+  // gating type) is deliberately excluded from stageArtifacts (see UNLISTED_ARTIFACT_TYPES), so
+  // looking it up there resolved to undefined and the popup read "Approving vundefined...".
+  // allArtifacts is the unfiltered list and always has whatever's being confirmed, regardless of
+  // whether that type happens to be hidden from the "All Artifacts" listing.
   const confirmingArtifact = confirmingArtifactId
-    ? stageArtifacts.find((a) => a.artifact_id === confirmingArtifactId)
+    ? allArtifacts.find((a) => a.artifact_id === confirmingArtifactId)
     : null;
 
   // Direct user correction: a UI/UX run/revision producing several pages at once must be
@@ -617,6 +645,19 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
           finalizingLabel={uiuxPhase?.label}
           phaseStartedAt={uiuxPhaseStartedAt}
         />
+      ) : isSecurityGenerating ? (
+        // No streamed text -- a scan is one plain, non-streaming POST -- so this is isFinalizing
+        // mode from the start (spinner + elapsed timer only), matching Architecture/Coder/UI-UX's
+        // own non-streamable tails. Otherwise switching to the Security stage mid-scan (from the
+        // Coder-approval auto-trigger) would show SecurityReportView's bare "No security scan has
+        // been run yet" empty state instead of any visible progress.
+        <LiveGenerationView
+          displayText=""
+          hasStarted={false}
+          isFinalizing
+          finalizingLabel="Scanning the merged code for vulnerabilities..."
+          phaseStartedAt={runSecurity.submittedAt || null}
+        />
       ) : versions.length === 0 && isRequirementStage ? (
         <RequirementSrsOutputPanel />
       ) : stage === "security" ? (
@@ -673,7 +714,7 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
                   </p>
                 ))}
 
-              <SecurityReportView artifact={selectedSecurityArtifact} featureId={featureId} />
+              <SecurityReportView artifact={selectedSecurityArtifact} />
             </div>
           );
         })()

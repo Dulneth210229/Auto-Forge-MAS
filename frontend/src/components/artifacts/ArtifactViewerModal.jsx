@@ -20,9 +20,9 @@ export default function ArtifactViewerModal({ artifact, onClose }) {
         // the main Result panel for the currently-selected version -- this is the OTHER path a
         // security report can be opened from (any "View" link/button, e.g. an older version),
         // which previously fell through to the generic raw-JSON ArtifactContentView below.
-        // `artifact.feature_id` is already present on every artifact record, same as the Result
-        // panel's own usage.
-        <SecurityReportView artifact={artifact} featureId={artifact.feature_id} />
+        // Reads its runSecurity mutation from SecurityAgentFlowContext, not a featureId prop --
+        // see SecurityReportView.jsx's own docstring.
+        <SecurityReportView artifact={artifact} />
       ) : isQaReport ? (
         // Same fix, same reasoning, for the QA report (QaReportView.jsx).
         <QaReportView artifact={artifact} featureId={artifact.feature_id} />

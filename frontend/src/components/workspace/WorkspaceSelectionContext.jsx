@@ -1,4 +1,4 @@
-import { createContext, useContext, useMemo, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { SELECTABLE_AGENT_STAGES } from "../../lib/pipelineStages";
 import { useGraphStatus } from "../../hooks/usePipeline";
@@ -25,6 +25,11 @@ const WorkspaceSelectionContext = createContext(null);
 // already the mechanism this page uses for featureId (see ProjectWorkspacePage), so a fresh load
 // of the exact same URL now reopens the exact same agent's chat instead of silently jumping back
 // to Requirement.
+//
+// When there's NO `?agent=` to seed from at all (a fresh project open, or a manual feature
+// switch in the sidebar) -- direct user request, see the auto-select effect below -- the initial
+// "requirement" default here is only ever a brief transient value; that effect corrects it to
+// the feature's real last-executed agent (via currentStage) the moment its data resolves.
 export function WorkspaceSelectionProvider({ featureId, onSelectFeature, children }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const urlAgent = searchParams.get("agent");
@@ -46,8 +51,8 @@ export function WorkspaceSelectionProvider({ featureId, onSelectFeature, childre
   // OutputPanel/FeatureListItem already fetch for the same featureId, so this is a cache read,
   // not an extra network request. Mirrors FeatureListItem.jsx's own established
   // graphStatus+artifacts -> stageStatuses -> deriveCurrentStage pipeline exactly.
-  const { data: graphStatus } = useGraphStatus(featureId);
-  const { data: artifacts } = useFeatureArtifacts(featureId);
+  const { data: graphStatus, isLoading: isGraphStatusLoading } = useGraphStatus(featureId);
+  const { data: artifacts, isLoading: isArtifactsLoading } = useFeatureArtifacts(featureId);
   const stageStatuses = {};
   for (const stage of SELECTABLE_AGENT_STAGES) {
     stageStatuses[stage] = deriveStageStatus({ stage, graphStatus, artifacts: artifacts || [] });
@@ -57,6 +62,46 @@ export function WorkspaceSelectionProvider({ featureId, onSelectFeature, childre
   // anything (the naive `|| "requirement"` fallback would incorrectly re-lock everything down).
   const currentStage =
     deriveCurrentStage(graphStatus, stageStatuses) ?? SELECTABLE_AGENT_STAGES[SELECTABLE_AGENT_STAGES.length - 1];
+
+  // Direct user request: opening a project (or switching to a different feature) should land on
+  // whichever agent that feature was LAST worked on, not always reset to Requirement -- reuses
+  // currentStage above, which already answers exactly this ("how far has this feature's real
+  // pipeline progress gotten"). Tracks which featureId an agent has already been auto-resolved
+  // for, so this only ever fires once per feature (never fights a human's own later manual pick).
+  const autoSelectedFeatureRef = useRef(null);
+
+  useEffect(() => {
+    if (autoSelectedFeatureRef.current !== featureId) {
+      autoSelectedFeatureRef.current = null;
+    }
+  }, [featureId]);
+
+  useEffect(() => {
+    if (!featureId) return;
+    if (autoSelectedFeatureRef.current === featureId) return;
+
+    const urlAgentNow = searchParams.get("agent");
+    if (SELECTABLE_AGENT_STAGES.includes(urlAgentNow)) {
+      // An explicit agent is already specified (a deep link, or a page reload -- see this
+      // component's own top-of-file comment) -- respect it, nothing to auto-select.
+      autoSelectedFeatureRef.current = featureId;
+      return;
+    }
+    // Real bug found live: currentStage is NEVER actually undefined/falsy while data is still
+    // loading -- deriveStageStatus treats a not-yet-arrived `artifacts` array the same as a
+    // genuinely empty one (both fall back to `artifacts || []`), so deriveCurrentStage happily
+    // (and wrongly) returns "requirement" immediately, before the real data arrives, and the ref
+    // guard above then locks that wrong answer in forever for this feature. The query's own
+    // isLoading is the only reliable "not ready yet" signal -- wait on that instead.
+    if (isGraphStatusLoading || isArtifactsLoading) return;
+
+    autoSelectedFeatureRef.current = featureId;
+    setSelectedAgentState(currentStage);
+    setAgentQueryParam(currentStage);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- setAgentQueryParam is a plain
+    // function recreated every render (see its own definition below); including it would defeat
+    // the point of this effect's guard.
+  }, [featureId, currentStage, isGraphStatusLoading, isArtifactsLoading, searchParams]);
 
   function setAgentQueryParam(stage) {
     setSearchParams(
@@ -77,10 +122,20 @@ export function WorkspaceSelectionProvider({ featureId, onSelectFeature, childre
     () => ({
       selectedFeatureId: featureId,
       selectFeature: (id) => {
+        // Deliberately only ONE router call here (onSelectFeature -> navigate to the bare
+        // `/features/{id}` path, no query string) -- a real, live-found bug: a second,
+        // synchronous setSearchParams(...) call right after (as this used to do, to clear
+        // `?agent=`) resolves against a STALE captured `location.pathname` from before the
+        // navigate's change commits, and silently reverts the whole URL back to wherever it was
+        // BEFORE this click -- reproducible any time the starting URL has no explicit featureId
+        // segment (exactly the state a fresh project-open leaves you in, see
+        // ProjectWorkspacePage's own effectiveFeatureId fallback). navigate() to a plain path
+        // with no `?query` already fully replaces the location (clears any prior search string)
+        // as a normal side effect, so the separate clear call was both redundant AND the actual
+        // cause of the bug.
         onSelectFeature(id);
         setSelectedAgentState("requirement");
         setActiveOutputTab("result");
-        setAgentQueryParam(null);
         setIsPreviewExpanded(false);
       },
       selectedAgent,

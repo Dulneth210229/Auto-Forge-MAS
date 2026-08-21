@@ -40,6 +40,15 @@ class StageEventService:
             "requested_at": datetime.utcnow(),
         }
 
+        # Feature.updated_at was previously dead data (set once at creation, never bumped) --
+        # this is the one real choke point every run/revise/clarify/confirm across every stage
+        # funnels through, so it's the natural place to make it a real "last activity" signal,
+        # powering "open a project -> default to whichever feature was worked on most recently"
+        # (mirrors routes/projects.py's own existing project["updated_at"] = ... pattern).
+        feature = store.features.get(feature_id)
+        if feature:
+            feature["updated_at"] = event["requested_at"]
+
         try:
             store.stage_events[event["event_id"]] = event
             return StageEventResponse(**event)

@@ -12,12 +12,13 @@ from datetime import datetime
 from app.agents.coder_agent.agent import coder_agent
 from app.agents.uiux_agent.agent import uiux_agent
 from app.core.enums import AgentName, ApprovalStatus, ArtifactType
-from app.schemas.approval_schema import ApprovalRequest, ApprovalResponse
+from app.schemas.approval_schema import ApprovalRequest, ApprovalResponse, ApprovalRevokeResponse
 from app.services.graph_orchestrator_service import (
     GraphNotRunningError,
     graph_orchestrator_service,
 )
 from app.services.in_memory_store import store
+from app.services.workspace_service import workspace_service
 from app.utils.id_generator import generate_id
 from app.utils.logger import get_logger
 
@@ -115,6 +116,13 @@ class ApprovalService:
         # Update artifact status directly.
         artifact["approval_status"] = request.status
 
+        # Feature.updated_at was previously dead data (set once at creation, never bumped) --
+        # an approval decision is a real, meaningful "something happened on this feature" moment,
+        # same reasoning as stage_event_service.record()'s own identical update.
+        feature = store.features.get(artifact["feature_id"])
+        if feature:
+            feature["updated_at"] = approved_at
+
         is_approved = request.status in [ApprovalStatus.APPROVED, ApprovalStatus.APPROVED.value]
 
         # See EXCLUSIVE_VERSIONED_ARTIFACT_TYPES's own docstring for why SRS/Enhanced SRS get this
@@ -209,7 +217,125 @@ class ApprovalService:
 
         return ApprovalResponse(**approval)
 
-    def _cascade_architecture_plan_decision(self, artifact: dict, status) -> None:
+    def revoke_approval(
+        self, artifact_id: str, revoked_by: str = "human_user", reviewer_comment: str | None = None
+    ) -> ApprovalRevokeResponse:
+        """
+        Moves an already-APPROVED artifact back to PENDING -- the one status transition
+        submit_approval never exposes (approve/reject/revision_request only ever move forward).
+        Direct user request: an approved artifact can't currently be un-approved to request
+        changes, even though every other pipeline decision can be revised.
+
+        Reverts the WHOLE version-sibling group (same feature_id + artifact_type + version),
+        mirroring artifact_service.delete_artifact's own established "operate on the whole
+        version, not one artifact_id" convention -- a gating type's JSON+Markdown pair always
+        share one version and must move together. For an artifact_type with its own dedicated
+        cascade (Architecture Plan's diagrams, UI/UX's Preview Screenshot siblings), that cascade
+        is reused instead of the generic same-type loop (it already covers the format-pair case
+        too, so running both would double-revert and write duplicate approval records).
+
+        For a Coder Agent code_diff artifact specifically, also attempts to reverse the real git
+        merge approving it already ran (see workspace_service.undo_merge_feature_branch) -- a
+        genuine, consequential git operation, reported back honestly via git_reverted/
+        restored_branch rather than silently left for the data model and the real code to
+        disagree. Never raises for the git step failing -- the data-level revoke has already
+        succeeded by that point and must not be rolled back just because the git side hit a
+        problem; the failure is logged instead, matching every other post-approval hook's own
+        never-raises precedent in this file.
+
+        Raises ValueError if the artifact doesn't exist or isn't currently approved.
+        """
+        artifact = store.artifacts.get(artifact_id)
+        if not artifact:
+            raise ValueError("Artifact not found.")
+
+        if artifact.get("approval_status") not in (ApprovalStatus.APPROVED, ApprovalStatus.APPROVED.value):
+            raise ValueError("Only an approved artifact can have its approval revoked.")
+
+        approved_at = datetime.utcnow()
+        reverted_ids: list[str] = []
+
+        def _revert_one(target: dict, by: str, comment: str) -> None:
+            target["approval_status"] = ApprovalStatus.PENDING
+            revoke_id = generate_id("approval")
+            store.approvals[revoke_id] = {
+                "approval_id": revoke_id,
+                "artifact_id": target["artifact_id"],
+                "feature_id": target["feature_id"],
+                "agent_name": target["agent_name"],
+                "status": ApprovalStatus.PENDING,
+                "reviewer_comment": comment,
+                "approved_by": by,
+                "approved_at": approved_at,
+            }
+            reverted_ids.append(target["artifact_id"])
+
+        _revert_one(artifact, revoked_by, reviewer_comment or "Approval revoked by the user to request changes.")
+
+        has_dedicated_cascade = _is_architecture_plan_type(
+            artifact.get("artifact_type")
+        ) or _is_uiux_screenshot_type(artifact.get("artifact_type"))
+        if not has_dedicated_cascade:
+            for other in store.artifacts.values():
+                if other["artifact_id"] == artifact_id:
+                    continue
+                if other.get("feature_id") != artifact["feature_id"]:
+                    continue
+                if other.get("artifact_type") != artifact["artifact_type"]:
+                    continue
+                if other.get("version") != artifact.get("version"):
+                    continue
+                if other.get("approval_status") not in (ApprovalStatus.APPROVED, ApprovalStatus.APPROVED.value):
+                    continue
+                _revert_one(
+                    other,
+                    "system:approval_revoke_cascade",
+                    f"Reverted together with v{artifact['version']} -- not an independent decision.",
+                )
+
+        # Both self-gate on artifact_type -- a no-op (empty list) for anything that isn't an
+        # Architecture Plan/UI-UX Preview Screenshot, so calling both unconditionally is safe
+        # (mirrors submit_approval's own unconditional calls to these same two methods).
+        reverted_ids.extend(self._cascade_architecture_plan_decision(artifact, ApprovalStatus.PENDING))
+        reverted_ids.extend(self._cascade_uiux_screenshot_decision(artifact, ApprovalStatus.PENDING))
+
+        # Same reasoning as submit_approval's own identical update -- a revoke is a real,
+        # meaningful "something happened on this feature" moment too.
+        feature = store.features.get(artifact["feature_id"])
+        if feature:
+            feature["updated_at"] = approved_at
+
+        git_reverted = False
+        restored_branch = None
+        is_coder_diff = (
+            artifact["agent_name"] in [AgentName.CODER, AgentName.CODER.value]
+            and artifact["artifact_type"] in [ArtifactType.CODE_DIFF, ArtifactType.CODE_DIFF.value]
+        )
+        if is_coder_diff:
+            try:
+                feature = store.features.get(artifact["feature_id"])
+                project_id = feature.get("project_id") if feature else None
+                if project_id:
+                    restored_branch = workspace_service.undo_merge_feature_branch(
+                        project_id, artifact["feature_id"]
+                    )
+                    git_reverted = restored_branch is not None
+            except Exception:
+                logger.exception(
+                    "Failed to undo merge for feature_id=%s version=%s during approval revoke",
+                    artifact["feature_id"],
+                    artifact["version"],
+                )
+
+        return ApprovalRevokeResponse(
+            artifact_id=artifact_id,
+            status=ApprovalStatus.PENDING,
+            reverted_artifact_ids=reverted_ids,
+            git_reverted=git_reverted,
+            restored_branch=restored_branch,
+        )
+
+    def _cascade_architecture_plan_decision(self, artifact: dict, status) -> list[str]:
         """
         Applies `status` to every sibling artifact generated alongside this Architecture Plan
         artifact (its own other format -- JSON/Markdown -- plus all 3 diagram types, both PUML
@@ -226,10 +352,15 @@ class ApprovalService:
 
         Never raises: a cascade failure must not prevent the human's own approval action from
         succeeding, same precedent as every other post-approval hook in this file.
+
+        Returns the artifact_ids actually touched -- revoke_approval uses this to report an
+        honest, complete reverted_artifact_ids list back to the caller (most callers, e.g.
+        submit_approval, ignore the return value).
         """
         if not _is_architecture_plan_type(artifact.get("artifact_type")):
-            return
+            return []
 
+        touched_ids: list[str] = []
         try:
             approved_at = datetime.utcnow()
             for sibling in store.artifacts.values():
@@ -268,6 +399,7 @@ class ApprovalService:
                     "approved_by": "system:architecture_plan_cascade",
                     "approved_at": approved_at,
                 }
+                touched_ids.append(sibling["artifact_id"])
         except Exception:
             logger.exception(
                 "Failed to cascade Architecture Plan decision for feature_id=%s version=%s",
@@ -275,7 +407,9 @@ class ApprovalService:
                 artifact.get("version"),
             )
 
-    def _cascade_uiux_screenshot_decision(self, artifact: dict, status) -> None:
+        return touched_ids
+
+    def _cascade_uiux_screenshot_decision(self, artifact: dict, status) -> list[str]:
         """
         Applies `status` to every other UI/UX artifact of the SAME feature_id and SAME version as
         this Preview Screenshot -- every UIUX_SIBLING_ARTIFACT_TYPES entry (metadata, integration
@@ -295,10 +429,15 @@ class ApprovalService:
 
         Never raises: a cascade failure must not prevent the human's own approval action from
         succeeding, same precedent as every other post-approval hook in this file.
+
+        Returns the artifact_ids actually touched -- revoke_approval uses this to report an
+        honest, complete reverted_artifact_ids list back to the caller (most callers, e.g.
+        submit_approval, ignore the return value).
         """
         if not _is_uiux_screenshot_type(artifact.get("artifact_type")):
-            return
+            return []
 
+        touched_ids: list[str] = []
         try:
             approved_at = datetime.utcnow()
             for sibling in store.artifacts.values():
@@ -334,6 +473,7 @@ class ApprovalService:
                     "approved_by": "system:uiux_screenshot_cascade",
                     "approved_at": approved_at,
                 }
+                touched_ids.append(sibling["artifact_id"])
 
             if status in (ApprovalStatus.APPROVED, ApprovalStatus.APPROVED.value):
                 uiux_agent.apply_design_system_patch(artifact["feature_id"], artifact["version"])
@@ -343,6 +483,8 @@ class ApprovalService:
                 artifact.get("feature_id"),
                 artifact.get("version"),
             )
+
+        return touched_ids
 
     def list_feature_approvals(self, feature_id: str) -> list[ApprovalResponse]:
         """

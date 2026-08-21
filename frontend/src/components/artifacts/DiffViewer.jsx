@@ -6,8 +6,9 @@ import MarkdownViewer from "./MarkdownViewer";
 const MAX_DIFF_TEXT_CHARS = 20_000; // mirrors diff_builder.py's own truncation cap
 
 // The code_diff artifact is a single markdown "merge report" (see diff_builder.py's
-// build_merge_report_markdown): everything above "## Full diff" is normal prose (verification
-// status, steps, files changed); the diff itself is a fenced ```diff block at the end.
+// build_merge_report_markdown): everything above "## Detailed Code Changes (Line-by-Line Diff)"
+// is normal prose (verification status, steps, files changed); the diff itself is a fenced
+// ```diff block at the end.
 function splitMergeReport(markdown) {
   const match = markdown.match(/```diff\n([\s\S]*?)```/);
 

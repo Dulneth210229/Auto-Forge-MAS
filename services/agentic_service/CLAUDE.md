@@ -6943,6 +6943,233 @@ milestone — that file is scratch, **this file is the durable one**.
       stage being Coder (revisiting an earlier stage is never blocked). Zero console/page errors
       across every screenshot taken.
 
+83. **Architecture Plan requirement tables, a real "revoke approval" capability (with a
+    genuinely-reachable git bug found and fixed along the way), a renamed "Full diff" heading,
+    and a Coder-Agent-approval popup that auto-runs Security Agent.** Four direct user requests
+    against the real, live Finodil "Login and Signup" feature. Investigated directly (3 parallel
+    Explore agents -- the table-rendering root cause, the approval/revoke mechanism plus the real
+    git state, the "Full diff" heading's actual source -- plus direct reading of `ResultTab.jsx`'s
+    existing `APPROVE_CONTINUATION_BY_STAGE` mechanism). Plan file:
+    `C:\Users\ASUS\.claude\plans\soft-petting-star.md` at time of writing.
+    - **Ask 1 -- tabular Requirement Interpretation**: root-caused directly against the real
+      generated `login_and_signup_architecture_plan_v1.json` -- `DocumentValue.jsx`'s array-of-
+      objects -> `<table>` renderer already existed and already produced exactly the wanted ID/
+      Description/Priority table, but `isFlatObject`/`isTableCellValue` was all-or-nothing across
+      the WHOLE array: a single Domain-Agent-enriched row carrying a nested `domain_citation`
+      object disqualified the entire array from table form, falling every row (including plain
+      ones) back to stacked ID/DESCRIPTION/PRIORITY label cards -- exactly what the user's
+      screenshot showed. Fixed in `DocumentValue.jsx` only (no changes to
+      `ArchitecturePlanDocumentViewer.jsx`/`SubSectionList`, so Functional Requirements,
+      Acceptance Criteria, Non-Functional Requirements, and Validation Rules are all fixed
+      identically by one change): `isTableCellValue` now also accepts a plain nested object whose
+      own values are themselves scalars/flat arrays; the `<td>` render branch gained a case
+      rendering such a cell as a compact `key: value` summary in small italic gray text instead
+      of `[object Object]`. `EnrichedItemList.jsx` (the SRS's own deliberately different
+      color-coded card view) was left untouched, per its own separate rationale.
+    - **Ask 2 -- a real, reusable "revoke approval" capability, applied live**: no existing status
+      transition moved an artifact from `approved` back to `pending`, and for the Coder Agent
+      specifically, approving had already run a real `git merge --no-ff` into `main` and deleted
+      the feature branch (confirmed via `git log --graph` against the real repo before writing
+      any code) -- a real revoke had to reverse both the data flag and, for Coder Agent, the git
+      state, or the approval record and the real code would silently disagree. New
+      `workspace_service.undo_merge_feature_branch(project_id, feature_id)`: finds the merge
+      commit by searching main's history for the exact, real message
+      `merge_feature_branch` itself writes (`f"Merge {branch_name} into main"` -- confirmed via
+      direct `git log` inspection, not guessed), recreates the feature branch at its pre-merge
+      tip, and reverses the merge on `main` via a real, non-destructive `git revert -m 1
+      --no-edit` (never a reset/force-push). New `ApprovalService.revoke_approval` (mirrors
+      `artifact_service.delete_artifact`'s own "operate on the whole version, not one
+      artifact_id" convention -- reverts the whole same-type-same-version sibling group together,
+      e.g. a JSON+Markdown pair); reuses the existing `_cascade_architecture_plan_decision`/
+      `_cascade_uiux_screenshot_decision` helpers (now returning the artifact_ids they touched,
+      not `None`, so `revoke_approval`'s own `reverted_artifact_ids` response is honest and
+      complete -- a real gap caught by this item's own new tests, not assumed correct) for
+      Architecture Plan/UI-UX Preview Screenshot specifically, since those already fully cover
+      their own format-pair + sibling-type cascade and running the generic loop too would
+      double-revert. New route `POST /artifacts/{artifact_id}/approval/revoke` +
+      `ApprovalRevokeRequest`/`ApprovalRevokeResponse` schemas. Frontend: new
+      `revokeApproval`/`useRevokeApprovalMutation` (mirrors `useApprovalMutation`, including
+      fixing that same pre-existing hook's own un-awaited `invalidateQueries` calls while touching
+      it -- the same bug class items 45/49 already fixed elsewhere); a "Revoke approval" action
+      added to `GovernancePanel.jsx`'s "already approved, nothing pending" branch and to
+      `ArtifactRow.jsx` for any individually-approved row, both behind a `ConfirmDialog` naming
+      the real git consequence for the coder stage specifically. `APPROVAL_WARNINGS.coder`'s text
+      updated from "Neither is undoable" (no longer accurate) to describe the real revoke path.
+    - **A second, real, more serious git bug found ONLY by live-testing the whole loop
+      end-to-end (approve -> revoke -> re-approve), not by any unit test written first**: after
+      `undo_merge_feature_branch`'s `git revert`, a plain subsequent `merge_feature_branch` call
+      (the existing, unchanged approval-side merge, triggered by re-approving the SAME code with
+      no new commits) silently no-op'd ("Already up to date") instead of actually re-applying the
+      branch's changes -- reverting a merge does NOT remove the merged branch's commits from
+      main's ancestry graph, only undoes their effect, so git's ancestry-based merge algorithm
+      correctly-but-unhelpfully concluded there was nothing new to merge. Confirmed live and
+      directly: after re-approving via the real UI, the artifact showed `approved` while `main`'s
+      actual working tree still had none of the login/signup code (`find app/api` showed only the
+      scaffold's own `health/route.ts`), and the feature branch had been deleted by the "merge"
+      that never actually merged anything. Fixed in `merge_feature_branch` per `git revert`'s own
+      manual ("Reverting a merge commit"): checks whether the branch tip is already an ancestor
+      of `main` (`git merge-base --is-ancestor`); if so, finds the matching `Revert "Merge ...
+      into main"` commit and reverts THAT REVERT instead of attempting a normal merge -- this
+      restores the real content without rewriting history, and correctly falls through to a
+      normal merge instead whenever the branch actually has new commits (revise() adds commits
+      that are never ancestors of the earlier revert, so the ancestry check correctly returns
+      false in that case). New `_find_merge_commit_for_branch` helper, shared by both
+      `merge_feature_branch` and `undo_merge_feature_branch` (DRY, was duplicated inline before).
+      **Real state repaired directly afterward**: manually confirmed the feature branch and
+      `main` were both left correct (branch restored via the fixed revoke call, `main` still
+      correctly unmerged) via `git log --graph`/`git branch`/`find app/api` -- the real Finodil
+      project ends this item in exactly the state the user asked for (Coder Agent v4 genuinely
+      `pending`, real feature branch restored with all real prior work, `main` clean).
+    - **Ask 3 -- rename "Full diff"**: root-caused to a backend-generated Markdown `## ` heading
+      (`coder_agent/diff_builder.py::build_merge_report_markdown`), not frontend JSX --
+      `DiffViewer.jsx` just splits the one Markdown string on the fenced ` ```diff ` block and
+      never hardcodes the heading text. Renamed to `"## Detailed Code Changes (Line-by-Line
+      Diff)"`; `DiffViewer.jsx`'s own code comment updated to match. Also directly edited the
+      real, already-saved Finodil merge report Markdown files (v1-v4) on disk, replacing the old
+      heading text in place -- a safe, cosmetic-only substitution so the user's real,
+      already-generated output reflects the rename immediately without a re-run.
+    - **Ask 4 -- Coder Agent approval popup + auto-run Security Agent**: extended the existing,
+      already-proven `APPROVE_CONTINUATION_BY_STAGE`/`ConfirmDialog`/`handleConfirmedApprove`
+      mechanism (`ResultTab.jsx`, previously covering Requirement->Domain->Architecture->UI/UX)
+      with a `coder -> security` entry -- this is also the FIRST time approving Coder Agent's
+      output goes through any confirmation popup at all (previously skipped straight to
+      `approval.mutate(...)`), so the real, serious merge warning is now finally surfaced at the
+      actual moment of clicking Approve, not just in `GovernancePanel`'s fine print. New
+      `SecurityAgentFlowContext.jsx` (mirrors `UiuxAgentFlowContext.jsx`, wrapping a single shared
+      `useRunSecurityAgent` mutation) fixes the exact "two independent mutation instances can't
+      see each other's pending state" bug item 61 already found for UI/UX Agent -- without it,
+      `SecurityReportView.jsx` and the new auto-trigger would each hold separate state, so a scan
+      started from the popup would show no visible progress anywhere. `useSecurityAgent.js`'s own
+      pre-existing un-awaited `invalidateQueries` calls fixed too, for the same reliability
+      reason. New `isSecurityGenerating` branch in `ResultTab.jsx`'s `LiveGenerationView` chain
+      (isFinalizing mode, spinner + elapsed timer -- Security Agent has no streaming route, a scan
+      is one plain POST) so switching to the Security stage mid-scan shows real progress instead
+      of `SecurityReportView`'s bare empty state.
+    - **A real, live-found display bug in the shared confirm-dialog mechanism itself, affecting
+      every stage that uses it, not just this new one**: `confirmingArtifact` was looked up via
+      `stageArtifacts.find(...)`, but `stageArtifacts` deliberately excludes Coder Agent's own
+      gating type (`code_diff`, in `UNLISTED_ARTIFACT_TYPES`) -- so the popup's `version`
+      interpolation silently rendered as `"Approving vundefined..."` for the Coder stage
+      specifically, confirmed via a real screenshot before the fix. The underlying approval call
+      itself was unaffected (it uses `confirmingArtifactId` directly, never the resolved object),
+      so this was a display-only bug, not a functional one -- still fixed, by switching the
+      lookup to the unfiltered `allArtifacts` prop instead, which is safe for every other stage
+      too since none of their own gating types are excluded from `stageArtifacts`.
+    - Tests: `tests/test_workspace_undo_merge.py` (new, 4 -- real git repos via `tmp_path`,
+      mirroring `test_workspace_scaffold.py`'s own fixture convention: restores branch + reverts
+      main on undo, safe no-op with no prior merge, safe no-op with no repo history at all, and
+      the exact live-found re-merge-after-revert bug reproduced and confirmed fixed).
+      `tests/test_approval_revoke.py` (new, 9 -- moves to pending with an honest approval record,
+      raises for a not-approved/unknown artifact, reverts a JSON+Markdown pair together, never
+      touches a different version's sibling, cascades Architecture Plan to its diagrams with no
+      double-revert, calls/skips the git undo correctly for a coder vs. non-coder artifact type).
+      `tests/test_approval_revoke_route.py` (new, 4, real `TestClient`). Full suite: **900
+      passed** (up from 883), including the `merge_feature_branch` fix's own regression test.
+      `npm run build` clean (1342 modules).
+    - **Real, live verification against the real Finodil "Login and Signup" feature**, not
+      synthetic: screenshots confirmed the Requirement Interpretation tables render cleanly with
+      real ID/Description/Priority/Origin/Domain Citation columns (matching the user's own
+      reported screenshot's exact content, now fixed); the real revoke endpoint was called
+      against the real, already-approved-and-merged `code_diff` v4 artifact and confirmed via
+      `git log --graph`/`git branch` to produce a genuine revert commit (history preserved, not
+      rewritten) and a restored `feature/login-and-signup` branch; the Result tab's diff section
+      was confirmed to read the new heading both in a fresh render and in the real, in-place-
+      edited Finodil artifacts; the real approve popup was driven through an actual browser,
+      confirmed to name the merge consequence and Security Agent correctly, and confirming it
+      switched to the Security stage and fired a real `POST .../security/run` request (which is
+      also what surfaced the re-merge-after-revert git bug above, live, before it could reach the
+      user again). Zero console/page errors across every screenshot taken.
+
+84. **Opening a project (or switching features) now jumps straight to the last-executed agent,
+    instead of always resetting to Requirement -- plus a real, pre-existing React Router race
+    bug found and fixed along the way.** Direct user request, with the real Finodil project as
+    the explicit example: "the user lastly worked on the Coder Agent... the system must show the
+    lastly executed agent whenever the user opens a project." Investigated directly (3 parallel
+    Explore agents: project-open navigation + `deriveCurrentStage` reuse-ability, feature/agent
+    "last activity" timestamp tracking, and the project/feature list click-through path). Plan
+    file: `C:\Users\ASUS\.claude\plans\soft-petting-star.md` at time of writing.
+    - **Part A -- which agent to show, reusing existing machinery, no new backend calls**:
+      confirmed `deriveCurrentStage` (`frontend/src/lib/deriveCurrentStage.js`, already used by
+      item 82's forward-gated agent picker) already correctly answers "which agent's UI
+      represents this feature's real current position" for exactly the stated example (every
+      earlier stage approved, Coder Agent has real pending output -> resolves to `"coder"`).
+      `WorkspaceSelectionContext.jsx` already computed this as `currentStage` for the selected
+      feature; only needed a new mechanism to actually USE it as `selectedAgent`'s default when
+      no explicit `?agent=` is present. New `autoSelectedFeatureRef` (tracks which `featureId` an
+      agent has already been auto-resolved for, so it only ever fires once per feature -- never
+      fights a later manual pick) + a `useEffect` that seeds `selectedAgent` from `currentStage`
+      once it's ready.
+    - **A real bug found live, before this was usable at all**: the first version's effect used
+      `if (!currentStage) return` as its "still loading" guard -- but `currentStage` is NEVER
+      actually falsy while data is loading, because `deriveStageStatus` treats a not-yet-arrived
+      `artifacts` array the same as a genuinely empty one (`artifacts || []`), so
+      `deriveCurrentStage` immediately (and wrongly) returns `"requirement"` before the real data
+      ever arrives, and the ref guard then locks that wrong answer in forever for the feature.
+      Confirmed live: opening the real Finodil project landed on `?agent=requirement` instead of
+      `coder`. Fixed by gating on the underlying queries' own real `isLoading` flags
+      (`useGraphStatus`/`useFeatureArtifacts`) instead of `currentStage`'s truthiness -- re-verified
+      live afterward, correctly lands on `?agent=coder`.
+    - **Part B -- which feature to default to when a project is opened fresh**: `Feature.
+      updated_at` existed on the schema but was dead data (set once at creation, confirmed via
+      direct grep across `app/`, never bumped by any real action). Confirmed every real
+      user-initiated action in this system funnels through exactly 3 backend choke points:
+      `stage_event_service.record()` (every run/revise/clarify/confirm across all 6 agent stages)
+      and `ApprovalService.submit_approval`/`revoke_approval` (every approve/reject/
+      revision-request/revoke) -- each gained an identical 2-line `feature["updated_at"] = ...`
+      update (mirrors `routes/projects.py`'s own existing `project["updated_at"] = datetime.
+      utcnow()` pattern), making the field real without touching ~30 individual call sites.
+      `ProjectWorkspacePage.jsx`'s `effectiveFeatureId` fallback changed from `features?.[0]?.
+      feature_id` (backend insertion order, confirmed via reading `list_project_features` --  no
+      `.sort()` at all) to a plain client-side `reduce` picking the feature with the latest
+      `updated_at` -- no new network call, no change to the general API response order (the
+      sidebar's own feature list keeps its current display order; only the default SELECTION
+      changes). `Feature.current_agent` (a separate, similarly-dead field) deliberately left
+      untouched -- `deriveCurrentStage` already gives Part A everything it needs without it, and
+      fixing it properly would need touching every individual agent's own `run()`/`revise()`.
+    - **A second, real, more serious pre-existing bug found ONLY by live-testing the actual
+      manual-feature-switch flow (not predicted by reading the code, not something this item's
+      own changes introduced)**: clicking a DIFFERENT feature in the sidebar while the URL had no
+      explicit featureId in its path (exactly the state a fresh project-open leaves you in, both
+      before AND after this item's own Part B change -- the default selection has never written
+      its own featureId into the URL path) silently reverted the ENTIRE navigation, including the
+      pathname, back to wherever the URL was before the click -- confirmed directly via network-
+      request monitoring: the real `GET /features/{id}/...` calls for the target feature fired
+      (proving the internal state briefly did change), but the final, settled URL and on-screen
+      content both reverted to the PREVIOUS feature. Root-caused to `WorkspaceSelectionContext.
+      jsx`'s `selectFeature`, which called TWO separate router-mutating functions in the same
+      handler -- `onSelectFeature(id)` (a `navigate()` to the new path) immediately followed by
+      `setAgentQueryParam(null)` (a `setSearchParams()` call to clear `?agent=`) -- the second
+      call resolves against a STALE captured `location.pathname` from before the first call's
+      change had committed, so its own `{replace: true}` overwrote the just-set path back to the
+      old one. Fixed by removing the now-redundant second call entirely: `navigate()` to a plain
+      path with no `?query` string already fully replaces the location (clearing any prior search
+      string) as a normal side effect -- one router call instead of two, no race possible.
+      **This was a genuinely pre-existing bug**, not introduced by this session's own Part A/B
+      work, but it directly blocked verifying (and would have undermined in real use) the very
+      feature this item exists to build, so it was fixed here rather than filed away separately.
+    - Tests: `tests/test_feature_last_activity.py` (new, 5 -- `stage_event_service.record()` and
+      both `approval_service` methods bump the real feature's `updated_at`; a safe no-op for an
+      unknown feature_id; a direct end-to-end proof that a real action on an OLDER feature makes
+      it "more recently active" than a newer-but-untouched one, matching exactly what
+      `ProjectWorkspacePage.jsx`'s own `reduce` picks the max of). Full suite: **905 passed** (up
+      from 900). `npm run build` clean (1342 modules). No frontend test framework exists in this
+      repo (per every prior item's own note), so the loading-race bug and the router-race bug were
+      both found and fixed via live browser verification, not unit tests.
+    - **Real, live verification, not synthetic**: opening the real Finodil project fresh (bare
+      `/projects/proj_2ba24bc0`, no featureId/agent) now correctly lands on
+      `?agent=coder` with the Coder Agent's real merge report/verification steps showing --
+      exactly the user's own stated example. Opening the real, 5-feature TaskFlow project fresh
+      correctly landed on "Task Add" (`feature_bdacfeef`, real highest `updated_at`) rather than
+      "Task Comments" (`feature_5521adbd`, what the old `features[0]` array-order fallback would
+      have picked -- direct, real proof the fix changes real behavior, not a coincidental match).
+      Manually clicking "Task Comments" in that same project's sidebar afterward correctly
+      navigated to `/features/feature_5521adbd?agent=coder` (its own real, extensive Coder Agent
+      history -- v18 setup instructions, real verification steps) -- confirming the router-race
+      fix and Part A's auto-select compose correctly together. A full reload with an explicit
+      `?agent=requirement` on the real Finodil feature (whose actual progress is Coder) correctly
+      still showed Requirement Agent's content, confirming item 44's original deep-link/reload
+      behavior is unregressed by any of this. Zero console/page errors across every screenshot.
+
 ## Where to look
 
 - Full build spec (read this first, in order, before any new milestone): `instructions .md`

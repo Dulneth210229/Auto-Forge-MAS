@@ -1551,20 +1551,77 @@ class WorkspaceService:
 
         return {"added": added, "modified": modified, "deleted": deleted}
 
+    def _find_merge_commit_for_branch(self, repo: Repo, branch_name: str):
+        """
+        Searches main's own history for the real, 2-parent commit merge_feature_branch itself
+        wrote (message exactly f"Merge {branch_name} into main") -- this repo has no separate
+        merge-commit-sha ledger, so the commit message IS the ledger. iter_commits is newest-first
+        by default, so the first match is the MOST RECENT merge of this branch. Returns None if
+        none exists (e.g. this branch has never actually been merged).
+        """
+        expected_message = f"Merge {branch_name} into main"
+        for commit in repo.iter_commits(MAIN_BRANCH):
+            if len(commit.parents) == 2 and commit.message.strip() == expected_message:
+                return commit
+        return None
+
     def merge_feature_branch(self, project_id: str, feature_id: str) -> None:
         """
         Merge the approved feature branch into main and delete the branch.
+
+        Real git gotcha, found live (a human revoked a Coder Agent approval -- see
+        undo_merge_feature_branch -- then re-approved the SAME code with no new commits on the
+        feature branch): a plain `git merge --no-ff branch` here would silently no-op
+        ("Already up to date") instead of actually re-applying the branch's changes. Reverting a
+        merge does NOT remove the merged branch's commits from main's ancestry graph -- they're
+        still there, just with their effect undone by the revert commit -- so git's ancestry-based
+        merge algorithm correctly-but-unhelpfully concludes "nothing new to merge" even though the
+        real file content is missing from main's working tree. The artifact would end up marked
+        approved with the code never actually landing on main -- a real, silent data/reality
+        mismatch, not just a git-internals curiosity. Detected by checking whether the branch tip
+        is already an ancestor of main; if so, the fix (per `git revert`'s own manual, "Reverting
+        a merge commit") is to revert the EARLIER REVERT itself first, which restores the original
+        merged content, before proceeding exactly as normal.
         """
         repo = self.ensure_project_repo(project_id)
         branch_name = self._feature_branch_name(feature_id)
 
         repo.git.checkout(MAIN_BRANCH)
 
-        try:
-            repo.git.merge(branch_name, "--no-ff", "-m", f"Merge {branch_name} into main")
-        except GitCommandError:
-            repo.git.merge("--abort")
-            raise
+        branch_head = repo.heads[branch_name] if branch_name in [h.name for h in repo.heads] else None
+        already_an_ancestor = False
+        if branch_head is not None:
+            try:
+                repo.git.merge_base("--is-ancestor", branch_head.commit.hexsha, repo.head.commit.hexsha)
+                already_an_ancestor = True
+            except GitCommandError:
+                already_an_ancestor = False
+
+        if already_an_ancestor:
+            merge_commit = self._find_merge_commit_for_branch(repo, branch_name)
+            revert_commit = None
+            if merge_commit is not None:
+                expected_revert_prefix = f'Revert "Merge {branch_name} into main"'
+                for commit in repo.iter_commits(MAIN_BRANCH):
+                    if commit.message.strip().startswith(expected_revert_prefix):
+                        revert_commit = commit
+                        break
+
+            if revert_commit is None:
+                raise ValueError(
+                    f"{branch_name}'s tip is already an ancestor of main with no matching "
+                    "revert commit found -- refusing to guess how to re-merge it."
+                )
+
+            # Un-reverts the earlier revert, restoring the branch's real content on main --
+            # NOT a second normal merge (which would still no-op for the ancestry reason above).
+            repo.git.revert(revert_commit.hexsha, "--no-edit")
+        else:
+            try:
+                repo.git.merge(branch_name, "--no-ff", "-m", f"Merge {branch_name} into main")
+            except GitCommandError:
+                repo.git.merge("--abort")
+                raise
 
         repo.git.branch("-d", branch_name)
 
@@ -1579,6 +1636,39 @@ class WorkspaceService:
 
         if branch_name in [head.name for head in repo.heads]:
             repo.git.branch("-D", branch_name)
+
+    def undo_merge_feature_branch(self, project_id: str, feature_id: str) -> str | None:
+        """
+        Reverses a prior merge_feature_branch call for real, real-only revoked approval (a human
+        approved the Coder Agent's output, which merged it, then asked to revoke that approval to
+        request changes) -- recreates the feature branch at its pre-merge tip and reverts the
+        merge on main, WITHOUT rewriting history (a plain `git revert`, never a reset/force-push),
+        so this is safe to call even if main has since gained other, unrelated commits.
+
+        Finds the merge commit by searching main's own history for a real, 2-parent commit whose
+        message is exactly the one merge_feature_branch itself writes
+        (f"Merge {branch_name} into main") -- this repo has no separate merge-commit-sha ledger,
+        so the commit message IS the ledger. Returns None (a safe no-op, not an error) if no such
+        commit is found -- e.g. the artifact was approved but the merge itself already failed and
+        was logged, not actually applied (see approval_service.submit_approval's own broad
+        except around merge_approved_feature).
+
+        Returns the restored branch name on success.
+        """
+        repo = self.ensure_project_repo(project_id)
+        branch_name = self._feature_branch_name(feature_id)
+
+        merge_commit = self._find_merge_commit_for_branch(repo, branch_name)
+        if merge_commit is None:
+            return None
+
+        if branch_name not in [head.name for head in repo.heads]:
+            repo.create_head(branch_name, merge_commit.parents[1])
+
+        repo.git.checkout(MAIN_BRANCH)
+        repo.git.revert(merge_commit.hexsha, "-m", "1", "--no-edit")
+
+        return branch_name
 
     def export_zip(self, project_id: str, ref: str) -> bytes:
         """

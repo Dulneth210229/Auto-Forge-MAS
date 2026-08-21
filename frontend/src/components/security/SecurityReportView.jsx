@@ -1,5 +1,5 @@
 import { useArtifactContent } from "../../hooks/useArtifacts";
-import { useRunSecurityAgent } from "../../hooks/useSecurityAgent";
+import { useSecurityAgentFlowContext } from "../workspace/SecurityAgentFlowContext";
 import { DISPLAY_TIERS, groupFindingsByTier, toDisplayTier } from "../../lib/severityTiers";
 import SeverityBadge from "./SeverityBadge";
 import LoadingSpinner from "../common/LoadingSpinner";
@@ -46,10 +46,13 @@ function FindingRow({ finding }) {
 // approving. Letting this view trigger that same action directly would let a human bypass
 // approval entirely, defeating the point of requiring it. "Re-run Scan" stays here since it's an
 // independent, non-approval-gated action (just re-scanning, not accepting/escalating anything).
-export default function SecurityReportView({ artifact, featureId }) {
+export default function SecurityReportView({ artifact }) {
   const { data, isLoading, error } = useArtifactContent(artifact?.artifact_id ?? null);
   const report = data?.content_json;
-  const runSecurity = useRunSecurityAgent(featureId);
+  // Shared with ResultTab.jsx's Coder-Agent-approval auto-trigger (see SecurityAgentFlowContext's
+  // own docstring) -- not a fresh useRunSecurityAgent(featureId) instance, so a scan started from
+  // the approval popup shows its real progress here too, not just wherever it was started.
+  const { runSecurity } = useSecurityAgentFlowContext();
 
   // No report exists yet (never scanned, or the feature has no generated code yet) -- unlike
   // every other stage, Security Agent has no chat/revise flow to trigger a first run from, so

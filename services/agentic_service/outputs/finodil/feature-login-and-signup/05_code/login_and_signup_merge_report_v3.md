@@ -107,7 +107,7 @@
 ### Modified
 - `app/page.tsx`
 
-## Full diff
+## Detailed Code Changes (Line-by-Line Diff)
 ```diff
 diff --git a/app/api/auth/login/route.ts b/app/api/auth/login/route.ts
 new file mode 100644
@@ -481,21 +481,21 @@ index 2c8ea46..7f08d5f 100644
 --- a/app/page.tsx
 +++ b/app/page.tsx
 @@ -1,3 +1,7 @@
-+"use client";
-+
-+import Link from "next/link";
-+
- export default function HomePage() {
-   return (
-     <div style={{ padding: "2rem", fontFamily: "sans-serif" }}>
++"use client";
++
++import Link from "next/link";
++
+ export default function HomePage() {
+   return (
+     <div style={{ padding: "2rem", fontFamily: "sans-serif" }}>
 @@ -6,6 +10,7 @@ export default function HomePage() {
-       <nav>
-         <ul>
-           {/* FEATURE_LINKS_START */}
-+          <li><Link href="/login-and-signup">Login and Signup</Link></li>
-           {/* FEATURE_LINKS_END */}
-         </ul>
-       </nav>
+       <nav>
+         <ul>
+           {/* FEATURE_LINKS_START */}
++          <li><Link href="/login-and-signup">Login and Signup</Link></li>
+           {/* FEATURE_LINKS_END */}
+         </ul>
+       </nav>
 diff --git a/lib/api/loginAndSignup.ts b/lib/api/loginAndSignup.ts
 new file mode 100644
 index 0000000..cd159a2
