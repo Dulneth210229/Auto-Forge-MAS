@@ -1,7 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRef } from "react";
 import {
-  editRequirementFields,
   reviseArchitecture,
   reviseCoder,
   reviseDomain,
@@ -84,11 +83,4 @@ export function useRunCoder(featureId) {
 
 export function useReviseCoder(featureId) {
   return useAgentMutation(featureId, (payload, signal) => reviseCoder(featureId, payload, signal));
-}
-
-// Field-by-field inline SRS editing (see EnrichedItemList.jsx/EnrichedPlainList.jsx/
-// EditableScalarField.jsx) -- a fast, deterministic, no-LLM edit; reuses the same
-// mutation/invalidation shape as every other agent action here rather than a bespoke one.
-export function useEditRequirementFields(featureId) {
-  return useAgentMutation(featureId, (payload, signal) => editRequirementFields(featureId, payload, signal));
 }

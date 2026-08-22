@@ -103,16 +103,6 @@ export async function reviseRequirementStream(featureId, { revision_comment, rev
   );
 }
 
-// Direct, no-LLM field-by-field edit -- deterministic apply_revision_operations only, so this is
-// a fast plain POST (no streaming needed, there's nothing to "type" live).
-export async function editRequirementFields(featureId, { operations, edited_by, base_artifact_id }, signal) {
-  return postCancelable(
-    `${base(featureId)}/requirement/edit`,
-    { operations, edited_by, base_artifact_id },
-    signal
-  );
-}
-
 // Requirement Agent conversational gap-filling loop -- additive, alongside run/revise above.
 export async function startRequirementConversation(featureId) {
   const { data } = await apiClient.post(`${base(featureId)}/requirement/conversation/start`);
@@ -309,6 +299,38 @@ export async function runUiux(
   );
 }
 
+export async function reviseUiux(featureId, { revision_comment, revised_by, target_page_ids }, signal) {
+  return postCancelable(`${base(featureId)}/uiux/revise`, { revision_comment, revised_by, target_page_ids }, signal);
+}
+
+// Live, token-by-token variants (ChatGPT/Claude-style), same mechanism as Domain/Architecture
+// Agent's run*Stream/revise*Stream above -- what UiuxAgentChat/useUiuxAgentFlow use instead of the
+// plain runUiux/reviseUiux. Events additionally include a "phase" type for the non-streamable tail
+// (component generation, page assembly/rendering) once ui_metadata_json itself finishes
+// streaming -- see the backend routes' own docstrings.
+export async function runUiuxStream(
+  featureId,
+  { use_enhanced_srs_if_available = true, ui_preferences, human_comment } = {},
+  onEvent,
+  signal
+) {
+  return streamNdjsonPost(
+    `${API_BASE_URL}${base(featureId)}/uiux/run/stream`,
+    { use_enhanced_srs_if_available, ui_preferences, human_comment },
+    onEvent,
+    signal
+  );
+}
+
+export async function reviseUiuxStream(featureId, { revision_comment, revised_by, target_page_ids }, onEvent, signal) {
+  return streamNdjsonPost(
+    `${API_BASE_URL}${base(featureId)}/uiux/revise/stream`,
+    { revision_comment, revised_by, target_page_ids },
+    onEvent,
+    signal
+  );
+}
+
 // Coder Agent
 export async function runCoder(
   featureId,
@@ -350,4 +372,26 @@ export async function reviseCoderStream(featureId, { revision_comment, revised_b
     onEvent,
     signal
   );
+}
+
+// Security Agent -- no revise/streaming variants (see security_schema.py's own docstring): a
+// re-run IS the whole operation.
+export async function runSecurity(featureId, { human_comment } = {}, signal) {
+  return postCancelable(`${base(featureId)}/security/run`, { human_comment }, signal);
+}
+
+// QA Agent -- run has no streaming variant either (real LLM calls + a real sandboxed test run,
+// not a single continuous reply worth watching token-by-token), but chat DOES stream, live Q&A
+// about the latest report (see qa_schema.py's own docstring for the "run vs. chat" split).
+export async function runQa(featureId, { human_comment } = {}, signal) {
+  return postCancelable(`${base(featureId)}/qa/run`, { human_comment }, signal);
+}
+
+export async function getQaChatHistory(featureId) {
+  const { data } = await apiClient.get(`${base(featureId)}/qa/chat`);
+  return data;
+}
+
+export async function qaChatStream(featureId, { message }, onEvent, signal) {
+  return streamNdjsonPost(`${API_BASE_URL}${base(featureId)}/qa/chat/stream`, { message }, onEvent, signal);
 }

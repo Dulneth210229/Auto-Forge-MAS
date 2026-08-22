@@ -12,6 +12,7 @@ Covers the two build() paths:
   to a private method.
 """
 
+from app.agents.architecture_agent.sequence_fragment_kinds import ALL_INTERACTION_KINDS, FRAGMENT_OPENER_KINDS
 from app.agents.architecture_agent.sequence_modeler import ArchitectureSequenceModeler
 
 
@@ -119,6 +120,31 @@ class TestLlmSpecificationPath:
         async_message = result["interactions"][-1]
         assert async_message["message_type"] == "async"
 
+    def test_par_and_break_fragment_kinds_are_preserved(self):
+        modeler = ArchitectureSequenceModeler()
+        specification = {
+            "participants": [
+                {"name": "User", "type": "actor"},
+                {"name": "Service", "type": "control"},
+                {"name": "Notifier", "type": "external"},
+                {"name": "AuditLog", "type": "database"},
+            ],
+            "interactions": [
+                {"kind": "break_start", "condition": "Validation fails"},
+                {"kind": "message", "from": "User", "to": "Service", "message": "Abort request", "message_type": "sync"},
+                {"kind": "end"},
+                {"kind": "par_start", "condition": "Notify and audit concurrently"},
+                {"kind": "message", "from": "Service", "to": "Notifier", "message": "Send notification", "message_type": "async"},
+                {"kind": "message", "from": "Service", "to": "AuditLog", "message": "Write audit entry", "message_type": "async"},
+                {"kind": "end"},
+            ],
+        }
+
+        result = modeler.build(srs_json={"feature_name": "X"}, sds_json={}, sequence_specification_json=specification)
+
+        kinds = [i["kind"] for i in result["interactions"]]
+        assert kinds == ["break_start", "message", "end", "par_start", "message", "message", "end"]
+
     def test_invalid_message_type_defaults_to_sync(self):
         modeler = ArchitectureSequenceModeler()
         specification = {
@@ -131,6 +157,141 @@ class TestLlmSpecificationPath:
         result = modeler.build(srs_json={"feature_name": "X"}, sds_json={}, sequence_specification_json=specification)
 
         assert result["interactions"][0]["message_type"] == "sync"
+
+
+class TestFragmentBalanceSanitizer:
+    """
+    Real, confirmed failure mode: a live Architecture Agent run for a real feature (Login and
+    Signup) produced an LLM-authored sequence specification whose "end" closed an alt fragment
+    BEFORE its own "else" (alt_start -> ... -> end -> else -> ... -> end) -- SequenceDiagramValidator
+    correctly rejects this, but the reactive repair loop can exhaust its attempts and still leave
+    a genuinely unbalanced diagram, which then crashed the entire run with a FATAL, uncaught
+    PlantUML CLI rendering error ("Some diagram description contains errors"). build() now always
+    sanitizes the final interactions list so this can never reach the renderer unbalanced.
+    """
+
+    def test_dangling_else_after_a_premature_end_is_dropped(self):
+        modeler = ArchitectureSequenceModeler()
+        specification = {
+            "participants": [
+                {"name": "User", "type": "actor"},
+                {"name": "Boundary", "type": "boundary"},
+            ],
+            "interactions": [
+                {"kind": "alt_start", "condition": "Credentials valid"},
+                {"kind": "message", "from": "User", "to": "Boundary", "message": "Login success", "message_type": "sync"},
+                {"kind": "end"},
+                {"kind": "else", "condition": ""},
+                {"kind": "message", "from": "User", "to": "Boundary", "message": "Login failed", "message_type": "sync"},
+                {"kind": "end"},
+            ],
+        }
+
+        result = modeler.build(srs_json={"feature_name": "Login"}, sds_json={}, sequence_specification_json=specification)
+
+        kinds = [i["kind"] for i in result["interactions"]]
+        # The dangling else (no open alt) and its now-unmatched trailing end are both dropped;
+        # both real messages survive.
+        assert kinds.count("alt_start") == kinds.count("end")
+        assert "else" not in kinds
+        messages = [i["message"] for i in result["interactions"] if i["kind"] == "message"]
+        assert "Login success" in messages
+        assert "Login failed" in messages
+
+    def test_well_formed_alt_else_end_is_preserved_unchanged(self):
+        modeler = ArchitectureSequenceModeler()
+        specification = {
+            "participants": [
+                {"name": "User", "type": "actor"},
+                {"name": "Boundary", "type": "boundary"},
+            ],
+            "interactions": [
+                {"kind": "alt_start", "condition": "Credentials valid"},
+                {"kind": "message", "from": "User", "to": "Boundary", "message": "Login success", "message_type": "sync"},
+                {"kind": "else", "condition": "Credentials invalid"},
+                {"kind": "message", "from": "User", "to": "Boundary", "message": "Login failed", "message_type": "sync"},
+                {"kind": "end"},
+            ],
+        }
+
+        result = modeler.build(srs_json={"feature_name": "Login"}, sds_json={}, sequence_specification_json=specification)
+
+        kinds = [i["kind"] for i in result["interactions"]]
+        assert kinds == ["alt_start", "message", "else", "message", "end"]
+
+    def test_a_fragment_never_closed_is_force_closed(self):
+        modeler = ArchitectureSequenceModeler()
+        specification = {
+            "participants": [
+                {"name": "User", "type": "actor"},
+                {"name": "Boundary", "type": "boundary"},
+            ],
+            "interactions": [
+                {"kind": "alt_start", "condition": "Credentials valid"},
+                {"kind": "message", "from": "User", "to": "Boundary", "message": "Login success", "message_type": "sync"},
+            ],
+        }
+
+        result = modeler.build(srs_json={"feature_name": "Login"}, sds_json={}, sequence_specification_json=specification)
+
+        kinds = [i["kind"] for i in result["interactions"]]
+        assert kinds == ["alt_start", "message", "end"]
+
+    def test_a_dangling_end_with_no_open_fragment_at_all_is_dropped(self):
+        modeler = ArchitectureSequenceModeler()
+        specification = {
+            "participants": [
+                {"name": "User", "type": "actor"},
+                {"name": "Boundary", "type": "boundary"},
+            ],
+            "interactions": [
+                {"kind": "message", "from": "User", "to": "Boundary", "message": "Hello", "message_type": "sync"},
+                {"kind": "end"},
+            ],
+        }
+
+        result = modeler.build(srs_json={"feature_name": "Login"}, sds_json={}, sequence_specification_json=specification)
+
+        kinds = [i["kind"] for i in result["interactions"]]
+        assert kinds == ["message"]
+
+    def test_nested_fragments_stay_correctly_balanced(self):
+        modeler = ArchitectureSequenceModeler()
+        specification = {
+            "participants": [
+                {"name": "User", "type": "actor"},
+                {"name": "Boundary", "type": "boundary"},
+            ],
+            "interactions": [
+                {"kind": "alt_start", "condition": "Input valid"},
+                {"kind": "alt_start", "condition": "Email not taken"},
+                {"kind": "message", "from": "User", "to": "Boundary", "message": "Created", "message_type": "sync"},
+                {"kind": "end"},
+                {"kind": "else", "condition": ""},
+                {"kind": "message", "from": "User", "to": "Boundary", "message": "Email taken", "message_type": "sync"},
+                {"kind": "end"},
+            ],
+        }
+
+        result = modeler.build(srs_json={"feature_name": "Signup"}, sds_json={}, sequence_specification_json=specification)
+
+        kinds = [i["kind"] for i in result["interactions"]]
+        assert kinds == ["alt_start", "alt_start", "message", "end", "else", "message", "end"]
+
+
+class TestSharedFragmentKindsSourceOfTruth:
+    def test_modeler_builder_and_validator_import_the_identical_shared_set(self):
+        # A real, confirmed inconsistency this module exists to prevent: the modeler/builder/
+        # validator each used to hardcode their own independent copy of "which fragment kinds
+        # exist," which could silently drift out of sync (an unrecognized kind was dropped by
+        # the modeler/builder but rejected by the validator). Confirms all three now import the
+        # exact same object, not three separately-defined-but-currently-equal sets.
+        from app.agents.architecture_agent import sequence_builder, sequence_validator
+
+        assert sequence_builder.ALL_INTERACTION_KINDS is ALL_INTERACTION_KINDS
+        assert sequence_validator.FRAGMENT_OPENER_KINDS is FRAGMENT_OPENER_KINDS
+        assert "par_start" in FRAGMENT_OPENER_KINDS
+        assert "break_start" in FRAGMENT_OPENER_KINDS
 
 
 class TestFallbackPath:

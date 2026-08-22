@@ -1,5 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { getLlmSettings, getOllamaStatus, listOllamaModels, testLlmSettings, updateLlmSettings } from "../api/llmSettings";
+import {
+  getLlmSettings,
+  getOllamaStatus,
+  listAnthropicModels,
+  listOllamaModels,
+  testLlmSettings,
+  updateLlmSettings,
+} from "../api/llmSettings";
 import {
   clearAgentLlmSettings,
   listAgentLlmSettings,
@@ -33,6 +40,18 @@ export function useOllamaModels() {
   return useQuery({
     queryKey: ["ollamaModels"],
     queryFn: listOllamaModels,
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+}
+
+// Claude-side counterpart to useOllamaModels, same shape/reasoning -- the model dropdown
+// combines both into one list (see ModelSelect.jsx), so an unreachable/unconfigured Anthropic
+// account degrades to "no Claude options" rather than blocking the whole picker.
+export function useAnthropicModels() {
+  return useQuery({
+    queryKey: ["anthropicModels"],
+    queryFn: listAnthropicModels,
     staleTime: 5 * 60_000,
     retry: false,
   });

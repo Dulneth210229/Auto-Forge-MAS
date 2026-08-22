@@ -69,3 +69,20 @@ def test_build_uses_content_regardless_of_page_metadata_shape():
 
     assert html.startswith("<!DOCTYPE html>")
     assert "</html>" in html
+
+
+def test_build_includes_click_guard_script_to_prevent_iframe_srcdoc_navigation_bug():
+    """
+    Real, confirmed bug: an <iframe srcDoc> resolves a relative href (e.g. the "#" every
+    decorative link in a generated component legitimately uses) against the PARENT page's own
+    URL, not the srcdoc content -- clicking such a link navigates the preview iframe to the host
+    app's own URL, rendering it nested inside the preview. This script must always be present,
+    after the fragments and before </body>, so every link in every assembled page is inert
+    regardless of its href value.
+    """
+    builder = UIUXPageHtmlBuilder()
+    html = builder.build({"page_id": "p"}, ['<a href="#">Next</a>'])
+
+    assert "event.preventDefault()" in html
+    assert 'closest("a")' in html
+    assert html.index('<a href="#">Next</a>') < html.index("event.preventDefault()") < html.index("</body>")

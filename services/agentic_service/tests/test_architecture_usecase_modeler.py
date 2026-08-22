@@ -194,6 +194,124 @@ class TestLlmSpecificationPath:
         assert "Export Results" in _names(included)
 
 
+class TestParticipatingActorsAndGeneralization:
+    def test_actor_is_associated_only_with_the_use_case_it_participates_in(self):
+        # Real gap this fixes: previously EVERY actor was hardwired to the single main use case
+        # only, even when it genuinely only participates in an extension use case's own logic.
+        modeler = ArchitectureUseCaseModeler()
+        srs_json = {"feature_name": "Process Return", "functional_requirements": [{"id": "FR-001", "description": "x"}]}
+        specification = {
+            "actors": [{"name": "Customer", "type": "primary"}, {"name": "Admin", "type": "secondary"}],
+            "use_cases": [
+                {
+                    "name": "Process Return", "type": "main", "related_requirements": ["FR-001"],
+                    "participating_actors": ["Customer"],
+                },
+                {
+                    "name": "Approve High Value Refund", "type": "extension", "related_requirements": ["FR-002"],
+                    "participating_actors": ["Admin"],
+                },
+            ],
+        }
+
+        _, usecase_json = modeler.build(srs_json=srs_json, sds_json={"design_views": {}}, usecase_specification_json=specification)
+
+        customer_id = next(a["id"] for a in usecase_json["actors"] if a["name"] == "Customer")
+        admin_id = next(a["id"] for a in usecase_json["actors"] if a["name"] == "Admin")
+        main_id = next(uc["id"] for uc in usecase_json["use_cases"] if uc["category"] == "main")
+        extension_id = next(uc["id"] for uc in usecase_json["use_cases"] if uc["category"] == "extension")
+
+        associations = {(r["from"], r["to"]) for r in _relationships_by_type(usecase_json, "association")}
+        assert (customer_id, main_id) in associations
+        assert (admin_id, extension_id) in associations
+        # Admin never directly participates in the main use case's own logic.
+        assert (admin_id, main_id) not in associations
+
+    def test_main_use_case_with_no_explicit_participating_actors_still_gets_every_actor(self):
+        # Backward-compatible default: an LLM (or the deterministic fallback) that omits
+        # participating_actors on the main use case still produces a usable diagram.
+        modeler = ArchitectureUseCaseModeler()
+        srs_json = {"feature_name": "Search", "functional_requirements": [{"id": "FR-001", "description": "x"}]}
+        specification = {
+            "actors": [{"name": "Customer", "type": "primary"}],
+            "use_cases": [{"name": "Search", "type": "main", "related_requirements": ["FR-001"]}],
+        }
+
+        _, usecase_json = modeler.build(srs_json=srs_json, sds_json={"design_views": {}}, usecase_specification_json=specification)
+
+        associations = _relationships_by_type(usecase_json, "association")
+        assert len(associations) == 1
+
+    def test_use_case_generalization_relationship_is_built(self):
+        modeler = ArchitectureUseCaseModeler()
+        srs_json = {"feature_name": "Make Payment", "functional_requirements": [{"id": "FR-001", "description": "x"}]}
+        specification = {
+            "actors": [{"name": "Customer", "type": "primary"}],
+            "use_cases": [
+                {"name": "Make Payment", "type": "main", "related_requirements": ["FR-001"], "participating_actors": ["Customer"]},
+                {
+                    "name": "Pay By Card", "type": "included", "related_requirements": ["FR-002"],
+                    "participating_actors": ["Customer"], "generalizes": "Make Payment",
+                },
+            ],
+        }
+
+        _, usecase_json = modeler.build(srs_json=srs_json, sds_json={"design_views": {}}, usecase_specification_json=specification)
+
+        main_id = next(uc["id"] for uc in usecase_json["use_cases"] if uc["name"] == "Make Payment")
+        child_id = next(uc["id"] for uc in usecase_json["use_cases"] if uc["name"] == "Pay By Card")
+
+        generalizations = _relationships_by_type(usecase_json, "generalization")
+        assert {"from": child_id, "to": main_id, "type": "generalization", "label": "", "related_requirements": []} in generalizations
+
+    def test_actor_generalization_relationship_is_built(self):
+        modeler = ArchitectureUseCaseModeler()
+        srs_json = {"feature_name": "Manage Account", "functional_requirements": [{"id": "FR-001", "description": "x"}]}
+        specification = {
+            "actors": [
+                {"name": "User", "type": "primary"},
+                {"name": "Admin", "type": "secondary", "generalizes": "User"},
+            ],
+            "use_cases": [{"name": "Manage Account", "type": "main", "related_requirements": ["FR-001"]}],
+        }
+
+        _, usecase_json = modeler.build(srs_json=srs_json, sds_json={"design_views": {}}, usecase_specification_json=specification)
+
+        user_id = next(a["id"] for a in usecase_json["actors"] if a["name"] == "User")
+        admin_id = next(a["id"] for a in usecase_json["actors"] if a["name"] == "Admin")
+
+        generalizations = _relationships_by_type(usecase_json, "generalization")
+        assert {"from": admin_id, "to": user_id, "type": "generalization", "label": "", "related_requirements": []} in generalizations
+
+    def test_system_actor_stereotype_is_carried_through(self):
+        modeler = ArchitectureUseCaseModeler()
+        srs_json = {"feature_name": "Send Notification", "functional_requirements": [{"id": "FR-001", "description": "x"}]}
+        specification = {
+            "actors": [
+                {"name": "Customer", "type": "primary", "stereotype": "human"},
+                {"name": "Email Provider", "type": "secondary", "stereotype": "system"},
+            ],
+            "use_cases": [{"name": "Send Notification", "type": "main", "related_requirements": ["FR-001"]}],
+        }
+
+        _, usecase_json = modeler.build(srs_json=srs_json, sds_json={"design_views": {}}, usecase_specification_json=specification)
+
+        customer = next(a for a in usecase_json["actors"] if a["name"] == "Customer")
+        email_provider = next(a for a in usecase_json["actors"] if a["name"] == "Email Provider")
+        assert customer["stereotype"] == "human"
+        assert email_provider["stereotype"] == "system"
+
+    def test_external_systems_from_context_view_default_to_system_stereotype(self):
+        modeler = ArchitectureUseCaseModeler()
+        srs_json = {"feature_name": "Checkout", "functional_requirements": [{"id": "FR-001", "description": "x"}]}
+        sds_json = {"design_views": {"context_view": {"external_systems": ["Stripe"]}}}
+
+        _, usecase_json = modeler.build(srs_json=srs_json, sds_json=sds_json, usecase_specification_json={})
+
+        stripe = next(a for a in usecase_json["actors"] if a["name"] == "Stripe")
+        assert stripe["stereotype"] == "system"
+
+
 class TestFallbackPath:
     def test_main_use_case_named_from_feature_name_only(self):
         """

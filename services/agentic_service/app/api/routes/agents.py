@@ -10,9 +10,9 @@ Agents:
 - ArchitectureAgent
 - UIUXAgent
 - CoderAgent
-- SecurityAgent
-- QAAgent
 - DeploymentAgent
+
+At this foundation step, we only verify the API structure.
 """
 
 import json
@@ -42,11 +42,17 @@ from app.services.stage_event_service import stage_event_service
 # ----------------------------------------------------------------------
 
 from app.agents.requirement_agent.agent import requirement_agent
-
+from app.agents.domain_agent.agent import domain_agent
+from app.agents.architecture_agent.agent import architecture_agent
+from app.agents.uiux_agent.agent import uiux_agent
+from app.agents.coder_agent.agent import coder_agent
+from app.agents.coder_agent.schemas import CoderAgentEnvSaveResult
+from app.core.enums import AgentName, ArtifactType, ArtifactFormat
+from app.schemas.agent_schema import AgentRunRequest, AgentRunResponse
+from app.services.artifact_service import artifact_service
 from app.schemas.requirement_schema import (
     RequirementAgentRunRequest,
     RequirementAgentReviseRequest,
-    RequirementAgentFieldEditRequest,
 )
 
 from app.schemas.requirement_conversation_schema import (
@@ -76,50 +82,14 @@ from app.schemas.architecture_schema import (
     ArchitectureAgentRunRequest,
     ArchitectureAgentReviseRequest,
 )
-
-# ----------------------------------------------------------------------
-# UI/UX Agent
-# ----------------------------------------------------------------------
-
-from app.agents.uiux_agent.agent import uiux_agent
-
 from app.schemas.uiux_schema import UIUXAgentRunRequest
+from app.schemas.coder_schema import CoderAgentRunRequest, CoderAgentReviseRequest
+from app.services.in_memory_store import store
+from app.services.plantuml_service import plantuml_service
+from app.services.stage_event_service import stage_event_service
+import traceback
 
-# ----------------------------------------------------------------------
-# Coder Agent
-# ----------------------------------------------------------------------
-
-from app.agents.coder_agent.agent import coder_agent
-from app.agents.coder_agent.schemas import CoderAgentEnvSaveResult
-
-from app.schemas.coder_schema import (
-    CoderAgentRunRequest,
-    CoderAgentReviseRequest,
-)
-
-# ----------------------------------------------------------------------
-# Security Agent
-# ----------------------------------------------------------------------
-
-from app.agents.security_agent.agent import security_agent
-from app.schemas.security_schema import SecurityAgentRunRequest
-
-# ----------------------------------------------------------------------
-# QA Agent
-# ----------------------------------------------------------------------
-
-from app.agents.qa_agent.agent import qa_agent
-from app.schemas.qa_schema import QAAgentRunRequest
-
-
-# ----------------------------------------------------------------------
-# Router
-# ----------------------------------------------------------------------
-
-router = APIRouter(
-    prefix="/features/{feature_id}/agents",
-    tags=["Agents"],
-)
+router = APIRouter(prefix="/features/{feature_id}/agents", tags=["Agents"])
 
 
 # ----------------------------------------------------------------------
@@ -292,45 +262,34 @@ async def revise_requirement_agent_stream(
     )
 
 
-@router.post(
-    "/requirement/edit",
-    response_model=AgentRunResponse,
-)
-async def edit_requirement_agent_fields(
-    feature_id: str,
-    request: RequirementAgentFieldEditRequest,
-):
+@router.post("/requirement/edit", response_model=AgentRunResponse)
+async def edit_requirement_agent_fields(feature_id: str, request: RequirementAgentFieldEditRequest):
     """
-    Apply deterministic field-level edits to the latest SRS.
+    Apply direct field-by-field edits to the latest SRS -- no LLM call, deterministic
+    apply_revision_operations only. Backend counterpart to the field-by-field inline-edit UI
+    (business_goal/a single functional requirement/etc.), as opposed to /requirement/revise's
+    plain-English, LLM-mediated flow.
     """
 
     _validate_feature(feature_id)
-
     stage_event_service.record(
         feature_id,
         AgentName.REQUIREMENT,
         "edit",
-        f"Manual field edit "
-        f"({len(request.operations)} operation(s))",
+        f"Manual field edit ({len(request.operations)} operation(s))",
         request.edited_by,
     )
 
     try:
         return await requirement_agent.edit_fields(
             feature_id=feature_id,
-            operations=[
-                op.model_dump(exclude_none=True)
-                for op in request.operations
-            ],
+            operations=[op.model_dump(exclude_none=True) for op in request.operations],
             edited_by=request.edited_by,
             base_artifact_id=request.base_artifact_id,
         )
 
     except ValueError as error:
-        raise HTTPException(
-            status_code=400,
-            detail=str(error),
-        )
+        raise HTTPException(status_code=400, detail=str(error))
 
     except Exception as error:
         raise HTTPException(
@@ -1230,73 +1189,16 @@ async def revise_architecture_agent_stream(
     request: ArchitectureAgentReviseRequest,
 ):
     """
-    Streaming Architecture Agent revision endpoint.
-    """
-
-    _validate_feature(feature_id)
-
-    stage_event_service.record(
-        feature_id,
-        AgentName.ARCHITECTURE,
-        "revise",
-        request.revision_comment,
-        request.revised_by,
-    )
-
-    async def event_stream():
-        try:
-            async for event in architecture_agent.revise_stream(
-                feature_id=feature_id,
-                request=request,
-            ):
-                yield json.dumps(event) + "\n"
-
-        except ValueError as error:
-            yield json.dumps(
-                {
-                    "type": "error",
-                    "message": str(error),
-                }
-            ) + "\n"
-
-        except Exception as error:
-            yield json.dumps(
-                {
-                    "type": "error",
-                    "message": (
-                        f"Architecture Agent revision failed: "
-                        f"{_readable_error(error)}"
-                    ),
-                }
-            ) + "\n"
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="application/x-ndjson",
-    )
-
-
-# ======================================================================
-# UI/UX AGENT
-# ======================================================================
-
-@router.post(
-    "/uiux/run",
-    response_model=AgentRunResponse,
-)
-async def run_uiux_agent(
-    feature_id: str,
-    request: UIUXAgentRunRequest,
-):
-    """
     Run the UI/UX Agent.
 
-    Generates:
-    - UI metadata
-    - component code
-    - page previews/screenshots
-    """
+    This endpoint:
+    - requires an approved SRS JSON artifact and an approved Architecture Plan JSON artifact
+    - optionally uses an approved Enhanced SRS JSON if available
+    - generates ui_metadata, per-component code, and per-page preview screenshots
 
+    Human approval is required after this -- both for the ui_metadata as a whole and for each
+    individual component (see StageOutputPanel/GovernancePanel's separate component approval UI).
+    """
     _validate_feature(feature_id)
 
     stage_event_service.record(
@@ -1316,10 +1218,7 @@ async def run_uiux_agent(
             feature_id=feature_id,
             agent_name=AgentName.UIUX,
             status="completed",
-            message=(
-                "UI/UX Agent completed. "
-                "Metadata and components require human approval."
-            ),
+            message="UI/UX Agent completed. Metadata and components require human approval.",
             artifact_ids=output.artifact_ids,
         )
 
@@ -1338,6 +1237,104 @@ async def run_uiux_agent(
             status_code=500,
             detail=f"UI/UX Agent failed: {_readable_error(error)}"
         )
+
+
+@router.post("/uiux/run/stream")
+async def run_uiux_agent_stream(feature_id: str, request: UIUXAgentRunRequest):
+    """
+    Streaming variant of /uiux/run -- same newline-delimited JSON event shape as Domain/
+    Architecture Agent's streaming endpoints, so the frontend can show ui_metadata_json "typing"
+    live, followed by {"type": "phase"} events for the non-streamable tail (component generation,
+    page assembly/rendering):
+        {"type": "token", "text": "..."}
+        {"type": "phase", "phase": "...", "label": "..."}
+        {"type": "error", "message": "..."}
+        {"type": "done", "artifact_ids": [...], "message": "..."}
+    """
+    _validate_feature(feature_id)
+    stage_event_service.record(feature_id, AgentName.UIUX, "run", request.human_comment)
+
+    async def event_stream():
+        try:
+            async for event in uiux_agent.run_stream(feature_id=feature_id, request=request):
+                yield json.dumps(event) + "\n"
+        except ValueError as error:
+            yield json.dumps({"type": "error", "message": str(error)}) + "\n"
+        except Exception as error:
+            yield json.dumps({"type": "error", "message": f"UI/UX Agent failed: {_readable_error(error)}"}) + "\n"
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
+
+
+@router.post("/uiux/revise", response_model=AgentRunResponse)
+async def revise_uiux_agent(feature_id: str, request: UIUXAgentReviseRequest):
+    """
+    Revise the latest UI/UX Agent output via an explicit human-directed change.
+
+    This endpoint:
+    - loads the latest ui_metadata_json artifact
+    - asks the LLM for a small, targeted plan of what should change (never a full retype)
+    - regenerates only the affected components' HTML; every other component is carried over
+      verbatim from the prior version
+    - creates a new, already-approved version; previous versions are kept unchanged
+    """
+    _validate_feature(feature_id)
+    stage_event_service.record(
+        feature_id, AgentName.UIUX, "revise", request.revision_comment, request.revised_by
+    )
+
+    try:
+        output = await uiux_agent.revise(feature_id=feature_id, request=request)
+
+        return AgentRunResponse(
+            feature_id=feature_id,
+            agent_name=AgentName.UIUX,
+            status="revised",
+            message="UI/UX Agent revision completed. Only the affected components were regenerated.",
+            artifact_ids=output.artifact_ids,
+        )
+
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+    except Exception as error:
+        print("========== UI/UX AGENT REVISION ERROR ==========")
+        print(traceback.format_exc())
+        print("==================================================")
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"UI/UX Agent revision failed: {_readable_error(error)}"
+        )
+
+
+@router.post("/uiux/revise/stream")
+async def revise_uiux_agent_stream(feature_id: str, request: UIUXAgentReviseRequest):
+    """
+    Streaming variant of /uiux/revise -- same newline-delimited JSON event shape as
+    /uiux/run/stream.
+        {"type": "token", "text": "..."}
+        {"type": "phase", "phase": "...", "label": "..."}
+        {"type": "error", "message": "..."}
+        {"type": "done", "artifact_ids": [...], "message": "..."}
+    """
+    _validate_feature(feature_id)
+    stage_event_service.record(
+        feature_id, AgentName.UIUX, "revise", request.revision_comment, request.revised_by
+    )
+
+    async def event_stream():
+        try:
+            async for event in uiux_agent.revise_stream(feature_id=feature_id, request=request):
+                yield json.dumps(event) + "\n"
+        except ValueError as error:
+            yield json.dumps({"type": "error", "message": str(error)}) + "\n"
+        except Exception as error:
+            yield json.dumps(
+                {"type": "error", "message": f"UI/UX Agent revision failed: {_readable_error(error)}"}
+            ) + "\n"
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
 
 # ======================================================================
@@ -1543,404 +1540,28 @@ async def revise_coder_agent_stream(feature_id: str, request: CoderAgentReviseRe
     )
 
 
-@router.post("/coder/revise/stream")
-async def revise_coder_agent_stream(
-    feature_id: str,
-    request: CoderAgentReviseRequest,
-):
+@router.post("/deployment/run", response_model=AgentRunResponse)
+def run_deployment_agent(feature_id: str, request: AgentRunRequest):
     """
-    Streaming Coder Agent revision endpoint.
-    """
-
-    _validate_feature(feature_id)
-
-    stage_event_service.record(
-        feature_id,
-        AgentName.CODER,
-        "revise",
-        request.revision_comment,
-        request.revised_by,
-    )
-
-    async def event_stream():
-        try:
-            async for event in coder_agent.revise_stream(
-                feature_id=feature_id,
-                request=request,
-            ):
-                yield json.dumps(event) + "\n"
-
-        except ValueError as error:
-            yield json.dumps(
-                {
-                    "type": "error",
-                    "message": str(error),
-                }
-            ) + "\n"
-
-        except Exception as error:
-            yield json.dumps(
-                {
-                    "type": "error",
-                    "message": (
-                        f"Coder Agent revision failed: "
-                        f"{_readable_error(error)}"
-                    ),
-                }
-            ) + "\n"
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="application/x-ndjson",
-    )
-
-
-# ======================================================================
-# SECURITY AGENT
-# ======================================================================
-
-@router.post(
-    "/security/run",
-    response_model=AgentRunResponse,
-)
-async def run_security_agent(
-    feature_id: str,
-    request: SecurityAgentRunRequest,
-):
-    """
-    Run the Security Agent.
-
-    The Security Agent:
-
-    1. Loads the project workspace.
-    2. Performs deterministic security analysis.
-    3. Runs AST-based security scanning.
-    4. Detects hard-coded secrets.
-    5. Scans project dependencies for vulnerabilities.
-    6. Optionally performs LLM-assisted secure-code review.
-    7. Evaluates the collected findings through the Security Gate.
-    8. Generates security report artifacts.
-    9. Returns the generated artifact IDs.
-
-    Security output is intended for review before finalization.
+    Run the Security Agent -- scans the Coder Agent's generated workspace (pattern/secret/
+    dependency layers plus an LLM review pass) and saves a versioned Critical/Moderate/Warning
+    report. No human approval is required after this (auto-approved, soft-gate stage -- see
+    security_agent/agent.py's own docstring): a Critical gate decision is clearly surfaced on the
+    report for a human to act on (e.g. via the frontend's "Send to Coder Agent" action, which
+    triggers a real Coder Agent revise() and then automatically re-runs this same route once that
+    revision completes), never used to block pipeline advancement itself.
     """
 
     _validate_feature(feature_id)
-
-    stage_event_service.record(
-        feature_id,
-        AgentName.SECURITY,
-        "run",
-        request.human_comment,
-    )
+    stage_event_service.record(feature_id, AgentName.SECURITY, "run", request.human_comment)
 
     try:
-        output = await security_agent.run(
-            feature_id=feature_id,
-            request=request,
-        )
-
-        return output
-
-    except ValueError as error:
-        raise HTTPException(
-            status_code=400,
-            detail=str(error),
-        )
-
-    except Exception as error:
-        print("========== SECURITY AGENT ERROR ==========")
-        print(traceback.format_exc())
-        print("===========================================")
-
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                f"Security Agent failed: "
-                f"{_readable_error(error)}"
-            ),
-        )
-
-
-@router.post("/security/run/stream")
-async def run_security_agent_stream(
-    feature_id: str,
-    request: SecurityAgentRunRequest,
-):
-    """
-    Streaming Security Agent endpoint.
-
-    The Security Agent itself performs analysis and artifact generation.
-    If the Security Agent implementation exposes run_stream(), events are
-    forwarded to the frontend using newline-delimited JSON.
-    """
-
-    _validate_feature(feature_id)
-
-    stage_event_service.record(
-        feature_id,
-        AgentName.SECURITY,
-        "run",
-        request.human_comment,
-    )
-
-    async def event_stream():
-        try:
-            # Use streaming implementation when available.
-            async for event in security_agent.run_stream(
-                feature_id=feature_id,
-                request=request,
-            ):
-                yield json.dumps(event) + "\n"
-
-        except AttributeError:
-            # Fallback for the current non-streaming SecurityAgent.
-            try:
-                output = await security_agent.run(
-                    feature_id=feature_id,
-                    request=request,
-                )
-
-                yield json.dumps(
-                    {
-                        "type": "done",
-                        "artifact_ids": output.artifact_ids,
-                        "message": output.message,
-                        "status": output.status,
-                    }
-                ) + "\n"
-
-            except ValueError as error:
-                yield json.dumps(
-                    {
-                        "type": "error",
-                        "message": str(error),
-                    }
-                ) + "\n"
-
-            except Exception as error:
-                yield json.dumps(
-                    {
-                        "type": "error",
-                        "message": (
-                            f"Security Agent failed: "
-                            f"{_readable_error(error)}"
-                        ),
-                    }
-                ) + "\n"
-
-        except ValueError as error:
-            yield json.dumps(
-                {
-                    "type": "error",
-                    "message": str(error),
-                }
-            ) + "\n"
-
-        except Exception as error:
-            yield json.dumps(
-                {
-                    "type": "error",
-                    "message": (
-                        f"Security Agent failed: "
-                        f"{_readable_error(error)}"
-                    ),
-                }
-            ) + "\n"
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="application/x-ndjson",
-    )
-
-
-# ======================================================================
-# QA AGENT
-# ======================================================================
-
-@router.post(
-    "/qa/run",
-    response_model=AgentRunResponse,
-)
-async def run_qa_agent(
-    feature_id: str,
-    request: QAAgentRunRequest,
-):
-    """
-    Run the QA Agent.
-
-    The QA Agent:
-
-    1. Loads the generated project workspace.
-    2. Scans supported source files.
-    3. Generates automated test cases using the LLM.
-    4. Creates test files in the generated_tests directory.
-    5. Validates generated tests where applicable.
-    6. Detects the supported test framework.
-    7. Executes generated tests.
-    8. Collects execution results.
-    9. Evaluates the QA results.
-    10. Generates QA artifacts and evaluation reports.
-    11. Returns the generated artifact IDs.
-
-    Generated tests are kept as artifacts for inspection and later
-    execution/finalization steps.
-    """
-
-    _validate_feature(feature_id)
-
-    stage_event_service.record(
-        feature_id,
-        AgentName.QA,
-        "run",
-        request.human_comment,
-    )
-
-    try:
-        output = await qa_agent.run(
-            feature_id=feature_id,
-            request=request,
-        )
-
-        return output
-
-    except ValueError as error:
-        raise HTTPException(
-            status_code=400,
-            detail=str(error),
-        )
-
-    except Exception as error:
-        print("========== QA AGENT ERROR ==========")
-        print(traceback.format_exc())
-        print("=====================================")
-
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                f"QA Agent failed: "
-                f"{_readable_error(error)}"
-            ),
-        )
-
-
-@router.post("/qa/run/stream")
-async def run_qa_agent_stream(
-    feature_id: str,
-    request: QAAgentRunRequest,
-):
-    """
-    Streaming QA Agent endpoint.
-
-    If the QA Agent exposes run_stream(), events are forwarded directly.
-    Otherwise, the normal QA Agent execution is used and a final `done`
-    event is returned.
-    """
-
-    _validate_feature(feature_id)
-
-    stage_event_service.record(
-        feature_id,
-        AgentName.QA,
-        "run",
-        request.human_comment,
-    )
-
-    async def event_stream():
-        try:
-            # Use streaming implementation when available.
-            async for event in qa_agent.run_stream(
-                feature_id=feature_id,
-                request=request,
-            ):
-                yield json.dumps(event) + "\n"
-
-        except AttributeError:
-            # Fallback to the normal QA execution path.
-            try:
-                output = await qa_agent.run(
-                    feature_id=feature_id,
-                    request=request,
-                )
-
-                yield json.dumps(
-                    {
-                        "type": "done",
-                        "artifact_ids": output.artifact_ids,
-                        "message": output.message,
-                        "status": output.status,
-                    }
-                ) + "\n"
-
-            except ValueError as error:
-                yield json.dumps(
-                    {
-                        "type": "error",
-                        "message": str(error),
-                    }
-                ) + "\n"
-
-            except Exception as error:
-                yield json.dumps(
-                    {
-                        "type": "error",
-                        "message": (
-                            f"QA Agent failed: "
-                            f"{_readable_error(error)}"
-                        ),
-                    }
-                ) + "\n"
-
-        except ValueError as error:
-            yield json.dumps(
-                {
-                    "type": "error",
-                    "message": str(error),
-                }
-            ) + "\n"
-
-        except Exception as error:
-            yield json.dumps(
-                {
-                    "type": "error",
-                    "message": (
-                        f"QA Agent failed: "
-                        f"{_readable_error(error)}"
-                    ),
-                }
-            ) + "\n"
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="application/x-ndjson",
-    )
-
-
-# ======================================================================
-# DEPLOYMENT AGENT
-# ======================================================================
-
-@router.post(
-    "/deployment/run",
-    response_model=AgentRunResponse,
-)
-def run_deployment_agent(
-    feature_id: str,
-    request: AgentRunRequest,
-):
-    """
-    Placeholder endpoint for Deployment Agent.
-    """
-
-    _validate_feature(feature_id)
+        output = await security_agent.run(feature_id=feature_id)
 
     return AgentRunResponse(
         feature_id=feature_id,
         agent_name=AgentName.DEPLOYMENT,
         status="not_implemented_yet",
-        message=(
-            "Deployment Agent endpoint is ready. "
-            "Real logic will be added later."
-        ),
-        artifact_ids=[],
+        message="Deployment Agent endpoint is ready. Real logic will be added later.",
+        artifact_ids=[]
     )

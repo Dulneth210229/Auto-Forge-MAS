@@ -39,7 +39,8 @@ class Settings(BaseSettings):
     OPENAI_MODEL: str = "gpt-4o-mini"
 
     ANTHROPIC_API_KEY: str | None = None
-    ANTHROPIC_MODEL: str = "claude-sonnet-4-5"
+    ANTHROPIC_BASE_URL: str = "https://api.anthropic.com"
+    ANTHROPIC_MODEL: str = "claude-sonnet-5"
 
     # Model used specifically by agentic (tool-calling) nodes such as the Coder Agent,
     # via init_chat_model. Kept separate from DEFAULT_LLM_MODEL because the one-shot

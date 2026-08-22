@@ -8,3 +8,11 @@ export async function submitApproval(artifactId, { status, reviewer_comment, app
   });
   return data;
 }
+
+export async function revokeApproval(artifactId, { reviewer_comment, revoked_by } = {}) {
+  const { data } = await apiClient.post(`/artifacts/${artifactId}/approval/revoke`, {
+    reviewer_comment,
+    revoked_by,
+  });
+  return data;
+}

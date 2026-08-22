@@ -17,6 +17,7 @@ import httpx
 from app.schemas.llm_schema import (
     AgentLLMOverrideUpdateRequest,
     AgentLLMSettingsResponse,
+    AnthropicModelsResponse,
     LLMSettings,
     LLMSettingsUpdateRequest,
     LLMGenerateRequest,
@@ -84,6 +85,20 @@ async def list_ollama_models():
             status_code=502,
             detail=f"Could not reach Ollama server at {base_url}: {str(error)}",
         )
+
+
+@router.get("/anthropic/models", response_model=AnthropicModelsResponse)
+async def list_anthropic_models():
+    """
+    List the real, current model IDs available on the configured Anthropic account (proxies its
+    own GET /v1/models) -- the Claude-side counterpart to /models above, powering the same chat
+    model-picker so it can offer real Claude models alongside real Ollama ones instead of Claude
+    only ever appearing by accident (see ModelSelect.jsx's own history). Returns an empty list,
+    not an error, when no ANTHROPIC_API_KEY is configured -- "nothing to offer" is a normal,
+    renderable state here, not a failure.
+    """
+    models = await llm_provider_service.list_anthropic_models()
+    return AnthropicModelsResponse(models=models)
 
 
 @router.get("/ollama/status", response_model=OllamaStatusResponse)

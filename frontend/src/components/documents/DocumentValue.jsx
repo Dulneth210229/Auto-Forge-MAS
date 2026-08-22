@@ -12,9 +12,15 @@ export function humanizeKey(key) {
 function isTableCellValue(v) {
   if (v === null || typeof v !== "object") return true;
   // An array of primitives (e.g. related_acceptance_criteria: ["AC-001"]) still fits in one
-  // table cell (joined with ", ") -- only a nested object/array-of-objects forces the row out
-  // of table form.
-  return Array.isArray(v) && v.every((item) => item === null || typeof item !== "object");
+  // table cell (joined with ", ") -- only an array containing an object forces the row out of
+  // table form.
+  if (Array.isArray(v)) return v.every((item) => item === null || typeof item !== "object");
+  // A plain nested object still fits a table cell if every one of ITS OWN fields is itself a
+  // scalar/flat array -- e.g. domain_citation: {source_document, chunk_id}. Rendered as a compact
+  // "key: value" summary (see the <td> render below) instead of disqualifying the whole row --
+  // previously a single Domain-Agent-enriched item (the only kind of row that carries this shape)
+  // broke table rendering for the ENTIRE array, falling every row back to stacked label cards.
+  return Object.values(v).every((vv) => vv === null || typeof vv !== "object");
 }
 
 function isFlatObject(value) {
@@ -64,6 +70,13 @@ export default function DocumentValue({ value }) {
                         <span className="text-gray-300 dark:text-gray-600">--</span>
                       ) : Array.isArray(row[col]) ? (
                         row[col].join(", ")
+                      ) : typeof row[col] === "object" ? (
+                        <span className="text-xs italic text-gray-400 dark:text-gray-500">
+                          {Object.entries(row[col])
+                            .filter(([, vv]) => vv !== null && vv !== undefined && vv !== "")
+                            .map(([kk, vv]) => `${humanizeKey(kk)}: ${vv}`)
+                            .join(", ")}
+                        </span>
                       ) : (
                         String(row[col])
                       )}

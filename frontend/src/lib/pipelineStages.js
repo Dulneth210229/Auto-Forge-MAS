@@ -4,17 +4,25 @@
 
 export const STAGE_SEQUENCE = ["requirement", "domain", "architecture", "uiux", "coder", "security", "qa"];
 
+// "uiux" is back here per direct user request: human approval is required again for the UI/UX
+// stage's output (only the Preview Screenshot is the human's approval surface on the backend).
 export const GATED_STAGES = ["requirement", "domain", "architecture", "uiux", "coder"];
 
 export const AUTO_APPROVED_STAGES = ["security", "qa"];
 
+// Every real, selectable agent stage in pipeline order. Distinct from GATED_STAGES: this is
+// "which stages are real agents a human can chat with / see status for," not "which stages pause
+// for a human approval gate" -- uiux, security, and qa all belong here but not in GATED_STAGES.
+export const SELECTABLE_AGENT_STAGES = ["requirement", "domain", "architecture", "uiux", "coder", "security", "qa"];
+
 // Stages the human triggers directly via a "Run" button/form -- these are pass-through
 // no-ops inside the LangGraph itself (see agent.py's own run() methods, called outside the
 // graph). Everything else in GATED_STAGES runs automatically once the prior stage is approved.
-export const MANUAL_RUN_STAGES = ["requirement", "architecture"];
-
-// Stages with no real backend implementation yet -- shown greyed-out in the tracker.
-export const PLACEHOLDER_STAGES = ["security", "qa", "deployment"];
+// "security"/"qa" belong here too -- a first run needs a direct POST .../run trigger, same shape
+// as requirement/architecture's manual runs (qa's own real chat is a SEPARATE capability from
+// this -- MANUAL_RUN_STAGES only affects the "Action Required" status badge, not which chat
+// component ChatPanel.jsx renders for a stage).
+export const MANUAL_RUN_STAGES = ["requirement", "architecture", "security", "qa"];
 
 export const STAGE_LABELS = {
   requirement: "Requirement",
@@ -24,7 +32,6 @@ export const STAGE_LABELS = {
   coder: "Coder",
   security: "Security",
   qa: "QA",
-  deployment: "Deployment",
 };
 
 // Cosmetic framing only -- who this stage's output is "for," not a real permission system.
@@ -38,11 +45,10 @@ export const STAGE_ROLE_LABELS = {
   coder: "Tech Lead",
   security: "Security Engineer",
   qa: "QA Engineer",
-  deployment: "DevOps Engineer",
 };
 
-// Stages with a real POST .../revise endpoint (uiux has none at all).
-export const REVISABLE_STAGES = ["requirement", "domain", "architecture", "coder"];
+// Stages with a real POST .../revise endpoint.
+export const REVISABLE_STAGES = ["requirement", "domain", "architecture", "uiux", "coder"];
 
 // Generous, real-world-observed timeouts (ms) before a "processing" auto-run stage is shown
 // as "possibly stuck" rather than an indefinite spinner. The graph itself gives no distinct

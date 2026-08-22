@@ -1,22 +1,19 @@
 import { artifactDownloadUrl } from "../../api/client";
 import ImageViewer from "../artifacts/ImageViewer";
 
-// Page screenshots share one artifact_type (ui_preview_screenshot) regardless of which page they
-// are -- the only real identity is the file's own basename, so "latest of each" means grouping by
-// that, not by version number alone.
+// Real, confirmed bug this fixes: the previous "dedupe by the file's own basename" logic assumed
+// a page's filename was stable across versions -- but _save_artifacts actually writes
+// "{feature_slug}_{page_slug}_v{version}.png", embedding the version IN the name, so every
+// version of every page has a distinct basename and nothing ever actually collapsed. This showed
+// every screenshot ever generated across every historical version, growing forever, instead of
+// just the current one. Fixed to filter by the real version NUMBER: only the single highest
+// version present is shown, per direct user correction ("only the new version must appear").
 function latestByFile(artifacts) {
   const matches = artifacts.filter((a) => a.artifact_type === "ui_preview_screenshot");
-  const byName = new Map();
+  if (matches.length === 0) return [];
 
-  for (const artifact of matches) {
-    const name = artifact.file_path.split(/[\\/]/).pop();
-    const existing = byName.get(name);
-    if (!existing || artifact.version > existing.version) {
-      byName.set(name, artifact);
-    }
-  }
-
-  return [...byName.values()];
+  const latestVersion = Math.max(...matches.map((a) => a.version));
+  return matches.filter((a) => a.version === latestVersion);
 }
 
 // This is the UI/UX stage's MAIN output, not a side extra -- per direct user feedback, a human

@@ -1,0 +1,24 @@
+{
+  "routes": [],
+  "api_endpoints": [
+    "/api/auth/signup",
+    "/api/auth/login",
+    "/api/auth/logout"
+  ],
+  "models": [],
+  "shared_components": [],
+  "features": {
+    "feature_917b691e": {
+      "feature_name": "Login and Signup",
+      "files": [
+        "app/api/auth/login/route.ts",
+        "app/api/auth/logout/route.ts",
+        "app/api/auth/signup/route.ts",
+        "app/login-and-signup/page.tsx",
+        "app/page.tsx",
+        "lib/api/loginAndSignup.ts",
+        "models/LoginAndSignupData.ts"
+      ]
+    }
+  }
+}

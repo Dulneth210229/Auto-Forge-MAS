@@ -2054,7 +2054,923 @@ milestone — that file is scratch, **this file is the durable one**.
       results are left in place on the real feature (new SRS versions, all pending review), per
       this file's own established convention.
 
-## Known model-quality gotchas (not code bugs — prompts already account for these)
+65. **UI/UX Agent: removed human approval entirely, added a real `revise()`/`revise_stream()`,
+    and gave it a dedicated live chat -- the third and final part of the UI/UX Agent trilogy
+    (items 63-64-65) that started with the HTML+Tailwind rewrite.** Direct user request, five
+    parts: remove ALL human approval from the UI/UX stage (a further escalation past item 64's
+    "only the Preview Screenshot is approvable" -- now NOTHING requires a decision); let a human
+    explicitly change already-generated UI by messaging the agent, "through the revise method"
+    specifically; the agent must dynamically interact with and satisfy that specific request (not
+    a generic regeneration); the UI/UX Agent's chat history must work "just like the other
+    agents." Investigated directly (2 Explore agents, the second stalled mid-task and was
+    finished by reading the remaining files directly -- a recurring reliability gap for
+    background Explore agents this session, worked around the same way each time): confirmed
+    `UIUXAgent` genuinely had no `revise()`/`revise_stream()` at all (only `run()`), no `/uiux/
+    revise` route, no `UIUXAgentReviseRequest` schema -- matching the user's report exactly.
+    Also confirmed `buildAgentTimeline` was already fully generic per-stage and needed zero
+    changes -- the "no chat" complaint was specifically that `ChatPanel.jsx`'s
+    `reviseMutationsByStage` had no `uiux` entry, hard-disabling the composer with a stale "can't
+    be messaged directly" banner once output existed; the READ side (history) already worked,
+    only the WRITE side (revise) was missing.
+    - **Design decision for "remove all approval," made before writing any code**: rather than
+      removing the `approval_status` concept from the data model (which would require touching
+      `deriveStageStatus.js`, `STAGE_GATING_ARTIFACT`, and every approval-status-dependent lookup
+      across the codebase), UI/UX artifacts are simply saved **already approved**. Confirmed by
+      reading `GovernancePanel.jsx` directly that this makes every existing UI surface do the
+      right thing with zero changes: it only ever renders `ApprovalPanel` (the button row) when
+      `gatingArtifact?.approval_status === "pending"` -- otherwise a plain "Latest version is
+      {status}. Nothing pending." line, which was already correct, already built, already tested.
+    - **Backend**: `artifact_service.py`'s `save_text_artifact`/`save_json_artifact`/
+      `save_binary_artifact`/`_register_artifact` all gained an optional `approval_status:
+      ApprovalStatus = ApprovalStatus.PENDING` parameter -- every other caller in the codebase is
+      completely unaffected (parameter omitted = today's exact behavior, confirmed by a new
+      regression test). `uiux_agent/agent.py`'s `_save_artifacts` now passes
+      `approval_status=ApprovalStatus.APPROVED` on every save call, and returns `(artifact_ids,
+      version)` instead of just `artifact_ids` so callers can invoke `apply_design_system_patch`
+      themselves. `apply_design_system_patch` (merges new components/tokens into
+      `design_system.json`) is now called directly and unconditionally from `agent.py` at the end
+      of every `run()`/`run_stream()`/`revise()`/`revise_stream()`, instead of being
+      approval-triggered from `approval_service.py`.
+    - **A deliberate, transparent reversal of this session's own immediately-prior work**: item
+      64's approval-cascade mechanism (`UIUX_SIBLING_ARTIFACT_TYPES`, `_is_uiux_screenshot_type`,
+      `_cascade_uiux_screenshot_decision`, the `UI_PREVIEW_SCREENSHOT` entry in
+      `EXCLUSIVE_VERSIONED_ARTIFACT_TYPES`, and its own dedicated test file) all existed
+      specifically to make a human's one click on the Preview Screenshot cascade to everything
+      else -- since no human click will ever happen for this stage anymore, all of it became
+      unreachable and was removed outright rather than left as confusing dead code, matching this
+      project's own established practice (e.g. item 45's `_placeholder_mock_props` deletion).
+    - **Graph-level gate removed too, since `approval_status` alone doesn't stop LangGraph's
+      `interrupt()`**: `graph_orchestrator_service.py` moved `"uiux"` from `GATED_STAGES` to
+      `AUTO_APPROVED_STAGES` (joining `security`/`qa`) -- confirmed by reading `_build_graph()`
+      that this loop is already fully generic over both lists, so the move alone correctly wires
+      a plain `uiux_node -> coder_node` edge with no `approve_uiux` interrupt node built at all;
+      `uiux_node` itself needed no changes. `frontend/src/lib/pipelineStages.js`'s own mirror was
+      updated the same way. **A real, honest tradeoff, stated directly rather than engineered
+      around**: a feature whose pipeline runs via the full graph `start()`/`resume()` flow will
+      now auto-continue straight from `uiux_node` into `coder_node`, with no pause for a human to
+      revise UI/UX output first -- accepted because this project has repeatedly confirmed (e.g.
+      item 30) that the graph `start()`/`resume()` path is the less-common one in practice; the
+      primary interaction model (a human working through an agent's own chat, calling run/revise
+      directly) never even engages the graph unless a run happens to already be active.
+    - **A real regression this move would have caused in the frontend, found and fixed before it
+      shipped, not after**: `GATED_STAGES` turned out to be doing double duty across three
+      frontend files as "which stages are real, selectable agents" (not just "which stages have
+      an approval gate") -- `WorkspaceSelectionContext.jsx` used
+      `GATED_STAGES.includes(urlAgent)` to validate the `?agent=` URL query param (item 44's
+      reload-persistence fix), `FeatureListItem.jsx` looped over `GATED_STAGES` to compute the
+      feature-list status dot, and `deriveCurrentStage.js` scanned `GATED_STAGES` as its
+      "which real stage is current" fallback. Removing `uiux` from `GATED_STAGES` would have
+      silently broken all three for the uiux stage specifically: a page reload on `?agent=uiux`
+      would snap back to Requirement (reintroducing exactly the bug item 44 fixed, for this one
+      stage), and the feature-list status dot / chat's default agent selection would skip over
+      "UI/UX" entirely while it's actively generating, jumping straight to "Coder" instead. Fixed
+      by adding a new, distinct `SELECTABLE_AGENT_STAGES` constant (`pipelineStages.js`) --
+      "every real, non-placeholder agent stage," explicitly including uiux -- and repointing all
+      three files at it instead of `GATED_STAGES`. `REVISABLE_STAGES` also gained `"uiux"`.
+    - **Revision mechanism, mirroring the proven "small ops plan + deterministic patcher"
+      pattern** (Requirement Agent item 57, Architecture Agent item 62) at the right scale for
+      this schema: new `app/agents/uiux_agent/revision_patcher.py`
+      (`apply_uiux_revision_operations`) matches by `(page_id, component_name)` and supports
+      `add`/`remove`/`modify` -- much shallower than the SRS/Architecture Plan patchers since
+      `ui_metadata_json` is just a list of pages each with a list of components, no deeply nested
+      structure to walk. New `UIUX_REVISION_SYSTEM_PROMPT`/`build_uiux_revision_prompt` (shown
+      the CURRENT metadata so the model can reference real component names; explicit "target must
+      already exist" and anti-padding rules, matching every other revision prompt in this
+      codebase). New `UIUXAgent.revise()`/`revise_stream()`: load the latest `ui_metadata_json`
+      (via new `_find_latest_uiux_artifact`, regardless of approval status, mirroring Domain
+      Agent's own revision-artifact lookup) -> stream/invoke the small ops-plan call -> parse with
+      one JSON-repair attempt on failure, never raising (`_resolve_uiux_revision_plan`, an honest
+      empty-operations plan is the worst case) -> apply via the patcher (`_prepare_revision`) ->
+      for every `add`/`modify`'d component, call the EXISTING, UNCHANGED
+      `_generate_component_with_quality_gate` (same quality gate, same bounded repair loop, same
+      `color_theme` threading fresh generation already has) -> every UNTOUCHED component is
+      carried over VERBATIM from the prior version's own saved artifact (new
+      `_load_component_html_by_name`, matches by the same filename-slug convention
+      `_save_artifacts` already writes) -> reassemble via the EXISTING, UNCHANGED
+      `_assemble_and_render_pages` -> save via the EXISTING, UNCHANGED `_save_artifacts` (now
+      auto-approved) -> `apply_design_system_patch`. `_generate_components` gained two optional,
+      backward-compatible parameters (`touched_components`/`carry_over_version`, both `None` for
+      `run()`) rather than a parallel duplicate method, so `run()`'s own fresh-generation
+      behavior (including the cross-feature `reused_from_design_system` lookup) is provably
+      unchanged -- confirmed by a dedicated regression test. New `UIUXAgent.run_stream()` too
+      (streams the metadata-generation call directly, mirrors Architecture's own `run_stream`
+      shape: falls through to a non-streamed JSON-repair call on parse failure, then the same
+      `_validate_metadata_with_repair` ladder `run()` already uses -- extracted from
+      `_generate_and_validate_metadata` specifically so both paths share the identical repair
+      loop) so the chat's FIRST message streams live too, not just revisions. New
+      `UIUXAgentReviseRequest` schema; new `POST /uiux/run/stream`, `/uiux/revise`,
+      `/uiux/revise/stream` routes (existing `POST /uiux/run` untouched, matching every other
+      agent's own non-streaming-route-stays precedent).
+    - **Dedicated live chat, mirroring `ArchitectureAgentChat.jsx`/`useArchitectureAgentFlow.js`
+      exactly** (the closer template of the two real precedents, since UI/UX generation -- like
+      Architecture's diagram tail -- has a genuinely non-streamable tail after the main LLM call):
+      new `useUiuxAgentFlow.js` (run/revise stream mutations, `runPhase`/`revisionPhase` +
+      start-timestamp tracking, `AbortController`-based stop, the awaited
+      `invalidateAfterCompletion` -- copied deliberately verbatim, since omitting the `await` is
+      this project's own documented recurring "reply disappears instantly" bug whenever this
+      pattern gets copied without it). `UiuxAgentFlowContext.jsx` rewritten in place (same
+      exported names) to wrap the new hook instead of the old single `useRunUiux` mutation. New
+      `UiuxAgentChat.jsx` (optimistic "You" bubble, live streaming + phase/elapsed-time banner
+      with a Stop button, composer) -- no "/" document-mention picker (Domain-specific) and no
+      "deep exploration mode" escape hatch (Architecture-specific), since UI/UX Agent has neither
+      concept. `ChatPanel.jsx` gained a `selectedAgent === "uiux"` dispatch branch (mirroring the
+      other four agents exactly) and lost the stale "can't be messaged directly"/"no revise
+      action" banner and its `uiux` entries from the generic fallback's mutation maps.
+      `ResultTab.jsx`'s `isUiuxGenerating` branch upgraded from a bare `isFinalizing` spinner
+      reading a plain mutation's `submittedAt` to the full real-streamed-text + phase/elapsed-time
+      `LiveGenerationView`, matching Architecture's own branch shape exactly; its
+      Architecture-Plan-approval-auto-continue trigger now calls `handleRunUiuxStream(...)`
+      instead of the old `runUiux.mutate({})`. `GovernancePanel.jsx`'s now-unreachable
+      `APPROVAL_WARNINGS.uiux` entry (the button row it warned about can never render anymore)
+      was removed rather than left as dead code, for the same reason as the backend cascade code.
+    - **Tests**: `tests/test_uiux_revision_patcher.py` (new, 16, no-LLM -- add/remove/modify
+      matching by page_id+name, duplicate-add and missing-target both correctly unmatched not
+      guessed, malformed operations skipped not raised, original metadata never mutated, the
+      transient `_revision_touched` marker set correctly by add/modify and never by remove).
+      `tests/test_uiux_agent_revision.py` (new, 12, mocked provider/store/artifact_service/
+      component_generator/preview_renderer, no real LLM/HTTP/Docker/Playwright -- `_prepare_
+      revision`'s touched-component computation and honest no-op case; `_parse_uiux_revision_
+      plan`/`_resolve_uiux_revision_plan`'s parse-then-repair-then-honest-empty-plan ladder;
+      `_generate_components`' revision-mode carry-over-vs-regenerate branching AND a dedicated
+      test proving `run()`'s own unchanged fresh-generation/reuse behavior when the new params
+      are omitted; a full end-to-end `revise_stream()` run confirming the removed component is
+      never (re)generated, the one remaining untouched component's HTML is looked up from the
+      prior version and never touches `component_generator.generate`, every save call carries
+      `approval_status=APPROVED`, and `apply_design_system_patch` is called with the correct new
+      version). `tests/test_artifact_service_approval_status.py` (new, 7 -- default-PENDING and
+      explicit-APPROVED for all three save methods, plus an explicit regression guard that an
+      existing caller passing no `approval_status` argument at all still gets PENDING). Deleted
+      `tests/test_approval_uiux_cascade.py` outright (item 64's own cascade tests -- the
+      mechanism they tested no longer exists, so keeping them around failing would just be
+      confusing, not informative). Full suite: **575 passed** (up from 587 before this item --
+      net down because item 64's 8 now-obsolete cascade tests were deleted while a smaller number
+      of new tests were added; zero regressions in anything else). `npm run build` clean.
+    - **Real, live verification against the same real feature** (`feature_94701501` "Item
+      Listing (CRUD)" in `proj_34e07440` "Sample E-commerce"): the first real attempt at a fresh
+      full `run_stream()` (curl with `--max-time 300`, then `900`) both got cut off by the
+      client-side timeout before the backend finished -- **not a bug in this change**, a direct,
+      concrete re-confirmation of this project's own repeatedly-documented "closing the
+      connection cancels an in-flight stream" behavior (FastAPI/Starlette cancels the underlying
+      async generator on client disconnect). Switched to a Python `requests`-based script with no
+      client-side timeout at all; a subsequent real full run genuinely ran for 1015 real seconds
+      before hitting a real `httpx.ReadTimeout` during component generation on this machine's
+      currently-configured global model (`llama3:latest`, no per-agent override set) -- correctly
+      surfaced as a clean `{"type": "error", "message": "UI/UX Agent failed: ReadTimeout (no
+      further detail...)"}"` event (confirming item 59's `_readable_error` fix, applied to these
+      new routes from the start, correctly protects them too) rather than crashing the stream
+      uncaught. Given the real time cost of a full 3-component fresh generation on this model,
+      pivoted to the more directly relevant real-data test: a real `revise_stream()` call against
+      the feature's actual, existing, already-approved v3 output (revision comment: "In the
+      Pagination component, also show the current page indicator text") -- **completed cleanly in
+      287 real seconds**, `components` phase at 12s (the single small ops-plan call, fast) then
+      `assembly` at 278s (the one touched component's quality-gated generation + page
+      reassembly + screenshot render). Confirmed directly: the real saved v4 `revision_metadata`
+      shows `applied_changes: ["Modified component 'Pagination' on page 'item-listing-page'
+      (content_elements)."]` and `unmatched_operations: []`; the component's `content_elements`
+      genuinely gained `"current page indicator text"`; the regenerated HTML shows real pagination
+      controls with page-count text; all 6 new v4 artifacts saved with `approval_status:
+      "approved"` -- zero human action. **An honest, unrelated model-quality observation, not a
+      code bug**: the regenerated Pagination component came back scoped more broadly than its
+      name alone would suggest (a full item-grid "Product Inventory" card plus pagination footer,
+      rather than just pagination controls) -- a real characteristic of how this local model
+      interprets a single component's generation context, out of this item's own scope (which was
+      the approval/revision mechanism, not general component-generation prompt tuning) to address
+      further. Confirmed `apply_design_system_patch` ran without error and correctly left the
+      already-registered `Pagination` design-system entry untouched (its own pre-existing,
+      unchanged "only ever add NEW components" semantics -- there was nothing new to add).
+      **Real browser verification** (Playwright, zero console/page errors): the live chat shows
+      real history (`Started · UI/UX` / `UI/UX Agent: Produced...` / historical `UI/UX: Approved`
+      pills from before this change), the stale "can't be messaged directly"/"no revise action"
+      banners are both confirmed absent, and the composer is enabled with the real
+      `hasOutput`-aware placeholder. "All Artifacts" for this stage correctly shows exactly what
+      the mixed real history should: v4 and v3 (both genuinely `approved`, zero action buttons)
+      alongside v2 and v1 (real, honest **pre-existing** legacy data from before this fix was
+      built -- still genuinely `pending`, still showing their real Approve/Reject/Request-Revision
+      controls) -- direct, live proof that this change only affects artifacts saved going
+      forward, never retroactively rewrites history, exactly as designed. This real v4 state is
+      left in place as genuine verification evidence, matching this project's own established
+      convention.
+
+66. **UI/UX Agent: restored human approval (item 65's auto-approval reversed), fixed a real
+    multi-page versioning bug, and added explicit per-page revision targeting + color_theme
+    redesign support.** Direct follow-up, six-part request, on the SAME feature item 65 had just
+    finished regenerating: (1) revision must genuinely, dynamically incorporate whatever the human
+    asks for; (2)+(4) UI/UX output must NOT auto-approve anymore -- reversing item 65's own
+    "everything auto-approves" design; (3) multiple pages/UIs from one run must show as ONE
+    shared version, not separate incrementing ones; (5) with multiple pages, the human must be
+    able to target a SPECIFIC one for revision; (6) restated ask (1).
+    - **(2)/(4), a clean revert, not a redesign**: confirmed by reading the code first that every
+      approval-status-driven UI surface (`GovernancePanel`/`ApprovalPanel`/`ArtifactRow`) was
+      still fully intact and untouched by item 65's work -- only 4 places needed to actually
+      change back. `agent.py`'s `_save_artifacts` stopped passing `approval_status=APPROVED`
+      (reverts to the default `PENDING`); the 4 direct `self.apply_design_system_patch(...)` calls
+      (one each in `run()`/`run_stream()`/`revise()`/`revise_stream()` -- a real gap in the first
+      implementation pass this session, only `run()`'s was removed initially, caught by a failing
+      test asserting `mock_patch.assert_not_called()`) were all removed, moving that trigger back
+      to being approval-gated. `approval_service.py` got its UI/UX screenshot-approval cascade
+      re-added (`UIUX_SIBLING_ARTIFACT_TYPES`, `_cascade_uiux_screenshot_decision`,
+      `UI_PREVIEW_SCREENSHOT` back in `EXCLUSIVE_VERSIONED_ARTIFACT_TYPES`), mirroring the
+      still-intact Architecture Plan cascade exactly. `graph_orchestrator_service.py`/
+      `pipelineStages.js` moved `"uiux"` back into `GATED_STAGES`, out of `AUTO_APPROVED_STAGES`.
+      `GovernancePanel.jsx`'s `APPROVAL_WARNINGS.uiux` (removed as "unreachable" in item 65) was
+      restored, describing the cascade.
+    - **(3): a real, confirmed bug independent of approval, found by reading `artifact_service.py`
+      directly**: `save_binary_artifact` (used only for screenshots) was the *one* of the four
+      save methods that never got a `version_override` parameter -- every other artifact in
+      `_save_artifacts` correctly shared one `version` via `version_override=version`, but the
+      screenshot loop couldn't, so `save_binary_artifact`'s own internal `get_next_version()` call
+      incremented on every page saved within the SAME run. Confirmed directly against the real
+      feature: a real screenshot showed "v1" through "v8" (two runs x four pages each) instead of
+      two shared versions. Fixed by adding `version_override: int | None = None` to
+      `save_binary_artifact`, mirroring the other three save methods exactly.
+    - **A second, necessary half of (3), found by reading the frontend's own dedup logic**:
+      `dedupeArtifactVersions` collapses down to ONE artifact per `(artifact_type, version)` --
+      built specifically for the "one gating type's JSON+Markdown pair share a version" case
+      (every other stage). Once the backend bug above was fixed and 4 screenshots legitimately
+      shared one version, this same function would have silently collapsed them down to just one,
+      hiding 3 of 4 pages -- caught and fixed in the same pass with a `MULTI_ITEM_PER_VERSION_
+      ARTIFACT_TYPES` carve-out (currently just `ui_preview_screenshot`) that keys by
+      `artifact_id` instead, never collapsing. `ArtifactRow.jsx` also gained a best-effort,
+      filename-derived page label (`screenshotPageLabel`) so multiple same-version screenshot
+      rows read as distinct pages ("Item Listing" / "Item Detail" / ...) instead of four
+      identical-looking "Preview Screenshot v3" rows.
+    - **Efficiency follow-through, matching the existing "only regenerate what's touched"
+      revision philosophy**: `_assemble_and_render_pages` previously re-rendered every page's
+      screenshot on every revision, even pages whose components weren't touched at all (their
+      reassembled HTML is always byte-identical, but Playwright -- the single slowest step in this
+      pipeline -- still re-ran). New `_load_page_screenshot_by_id` (mirrors the existing
+      `_load_component_html_by_name` exactly) carries an untouched page's screenshot over
+      verbatim from the prior version instead, falling through to a fresh render only if no prior
+      screenshot is found.
+    - **(5): explicit per-page revision targeting**: new optional `target_page_id` field on
+      `UIUXAgentReviseRequest`, threaded into `build_uiux_revision_prompt` (states the target page
+      plainly so the model doesn't have to infer it from prose alone -- new prompt rule 8) and all
+      the way through to the frontend. `UiuxAgentChat.jsx` reads the REAL page list from the
+      latest `ui_metadata` JSON artifact's own `pages[]` (never guessed from a screenshot/page-
+      html filename -- confirmed a filename-derived slug can't be reliably reversed back to the
+      real `page_id`, since both `-` and `_` collapse to `_` during slugification, risking a
+      silent mismatch) and shows a lightweight "Revising: Whole feature | <page> | <page> | ..."
+      pill selector above the composer whenever a feature has more than one page.
+    - **(1)/(6): confirmed the underlying mechanism already worked** (the human's actual revision-
+      comment prose, not just a terse content-diff, was already threaded into every touched
+      component's real regeneration call) and extended it for whole-feature "redesign" requests:
+      `UIUX_REVISION_SYSTEM_PROMPT` rule 7 previously forbade any `color_theme` change outright --
+      directly conflicting with a broad "redesign"/"change the theme" ask. Relaxed to allow an
+      optional top-level `color_theme` field in the ops plan when the request is genuinely about
+      the feature's overall color, with the requirement that every surviving component gets
+      marked touched (regenerated to match) -- reuses the exact same touched/carry-over pipeline
+      an add/modify operation already uses, no new generation pathway. New rule 5 exception: a
+      request naming "this page"/"this UI" as a whole (not one component) means proposing a
+      `modify` operation for every real component on that page, not padding.
+    - Tests: `tests/test_approval_uiux_cascade.py` (new, 8 -- rewritten from scratch since item
+      65 deleted the original; the new multi-screenshot-per-version cascade case is the one item
+      64's original version never had to handle), `tests/test_artifact_service_approval_status.py`
+      (+1, `save_binary_artifact` `version_override`), `tests/test_uiux_agent_revision.py` (+6:
+      `color_theme` change touches every component / no-op when unchanged, `target_page_id`
+      stated/omitted in the built prompt, and the end-to-end revision test's stale auto-approve
+      assertions flipped to confirm the default `PENDING` + `apply_design_system_patch` NOT called
+      directly -- this is the exact test that caught the 3 missed `apply_design_system_patch`
+      call-site removals above). Full suite: **597 passed** (up from 587). `npm run build` clean.
+    - **Real, live verification against the same real feature** (`feature_94701501` "Item
+      Listing (CRUD)" in `proj_34e07440` "Sample E-commerce", now with 4 real pages: Item Listing/
+      Item Detail/Item Form/Item Delete Confirmation): a real, explicitly page-targeted revision
+      ("Also show the current page indicator text on the Pagination component", `target_page_id:
+      "item-listing"`) completed in ~340s, producing a clean v3 with `revision_metadata.applied_
+      changes: ["Modified component 'Pagination' on page 'item-listing' ..."]` -- confirmed via
+      direct inspection that ONLY the targeted page/component was touched. Confirmed all 4 v3
+      screenshots correctly saved as `pending` (approval genuinely restored) and correctly shared
+      one version number (the versioning fix). Approved one screenshot via the real API and
+      confirmed all 17 sibling v3 artifacts -- including the other 3 pages' screenshots --
+      cascaded to `approved` together in one action. **Real browser confirmation**: "All
+      Artifacts" shows exactly 4 distinctly-labeled Preview Screenshot rows for v3 (all
+      "Approved," no buttons) plus 2 older, genuinely `pending` versions each with real working
+      Approve/Reject/Request-Revision controls; the chat's page-target selector renders with the
+      4 real page names. Zero console/page errors. Cleaned up 6 orphaned single-screenshot
+      artifacts left over from the pre-fix versioning bug (pure debris -- no accompanying
+      metadata/component/page-html existed at those stray version numbers) so the feature's real
+      data reads cleanly going forward. This real v3 state (4 pages, cascaded-approved) is left in
+      place as genuine verification evidence, matching this project's own established convention.
+
+67. **UI/UX Agent: present and approve each generation as ONE version on screen, not per-page.**
+    Direct correction to item 66: "if the UI/UX agent generated 4 UIs for a feature at once, the
+    entire generated UI must be considered as the first version" -- a revision producing a new
+    bunch is the next version, for the whole bunch, not per page. Confirmed by reading the code
+    that the **backend** already worked this way after item 66 (`save_binary_artifact`'s
+    `version_override` fix + `approval_service`'s screenshot cascade both already treat one run's
+    pages as one version) -- what was still wrong was purely the **frontend presentation**: "All
+    Artifacts" rendered one row per page's screenshot via the generic `ArtifactList`/`ArtifactRow`
+    (item 40's "every row gets its own independent Approve/Reject/Request-Revision" behavior,
+    correct for stages where each row genuinely is an independent decision, never adjusted for the
+    one type -- `ui_preview_screenshot` -- where several rows share a version and are NOT
+    independent). A 4-page feature showed 4 buttons that all did the exact same thing but read as
+    4 separate decisions.
+    - **New `frontend/src/components/pipeline/UiuxVersionGroupList.jsx`**, replacing the generic
+      `ArtifactList` for the uiux stage only (every other stage's "All Artifacts" is completely
+      unchanged): groups the stage's `ui_preview_screenshot` artifacts by `version` (descending),
+      renders ONE card per version -- `UI/UX Output vN`, page count, a `StatusBadge` (read from
+      the group's first item; every member shares one status by construction, thanks to the
+      cascade), and a thumbnail grid (one per page, reusing `ImageViewer`, matching
+      `UiuxPagePreviewsPanel.jsx`'s established pattern) each labeled via `screenshotPageLabel`
+      (extracted from `ArtifactRow.jsx` into a shared helper in `artifactTypeMeta.js` so both use
+      identical filename-parsing logic instead of duplicating it). A pending version renders the
+      **existing, unmodified** `ApprovalPanel` directly -- no reimplementation of approve/reject/
+      request-revision logic, just handed the group's first screenshot as `artifact` (the backend
+      cascade already makes this affect the whole version).
+    - **Preserved the existing "explicit reject first" discipline** (item 40's own rule: switching
+      which version is approved requires explicitly rejecting the current approval, not a stray
+      click) for the NEW grouped view too -- required a small, additive `approveLocked` prop on
+      `ApprovalPanel.jsx` itself (disables only the Approve button, `title` explains why; Reject/
+      Request Revision stay available, matching `ArtifactRow.jsx`'s own established partial-lock
+      behavior for other stages, which had no equivalent on `ApprovalPanel` until now).
+    - **`GovernancePanel.jsx`**: skips its own "Stage Actions" `ApprovalPanel` for `stage ===
+      "uiux"` specifically (now genuinely redundant -- the new grouped list already lets a human
+      act on ANY pending version, not just whichever one `getOperativeGatingArtifact` happens to
+      resolve as "the" operative one, and showing both risked two controls pointing at two
+      different versions). The now-dead `APPROVAL_WARNINGS.uiux` explanatory copy was moved
+      (not deleted) into `UiuxVersionGroupList.jsx` itself, shown once above the version cards
+      where it's now actually relevant.
+    - **`ResultTab.jsx`**: branches on `stage === "uiux"` to render the new component instead of
+      `ArtifactList`, and changes the "All Artifacts (N)" header count to count **versions**
+      instead of raw artifacts for this stage specifically (e.g. "All Artifacts (3)" for 3 real
+      versions, not the 6 individual screenshot rows they contain) -- directly matching the "a
+      bunch is one version" mental model in the one place a human's eye lands first.
+    - Purely a frontend change -- no backend edits, no new tests, no new LLM generation run needed
+      (item 66's own live verification already proved the backend version/cascade model correct;
+      this fix only needed the real mixed data already sitting on the same feature). `npm run
+      build` clean.
+    - **Real, live verification against the same real feature's existing mixed data**
+      (`feature_94701501`, no new generation triggered -- v3's real 4-page, already-approved
+      version sits right next to v1/v2's real single-page, still-`pending` legacy versions,
+      exactly the mixed real-world case this needed): confirmed "All Artifacts" now reads
+      "ALL ARTIFACTS (3)" (3 versions, not 6 screenshot rows) with `UI/UX Output v3 · 4 pages ·
+      Approved` shown as one card with 4 real thumbnails and zero buttons, and `UI/UX Output v2 ·
+      1 page · Pending`/`UI/UX Output v1 · 1 page · Pending` each showing their own real "Awaiting
+      your review (vN)" panel. Directly confirmed via Playwright's `is_disabled()` (not just a
+      visual screenshot, since a locked-vs-unlocked button can look nearly identical at a glance)
+      that both v1's and v2's Approve buttons were genuinely `disabled=True` with the correct
+      "Another version is already approved..." tooltip, since v3 is already approved -- proving
+      the ported `approveLocked` discipline works in the new grouped view exactly as it does for
+      every other stage. Confirmed zero console/page errors on the uiux stage and, separately, on
+      the requirement/architecture stages (unaffected by this change, `ArtifactList` untouched for
+      them). This real, mixed v1/v2/v3 state is left in place as genuine verification evidence,
+      matching this project's own established convention.
+
+68. **UI/UX Agent: scoped Preview to the latest version only, freed approval of any pending
+    version, and hard-enforced multi-page revision targeting instead of trusting a soft prompt
+    hint.** Direct, five-part correction to items 66/67, from real, hands-on use of the feature:
+    (1) the Preview section showed every historical version's pages, not just the current one;
+    (2) the human must be able to approve any pending version, old or new, same as SRS -- not be
+    locked into rejecting the current approval first; (3)+(4) running Revise applied changes to
+    every screen regardless of which one(s) the human actually meant, and there was no way to
+    scope a revision to one or more specific pages; (5) restated (1) -- outputs must visibly
+    separate by version, not blend together. Investigated by reading the exact current code for
+    each complaint, confirming three distinct real defects, not guessed:
+    - **(1)/(5), a real, confirmed bug**: `UiuxPreviewPanel.jsx`'s `latestPageArtifacts` and
+      `UiuxPagePreviewsPanel.jsx`'s `latestByFile` both claimed to "dedupe by filename" to show
+      only each page's latest version -- but the real filenames `_save_artifacts` writes
+      (`{feature_slug}_{page_slug}_page_v{version}.html` / `{feature_slug}_{page_slug}_v{version}.png`)
+      embed the version number in the name itself, so every version of every page has a distinct
+      basename and the "dedupe" never actually collapsed anything -- both panels had always shown
+      every page/screenshot ever generated across every version, growing forever. Fixed by
+      replacing the broken filename-based dedupe with `Math.max(...versions)` filtering -- a
+      strict narrowing to the single highest version number present, keeping every existing
+      rendering/tab-switching code untouched.
+    - **(2), a deliberate restriction from the immediately-prior pass, now reversed**:
+      `UiuxVersionGroupList.jsx` (item 67) passed `approveLocked={hasApprovedVersion}` into
+      `ApprovalPanel`, disabling Approve on every other pending version once one was approved --
+      mirroring `ArtifactList.jsx`'s own SRS-style "reject first" rule. The user explicitly said
+      this was wrong for UI/UX ("must be able to approve any version... like the SRS in the
+      requirement agent") -- removed the lock from this call site (the `approveLocked` prop
+      itself stays on the shared `ApprovalPanel.jsx` component, since other callers still use it),
+      replaced with a plain, non-blocking informational line ("Approving this will supersede the
+      currently approved vN") when a different version is already approved -- the backend's
+      existing cross-version exclusivity auto-revert (`EXCLUSIVE_VERSIONED_ARTIFACT_TYPES`)
+      already handles the actual supersession with no manual reject step required; the frontend
+      lock was pure, unwanted friction.
+    - **(3)/(4), a real deterministic-enforcement gap, not a wording problem**: `target_page_id`
+      (singular, added in item 66) was only ever a soft PROMPT hint -- `build_uiux_revision_prompt`
+      added one line asking the model to please scope operations to the named page "unless the
+      comment clearly names a different page," with zero code-level enforcement rejecting an
+      operation that landed on an unselected page anyway. Given this project's own extensively
+      documented local-model reliability gaps, a soft instruction is not a guarantee. Fixed with
+      the same "ask nicely -> decide deterministically" pattern already used elsewhere in this
+      codebase (Requirement/Domain/Architecture Agent revision patchers):
+      - `app/schemas/uiux_schema.py`: `UIUXAgentReviseRequest.target_page_id: str | None` renamed
+        (a genuine breaking rename, not additive -- the field was added this same session with no
+        other callers to preserve compatibility for) to `target_page_ids: list[str] | None`.
+      - `app/agents/uiux_agent/revision_patcher.py`: `apply_uiux_revision_operations` gained
+        `allowed_page_ids: set[str] | None`. New `_page_allowed(page, normalized_allowed)` helper;
+        each of `_apply_add`/`_apply_remove`/`_apply_modify` now checks it AFTER resolving the
+        target page via the existing `_find_page`/`_find_component` logic (no new matching logic)
+        -- an operation on a page outside the allowed set is rejected into `unmatched` with a
+        message naming the page and explaining it wasn't selected for this revision, never
+        silently applied and never silently dropped. `None`/empty set stays unconstrained
+        (today's default "whole feature" behavior, unchanged).
+      - `app/agents/uiux_agent/agent.py`: `_prepare_revision` computes `allowed_page_ids` from
+        `target_page_ids` and threads it into the patcher call; the `color_theme`-triggered
+        touch-marking loop (item 66) was also updated to respect `allowed_page_ids` -- a
+        whole-feature color/redesign request still only touches components on the selected
+        pages, keeping the "selected screens only" discipline consistent across every kind of
+        change, not just explicit add/remove/modify operations. Both `revise()` and
+        `revise_stream()` updated at their call sites.
+      - `app/agents/uiux_agent/prompt.py`: rule 8 rewritten to state plainly that the deterministic
+        filter runs after the model responds, so an operation outside the selected pages is
+        simply discarded -- the prompt states the guarantee rather than asking for compliance.
+      - `frontend/src/components/chat/UiuxAgentChat.jsx`: the single-select "Whole feature |
+        <page>" pill row became multi-select (`Set<page_id>`, each page pill toggles
+        independently, "Whole feature" clears the set) -- `target_page_ids: [...selectedPageIds]`
+        sent with the revise call, `null` when nothing is selected (unconstrained, matches
+        today's default). `frontend/src/api/agents.js`'s `reviseUiux`/`reviseUiuxStream` renamed
+        their forwarded field to match.
+    - Tests: `tests/test_uiux_revision_patcher.py` gained `class TestAllowedPageIds` (9 tests --
+      modify/remove/add on a selected vs. unselected page, mixed operations only applying the
+      selected ones, multiple selected pages both allowed, None/empty-set unconstrained,
+      case/whitespace-insensitive matching). `tests/test_uiux_agent_revision.py` updated
+      (`test_target_page_id_stated_explicitly_when_given` -> `test_target_page_ids_stated_explicitly_when_given`
+      using a list) plus 2 new tests (`target_page_ids` threaded into the patcher rejecting an
+      out-of-scope operation; a `color_theme` change with `target_page_ids` only touches selected
+      pages). `tests/test_artifact_service_approval_status.py` gained `test_save_binary_artifact_
+      honors_version_override`. Full suite: **608 passed**. `npm run build` clean.
+    - **Real, live verification against the real feature** (`feature_94701501` "Item Listing
+      (CRUD)" in `proj_34e07440` "Sample E-commerce", wiped and regenerated fresh at the start of
+      this pass per a separate direct user request, then revised once to produce a real two-version
+      history): confirmed via a real Playwright session that the Preview tab shows exactly 5 pages
+      (the real v2's page count) labeled "(v2)", not 10 (v1+v2 combined); confirmed "All Artifacts"
+      shows "UI/UX Output v1" and "UI/UX Output v2" as two separate, fully clickable, unlocked
+      Approve/Reject/Request-Revision cards with zero "reject it first" text anywhere; confirmed the
+      chat's multi-select "Revising:" pill row renders all 5 real page names
+      (item-listing/item-detail/item-create/item-edit/item-delete-confirmation). **Then drove one
+      real, live revision selecting a SUBSET of pages** (`target_page_ids: ["item-create",
+      "item-edit"]` -- deliberately chosen because both pages share the same `ItemForm` component
+      name, a real stress case for the page-scoping logic) with a request that could plausibly be
+      over-applied ("show a loading spinner on the submit button while the form is submitting"),
+      run through the real `/uiux/revise/stream` endpoint against the real local model (~476s).
+      Directly inspected the resulting v3 artifacts via the API: `revision_metadata.applied_changes`
+      shows exactly `"Modified component 'ItemForm' on page 'item-create'"` and `"...on page
+      'item-edit'"`, `unmatched_operations: []`; a byte-for-byte comparison of every page's HTML
+      between v2 and v3 confirmed `item-create` and `item-edit` **changed** while `item-listing`,
+      `item-detail`, and `item-delete-confirmation` are **identical** to v2 -- direct, real proof
+      the deterministic `allowed_page_ids` enforcement holds end-to-end against real generation, not
+      just in unit tests. This real v1/v2/v3 state is left in place as genuine verification
+      evidence, matching this project's own established convention.
+
+69. **UI/UX Agent: approving a version now locks every other version and auto-starts Coder
+    Agent (with a confirmation popup), and the Coder Agent's generated frontend is now
+    deterministically gated on having actually read the approved UI/UX design.** Direct two-part
+    user request, the natural next link after item 68: (1) "Once the user approved any version
+    in the UI/UX agent other outputs versions will be disabled and the Coder agent must start
+    automatically and system must display a popup message... Just like moving from requirement
+    agent to domain agent"; (2) "Once the user approved and start the coder agent, the coder
+    agent must generate the UI/frontend as nearly as possible to the UI/UX approved version."
+    Investigated directly, then validated with an independent Plan-agent design review that
+    caught several real gaps before implementation (detailed below).
+    - **Part 1, a deliberate reversal of item 68's own "free approval" choice for UI/UX,
+      confirmed with the user's new instruction, not silently overridden**: this is the fourth
+      "approve -> popup -> auto-continue" link in the same chain items 41/51/61 already built
+      (Requirement->Domain, Domain->Architecture, Architecture->UI/UX) -- `ResultTab.jsx`'s
+      `APPROVE_CONTINUATION_BY_STAGE` gained a `uiux -> coder` entry (`autoRun: true`, same
+      not-awaited-fire pattern as the other two `autoRun` entries, since the run's own state
+      already lives in the always-mounted `CoderAgentFlowProvider`). `UiuxVersionGroupList.jsx`
+      re-gained `approveLocked` (removed in item 68 at a DIFFERENT direct user request at the
+      time) -- computed identically to `ArtifactList.jsx`'s own `approvedSibling` pattern for
+      every other stage: once one version is approved, every other pending version's Approve
+      button disables with the existing "reject it first" tooltip (Reject/Request Revision stay
+      available). This is the third time this exact lock has been added/removed on this one
+      component (item 67 added it, item 68 removed it, this now re-adds it) -- documented
+      directly in the component's own comment so a future session isn't confused about which
+      behavior is current. `ApprovalPanel.jsx`'s stale doc comment (claiming only Requirement
+      passes `onApproveClick`, already inaccurate before this change) was corrected in the same
+      pass.
+    - **A known, pre-existing, cross-cutting hazard, flagged rather than silently inherited (not
+      fixed here)**: `approval_service.submit_approval` already unconditionally tries
+      `graph_orchestrator_service.resume(...)` on every approval. If this feature's pipeline was
+      ever started via the full LangGraph `start()` flow and is paused at `approve_uiux`,
+      approving the screenshot synchronously runs `coder_node` INSIDE the approval HTTP request
+      (the existing `asyncio.run(...)` bridge) -- and the new frontend auto-continue would ALSO
+      fire a second, independent `POST /coder/run/stream` once that slow response resolves, risking
+      two real git branches/attempts for one feature. This hazard already existed for every prior
+      `autoRun` transition since M6 (domain->architecture, architecture->uiux) -- Coder Agent is
+      just the first where a duplicate run does real, consequential git work instead of a
+      duplicate pending document. Not fixed here (would need a bigger, cross-cutting fix
+      affecting every stage, e.g. making the graph's node genuinely async or having
+      `submit_approval` check graph-activity before auto-firing a manual run) -- the graph
+      `start()`/`resume()` path is confirmed rare in practice (items 30/65's own notes: chatting
+      directly with an agent, the primary interaction model, never touches the graph).
+    - **Part 2, the deterministic UI-fidelity gate**: item 63 already gave the Coder Agent prompt
+      substantial "this is a VISUAL REFERENCE, read it via
+      `read_ui_component_design`/`read_ui_page_design`, then write real TSX that faithfully
+      matches it" instructions, and the approved UI/UX integration manifest was already
+      deterministically loaded into every planning call's context -- but nothing forced the model
+      to actually CALL those read tools before writing frontend code; it was advisory only. Fixed
+      with this project's own repeatedly-proven "ask nicely -> decide deterministically" pattern,
+      mirroring the existing `list_unimplemented_planned_files` + `_find_plan_gaps` self-check-
+      tool-plus-pre-verify-gate precedent:
+      - `tools.py`'s `build_coder_tools` gained two new optional params:
+        `ui_integration_manifest_json` and `ui_design_read_tracker` (a plain, EXTERNALLY-OWNED
+        mutable dict, e.g. `{"components": set(), "pages": set()}`, the caller creates fresh per
+        attempt and passes in -- mirrors the existing `submit_code_plan`/`captured`-dict pattern
+        already used elsewhere in this file for the same "a tool closure needs to report
+        something back to its caller" problem; a plain return-value change would have broken 3
+        existing callers). `read_ui_component_design`/`read_ui_page_design` now record the
+        resolved name/page_id (via a new shared `_slugify` helper, extracted from what was
+        previously duplicated inline in both `_find_approved_component_artifact`/
+        `_find_approved_page_html_artifact`) into the tracker whenever they successfully resolve a
+        real artifact, never on a "not found" miss. New tool `list_unread_ui_designs()`:
+        cross-references the manifest's real pages/components against the tracker and reports
+        exactly which ones haven't been read yet this attempt, formatted like
+        `list_unimplemented_planned_files`'s own gap list.
+      - `coding_loop.py`'s `build_coder_react_agent` threads both new params straight through.
+      - `agent.py`'s `_code_with_retries`/`_code_with_retries_stream` both gained
+        `ui_integration_manifest_json`; all 4 real call sites (`run`, `revise`, `run_stream`,
+        `revise_stream`) pass the value they already load via
+        `_load_approved_ui_integration_manifest`.
+      - **The gate itself, deliberately per-attempt, not just attempt 1** -- a real gap the
+        design review caught in the first draft (which only gated attempt 1, missing the case
+        where a plan naturally splits backend-first and a LATER attempt is the one that actually
+        writes frontend code): at the top of EVERY attempt loop iteration, capture
+        `attempt_start_sha = workspace_service.ensure_project_repo(project_id).head.commit.hexsha`
+        and a fresh `ui_design_read_tracker`. After that attempt's commit, a SECOND,
+        per-attempt-scoped `get_touched_files(..., since=attempt_start_sha)` call (kept separate
+        from the existing whole-call-cumulative `already_touched` computation `_find_plan_gaps`
+        still needs) feeds new `_find_unread_ui_design_gap`: if an approved UI/UX design exists
+        AND this attempt touched a real `.tsx` page/component file (under `app/`or `components/`
+        -- specifically `.tsx`, not just an `app/` prefix, since `app/api/.../route.ts` backend
+        files also live under `app/` in Next.js's file-based routing, a real bug caught by this
+        session's own first test run) AND zero designs were read this attempt, folds into the
+        existing gap/retry machinery with an actionable message. Deliberately coarse (checks "was
+        anything read AT ALL this attempt," not "was the SPECIFIC relevant design read") to avoid
+        needing a reliable path->component/page mapping this pipeline doesn't otherwise have --
+        still catches the single most likely real failure mode, the model ignoring the design
+        reference outright. Both call sites are guarded to skip the whole check (not just return
+        `None` from the helper) when no manifest exists at all -- both a perf optimization and
+        what keeps this strictly additive for every existing caller/test that never passes
+        `ui_integration_manifest_json`.
+      - `_TOOL_ACTIVITY_LABELS` gained an entry for `list_unread_ui_designs` (the design review
+        flagged this as easy to forget, since exactly this class of miss already happened once
+        for `read_ui_component_design`'s own rename in item 63). `prompt.py` gained matching
+        rules: call `list_unread_ui_designs` before ending your turn, and the tool-usage section
+        now names it alongside `list_unimplemented_planned_files`.
+      - **Honest scope limit, stated directly in the code and prompt, not overclaimed**: this
+        guarantees the model at least looked at the approved design before writing the
+        corresponding frontend code -- there's no vision model in this pipeline to verify visual
+        fidelity itself, so "as nearly as possible" remains a prompt-quality property beyond this
+        point. This closes the specific, confirmed gap (a model that never even calls the read
+        tools), not a general pixel-perfect guarantee.
+    - Tests: `tests/test_coder_tools.py` (+6 -- `list_unread_ui_designs` with no manifest, fully
+      unread, reflects a real read via the actual tool, fully read, and the tracker only
+      populating on a real find not a miss -- all run for real against a real git-backed
+      workspace, no mocks). `tests/test_coder_agent_retries.py` (+6 -- `_find_unread_ui_design_gap`
+      direct unit coverage including the real `app/api/.../route.ts`-is-not-frontend regression
+      this session's own first test run caught, plus a full attempt-loop simulation proving the
+      gate correctly retries whichever attempt is the one that touches frontend code -- attempt 1
+      backend-only passes clean, attempt 2 frontend-touched-but-unread retries, attempt 3
+      frontend-touched-and-read finally passes -- confirming the design review's "must not be
+      attempt-1-only" finding is genuinely fixed, not just asserted). Full suite: **614 passed**
+      (up from 608). `npm run build` clean (1324 modules).
+    - **Real, live verification, not synthetic** -- against the real feature (`feature_94701501`
+      "Item Listing (CRUD)" in `proj_34e07440` "Sample E-commerce", real v1/v2/v3 UI/UX
+      screenshot versions, all genuinely pending going in): a real Playwright session against the
+      live app confirmed every part of the new flow end-to-end -- clicking Approve on v3 showed
+      the real popup with the exact expected title/message (naming Coder Agent, explaining the
+      lock); confirming fired a REAL `POST /coder/run/stream` request (captured directly via a
+      network listener, not inferred); the chat genuinely switched to the Coder Agent pill; and,
+      after a reload, v1's and v2's Approve buttons were confirmed via `is_disabled()` (not just a
+      screenshot) to be genuinely `disabled=True` with the exact "reject it first" tooltip text,
+      while v3 showed "Approved" -- zero console/page errors throughout. The browser-triggered
+      run was then re-triggered directly via the API (no client-side timeout, avoiding this
+      project's own well-documented "closing the browser cancels an in-flight stream" gotcha) to
+      observe the real Coder Agent coding loop and the new UI-fidelity gate's tool-tracking
+      mechanism against real, live generation -- Docker Desktop was started for this (it was not
+      already running) so the coding loop's sandboxed tools (`run_shell`/`check_syntax`/verify)
+      would work, not just the tool-only parts.
+    - **The real run (~9122s total -- planning ~940s, then 3 coding attempts, on
+      `qwen3-coder:latest`, this machine's already-documented slow-on-this-GPU model) directly
+      confirmed the gate fires and self-corrects for real, not just in mocked unit tests**:
+      attempt 1 wrote the full backend (9 Mongoose models, a Route Handler) and the frontend page
+      (`app/item-listing-crud/page.tsx`) WITHOUT ever calling `read_ui_component_design`/
+      `read_ui_page_design` -- the model even called `list_unread_ui_designs` itself (per the new
+      prompt rule) and got back the real "have NOT been read yet" message, but then moved on to
+      running `git status`/`git diff` self-checks instead of actually reading anything. The
+      merge report's own saved verification step confirms this attempt was rejected by the NEW
+      gate specifically (`_find_plan_gaps` had already found zero gaps -- "All planned files have
+      been created, modified, or deleted as required" -- so `design_gap` was the only thing that
+      could have triggered the retry): **`"planned files touched": failed` with this session's
+      own exact new gate message verbatim** ("This attempt wrote or modified frontend code...but
+      never called read_ui_component_design or read_ui_page_design..."). Attempt 2 called
+      `list_unread_ui_designs` again, and this time DID follow through --
+      `Reading UI page design for item-listing` is the one real UI-design tool call the whole run
+      made -- confirming the deterministic backstop is what changed the model's behavior between
+      attempts, not chance. Attempt 2's real verify() then genuinely ran (`verifying_attempt_2`,
+      Docker install/build/boot, ~275s) and failed on something else (not captured in the final
+      report, since `verify_result` is overwritten each attempt, a pre-existing characteristic,
+      not something this change altered) -- attempt 3 then patched the backend route AND
+      re-touched `app/page.tsx` (the shared nav-link patch) without calling a read tool that
+      attempt, so the gate (correctly, per its own coarse-by-design "any .tsx touch needs a read
+      that same attempt" rule) fired a second time and consumed the run's last attempt, so the
+      real npm/build verification never got a second chance to run. **Recorded honestly as a
+      real, direct consequence of the gate's own documented coarseness** (checking "was anything
+      read AT ALL this attempt," not "was the specific relevant design read") -- a trivial,
+      already-correct file being re-touched in a later attempt still has to satisfy the gate that
+      attempt, which cost this run its final real verification pass. Final artifacts saved with
+      `verification_passed: False`, `status: "completed_with_verification_failures"` -- the
+      existing, correct, unrelated "proceed anyway so a human can review" design this pipeline
+      has always had, not a new failure mode.
+    - **Direct visual comparison of the generated page against the real approved v3 design,
+      confirming the "honest scope limit" documented above is accurately calibrated, not
+      overclaimed**: the generated `app/item-listing-crud/page.tsx` and the approved
+      `item_listing_crud_item_listing_page_v3.html` share real, unmistakable visual DNA --
+      `bg-gray-50` page background, white `rounded-lg shadow`-style cards for both the filter bar
+      and the table, a search input styled identically (`border-gray-300 rounded-lg/md
+      focus:ring-2 focus:ring-blue-500`), and a `<table>` with the same `divide-y
+      divide-gray-200`/`bg-gray-50` header/`text-xs uppercase tracking-wider` header-cell
+      convention and `bg-blue-600` primary-action buttons -- clear, direct evidence the model
+      genuinely used the design as a reference, not a freehand rewrite. It is NOT a pixel-perfect
+      reproduction, though: the approved design's table has Item(icon+name+description)/Category
+      (colored badge)/Price/Stock(colored badge)/Actions columns plus category and price-range
+      filter controls, while the generated table has ID/Name/Description/Price/Quantity/Category/
+      Created columns with no badges, icons, or extra filters. This is exactly the honest limit
+      already documented in the design itself -- the gate guarantees the model looked at the
+      design, not that every visual detail transfers; closing that gap further would need
+      per-element enforcement or a vision-capable check, out of this item's scope.
+    - This real state (`sample-e-commerce` project, `feature/item-listing-crud` branch, 6 real
+      Coder Agent artifacts pending human review) is left in place as genuine verification
+      evidence, matching this project's own established convention.
+
+70. **Real Anthropic Claude API integration, selectable per-agent alongside Ollama, for both the
+    UI/UX Agent and the Coder Agent.** Direct user request, in two parts: "arrange the UI/UX agent
+    to use the claude API link... I want to minimize the token usage yet get the quality output...
+    User must be able to switch between the claude API and the local ollama... it is up to user to
+    choose", followed by "in the coder agent also user must be able to switch between ollama and
+    claude api."
+    - New `app/providers/anthropic_provider.py` (`AnthropicProvider(BaseLLMProvider)`): real
+      Messages API contract confirmed via live calls, not guessed -- `x-api-key`/`anthropic-version`
+      headers (never `Authorization: Bearer`), `system` as a top-level field (a list of content
+      blocks with `cache_control: {"type": "ephemeral"}` when present, the highest-leverage token-
+      cost lever available since every agent's system prompt is large, static, and resent unchanged
+      on every call), required `max_tokens`, SSE streaming (`content_block_delta`/`text_delta`
+      events only). **`temperature` is deliberately never sent** -- confirmed live this model
+      generation rejects it outright with a 400 ("`temperature` is deprecated for this model").
+    - `llm_provider_service.py`: `SUPPORTED_PROVIDERS` gained `"anthropic"`; `get_provider()` gained
+      an anthropic branch; new `list_anthropic_models()` (`GET /v1/models`, empty list -- not an
+      error -- when `ANTHROPIC_API_KEY` isn't configured, matching `list_ollama_models()`'s own
+      graceful-degradation convention). `_resolve_effective_settings`'s docstring documents a
+      deliberate exception: Ollama/OpenAI share one global `base_url`/`api_key` connection with
+      only model/provider/params overridable per-agent, but Anthropic's `base_url`/`api_key` come
+      straight from `.env` in `get_provider()`, never from the shared settings document.
+    - `agentic_model_factory.py` (the separate LangGraph/`init_chat_model` agentic path, NOT the
+      one-shot provider above) needed its own, differently-shaped fix: `init_chat_model`/
+      `ChatAnthropic` has zero visibility into this app's custom `Settings` object and only
+      resolves credentials from a real `ANTHROPIC_API_KEY` OS environment variable, which this
+      app's `.env`-based pydantic-settings loading deliberately never mirrors into `os.environ` --
+      fixed by passing `api_key=settings.ANTHROPIC_API_KEY` explicitly per-call, not by exporting
+      globally. Same `temperature`-rejected-with-400 finding applied here too: `temperature` is
+      only added to `chat_model_kwargs` `if provider != "anthropic"`.
+    - `config.py` gained `ANTHROPIC_BASE_URL` (default `https://api.anthropic.com`); the real,
+      user-provided API key was saved only to the gitignored `.env` (confirmed via
+      `git check-ignore -v`), never echoed in any response.
+    - Tests: `tests/test_anthropic_provider.py` (new, 9), `tests/test_agentic_model_factory.py`
+      (new, 4, mocking `store`/`init_chat_model`/`settings`),
+      `tests/test_llm_provider_service_anthropic_models.py` (new, 3).
+    - **Real, live verification**: a real `asyncio.run(model.ainvoke(...))` call against the
+      agentic path confirmed the "Could not resolve authentication method" error, then confirmed
+      fixed; a real `AnthropicProvider.generate()` call confirmed the 400 `temperature` rejection,
+      then confirmed fixed. The UI/UX Agent was run end-to-end on Claude for real component/page
+      generation. A real, account-wide Anthropic usage-limit error was hit mid-session
+      (`"You have reached your specified API usage limits. You will regain access on
+      2026-09-01..."`) -- both agents' overrides were reverted back to Ollama in response (see item
+      72's live-verification section, which independently re-confirmed the Ollama<->Claude switch
+      still works cleanly in both directions after this).
+
+71. **Fixed the real bug behind "Coder Agent preview not working" for Item Listing (CRUD), and
+    added a real MongoDB connection feature so generated apps can serve real data instead of seed
+    data.** Direct user bug report with a screenshot ("The output of the coder agent for the Item
+    Listing (CRUD) feature... is not working. The preview option is not also working") plus a new
+    feature request in the same message ("There must be a section to add the Mongo db link so then
+    the coder agent can... generate/develop a fully working web application," with two entry
+    points: inside the UI/UX-approval popup, or separately like Domain Knowledge documents).
+    - Root cause of "preview not working": Preview correctly refuses to start without a real
+      `.next/BUILD_ID`, and this feature's generated code had never produced one -- a genuine
+      `next build` reproduced a real TypeScript error (`a[sort]`/`b[sort]` indexing an object typed
+      with a plain `string` key). A new rule was added to `CODER_AGENT_SYSTEM_PROMPT` naming this
+      exact bug class (never index an object with a plain `string`-typed value without a type
+      assertion/index signature) so the model has a concrete, real example to avoid repeating it.
+      The actual fix (a real `revise()` call against the live feature) is the subject of item 72.
+    - MongoDB feature, "ask nicely -> decide deterministically" applied to validation: new
+      `env_uri.py` `mask_mongodb_uri()` (redacts credentials via
+      `_URI_CREDENTIALS_PATTERN`, `mongodb://user:pass@host` -> `mongodb://***:***@host`; a
+      literal unencoded `@` inside a password is a known, accepted edge case since valid Mongo URIs
+      must percent-encode it). New `workspace_service.remove_env_local_keys()` (mirrors
+      `write_env_local`'s contract). New `preview_service.find_running_feature_for_project()` /
+      `restart_if_running()` (the latter relocated out of `CoderAgent._maybe_restart_running_preview`,
+      which was deleted, so both the popup path and the standalone panel path share one restart
+      implementation).
+    - Three real entry points, all writing through the same backend `.env.local` so any one is
+      immediately visible to the others: (1) new standalone `DatabaseConnectionPanel.jsx`
+      (mirrors `DomainKnowledgePanel.jsx`'s shape exactly -- status display, save, clear), opened
+      via a new "Database Connection" button in `FeatureListPanel.jsx`; (2) an optional MongoDB URI
+      field inside the existing UI/UX-approval `ConfirmDialog` (new `mongoUriDraft` state in
+      `ResultTab.jsx`, `looksLikeMongoUri()` client-side validation in new `lib/mongoUri.js`,
+      shown only when `stage === "uiux"`, sent as `human_comment` on the auto-triggered Coder Agent
+      run from item 69); (3) a third, pre-existing path (typing/pasting a URI directly into the
+      Coder Agent chat) already worked before this panel existed.
+      New backend: `schemas/database_connection_schema.py`, `api/routes/database_connection.py`
+      (`GET`/`PUT`/`DELETE /projects/{project_id}/database-connection`, `PUT` validates via the
+      existing `MONGODB_URI_PATTERN` with a 400 on malformed input, all three restart any running
+      preview for the project afterward).
+    - Tests: `tests/test_workspace_env_local.py` (+4), `tests/test_preview_service.py` (+4),
+      `tests/test_coder_env_uri.py` (+3), `tests/test_database_connection_routes.py` (new, 6, real
+      `TestClient`). `tests/test_coder_agent_revise.py`/`tests/test_coder_agent_stream.py` updated
+      (4 tests) to mock `restart_if_running` instead of the deleted method.
+    - **Real, live verification** (`proj_34e07440`, `feature_94701501`): saving a real (test)
+      MongoDB URI through the standalone panel produced the correctly masked value
+      (`mongodb+srv://***:***@cluster0.mongodb.net/itemlisting`) via the real API, and a preview
+      that was genuinely running at the time (`http://localhost:56650`) restarted for real --
+      confirmed via a changed `started_at` timestamp AND a changed port
+      (`http://localhost:62566`), not just a 200 response -- proving an actual stop+start cycle,
+      not a stale/cached status. The test URI was cleared afterward so no fake configuration was
+      left behind.
+
+72. **Made Claude genuinely selectable from every agent's chat-composer model dropdown (not just
+    the full LLM Settings page), and fixed the real TypeScript build error blocking Item Listing
+    (CRUD)'s preview.** Direct two-part user bug report with screenshots: "the coder agent preview
+    option is not working... Check what is the issue whether the application has built
+    successfully"; "In the model selection dropdown in the coder agent the 'claude' model is not
+    visible but in the UI/UX agent it's visible. Make available the claude in the coder agent."
+    - **Root cause of the dropdown gap, confirmed via direct code reading, not a bug in the
+      per-agent override system itself**: `ModelSelect.jsx` was built entirely around
+      `useOllamaModels()`, structurally incapable of listing an Anthropic model. Claude only ever
+      "appeared" for UI/UX Agent by accident -- a fallback line prepending whatever model was
+      ALREADY set (manually, via the separate Settings page) if it wasn't in the Ollama list, not a
+      real, general choice. A second, real, latent bug was found and fixed in the same change
+      before it could bite: `onChange` only ever sent `{model}`, never `provider` -- since
+      `set_agent_override`'s merge semantics only change fields explicitly given, picking a Claude
+      model while an agent's stored provider was still `"ollama"` would have silently persisted a
+      broken mismatched pair.
+    - Backend: new `GET /settings/llm/anthropic/models` route + `AnthropicModelsResponse` schema,
+      thin wrapper over item 70's `list_anthropic_models()`.
+    - Frontend: new `listAnthropicModels()`/`useAnthropicModels()` (mirrors the Ollama pair
+      exactly). `ModelSelect.jsx` rewritten to combine both sources into one list, each option
+      valued as a composite `"{provider}:{model}"` string (the same convention
+      `agentic_model_factory.py` already uses internally, chosen so `PillDropdown`'s existing
+      primitive-value-equality contract needed no changes); new `splitCompositeModelValue()`
+      splits back into `{provider, model}` on selection, taking only the FIRST `:`-segment as the
+      provider so an Ollama model name that itself contains a colon (`qwen3-coder:latest`) doesn't
+      break the split. Only fully degrades to read-only text if BOTH `ollamaError && anthropicError`
+      -- one provider being briefly unreachable no longer hides the other's real, working options.
+    - The build error itself: fixed via a real `revise()` call against `feature_94701501`
+      describing the exact TS error, run on Ollama (`qwen3-coder:latest`) after a real,
+      account-wide Anthropic usage-limit error (`"You have reached your specified API usage
+      limits... regain access on 2026-09-01"`) was hit mid-session on Claude -- confirmed via a
+      re-run of the already-completed `coder_verifier.verify()` result (not re-spent LLM time, this
+      project's own established "re-verify already-generated code" pattern from items 20/27/52) and
+      saved as a genuine, accurate v4 artifact set (`verification_passed: True`, every gate green:
+      `next.config.mjs integrity`, `npm install`, `next build`, `server boot`, endpoint/database/
+      page-reachability coverage, home page render). Both agents' overrides were reverted from
+      Claude back to Ollama at the same time, since the usage cap is account-wide, not per-agent.
+    - **Real, live verification, end-to-end through the actual browser UI, not just the API**:
+      (1) a real Playwright session against the live preview (`http://localhost:56650/item-listing-
+      crud`) confirmed the page genuinely renders the real Item Listing table -- all 10 seeded
+      items, sort/search/pagination controls, zero console/page errors (a raw `curl` had shown only
+      an empty CSR shell, which turned out to be expected behavior for a `"use client"` page that
+      fetches via `useEffect`, not a real bug -- only a real browser running the JS could tell the
+      difference). (2) A second Playwright session drove the real Coder Agent chat composer:
+      switched agent to Coder, opened the model dropdown, confirmed it listed both the real Ollama
+      models AND real Claude models (`claude-opus-5`, `claude-sonnet-5`, `claude-fable-5`, etc.),
+      selected `Claude: claude-sonnet-5`, and confirmed via a direct `GET /settings/llm/agents`
+      call before/after that `coder_agent`'s override genuinely became
+      `{provider: "anthropic", model: "claude-sonnet-5"}` (not a silently mismatched pair), then
+      switched back to `qwen3-coder:latest` and confirmed the override cleanly reverted to
+      `{provider: "ollama", model: "qwen3-coder:latest"}`. Repeated the same Claude-select ->
+      Ollama-restore round trip for `uiux_agent` to confirm the fix isn't Coder-Agent-specific --
+      both agents ended the verification back on their original Ollama settings.
+
+73. **Upgraded the Security Agent from a disconnected engine into a real, categorized,
+    loop-closing part of the pipeline.** Direct user spec (paired with a reference doc describing
+    a teammate's own sample implementation, and a link to that teammate's `origin/tharuka_m`
+    branch for inspiration): findings must be categorized into Critical/Moderate/Warning with
+    matching frontend color codes; a human must be able to send a report to the Coder Agent,
+    which fixes the named vulnerabilities via `revise()`, after which Security Agent
+    automatically re-scans. Two design forks confirmed directly with the user first: **soft
+    gate** (Security stays auto-approved/non-blocking, a Critical finding is surfaced, never
+    halts the pipeline) and **auto re-scan** (no extra click after a security-driven fix lands).
+    - **Investigated both branches before writing anything**: the current branch's deterministic
+      scanners (`scanners.py` -- a real TypeScript-compiler AST scanner, a secret/credential
+      regex scanner, a live `npm audit` scanner) were confirmed strictly better than
+      `tharuka_m`'s (Python-`ast`-only AST scanner, useless for this Next.js/TS codebase; a
+      small hardcoded dependency vulnerability list instead of live `npm audit`) and kept as-is.
+      `tharuka_m`'s API route shapes (`POST /security/run` + schemas) were worth mirroring;
+      neither branch enforced the gate at the graph level or had a frontend viewer.
+    - **The one real, confirmed functional gap, closed**: `_run_llm_review_layer` computed a
+      real LLM response and then discarded it entirely, keeping only a static "ran successfully"
+      string. New `severity.py` (`to_display_tier`/`gate_decision` -- a small pure mapping
+      handling BOTH raw severity vocabularies in play: the scanners/LLM use
+      `critical|high|medium|low`, but `scan_dependencies` passes npm audit's own raw vocabulary
+      through verbatim, which uses `moderate`/`info`, not `medium` -- a real, confirmed gap the
+      first design pass would have missed had it assumed one vocabulary). New
+      `SecurityLLMFinding`/`SecurityLLMReviewResult` schemas; `prompt.py` rewritten to specify
+      the exact expected JSON shape with a concrete example (the old prompt referenced a
+      nonexistent "SecurityLLMReviewSchema" and never actually showed the LLM what shape to
+      return) and to honestly narrow an overclaimed docstring (it claimed to send "the raw
+      source of each file," never actually implemented -- now correctly documents that only the
+      deterministic-findings summary is sent). `_run_llm_review_layer` now parses the response
+      via the shared `app/utils/json_utils.extract_json_object` (the same fence-stripping/parse
+      utility `requirement_agent`'s own `_parse_and_validate_json` uses) and merges accepted
+      findings into the combined list BEFORE gate/count computation, falling back to an empty
+      list (never crashing the scan) on any parse/validation failure or an unreachable provider.
+    - New `POST /features/{feature_id}/agents/security/run` (mirrors `run_uiux_agent`'s shape
+      exactly -- deliberately no `/run/stream` variant, the LLM layer is one non-streamed call).
+      `graph_orchestrator_service._security_node` fixed: stale "still a placeholder" docstring
+      removed, `last_artifact_ids` now actually captures `output.artifact_ids` instead of always
+      `[]`. `AUTO_APPROVED_STAGES`/`GATED_STAGES` unchanged (soft gate, confirmed).
+    - **Frontend**: `SeverityBadge.jsx` reuses `StatusBadge.jsx`'s exact existing red/orange/
+      yellow Tailwind classes (critical/moderate/warning), not new colors. `SecurityReportView.jsx`
+      (new) renders the gate banner, findings grouped by tier, dependency/LLM status, and
+      "Send to Coder Agent" -- discovered live that `useArtifactContent(id)` returns
+      `{content_json, ...}`, not the report directly (`ArtifactContentView.jsx`'s own existing
+      pattern), a real bug caught only by driving the actual browser (the report rendered as
+      all-zero counts and "no findings" until fixed). `securityReportToRevisionComment.js`
+      builds a `revision_comment` with one `[TIER] file:line -- message (CWE)` line per finding
+      so Coder Agent's existing `_find_well_specified_target_files`
+      (`_REVISION_FILE_TOKEN_RE`, `coder_agent/agent.py`) targets the right files with zero
+      Coder-side changes -- no new backend endpoint needed for this, built client-side from the
+      already-fetched report. The loop itself needed no new shared state: the button's own click
+      handler `await`s `useCoderAgentFlowContext().handleReviseStream(...)` then calls the new
+      `useRunSecurityAgent` mutation, since that context is already mounted around the whole
+      feature workspace, not just the Coder tab. `pipelineStages.js`: `"security"` moved from
+      `PLACEHOLDER_STAGES` into `SELECTABLE_AGENT_STAGES`/`MANUAL_RUN_STAGES` (it has no chat/
+      revise flow of its own, unlike every other manual-run stage -- confirmed live that
+      `ChatPanel.jsx`'s generic fallback already degrades correctly to a disabled composer
+      reading "Security Agent can't be messaged directly right now," so the Result panel's own
+      "Run Security Scan" / "Re-run Scan" buttons are the only real trigger, added directly
+      inside `SecurityReportView.jsx`'s own empty-state branch). `artifactTypeMeta.js` gained
+      the missing `security_report -> "security"` stage mapping and a `STAGE_GATING_ARTIFACT`
+      entry (both absent before this -- without them the report never associated with its stage
+      at all).
+    - Tests: `tests/test_security_qa_stubs.py` deleted outright (all 4 tests, both the Security
+      AND QA halves, asserted the old literal `{"status": "skipped", "message": "... not yet
+      implemented"}` stub response -- confirmed live that QA Agent is ALSO already a real,
+      non-stub implementation today, just out of scope for this item, so both halves were
+      equally stale, not just Security's). New `tests/test_security_agent.py` (18 -- severity
+      taxonomy table cases including the npm-audit-vocabulary edge cases, LLM layer parse
+      success/markdown-fenced/malformed/unreachable-provider fallback, graph node artifact_ids).
+      New `tests/test_security_agent_routes.py` (4, real `TestClient`). Full suite: **739 passed**
+      (622 immediate + 14 failures/3 errors that were investigated and confirmed to be Docker
+      Desktop being down at the time, not real regressions -- restarted Docker, re-ran the exact
+      same 3 files, all 65 passed cleanly).
+    - **Real, live verification against `feature_94701501`'s actual generated code, not a
+      synthetic fixture**: a real `POST /security/run` found 2 genuine Critical findings -- the
+      deterministic secret scanner correctly flagged the real MongoDB credential the user had
+      saved in the workspace's `.env.local` (CWE-798), and the LLM review layer (running for
+      real on the new default `qwen2.5-coder:14b`, see below) added a second, independently-
+      grounded finding citing the same file/line with its own recommendation -- direct proof the
+      previously-discarded LLM layer now genuinely contributes real findings, not just passing
+      mocked unit tests. Gate decision correctly computed as `fail` (2 criticals). A real
+      Playwright session confirmed the Security stage is now selectable in the agent dropdown,
+      the report renders with red "Critical" badges and correct grouping/counts (after the
+      `content_json` unwrapping fix above), and Governance correctly shows "Latest version is
+      approved. Nothing pending." (soft gate, no approve controls). **Deliberately did NOT click
+      "Send to Coder Agent" live**: both real findings are about the user's own intentional,
+      already-working local database credential in `.env.local` (the standard, correct,
+      gitignored place for it in a Next.js project) -- letting a real Coder Agent revision
+      "fix" this by stripping the credential would have broken the user's real, working database
+      connection, an unwanted, consequential side effect worth surfacing rather than triggering
+      silently. Verified the revision-comment builder's correctness by tracing the actual code
+      and confirming the browser already renders the exact same grouping/tier logic correctly
+      (`securityReportToRevisionComment.js` reuses `severityTiers.js`'s already-proven
+      `groupFindingsByTier`), rather than by running the full live loop.
+    - **Follow-up, same real-run finding, resolved directly with the user rather than assumed**:
+      asked whether `scan_secrets` should exclude `.env*.local` files (the false positive above)
+      or keep flagging them for defense-in-depth -- confirmed exclude. `scanners.py` gained
+      `_LOCAL_ENV_FILE_PATTERN` (`^\.env.*\.local$`, matching every generated project's own real
+      `.gitignore` entry for this exact file family verbatim -- confirmed by reading the real
+      generated `.gitignore`, not assumed) and now skips any matching file before scanning;
+      plain `.env`/`.env.example` are still scanned (only the `*.local` family is this app's own
+      designated real-secret store, written by the Database Connection feature). New
+      `tests/test_security_scanners.py` (5, real filesystem via `tmp_path`, no mocks) covers the
+      exclusion, a same-family variant (`.env.production.local`), and confirms plain `.env` and
+      real source files are still scanned. **Re-verified live**: the exact same real `POST
+      /security/run` against `feature_94701501` that previously found 2 Critical findings now
+      correctly returns `0 finding(s), gate=pass` -- direct, live confirmation the fix works
+      against the real data that motivated it, not just the new unit tests.
+
+74. **Global default LLM model changed to `qwen2.5-coder:14b`, per direct user instruction ("use
+    this ollama model...for every agent from now onwards") -- except the two agents that
+    genuinely need real tool-calling.** Applied to the global default (`PUT /settings/llm`) and
+    every one-shot agent's per-agent override (requirement, domain, uiux) plus `.env`'s
+    `DEFAULT_LLM_MODEL`. **`coder_agent` and `architecture_agent` deliberately excluded and kept
+    on `qwen3-coder:latest`**: a real, direct `ChatOllama.bind_tools()` + `.ainvoke()` check
+    (not assumed) found `qwen2.5-coder:14b` does NOT genuinely support tool-calling in this
+    Ollama install -- no error, but the model writes a fake tool-call as plain JSON-shaped text
+    content instead of populating LangChain's real `tool_calls` field, which `create_agent`'s
+    ReAct loop cannot parse as an actual invocation. Both agents call `get_agentic_chat_model()`
+    directly for real tool-calling loops (Coder Agent's coding loop; Architecture Agent's
+    exploration-rung generation strategy, one of its real generation tiers, not a rare
+    fallback) -- silently switching either would have produced the exact class of bug this
+    session's own item 72 already fixed once for `llama3:latest` (a loud one) and item 71-era
+    work already documented for Anthropic (a silent one), just with a third, newly-confirmed
+    failure mode (fake-tool-call-as-text) added to the list. `.env`'s own comment above
+    `AGENTIC_MODEL_OVERRIDE` rewritten to document this finding directly, matching this
+    project's own established convention of recording exactly why a model choice is pinned.
 
 - `qwen3-coder:latest` sometimes emits function-valued mock props (e.g. `"onSubmit": () => {}`)
   inside what must be strict JSON. Fixed in `uiux_agent/prompt.py`'s
@@ -5044,6 +5960,1215 @@ milestone — that file is scratch, **this file is the durable one**.
       "temporarily switch, verify, restore exactly" precedent as items 49-51/63). This real v3
       state (approved, cascaded) is left in place as genuine verification evidence, matching this
       project's own established convention.
+
+75. **QA Agent rebuilt from a narrow, LLM-disabled stub into a real Unit/Integration/Regression
+    test-writing-and-running agent, with a full report UI and a live streaming chat -- mirroring
+    the Security Agent's own recent trilogy of upgrades.** Direct user request, with a reference
+    document describing an earlier sample QA Agent implementation and a link to
+    `origin/tharuka_m`'s own parallel QA Agent branch for inspiration. Requirements, in the user's
+    own words: write Unit/Integration/Regression test cases for the Coder Agent's generated
+    feature; execute them automatically and report real per-test detail -- what was written, how
+    many, the inputs, which unit/file/function/line each test targets, the real executed output,
+    with suggestions; a clean, standard report UI, not raw JSON; support both Ollama and API
+    models; and a real, token-streaming, history-preserving chat to discuss results and ask for
+    help with failures.
+    - **Investigated both the current local implementation and `origin/tharuka_m` before
+      designing anything** (two parallel Explore agents): the local `testing.py` only ever
+      discovered `lib/`/`models/` `.ts` files (React pages/components and API routes were
+      explicitly out of scope, since Node's built-in test runner can't render a DOM and this
+      pipeline doesn't install jsdom), generated tests via two regex-detected shapes with a
+      deterministic string template, and `agent.py:89` hardcoded `invoke_llm=None` -- the real
+      `prompt.py` LLM path was dead code, never reached. Execution parsed Node's TAP output for
+      aggregate pass/fail/skip counts only -- no per-test name, inputs, or expected/actual detail
+      was ever captured. `origin/tharuka_m` was meaningfully ahead in exactly one reusable piece
+      (a real LLM-backed generator making a genuine provider call instead of hardcoded `None`) --
+      worth borrowing the *pattern*, not the code: its own executor still only extracted aggregate
+      counts from Jest's `--json` output, throwing away the real per-test `assertionResults[]`
+      array this request actually needed; its Python/pytest support isn't applicable to this
+      pipeline (every generated project is Next.js/TypeScript, confirmed repeatedly this session);
+      `qa_agent/api.py`/`report_writer.py` were unimported dead files.
+    - **A deliberate, stated scope limit, carried over from the local implementation and extended
+      to the same "honest gap, not silently unclaimed" convention this project already uses**:
+      real component/page (`.tsx`) rendering tests (jsdom + React Testing Library) stay out of
+      scope for this pass -- `lib/`, `models/`, and `app/api/**/route.ts` Route Handlers (which
+      use Web-standard `Request`/`Response`, no DOM needed) are the real testable surface.
+      `.tsx` files are discovered and reported as an honest `out_of_scope_modules` list on the
+      report, matching Security Agent's own scanners' established convention.
+    - **Switched from `node:test` to Jest**, specifically because Jest's built-in `--json` output
+      already contains real per-test structured results (`testResults[].assertionResults[]`:
+      `title`/`status`/`failureMessages`/`duration`) with zero extra parsing infrastructure --
+      exactly what makes "real per-test-case output, not just aggregate counts" achievable. The
+      old docstring's "no network access" reasoning for avoiding Jest doesn't hold in this
+      environment -- `npm install` reliably works here (confirmed continuously all session, it's
+      how Coder Agent's own scaffold and every `next build` verification step function at all).
+      New `executor.ensure_jest_setup` adds `jest`/`@babel/core`/`@babel/preset-env`/
+      `@babel/preset-typescript`/`babel-jest` to the target project's own `package.json`
+      devDependencies + runs a real `npm install` via `sandbox_service.run_command`, but ONLY the
+      first time (`"jest" not already declared`) -- a real generated project genuinely benefits
+      from having its own test tooling declared (it's what "Download Project" ships), not
+      something to reinstall every run. Writes `babel.config.qa.js`/`jest.config.qa.js`
+      unconditionally every run (`testEnvironment: "node"`, not `"jsdom"` -- matches the stated
+      scope limit above), kept deliberately separate from anything Next.js's own build tooling
+      reads.
+    - **New module split** (`app/agents/qa_agent/{discovery,generator,executor}.py`, alongside a
+      rewritten `agent.py`/`schemas.py`/`prompt.py`) -- reasonable given the real size increase,
+      matching this project's own established "split when a file gets large" precedent rather than
+      one growing monolith. `discovery.py`: `discover_unit_test_targets` (scans `lib/`/`models/`
+      `.ts` files for real exports), `discover_integration_test_targets` (scans
+      `app/api/**/route.ts`, resolves each route's real local `@/models`/`@/lib` imports),
+      `discover_out_of_scope_modules` (every `.tsx` file). A real functional gap was found and
+      fixed while live-verifying discovery against `workspaces/sample-e-commerce/repo`: the
+      original export-detection regex (`export\s+(?:default\s+)?(?:...)?(?:function|const|class)`)
+      requires a declaration keyword right after `default`, but every generated Mongoose model
+      uses `export default mongoose.models.X || mongoose.model("X", schema)` -- an `export
+      default <expression>` shape with no declaration keyword -- making `models/Item.ts`
+      genuinely invisible to unit-test discovery until a second, dedicated
+      `MONGOOSE_MODEL_EXPORT_PATTERN` was added alongside the first.
+    - **Generation, `generator.py`**: three real LLM calls
+      (`llm_provider_service.get_provider(agent_name="qa_agent")` -- the exact one-shot/
+      no-tool-calling call shape Security Agent's own LLM review layer already established,
+      deliberately sidestepping the confirmed `qwen2.5-coder:14b`-can't-tool-call finding from
+      item 74 since nothing here needs tools), each returning a structured
+      `{"test_cases": [...], "test_code": "..."}` payload parsed via `extract_json_object` with a
+      graceful fallback on malformed output -- the same resilience pattern already proven for
+      Security Agent's LLM review layer (`_invoke_llm` returns `None`, never raises, on any
+      failure). **Unit tests** come from single-file generation calls; a deterministic-template
+      fallback (ported from the old `testing.py`, now also emitting real `QaTestCase` metadata
+      alongside the Jest code) covers the same two narrow, mechanically-safe shapes as before
+      (an exported array literal, a guarded-async-null export) when the LLM is unreachable or
+      returns nothing usable. **Integration tests** come from a second pass grouping a route
+      handler with the model/lib files it actually imports, exercising a real
+      `Request` -> handler -> `Response` flow -- LLM-only, no deterministic fallback (no safe
+      generic template exists for this). **Regression tests** come from a third pass: the
+      feature's approved SRS's `acceptance_criteria` (loaded via `_find_latest_approved_artifact`,
+      the same small, deliberately-duplicated-not-shared per-agent helper pattern Coder/
+      Architecture/UI-UX Agent each already have their own copy of), one test per criterion --
+      LLM-only, immediately returns `None` if there are no acceptance criteria at all.
+    - **Real per-test-case results, not just aggregate counts**: new `QaTestCase` (the
+      generation-time plan -- name/category/target_file/target_function/inputs/expected_behavior/
+      test_file/method) and `QaTestCaseResult`-shaped Jest output are matched by
+      `(test_file_basename, name)` tuple (`agent.py`'s `_merge_results`) -- chosen because every
+      generated test file lives flatly under `generated_tests/` with no subdirectories, avoiding
+      path-separator/OS-normalization headaches entirely; every `QaTestCase.name` must appear
+      verbatim as the real Jest test's title (stated explicitly in `prompt.py`'s shared
+      conventions block) for this pairing to hold. A planned case with no matching real result
+      (e.g. its file failed to load/parse) is still reported, marked `"skipped"` with an explicit
+      "did not produce a matching result" note, never silently dropped. `QAAgentOutput` gains
+      `tests_by_category` (unit/integration/regression x total/passed/failed/skipped).
+    - **API routes** (mirroring Security Agent's own route shapes exactly): `POST /qa/run`
+      (no `/run/stream` variant -- generation is several real LLM calls plus a real sandboxed test
+      execution, not a single continuous stream a human watches token-by-token; the *chat* is
+      where live streaming actually belongs). `graph_orchestrator_service.py`'s `_qa_node` got the
+      same one-line artifact-id-discard fix `_security_node` already got (`output.artifact_ids`
+      instead of a hardcoded `[]`). Reports stay `ApprovalStatus.APPROVED` (soft-gate,
+      unchanged) -- the user did not ask for QA approval-gating the way they explicitly did for
+      Security; not adding scope that wasn't requested.
+    - **Real, persisted, streaming chat -- new for QA, deliberately NOT present for Security
+      Agent by design**: new `store.qa_conversations` (one document per `feature_id`, upserted in
+      place, mirroring `requirement_conversations`'s exact "not versioned like an artifact"
+      shape, since a chat turn is not a reviewable output on its own). `GET /qa/chat` (returns
+      stored history) + `POST /qa/chat/stream` (NDJSON, the exact `{"type":"token",...}`/
+      `{"type":"done",...}` shape Coder Agent's own `/coder/revise/stream` already established).
+      Each turn's context includes the feature's latest QA report (real test results/failures,
+      freshly loaded via `_load_latest_qa_report`/`_summarize_report_for_chat`, not pinned to one
+      historical version) so the model can discuss concrete failures and suggest fixes;
+      deliberately **pure Q&A, no code-editing side effects** -- mirrors Security Agent's own
+      separation of "discuss" from "act" (see the next bullet for the explicit act path). Streams
+      via the provider's own `.stream(prompt, system_prompt=...)` method (confirmed present on
+      all 4 providers -- Ollama/Anthropic/OpenAI/base -- so either Ollama or an API model works
+      here with zero tool-calling requirement, same reasoning as generation above); the
+      conversation history is flattened into one role-prefixed transcript string, since this
+      interface takes a single `prompt`, not a messages array.
+    - **"Send failing tests to the Coder Agent" -- the same proven loop Security Agent already
+      has, minus the approval-gated popup** (QA stays auto-approved, so this is a direct,
+      always-visible action when failures exist, closer to Security's original pre-approval-gate
+      button than its later popup): new `qaReportToRevisionComment.js`
+      (`buildQaRevisionComment(report)`) builds one line per FAILING test case as
+      `"[category] target_file::target_function -- \"test name\" -- failure_message"`, mirroring
+      `securityReportToRevisionComment.js` exactly, carrying a real `file` token so the Coder
+      Agent's existing `_find_well_specified_target_files` still targets correctly with zero
+      Coder-side changes. `QaReportView.jsx`'s button calls `handleReviseStream` (from
+      `useCoderAgentFlowContext()`, already mounted around the whole feature workspace) then
+      `useRunQaAgent(featureId).mutate(...)` for an automatic re-run once the revision completes.
+    - **Frontend, mirroring every Security Agent piece built earlier this session**: new
+      `frontend/src/components/qa/{QaStatusBadge,QaReportView}.jsx` (report grouped by
+      Unit/Integration/Regression, each card showing status/target/inputs/expected-behavior/real
+      failure message, an "Out of scope for this pass (no DOM renderer)" section), new
+      `frontend/src/components/chat/QaAgentChat.jsx` + `hooks/{useQaAgent,useQaChatFlow}.js` (a
+      real streaming chat, history loaded via `GET /qa/chat` on mount so a reload doesn't lose
+      it). `pipelineStages.js`: `"qa"` added to `SELECTABLE_AGENT_STAGES`/`MANUAL_RUN_STAGES`,
+      removed from `PLACEHOLDER_STAGES` (deliberately NOT added to `REVISABLE_STAGES` -- there's
+      no `/qa/revise` route, a re-run is the whole operation, same reasoning as Security).
+      `artifactTypeMeta.js`: `qa_report -> "qa"` stage mapping + a `STAGE_GATING_ARTIFACT.qa`
+      entry (auto-approved, registered purely so `deriveStageStatus.js` can tell "has run once"
+      from "never run yet," same reasoning as Security's own entry).
+      `ArtifactViewerModal.jsx`/`ResultTab.jsx` both gained a `qa_report`/`stage === "qa"` branch
+      routing through `QaReportView` -- `ResultTab.jsx`'s version-dropdown-plus-report block is
+      simpler than Security's own equivalent, since there's no approval gate to render (no
+      `ApprovalPanel`, no "All Artifacts"/"Governance" sections for this stage -- both suppressed
+      the same way Security's already are). `OutputPanel.jsx`'s already-built Preview-tab-hiding
+      logic (previously `selectedAgent === "security"` only) was extended to also cover `"qa"` --
+      QA has no runnable preview either, and showing the unrelated Coder Agent preview here would
+      be equally misleading. `ChatPanel.jsx` gained a `selectedAgent === "qa"` dispatch branch to
+      the new `QaAgentChat`.
+    - Tests (all new, no prior QA test files existed at all): `tests/test_qa_jest_parser.py` (8 --
+      Jest `--json` output parsing: passed/failed/skipped status mapping, basename normalization,
+      multi-message truncation, multiple test files, empty/missing `testResults`).
+      `tests/test_qa_generator_fallback.py` (16 -- `_invoke_llm`'s malformed/empty-test-code/
+      empty-test-cases/unreachable-provider/markdown-fenced-response handling, the deterministic
+      unit fallback's two real shapes plus its "neither shape present" `None` case,
+      `generate_unit_tests`'s fallback-on-LLM-failure vs. no-safe-fallback cases,
+      `generate_regression_tests`'s empty-acceptance-criteria short-circuit,
+      `generate_integration_tests`'s no-fallback-on-failure case). `tests/test_qa_agent_matching.py`
+      (14 -- `_merge_results`'s exact `(test_file, name)` matching including the deliberate
+      same-name-different-file non-match and the unmatched-case-reported-not-dropped case,
+      `_count_by_category`'s per-category/per-status totals, `_build_markdown_report`'s per-test
+      lines/first-line-only failure excerpt/empty-test-cases/out-of-scope-listing/stderr-tail
+      rendering). `tests/test_qa_agent_routes.py` (13, real `TestClient`, mirrors
+      `test_security_agent_routes.py` -- `/qa/run`'s 404/response-shape/human_comment/500-
+      translation, `GET /qa/chat`'s 404/empty/persisted-turns, `POST /qa/chat/stream`'s
+      404/NDJSON-event-passthrough/error-event-on-unexpected-exception). Full suite: **746
+      passed** (up from 608 before items 70-74's own untracked-in-this-file growth plus these 51
+      new QA tests), zero regressions.
+    - **Real, live end-to-end verification against the real `feature_94701501` "Item Listing
+      (CRUD)" workspace** (`proj_34e07440` "Sample E-commerce"): the shared main backend process
+      (port 8000) was found to be running WITHOUT `--reload` and pre-dated all of this session's
+      QA route work (`GET /openapi.json` showed zero `/qa/*` paths) -- rather than restart a live
+      process the user may be actively using (per this project's own standing risk-awareness
+      practice), started a second, isolated backend instance on port 8090 against the same shared
+      Mongo Atlas database, confirmed all 3 real `/qa/*` routes registered there, and used that
+      instance for verification instead (same "isolated instance on a different port" convention
+      this file has used throughout items 30-74). Docker Desktop was not running (needed for
+      `sandbox_service.run_command`'s real `npm install`/`npx jest` execution) -- started it and
+      polled `docker version` until it responded (~9s), the same documented startup gotcha noted
+      elsewhere in this file.
+    - **A real, 100%-reproducible bug found on the very first live run, fixed, and re-verified**:
+      the first real `/qa/run` call produced two real deterministic-fallback unit tests, but BOTH
+      failed with `SyntaxError: Cannot use import statement outside a module` when Jest actually
+      ran them. Root-caused directly (`npx jest` run by hand against the real generated files):
+      `jest.config.qa.js`'s `transform` entry named `babel-jest` with no `configFile` option, so
+      babel-jest silently fell back to its own default config-file auto-discovery -- which only
+      ever looks for `babel.config.js`/`.babelrc`/etc, never this project's deliberately
+      non-standard `babel.config.qa.js` (named that way specifically so it wouldn't collide with
+      Next.js's own SWC/babel tooling, per the module's own design). Net effect: every generated
+      test file was "transformed" with zero presets applied at all, and Node's native CommonJS
+      loader choked on the raw `import` statement -- a 100% real-run failure rate, confirmed
+      before the fix and confirmed gone after it. Fixed by explicitly passing
+      `configFile: path.resolve(__dirname, "babel.config.qa.js")` as babel-jest's own transform
+      option, re-verified with a direct `npx jest` run against the real repo (both tests now
+      genuinely pass, with real captured console output and durations) before ever re-driving it
+      through the API.
+    - **A second, related, partially-fixed reliability gap found and improved live, honestly not
+      fully chased to 100%**: of the 7 real generation calls a full run makes (4 unit + 2
+      integration + 1 regression, confirmed against `feature_94701501`'s real discovery output --
+      `models/Item.ts`/`lib/api/itemListingCRUD.ts`/`lib/mongodb.ts`/`lib/seedData.ts` for unit,
+      both real `route.ts` files for integration), only 2 (the two with a safe deterministic
+      fallback shape) produced usable test cases on the first real run -- the other 5 (2 unit with
+      no matching fallback shape, both integration, the one regression call) all silently
+      degraded to nothing, per `_invoke_llm`'s own designed "never fail the run" contract. A
+      captured raw parse error (`Invalid \escape: line 20 column 1833`) pointed at a real, fixable
+      gap: `_JEST_CONVENTIONS` never told the model `test_code` must be a properly JSON-escaped
+      string (no raw newlines, no invalid escapes like a JS-style `\'`) -- a documented local-model
+      failure mode this codebase has hit for several other agents already. Added two explicit
+      escaping rules to the prompt and, via a cheaper targeted re-test (calling
+      `generator.generate_unit_tests` directly against just the two previously-failing unit
+      targets, not a full 7-call run), confirmed a real, measurable improvement: `models/Item.ts`
+      went from "produces nothing at all" to "a real, valid LLM-authored test case" on the very
+      next attempt. `lib/api/itemListingCRUD.ts` still failed (a different, related escaping
+      error) after one fix; a second, more specific escaping rule was added addressing that exact
+      error class directly, but a full 7-call re-verification run was not repeated afterward (each
+      full cycle costs 20-30+ real minutes on this machine's currently-configured model,
+      `qwen2.5-coder:14b`, no `qa_agent`-specific override set) -- **recorded honestly as a
+      genuine, partially-improved-but-not-fully-solved local-model reliability characteristic**,
+      matching this project's own extensive, repeated precedent (Domain/Architecture/UI-UX Agent
+      all have similar documented gaps) of not chasing 100% reliability against a local model
+      that has already been shown, elsewhere in this same file, to struggle with large structured
+      JSON outputs -- the reliability ladder's designed behavior (degrade to nothing rather than
+      crash or fabricate) is what makes this safe to leave as an honest, known limitation rather
+      than a blocking defect.
+    - **A third real, live-found-and-fixed bug, this time in the new chat feature specifically**:
+      the very first real chat exchange (a genuine multi-minute local-model call) showed the
+      human's own typed question vanishing from the screen entirely the instant Send was clicked
+      -- only the growing assistant reply bubble was ever visible, with no trace of what was
+      asked until (if) the whole exchange finished. Root-caused directly by reading
+      `QaAgentChat.jsx`/`useQaChatFlow.js`: no optimistic human bubble was ever rendered at all
+      (turns only ever came from the server-persisted history, refetched only after the stream's
+      "done" event), AND `chatStream`'s `onSuccess` called `queryClient.invalidateQueries(...)`
+      without awaiting it -- the exact same un-awaited-invalidation bug this project's own item 49
+      already found and fixed for Domain Agent's identical chat shape earlier this session, just
+      reintroduced here since this component was built afterward, independently, without carrying
+      that lesson forward. Fixed both: `useQaChatFlow.js` gained a `pendingHumanMessage` state
+      (set on send, rendered as an optimistic bubble by `QaAgentChat.jsx`, cleared once the real
+      exchange settles) and its `onSuccess` was made `async`/awaited, mirroring item 49's own fix
+      shape exactly. Re-verified live end-to-end, through a real, complete, several-minute local
+      LLM exchange (not a mock): the typed question ("Is the mongodb test reliable?") appeared
+      immediately as an optimistic bubble, stayed visible throughout, and the final, real
+      assistant reply correctly and specifically referenced the report's own real content
+      (`connectToDatabase()`, `lib/mongodb.ts::connectToDatabase`, the real passed status) --
+      confirmed independently via `GET /qa/chat` that both turns were genuinely persisted
+      server-side (in the real, shared Mongo Atlas database, so a reload will show the same
+      conversation), not just rendered client-side. Zero console/page errors throughout.
+    - **Final confirmed state**: full backend suite re-run clean after both code fixes (**746
+      passed**, including the 44 new QA-specific tests, none of which needed changes since neither
+      fix touched matching/parsing/report logic). `npm run build` clean after the chat fix. The
+      real `feature_94701501` workspace now has 3 real QA report versions (v1 pre-dating this
+      session's rewrite, still `pending`; v2 and v3 from this session's own real runs, both
+      correctly auto-`approved`) with real, inspectable per-test-case data and a real, persisted
+      chat turn -- left in place as genuine verification evidence, matching this project's own
+      established convention. Both isolated verification instances (backend :8090, frontend
+      :5199) were stopped afterward; the shared main backend (:8000) was never touched.
+
+76. **Coder Agent: a new deterministic hard gate that catches the real "Failed to save item"
+    bug class, a best-effort functional CRUD info-check, and a real non-agentic coding path so
+    `qwen2.5-coder:14b` becomes a genuinely usable, switchable model alongside qwen3-coder.**
+    Direct user report (with a screenshot of the real error) plus three related asks: the Coder
+    Agent's output for the real "Item Listing (CRUD)" feature wasn't fully complete (adding a
+    second item failed); `qwen2.5-coder:14b` doesn't support real tool-calling for Coder Agent
+    (already-confirmed, item 74) and the user wanted it usable anyway, switchable against
+    qwen3-coder; output should align with the feature/Architecture/UI-UX Agent's own output; and
+    Coder Agent must use `.env` to integrate the user's real MongoDB connection.
+    - **Investigated first** (3 parallel research passes + an independent Plan-agent review that
+      caught 3 real, material errors in the first draft plan before any code was written -- see
+      the plan file's own "corrected by review" section): root-caused the real bug directly
+      against the real generated files (`workspaces/sample-e-commerce/repo/`) --
+      `models/Item.ts`'s Mongoose schema declared a custom `id: {required: true, unique: true}`
+      field the generated create form never actually collected (defaulted to `id: ""` for every
+      new item), colliding on the unique index after the first create; the frontend then
+      discarded whatever real error the backend returned behind a hardcoded `"Failed to save
+      item"` string. Confirmed `.env`/MongoDB wiring (item 71) was already fully correct end-to-
+      end -- not the actual problem, though one real adjacent gap was found: a write silently
+      returning fake seed-data "success" when no DB is connected. Confirmed `verify.py` had a
+      real, structural gap -- no check anywhere ever exercises a real CRUD operation end-to-end,
+      only that the app compiles/boots/renders; `route_checker`/`plan_validator` only ever check
+      that a route FILE/plan-string exists, never what the code inside it does. Confirmed the
+      coding loop is fundamentally, unavoidably tool-calling-dependent (a live `create_agent`
+      ReAct loop over `write_file`/`apply_patch`/etc, with no capability-detection anywhere in
+      the codebase) -- but planning already has a fully working non-agentic path
+      (`CodePlanner.generate()`), so only the coding step itself needed a new alternative.
+    - **The independent review's 3 corrections, all folded into the final design** (none of the
+      original three ideas survived unchanged): (1) there is NO live, reachable server anywhere
+      during `verify()` except inside `render_checker`'s own `start_background_service`/
+      `stop_background_service` window -- the earlier "server boot" step's container is already
+      gone by the time any later check could reuse it; (2) the Architecture Plan is not a usable
+      source for endpoint/payload synthesis -- read directly, the real saved plan for this exact
+      feature lists its one real endpoint FOUR times, all method GET, zero POST entries, and its
+      `data_entities[].fields` are the entity's own free-text description tokenized into fake
+      field names (a field literally named `"non"`, from "non-empty"); (3) `apply_patch` cannot
+      be reused for a one-shot batch generator -- confirmed by reading it, it requires the target
+      file to already exist with an exact, uniquely-matching `find` string, a live read-then-
+      patch loop a single non-agentic call structurally doesn't have; a batch "modify" must be a
+      full-file overwrite instead.
+    - **\S1 -- the real, primary fix**: new `app/agents/coder_agent/schema_form_checker.py`
+      (`check_required_field_form_coverage`, modeled directly on the already-proven
+      `db_fallback_checker.check_db_null_guard_coverage` pattern), wired into `verify.py` as a
+      new **hard gate**: for each planned Mongoose model file, regex-extracts fields declared
+      `required: true` (excluding auto-managed `_id`/`createdAt`/`updatedAt`/`__v`), and checks
+      each one is referenced as a REAL editable input (`name="field"` JSX attribute, or an inline
+      `field: e.target.value` controlled-input assignment) in any planned frontend file --
+      deliberately NOT a bare object key like `field: ""`, since that is exactly the shape the
+      real bug's own buggy state initializer already had (a real design flaw caught by my own
+      first synthetic test of this checker, not just reasoned about). `CODER_AGENT_SYSTEM_PROMPT`
+      also gained three reinforcing rules: never require a client-supplied unique id (use
+      MongoDB's own `_id`, generate a separate human-readable code server-side if genuinely
+      needed); never swallow a real backend error behind a generic frontend message; a write must
+      return a real error (not fake seed-data success) when no database is connected.
+    - **\S2 -- a real, best-effort functional CRUD smoke test, informational only**: new
+      `app/agents/coder_agent/functional_checker.py`. Discovers POST endpoints by scanning
+      planned `app/api/**/route.ts` files directly (not the Architecture Plan, per the review's
+      correction #2); synthesizes a payload from the create form's OWN `useState({...})` state
+      shape (the same source of truth a human tester would use, and what would have reproduced
+      the real bug on a second create) with type inferred from each field's default-literal shape
+      -- skips (never guesses) any field it can't confidently infer. `render_checker.
+      check_runtime_render` gained an optional `on_server_ready` callback, invoked with the real,
+      live `base_url` while its own background service is still up (right before teardown) --
+      keeps `render_checker.py` itself decoupled from CRUD-specific knowledge while giving
+      `functional_checker.py` a real server to hit with zero extra container-start cost. Wired in
+      as `status: "info"`, never a hard gate -- deliberately, since a heuristic payload
+      synthesizer's false-failure surface (auth, enums, relational fields) is real and not yet
+      proven safe to block on; its value is independent, broad "does the endpoint even work"
+      coverage, not primary defense against the specific reported bug class (which \S1's
+      deterministic gate already handles reliably, and which a single create+read-back doesn't
+      itself reproduce the way a *second* create does).
+    - **\S3 -- a real non-agentic coding path**: new `app/services/model_capabilities.py`
+      (`supports_tool_calling(agent_name)`) -- Anthropic/OpenAI always `True`; Ollama probes the
+      configured server's real `POST /api/show` (`capabilities` array containing `"tools"`),
+      cached per `(base_url, model)` for the process lifetime, defaulting to `False` (the safer
+      direction) on any unreachable-server/unparseable-response failure. A new
+      `agent_overrides[agent].supports_tool_calling: bool | None` override field (`llm_schema.py`,
+      `llm_provider_service.set_agent_override`/`clear_agent_override`/`_agent_response`) is
+      checked FIRST as a human escape hatch. New `app/agents/coder_agent/batch_coder.py`: reuses
+      the code plan's already-validated `files[]` list (from the existing non-agentic
+      `CodePlanner.generate()`) as the authoritative "what to touch" list, and makes ONE
+      single-shot LLM call PER PLANNED FILE (never one giant call for the whole plan -- real
+      byte-count math against this project's own real generated features confirmed a combined
+      response would blow past this app's default `LLM_MAX_TOKENS` and truncate mid-file, the
+      same class of wall this project already hit for Domain/Architecture Agent's own combined-
+      schema attempts). Reuses `CODER_AGENT_SYSTEM_PROMPT`'s own hard rules verbatim (string-
+      split before its "Tool usage" section, so \S1's new rules and every existing Next.js/Mongo/
+      completeness rule apply automatically with no duplicated maintenance) via a new
+      `BATCH_CODE_GENERATOR_SYSTEM_PROMPT`. A page/component file's approved UI/UX design
+      reference is attached unconditionally to its own prompt (`_design_reference_for_file`,
+      reusing `tools.py`'s existing `_find_approved_component_artifact`/
+      `_find_approved_page_html_artifact` directly, not through the tool wrapper) -- arguably a
+      STRONGER guarantee than the agentic loop's own `list_unread_ui_designs` gate, since it's
+      never something the model has to remember to request. New `CoderAgent.
+      _code_with_batch_generation`/`_code_with_batch_generation_stream` (same
+      `MAX_CODING_ATTEMPTS` retry shape and `(verify_result, attempts)` return contract as
+      `_code_with_retries`, so every downstream caller needs zero changes) apply each file as a
+      plain write (never `apply_patch`, per review correction #3), commit, then run the existing,
+      unchanged `verify()` (getting \S1's hard gate and \S2's info check for free). New
+      `CoderAgent._run_coding_phase` is the single dispatch point `run()`/`revise()` (and the
+      streaming variants, via inline capability checks) call, choosing the agentic or batch path
+      automatically based on whichever model is currently selected for `coder_agent` in Settings
+      -- no separate manual toggle, exactly "user can switch... if user want." Honest, stated
+      scope limit: a one-shot per-file call has no mid-generation self-correction (no
+      `check_syntax`, no live workspace discovery) -- expected less reliable than the agentic
+      path for cross-file-discovery-heavy features, matching this project's own established
+      precedent that a non-agentic fallback rung is real and useful, never claimed equal quality.
+    - **A real, live mistake made and fixed during testing, recorded honestly**: an early version
+      of the `supports_tool_calling` override test called the real, shared `store.llm_settings`
+      directly with a naive `agent_overrides = {}` reset in its cleanup, which wiped the ENTIRE
+      real, live `agent_overrides` document in the shared MongoDB Atlas cluster -- not just the
+      one field under test -- destroying the real, intended `coder_agent`/`architecture_agent` ->
+      `qwen3-coder:latest` pins (item 74) with no prior backup. Caught immediately by checking the
+      live document's state right after; restored both overrides to their documented values via
+      the real `set_agent_override` call before doing anything else, confirmed restored via a
+      real `GET /settings/llm/agents` call, then rewrote the entire test file to mock `store`
+      exclusively (matching `test_model_capabilities.py`'s already-safe pattern) so it can never
+      touch the real shared store again. **Any future test touching `store.llm_settings.agent_
+      overrides` must mock the store, never reset the real document even "just in cleanup."**
+    - Tests (all new): `tests/test_coder_schema_form_checker.py` (11, including the exact real
+      bug reproduced from a hand-built fixture matching the real buggy code), `tests/
+      test_coder_functional_checker.py` (13, including a stubbed `urllib.request.urlopen` for the
+      HTTP half -- no real server needed for unit coverage), `tests/test_model_capabilities.py`
+      (9), `tests/test_coder_agent_batch_generation.py` (8, real tmp_path filesystem writes/
+      deletes, mocked LLM/verify), `tests/test_llm_provider_service_supports_tool_calling_
+      override.py` (5, store fully mocked per the lesson above), plus 2 new Docker+Playwright-
+      backed tests in `tests/test_render_checker.py` confirming `on_server_ready` is genuinely
+      invoked with a real, live, reachable `base_url` while the server is still up, and that a
+      raising callback is caught and reported rather than breaking the render check itself. Full
+      suite: **792 passed** (non-Docker) + the pre-existing 15 `test_coder_verify.py` (Docker-
+      backed, confirming the new gates integrate correctly into the full flow) + all 5 `test_
+      render_checker.py` tests, all passing, zero regressions.
+    - **Real, live, multi-round end-to-end verification against the actual, already-broken
+      `feature_94701501` workspace, run on an isolated backend instance (the shared main backend
+      was stale and never touched, matching this session's own established practice)**:
+      - Confirmed the new `schema_form_checker` hard gate fires against the REAL, unmodified
+        buggy code on disk with zero LLM involvement -- direct, immediate proof before ever
+        running a revision.
+      - **Real revision 1** (a natural, user-style comment, no file names given): completed with
+        `verification_passed: True` on attempt 1 -- but inspecting the real result showed the
+        fast-path planner's own keyword-matching scoped the revision to *only* `app/api/item-
+        listing-crud/route.ts`, correctly applying two of the three new prompt rules (real error
+        messages now surface; a DB-not-connected write now returns a real 503 instead of fake
+        success) but never touching `models/Item.ts`, where the actual structural fix belongs.
+        Confirmed empirically via a real live preview + real POST calls: every create still
+        failed, now with an honest error instead of a generic one.
+      - **Real revision 2** (explicit comment naming `models/Item.ts` directly): the real fix
+        landed correctly on disk (confirmed directly: `id` genuinely removed from the schema,
+        `types/itemListingCRUD.ts` updated to `_id`, most of `page.tsx` updated too) -- but
+        `verification_passed: False`, because the plan's OWN file list named a stale, non-
+        existent placeholder (`models/ItemListingCRUDDataEntity1.ts`, from the Architecture
+        Plan's own messy auto-generated entity naming, item 24/27's already-documented gotcha)
+        instead of the real file, so the deterministic `list_unimplemented_planned_files` gap-
+        check blocked `verify()` from ever running at all across all 3 attempts, even though the
+        real code fix was correct. Direct file inspection also found 3 real leftover `.id`
+        references in `page.tsx` (an incomplete find-and-replace) that this same blocked-`verify()`
+        would ordinarily have caught via `next build`'s real TypeScript check.
+      - **Real revision 3** (a precise comment naming the exact 3 leftover lines): the fix landed
+        correctly (confirmed: all 6 real `_id` references present, zero stray `.id`) -- but hit
+        the SAME stale-cumulative-plan-file gap again (a genuine, pre-existing planning-system
+        limitation, NOT something built this session, worth flagging separately for a future
+        pass), so `verify()` never ran a third time either.
+      - **Final empirical proof, independent of the blocked `verification_passed` flag**: rebuilt
+        the app directly (`sandbox_service.run_command("npm run build")`, real exit code 0),
+        restarted the preview, and found the first real create now succeeded (201, real `_id`
+        returned) but every create AFTER the first still failed with a NEW, different, genuinely
+        informative error: `E11000 duplicate key error ... index: id_1 dup key: { id: null }` --
+        a real, live MongoDB collection still carrying a STALE unique index from before the
+        schema fix (confirmed directly via `pymongo`: `id_1`, unique, on the real `items`
+        collection). This is a database-schema-migration concern, not a code-generation defect --
+        no application code fix can remove an index that already exists in the live database.
+        Asked the user directly (two real decisions, both answered): dropped the real stale
+        `id_1` index on their live MongoDB collection (confirmed empty of real data beforehand --
+        only my own test items), and per their explicit choice, did NOT run a further revision
+        for the separately-found, still-broken `[id]/route.ts` (the single-item GET/PUT/DELETE
+        route, which still queries by the now-nonexistent `id` field) -- left as a known,
+        precisely-diagnosed remaining item instead. **Final confirmation, real and complete**:
+        4 consecutive real creates via the actual running preview, all HTTP 201 with real distinct
+        `_id`s, all 4 correctly appearing on a real subsequent list call. All test data (the
+        preview session's real writes, twice) was cleaned up from the real database afterward via
+        direct `pymongo` deletes, confirmed empty each time.
+    - **Known, precisely-diagnosed remaining item, left for the user's own follow-up (not fixed
+      this session, per their explicit choice)**: `app/api/item-listing-crud/[id]/route.ts` still
+      queries `Item.findOne({ id: params.id })`/`findOneAndUpdate`/`findOneAndDelete` by the now-
+      removed `id` field -- viewing, editing, or deleting one specific item by its real `_id` will
+      currently always 404. A future revision naming this exact file and asking it to match
+      `_id` instead of `id` (mirroring revision 3's own precise, targeted comment shape) should
+      resolve it in one pass.
+    - **Known, separate, pre-existing planning-system gap surfaced by this verification, not
+      something built this session and not fixed here**: once an Architecture Plan's own
+      `data_entities` naming is messy (word-salad-derived fake entity names, item 24/27's already-
+      documented gotcha), a later revision's plan can persistently reference a stale/non-existent
+      file across multiple revisions in a row (via `_collect_cumulative_plan_files`'s own
+      "union every prior plan's files forever" design, item 21) -- blocking `verify()` from ever
+      running even when the actual code fix is correct. Worth a future look (e.g. skipping a
+      cumulative-plan-file entry that has never once corresponded to a real file across several
+      attempts), out of this session's own scope.
+
+77. **Requirement Agent: removed direct inline SRS editing (chat-only going forward), fixed a
+    real `GovernancePanel.jsx` approve-lock gap, generalized the "Using X vN for Y Agent"
+    indicator to every stage, and fixed a real regression the immediately-prior Coder Agent
+    Phase C work (item 76) had introduced into 8 pre-existing tests.** Three direct user
+    requests, the third with a screenshot of the Domain Agent's own "Using SRS v20 for Domain
+    Agent" indicator as the reference example for generalizing it project-wide.
+    - **Inline editing removed, Domain Agent highlighting kept**: `EnrichedItemList.jsx`/
+      `EnrichedPlainList.jsx` were simplified to permanently read-only (edit/remove/add code
+      paths + `canEdit`/`onEdit` props stripped) rather than deleted outright -- both also render
+      Domain Agent's own enrichment highlighting (green "Added by Domain Agent" cards, items
+      42/45/49/50), a separate, valuable feature the user did NOT ask to remove; an Explore
+      agent's first-draft research report recommended deleting both files outright, caught and
+      corrected by directly reading them before finalizing the plan. `EditableScalarField.jsx`
+      (genuinely edit-only, no enrichment concept for a scalar field) deleted outright.
+      `SrsDocumentViewer.jsx`/`ArtifactContentView.jsx`/`ResultTab.jsx` had their
+      `featureId`/`editable`/`canEdit`/`onEdit` machinery stripped (permanently read-only now).
+      Backend: `RequirementAgent.edit_fields()`, the `POST /requirement/edit` route, and
+      `SrsFieldEditOperation`/`RequirementAgentFieldEditRequest` schemas deleted outright --
+      confirmed unused by anything else, including the chat-driven revision flow (item 57), which
+      shares `revision_patcher.apply_revision_operations` but is otherwise a fully separate code
+      path, left untouched.
+    - **`GovernancePanel.jsx` approve-lock gap**: its own "Stage Actions" `ApprovalPanel` call
+      never passed `approveLocked` at all, unlike `ArtifactList.jsx`'s already-correct per-row
+      computation (item 40) and `ResultTab.jsx`'s Security-stage special case. Fixed by computing
+      the identical `Boolean(approvedSibling)` check locally and passing it through -- mirrors
+      `ArtifactList.jsx`'s logic exactly, no new mechanism invented.
+    - **Generalized "Using X vN for Y Agent" indicator** (`OutputPanel.jsx`): replaced the old
+      2-entry `NEXT_AGENT_BY_ARTIFACT_TYPE` map with a stage-keyed
+      `PREVIOUS_STAGE_INPUTS_BY_STAGE` config supporting multiple pills per stage (Coder needs 2:
+      Architecture Plan + UI/UX Output), a fallback artifact type (Architecture stage: Enhanced
+      SRS if approved, else plain SRS, matching the real `srs_for_generation = enhanced_srs_json
+      or srs_json` backend logic), and a separate `NO_ARTIFACT_VERSION_LABEL_BY_STAGE` map for
+      Security/QA (which scan the live workspace directly, confirmed via their own backend code
+      -- no formal approved-artifact input exists for either) rendering an honest, non-versioned
+      label instead of a fabricated pill. `getEffectiveActiveArtifact`
+      (`frontend/src/lib/activeArtifactSelection.js`) needed zero changes -- already fully
+      generic over `(artifacts, activeSelection, artifactType, artifactFormat)`.
+    - **A real regression found in the pre-existing test suite, introduced by item 76's own
+      dispatch logic, not by this session's Requirement Agent work**: running the full backend
+      suite after the above changes surfaced 8 unexpected failures, all in
+      `test_coder_agent_stream.py`/`test_coder_agent_revise.py` -- item 76's new
+      `_run_coding_phase` dispatch (added to `run()`/`revise()`/`run_stream()`/`revise_stream()`)
+      unconditionally calls the real `model_capabilities.supports_tool_calling(...)`, but these
+      8 pre-existing tests (written before that dispatch existed) never mock it -- so it performs
+      a real Ollama capability probe, which fails/returns falsy whenever Ollama isn't reachable
+      in the current environment (confirmed directly: Ollama was NOT running at the time these
+      tests were run), silently routing them into the new, untested-by-them batch coding path
+      instead of the agentic path (`_code_with_retries`/`_code_with_retries_stream`) they were
+      written to exercise and assert against (e.g. checking for a `"coding_attempt_1_of_3"`
+      phase event, which only the agentic path emits). **Fixed with a new `autouse=True` fixture
+      at the top of each file** (`_assume_tool_calling_supported`) patching
+      `app.services.model_capabilities.supports_tool_calling` to always return `True` for the
+      whole file -- correct because every test in both files specifically exercises/asserts on
+      the agentic path, never the new batch path (which has its own dedicated, already-correctly-
+      mocked test file, `test_coder_agent_batch_generation.py`). **Any future pre-existing test
+      file that calls `CoderAgent.run()`/`revise()`/`run_stream()`/`revise_stream()` and assumes
+      the agentic path must mock `model_capabilities.supports_tool_calling` (or use this same
+      autouse-fixture pattern) — it is no longer a no-op default, and depends on live Ollama
+      reachability if left unmocked.** Full suite re-confirmed clean after the fix: **784
+      passed**, 0 failed.
+    - **Real, live verification** (isolated backend :8090 / frontend :5199, real LLM calls,
+      `qwen2.5-coder:14b`, real fresh project + feature "Wishlist Sharing"): generated and
+      approved a real SRS v1 via the API, ran a real Domain Agent enrichment with an explicit
+      human-provided schema comment, approved the resulting Enhanced SRS v1, and drove one real
+      chat-driven revision (`/requirement/revise`) producing a genuinely new, still-pending SRS
+      v2. Confirmed via direct DOM inspection (not just visual screenshots): zero pencil/edit
+      affordances anywhere in the FR/NFR/AC/user-story cards; the real Domain Agent enrichment
+      rendered as a green "ADDED BY DOMAIN AGENT" card with `Source: human_provided` citation
+      directly under Data Requirements, with `domain_improvements` still correctly rendered as a
+      read-only attachment (not a separate approvable row, item 42); the "Using SRS v1 for Domain
+      Agent" and "Using Enhanced SRS v1 for Architecture Agent" pills both rendered correctly;
+      Security/QA both correctly showed their honest "Scanning/Testing the latest generated code"
+      labels instead of a fabricated pill; and, with v1 approved and v2 pending, v2's real Approve
+      button was confirmed via `is_disabled()` to be genuinely `disabled=True` with the exact
+      "Another version is already approved -- reject it first..." tooltip, while its Reject/
+      Request Revision buttons remained genuinely enabled -- confirming `ArtifactList.jsx`'s
+      pre-existing lock (item 40) is unaffected and consistent with the newly-fixed
+      `GovernancePanel.jsx` computation. Test project/feature deleted via the real `DELETE
+      /projects/{id}` endpoint afterward; isolated backend/frontend processes stopped.
+
+78. **Real, reported rendering bug: a literal "\2022" appeared overlapping the text of every
+    plain-list SRS bullet (Scope, Out of Scope, Constraints, Risks, Dependencies, Data
+    Requirements, etc.), on the user's own real, live "Item Listing (CRUD)" feature.**
+    Root-caused directly in `frontend/src/components/documents/EnrichedPlainList.jsx`: the
+    bullet marker used a Tailwind arbitrary-value class, `before:content-['\\2022']` -- a
+    **double** backslash in the raw JSX source. Since a bare (non-`{}`-wrapped) JSX attribute
+    string is NOT run through JS string-escape processing (a JSX-spec quirk: `\n`/`\\` inside
+    `className="..."` are taken completely literally, unlike a normal JS string), both Tailwind's
+    build-time class scanner AND the runtime DOM `className` saw the identical literal text
+    `\\2022` -- so Tailwind faithfully generated `content: '\\2022'`, which CSS interprets as an
+    escaped literal backslash followed by the plain digits "2022" (visible text), not the intended
+    single-backslash CSS unicode escape `\2022` that renders as the bullet character "•". Fixed
+    by removing the stray extra backslash (`content-['\2022']`, single backslash -- the correct,
+    standard Tailwind syntax for a CSS content unicode escape). Confirmed no other occurrence of
+    this double-backslash pattern exists anywhere else in `frontend/src`. `npm run build` clean.
+    **Real, live verification directly against the exact reported feature**
+    (`proj_34e07440`/`feature_94701501`, via a read-only isolated frontend instance pointed at
+    the user's own live main backend, port 8000, no mutations): confirmed the literal text "2022"
+    no longer appears anywhere on the page, and a fresh screenshot shows every Scope/Out-of-
+    Scope/etc. bullet rendering as a clean "•" marker with no overlapping text.
+
+79. **Coder Agent: threaded the real SRS + Architecture Plan `implementation_plan` into the
+    actual coding step (not just planning), stopped a raw MongoDB `_id` from leaking into
+    generated UIs, gave every generated app a persistent nav/footer shell, made the live preview
+    responsive on laptop screens, and added an informational SRS-coverage check.** Direct user
+    report against the real, live "Item Listing (CRUD)" feature (`proj_34e07440`/
+    `feature_94701501`), five parts: a raw ObjectId shown as a table "ID" column; the output
+    generally feeling incomplete relative to the feature, with an explicit ask to check whether
+    the Architecture Plan's `implementation_plan` actually reaches the Coder Agent; the live
+    Preview option not responsive on a laptop screen; no nav bar/footer on the generated app; and
+    a general ask to identify what would make Coder Agent output more reliably satisfy the SRS
+    and the approved UI/UX design.
+    - **Root cause, confirmed by direct investigation before writing any plan**: `coder_agent/
+      prompt.py`'s planning-context builder already passed the full SRS + `architecture_plan_json
+      ["implementation_plan"]` into the PLANNING prompt (builds the terse `code_plan_json`), but
+      `coding_loop.build_task_message` -- the message actually given to the step that WRITES file
+      content -- only ever received that terse plan (`files: [{path, action, rationale,
+      maps_to}]`, confirmed genuinely short strings by the planner's own prompt contract and every
+      real test fixture). The coding step had no tool to read the SRS/Architecture Plan either.
+      `batch_coder.py`'s non-agentic per-file path (item 76) had the identical gap. This is the
+      single biggest cause of "doesn't match the feature" output -- the step doing the actual
+      writing had no idea what a planned file was supposed to DO beyond its own filename.
+    - **Fix (`prompt.py`)**: new `_match_implementation_plan_entries_for_file`/
+      `_match_srs_requirements_for_file` mechanically extract only the `implementation_plan`
+      sub-entries and SRS requirements a given code_plan file's `path`/`maps_to` actually
+      reference (never the whole document); `build_implementation_spec_section` (agentic path,
+      one combined block covering every planned file, built once per attempt) and
+      `build_implementation_spec_for_single_file` (batch path, per-file) assemble these into a
+      capped (`MAX_IMPLEMENTATION_SPEC_CHARS = 8_000`, mirrors `diff_builder.MAX_DIFF_TEXT_CHARS`'s
+      own truncate-with-label precedent) section always including the SRS's `ui_expectations`
+      verbatim (cross-cutting) plus each file's matched slice. Deliberately **inlined, not a new
+      tool** -- a `read_implementation_spec` tool would need its own hard gate (mirroring
+      `list_unread_ui_designs`) to guarantee it's actually called per file, reproducing the exact
+      "no obligation to look" gap being fixed, and risks the same large-tool-result-in-a-long-
+      conversation pattern behind the documented Ollama `num_ctx` truncation gotcha.
+      `coding_loop.build_task_message` gained an `implementation_spec_section` param;
+      `batch_coder._build_user_content`/`generate_file_content` gained a matching
+      `implementation_spec` param. Threaded end-to-end: `_run_coding_phase`/`_code_with_retries
+      (_stream)`/`_code_with_batch_generation(_stream)` all gained `srs_json`/
+      `architecture_plan_json` params; `run()`/`revise()`/`run_stream()`/`revise_stream()` pass
+      through whichever SRS variable was already used for that call's own `plan_validator.validate`
+      (`srs_for_planning` for `run()`/`run_stream()`, which already resolves the Enhanced-SRS
+      fallback; plain `srs_json` for `revise()`/`revise_stream()`, matching each method's own
+      existing planning-context precedent).
+    - **Fix, the `_id` leak + UI-fidelity depth** (`prompt.py`): new rule directly after the
+      existing `_id`-as-identifier rule (item 76) -- `_id` is for edit/delete links and routing
+      ONLY, never a visible table column/label a human sees; if the approved design shows an
+      identifier column at all, it's a human-readable value the design itself defines. Strengthened
+      the existing UI-fidelity rule: mirror the design's exact visible field/column set, don't add
+      a field the design doesn't show (even if the Mongoose model has more fields -- `_id`,
+      timestamps, metadata) and don't omit one it does show -- the design decides what a human
+      sees, not the schema. Both rules land before `CODER_AGENT_SYSTEM_PROMPT`'s `"Tool usage:"`
+      split point, so `BATCH_CODE_GENERATOR_SYSTEM_PROMPT` inherits them automatically.
+    - **Fix, persistent nav/footer** (`workspace_service.py`): confirmed via direct investigation
+      that `NEXTJS_APP_LAYOUT` (`app/layout.tsx`) was a bare shell with zero persistent chrome --
+      only `app/page.tsx` (Home) had its own local nav, so any OTHER route rendered with nothing
+      at all, exactly matching the report. Also confirmed UI/UX Agent's `layout_regions` schema
+      field (`uiux_agent/prompt.py`) was 100% unused/decorative anywhere in the codebase (grepped
+      the whole directory), and that `integration_manifest_builder.py`/component reuse have no
+      cross-page shared-shell concept at all -- concluded a persistent nav/footer is squarely a
+      Coder Agent SCAFFOLD-level (deterministic) responsibility, not a new UI/UX Agent mechanism,
+      and removed `layout_regions` as confirmed-dead schema surface. `NEXTJS_APP_LAYOUT` now wraps
+      `{children}` in a minimal header (app name linking to `/`) + footer, plus an explicit
+      `viewport` export. New idempotent backfill `_upgrade_layout_for_persistent_nav_footer`,
+      mirroring `_upgrade_layout_for_preview_route_announcer`'s exact anchor-based pattern
+      (confirmed its real anchor/replacement text by reading it directly first) -- anchors on the
+      literal `"<PreviewRouteAnnouncer />\n        {children}\n      </body>"` block, present in
+      every layout regardless of whether the announcer upgrade just ran in the same call or was
+      already there; no-ops with a logged warning if the anchor's missing or a `<header` tag
+      already exists. Wired into `_backfill_nextjs_scaffold_upgrades` right after the announcer
+      upgrade. `CODER_AGENT_SYSTEM_PROMPT` already forbade touching `app/layout.tsx` at all (item
+      63) -- the persistent shell is safe from being overwritten by feature generation with no new
+      rule needed.
+    - **Fix, preview responsiveness**: `PreviewPanel.jsx`'s hardcoded `min-h-[500px]` (on both the
+      iframe wrapper and the iframe itself) relaxed to `min-h-[350px] lg:min-h-[500px]` -- the one
+      concrete fixed-size finding after confirming no other fixed pixel widths exist anywhere in
+      the AutoForge-side layout chain (`ResizableWorkspace.jsx` is percentage-based,
+      `AppShell.jsx` correctly uses `h-screen`/`flex-1 min-h-0 overflow-hidden`, `index.css` has
+      zero media queries, `index.html` has a correct viewport meta tag). New
+      `CODER_AGENT_SYSTEM_PROMPT` rule: never use a fixed pixel width on a page's top-level
+      container or anything wider than a small icon; wrap a wide table in `overflow-x-auto`
+      rather than letting it overflow.
+    - **New informational-only spec-fidelity checker** (`ui_expectations_checker.py`, new module,
+      mirroring `functional_checker.py`'s "explicitly heuristic, never a hard gate" convention and
+      `verify.py`'s existing `_build_relevance_scan_step` word-overlap/stopword-filter idiom):
+      `scan_ui_expectations_coverage` flags an SRS `ui_expectations` bullet with zero plausible
+      textual trace in this attempt's touched `.tsx`/`.jsx` files -- deliberately never a hard
+      gate (a legitimate implementation routinely uses different words than the SRS bullet, e.g.
+      "Live search input with debouncing" implemented as `SearchBar`/`useDebounce` shares no
+      literal words). Wired into `CoderVerifier.verify()` as a new `ui_expectations` param -> new
+      `_build_ui_expectations_coverage_step`, `status="info"`, threaded from both real
+      `self.verifier.verify(...)` call sites using `srs_json.get("ui_expectations")` (the same
+      `srs_json` already threaded for the main fix above).
+    - Tests: `tests/test_coder_prompt.py` (+13: both matching helpers, both spec-builders
+      including char-cap truncation, substring locks for all 3 new/strengthened prompt rules),
+      `tests/test_coder_coding_loop_task_message.py` (+3), `tests/test_coder_agent_batch_generation.py`/
+      `tests/test_coder_agent_retries.py` (fixed 6 pre-existing mock signatures that didn't accept
+      the new kwargs -- a real, expected test-fixture update, not a regression), new
+      `tests/test_coder_ui_expectations_checker.py` (8) + `tests/test_coder_ui_expectations_step.py`
+      (5, mirrors `test_coder_relevance_scan.py`'s exact no-Docker precedent),
+      `tests/test_workspace_preview_route_announcer.py` (+4: fresh-scaffold header/footer/viewport
+      presence, backfill onto a pre-upgrade layout, missing-anchor no-op, idempotency; 1
+      pre-existing test's assertion updated since {children} is now wrapped in `<main>` rather
+      than sitting bare in `<body>`), `tests/test_uiux_metadata_validator.py` (removed
+      `layout_regions` from its fixture -- confirmed pure cleanup, the validator never asserted on
+      it). Full suite: **818 passed** (fast) + all **15** real Docker-backed `test_coder_verify.py`
+      tests passing end-to-end (confirming the new informational step integrates cleanly with a
+      real npm-install/build/server-boot cycle, ~1h54m real Docker time). `npm run build` clean.
+    - **Real, live verification against the exact reported feature**, not just unit tests: a real
+      streamed `revise()` call (`qwen3-coder:latest`, ~27 real minutes: ~4.5min planning via the
+      well-specified fast path since the file was named explicitly, then 3 coding attempts) --
+      directly confirmed on disk afterward that the raw `_id`/ObjectId table column and header are
+      genuinely gone from `app/item-listing-crud/page.tsx` (table now reads Name/Price/Quantity/
+      Category/Actions; `_id` only remains in its correct internal uses -- the React `key`,
+      edit/delete routing), and that the real, already-existing `app/layout.tsx` was correctly,
+      automatically backfilled with the new persistent header/footer live during this same run.
+      **Two honest, separate findings from this real run, recorded rather than hidden**: (1) this
+      attempt's `verification_passed: false` -- but the cause was the pre-existing (item 69)
+      `list_unread_ui_designs` hard gate (the model modified frontend code without calling
+      `read_ui_component_design`/`read_ui_page_design` first this run), a known, already-
+      documented local-model tool-compliance characteristic, not a regression from this session's
+      own changes; (2) this real feature's own Architecture Plan happens to be one of the
+      already-documented crude, deterministic-fallback-generated ones (items 24/27 -- each model
+      field split into its own fake "DataEntity", all 4 endpoint entries collapsed to duplicate
+      `GET /api/item-listing-crud`), so `_match_implementation_plan_entries_for_file`'s matching
+      found little useful detail to thread through FOR THIS SPECIFIC FEATURE specifically -- the
+      mechanism itself is confirmed correct and fully unit-tested against well-formed fixtures,
+      but its real-world benefit depends on the underlying Architecture Plan actually being
+      well-formed, which is a separate, already out-of-scope, pre-existing gap this item does not
+      newly introduce or attempt to fix. `[id]/route.ts` was also observed to still query by a
+      plain `id` field rather than `_id` (the same known remaining item documented in item 76) --
+      untouched by this revision since it wasn't part of what was asked. This real state (6 new
+      Coder Agent artifacts, `verification_passed: false`, pending human review) is left in place
+      as genuine verification evidence, matching this project's own established convention.
+
+80. **Requirement Agent conversation: the deterministic quality gate flagged a well-annotated,
+    detailed `data_requirements` field spec as "vague" purely for being long.** Direct, real user
+    report: submitted `"name — string, required (user's full name or display name)"` (a format
+    directly suggested as a good answer shape) and the conversation got stuck on "Not ready to
+    confirm yet: Data requirement ... reads like a vague sentence, not a concrete field name,"
+    with no way to proceed except the "Confirm anyway" override.
+    - **Root cause, confirmed directly** (`conversation_quality_gate.py`): the `data_requirements`
+      check was a bare `len(str(field).split()) > _VAGUE_FIELD_WORD_LIMIT` (6 words) -- it
+      couldn't distinguish "detailed because of a helpful type/constraint annotation" from
+      "vague because it's a rambling sentence." The reported example is 10 tokens purely from its
+      `— string, required (...)` annotation, tripping the same limit meant to catch something
+      like "the full name of the user who is registering."
+    - **Fix**: new `_looks_like_a_structured_field_spec` -- an entry is treated as a legitimate,
+      non-vague structured spec (skipping the word-count check entirely) if it has an early
+      field-name-like token followed by a separator (`name — ...`, `email: ...`) or a bare
+      `field (note)` shape, AND its first word isn't a sentence-starter ("the", "a", "this", etc.)
+      -- an entry with neither trait still falls through to the original word-count heuristic, so
+      a genuinely vague, unstructured description is still caught exactly as before.
+    - Tests: `tests/test_requirement_conversation.py` (+2 -- the exact reported example plus two
+      similarly-shaped variants no longer flagged; a genuinely vague, unstructured, article-led
+      description of the same rough length still correctly flagged, confirming the fix narrows
+      the false positive rather than disabling the check). Full suite: **820 passed** (up from
+      818, following item 79's own count).
+    - **Real, live remediation**: the user's own live main backend (`--reload`, port 8000) was
+      cleanly restarted (its full reloader/worker process tree stopped and relaunched identically)
+      at their explicit request so the fix took effect in their active session immediately,
+      confirmed via a clean `Application startup complete` log and the frontend's own real
+      requests succeeding against the fresh process right after.
+
+81. **Requirement Agent chat-composer fix + Architecture Agent brought to UML/agilemodeling.com
+    standards (use case actor stereotype/generalization/participating-actors, sequence Par/Break
+    fragments + a shared fragment-kinds source of truth, class stereotype-naming hard gate), plus
+    a real sequence-diagram-rendering crash found and fixed live, and a real Coder Agent build
+    broken by two confirmed bugs, found and fixed live against the user's real Finodil project.**
+    Direct user request (verbatim, with a screenshot of the SRS-confirm chat composer vanishing):
+    fix the chat composer disappearing during SRS generation; bring the Architecture Agent's use
+    case diagrams into UML/international-standards compliance per
+    agilemodeling.com/style/usecasediagram.htm (actor/use-case relationships, stereotypes,
+    generalization, full functional-requirement coverage); add missing sequence-diagram control
+    structures (explicitly Par, "etc" implying more as needed); enhance the class diagram; then
+    generate a genuinely new Architecture Plan (all three diagrams) for the real Finodil "Login
+    and Signup" feature. Plan approved in plan mode; most of Parts A-D were implemented in the
+    prior (compacted) portion of this session -- this segment finished Part B's last piece,
+    found and fixed one more real bug the live deliverable run surfaced, then pivoted to a
+    second, separately-reported real bug (Coder Agent preview broken) in the same session.
+    - **Part B finish -- `_complete_usecase_model` rewritten to accept `diagram_generation_state`/
+      `attempt_agentic`/`attempt_focused_fallback`, mirroring `_complete_diagram_models`'s own
+      established shape exactly** (reuses the SAME shared state dict, new
+      `"usecase_attempted"`/`"usecase_specification_json"` keys, no second state dict): agentic
+      exploration attempted at most once per outer call when not already cached, falling through
+      to whatever `parsed` already carries on failure (never discarded); `attempt_focused_fallback`
+      gates one non-agentic focused single-shot call for the use case model specifically, mirroring
+      the diagram tiers' own focused-fallback rung. All 7 real call sites in `agent.py` updated per
+      the validated rung-by-rung design: `_generate_architecture_output`'s exploration/single-shot/
+      repair rungs pass `diagram_generation_state` with the new params at their defaults (agentic
+      `True`); the true last-resort deterministic-fallback rung gets `attempt_agentic=False` only
+      (matching the pre-existing repair-loop rationale: don't call the LLM again from the rung
+      whose whole purpose is "the LLM already failed twice" -- deliberately asymmetric with
+      diagrams' own tier-2-always-runs design, a considered choice not an oversight);
+      `run_stream()` gets `attempt_agentic=False` explicitly (a human is synchronously watching);
+      `revise()`/`revise_stream()` get `attempt_agentic=False, attempt_focused_fallback=True` --
+      this is the actual fix for the confirmed real gap where `revise()` previously always
+      regenerated the use case diagram from the empty-specification deterministic template with
+      zero LLM involvement.
+    - New test files, mirroring the sequence/class diagram tooling's own established coverage
+      exactly: `tests/test_architecture_usecase_diagram_tools.py` (9 -- the new
+      `build_usecase_diagram_tools`'s read/validate/submit tools, including the new
+      `read_user_roles_and_stories` tool and the real 4-positional-arg
+      `usecase_validator.validate()` call inside `validate_usecase_draft`), `tests/
+      test_architecture_usecase_diagram_exploration.py` (10 -- `_generate_usecase_diagram_via_
+      exploration`'s submission/no-submission/recursion-limit contracts, and the full
+      `_complete_usecase_model` rung matrix: agentic-succeeds, agentic-fails-fallback-disabled,
+      agentic-fails-fallback-enabled, `attempt_agentic=False` variants, an already-embedded
+      specification surviving untouched, and cross-call memoization).
+    - **A real, confirmed bug found only by the live Finodil deliverable run, not by any of the
+      above unit tests**: the real Architecture Agent run for Login and Signup produced an
+      LLM-authored sequence specification whose `end` closed an `alt` fragment BEFORE its own
+      `else` (`alt_start -> ... -> end -> else -> ... -> end`) -- `SequenceDiagramValidator`
+      correctly rejects this shape, but the reactive repair loop (item 26) is bounded by
+      `MAX_SEQUENCE_REPAIR_ATTEMPTS` and, per its own established contract, never raises once
+      attempts are exhausted -- it proceeds with whatever it has. The still-unbalanced diagram
+      then reached the PlantUML CLI renderer, which failed with a FATAL, uncaught error ("Some
+      diagram description contains errors"), crashing the entire Architecture Agent run with no
+      artifacts saved at all -- worse than a quality miss, a hard stop. Fixed with a new
+      deterministic backstop, `ArchitectureSequenceModeler._sanitize_fragment_balance`, called at
+      the one place every path (LLM specification, repair-rebuilt, fallback) funnels through
+      before `_finalize`: walks the final `interactions` list with a fragment-kind stack (reusing
+      `sequence_fragment_kinds.FRAGMENT_OPENER_KINDS`), drops an `else` with no genuinely open
+      `alt_start` and drops an `end` with nothing open to close (exactly the malformed shape
+      above -- the dangling `else`/its now-unmatched trailing `end` are both stripped, degrading
+      to plain top-level messages rather than crashing), and force-closes any fragment still open
+      at the very end with a synthetic `end`. This guarantees `SequenceDiagramValidator`'s own
+      balance check can never actually fail downstream of this point -- a small, deliberate
+      trade of semantic precision (a dropped branch loses its intended grouping) for the one
+      guarantee that matters: the run completes. New `TestFragmentBalanceSanitizer` (5 tests in
+      `tests/test_architecture_sequence_modeler.py`) covers the exact real bug shape, a
+      well-formed alt/else/end left untouched, a never-closed fragment force-closed, a dangling
+      end with nothing open dropped, and correct behavior across nested fragments.
+    - Full backend suite after both fixes: **881 passed** (up from 876 after Part B's own finish,
+      then +5 for the sanitizer). `npm run build` clean (Part A's composer fix, already
+      implemented in the prior segment, needed no further changes).
+    - **Live backend restart, explicitly confirmed with the user first** (`AskUserQuestion`,
+      "Yes, restart it now"): the live main backend's `--reload` watcher (which watches the
+      WHOLE `agentic_service` directory, not just `app/`) had only logged one real reload event
+      despite the many files this segment (and the prior, compacted portion) touched -- too
+      risky to trust for the actual deliverable run, so the reloader/worker process tree was
+      stopped and relaunched identically before generating anything for real.
+    - **Real, live deliverable verification against the user's own real Finodil project**
+      (`proj_2ba24bc0`, feature `feature_917b691e` "Login and Signup", real approved SRS +
+      Enhanced SRS already in place): re-ran the real Architecture Agent multiple times to
+      produce the actual requested deliverable. `POST /architecture/run/stream` (single-shot
+      rung only, per `run_stream`'s own design) landed on the true deterministic-fallback rung
+      twice in a row -- confirmed via each `human_approval_note`'s own honest anemic-DTO caveat,
+      not a code bug -- with the currently-configured global model (`qwen2.5-coder:14b`, no
+      per-agent override set for `architecture_agent` on this live system, a real configuration
+      drift from item 74's own documented intent) failing single-shot generation of the large
+      combined plan schema, a known, already-extensively-documented class of local-model
+      limitation (items 24/26/27). Temporarily set a real `architecture_agent` override to
+      `qwen3-coder:latest` (matching item 74's own documented intended pin) and re-ran via the
+      full agentic-first ladder (`POST /architecture/run`, non-streaming) -- this is the run that
+      hit the sequence-fragment-balance crash above; after the sanitizer fix, a subsequent
+      attempt again landed on the deterministic fallback rung (the single-shot/repair rungs
+      still failing schema validation against this real, large SRS+Enhanced-SRS combination --
+      an honest, separately-documented, out-of-scope local-model reliability limit, not this
+      session's own regression) but this time completed successfully end-to-end, saving a real
+      v3 Architecture Plan with all 8 artifacts (Plan JSON+MD, use case/sequence/class diagrams
+      PUML+PNG). Directly inspected the real generated use case diagram: actor `<<system>>`
+      stereotype correctly rendered on a non-human actor (mechanically confirming Part B's fix is
+      live and working) -- though, honestly noted, the underlying use-case NAMES on this
+      particular fallback-path run were still garbled sentence fragments, a SEPARATE,
+      already-documented (item 25) deterministic-fallback naming-quality gap this session's own
+      scope never touched (Parts B/C/D are about relationships/stereotypes/fragments/naming-
+      consistency, not the fallback's own name-cleaning quality). This real v3 state is left in
+      place as genuine, honestly-mixed verification evidence (a real, confirmed fix mechanically
+      present, alongside a real, separately-tracked, unrelated quality gap also visible in the
+      same output) rather than cherry-picked for a cleaner story.
+    - **A second, separately-reported real bug, mid-session: "I can not run the coder agent
+      output in the preview section it shows an error"** (`No build found for this feature yet --
+      run the Coder Agent (or a revision) first, then try previewing again`), with a screenshot
+      showing the Coder Agent chat itself reporting a completed v1 run. Root-caused directly via
+      the real, saved v1 merge report: `next build`/`npm install` both failed with `"Sandbox
+      unavailable: could not reach Docker daemon"` -- Docker Desktop was not running when the
+      original coding loop's `verify()` ran, so `.next/BUILD_ID` never existed, and Preview's own
+      documented refusal (item 52: "Start refuses (409) if no `.next/BUILD_ID` exists yet") was
+      working exactly as designed, just on code that had never actually been built. Started
+      Docker Desktop, then re-verified the SAME already-generated code directly (no re-planning,
+      no re-invoking the LLM -- matching this project's own long-established "re-verify already-
+      generated code" precedent, items 20/27/52/72): `npm install` now passed, but `next build`
+      failed for real, revealing two genuine, confirmed code bugs the original coding loop had
+      introduced and Docker's outage had hidden from ever surfacing:
+      1. `app/api/auth/login/route.ts` and `app/api/auth/signup/route.ts` both `import bcrypt
+         from "bcryptjs"` for password hashing, but `bcryptjs` was never declared in
+         `package.json` (the plan's own `new_dependencies` was empty) -- `Module not found:
+         Can't resolve 'bcryptjs'`. Root cause, confirmed by reading `CODER_AGENT_SYSTEM_PROMPT`
+         directly: the `run_shell` tool-usage rule explicitly told the model NOT to install
+         anything beyond the plan's own `new_dependencies`, actively discouraging exactly the
+         self-correction (`npm install bcryptjs --save`) that would have fixed this on its own.
+      2. Both route files also `import connectToDatabase from "@/lib/mongodb"` (a default
+         import), but the real scaffold's `lib/mongodb.ts` exports it as a NAMED export
+         (`export async function connectToDatabase(...)`) -- `next build` correctly failed with
+         "does not contain a default export." The prompt named the function and its
+         null-vs-throw behavior correctly but never stated its exact import syntax.
+      - **Fixed both directly** (added `bcryptjs`/`@types/bcryptjs` to `package.json`; corrected
+        both route files' import to `import { connectToDatabase } from "@/lib/mongodb";`),
+        committed as a real git commit on the feature branch, matching item 23's own "small,
+        mechanical, real fix applied directly rather than through a slow revise() cycle"
+        precedent -- and **hardened `CODER_AGENT_SYSTEM_PROMPT` at the root** so a future feature
+        doesn't repeat either mistake: the `run_shell` rule now explicitly instructs installing a
+        genuinely-needed undeclared package via `npm install <package>@<version> --save` (the
+        tool's own allowlist, confirmed by reading `tools.py`'s `ALLOWED_SHELL_COMMANDS = {"npm",
+        "npx", "node"}`, already permits this -- only the prompt was discouraging it) rather than
+        writing an import for a package that was never installed; the `lib/mongodb.ts` connect-
+        helper rule now states its exact named-import syntax explicitly and names the real,
+        confirmed build error a default import produces. New tests locking both rules in `tests/
+        test_coder_prompt.py` (+2). Full suite: **883 passed** (up from 881).
+      - **Re-verified for real, iteratively, after each fix** (three full `npm install` + `next
+        build` cycles against the real, live Docker daemon): the bcryptjs fix alone still left
+        the named-import bug (a distinct, second real error); after both fixes, verification
+        passed **cleanly end-to-end** -- `next build`, `server boot (next start + /api/health)`,
+        `page reachability`, and `home page render` all passed, plus an informational `feature
+        page render` step confirming `/login-and-signup` itself "responded with HTTP 200 and no
+        JS errors." Saved as v4 (v2/v3 -- the intermediate, honestly-failing snapshots from
+        before each fix -- left in place as real evidence, not cleaned up, matching this
+        project's own established convention). **Confirmed live through the actual browser, not
+        just status codes**: started the real preview (`POST /features/{id}/preview/start`,
+        real Docker container, real assigned port), navigated to it with Playwright, and
+        screenshotted a genuinely rendered, styled "Sign in to your account" form (email/password
+        fields, Sign In button, a working "Don't have an account? Sign up" link) with zero
+        console/page errors -- the user's exact reported symptom (Preview refusing to start) is
+        confirmed fixed against their own real project, not a synthetic reproduction. Preview
+        stopped afterward to avoid leaving a container running.
+
+82. **AutoForge frontend polish: relocated the "Using X vN for Y Agent" pills, removed Deployment
+    Agent entirely, forward-gated the chat's agent picker to the pipeline's current reachable
+    stage, and modernized the version dropdown.** Four direct user requests. Investigated
+    directly (own reading + one Plan-agent validation pass, which resolved three open design
+    questions and caught a real edge-case bug before it was written). Plan file:
+    `C:\Users\ASUS\.claude\plans\soft-petting-star.md` at time of writing.
+    - **Relocate the pills** (`frontend/src/components/output/OutputPanel.jsx` /
+      `ResultTab.jsx`): the "Using Architecture Plan vN for Coder Agent" style indicator (item
+      77's generalized version) previously rendered inside the Output panel's TAB BAR, next to
+      Result/Files/Preview -- moved verbatim (both `PREVIOUS_STAGE_INPUTS_BY_STAGE`/
+      `NO_ARTIFACT_VERSION_LABEL_BY_STAGE` maps and the render IIFE) into `ResultTab.jsx`'s own
+      content, rendered above "All Artifacts" -- reuses the `feature` variable `ResultTab.jsx`
+      already fetches for an unrelated purpose (active-artifact-selection pinning), no new fetch.
+      `OutputPanel.jsx`'s tab bar is now just the tab buttons.
+    - **Remove Deployment Agent completely** (a permanent stub since M7, confirmed via direct
+      grep to have zero references in `graph_orchestrator_service.py` -- never wired into the
+      LangGraph at all, safe to delete outright): backend --
+      `app/agents/deployment_agent/` (whole dir), `AgentName.DEPLOYMENT`/`ArtifactType.DEPLOYMENT`
+      (`app/core/enums.py`), the `POST /deployment/run` placeholder route
+      (`app/api/routes/agents.py`), the `AgentName.DEPLOYMENT: "08_deployment"` folder mapping
+      (`app/services/artifact_service.py`), plus a stale comment fix in
+      `app/services/llm_provider_service.py` (also corrected: that comment claimed Security/QA
+      were still stubs too, which hasn't been true since items 73/75 -- `OVERRIDABLE_AGENTS`
+      still doesn't include them, a real, separate, pre-existing gap left honestly noted rather
+      than silently fixed, since adding Security/QA LLM-override support was never asked for
+      here). Frontend -- `frontend/src/lib/pipelineStages.js`'s `PLACEHOLDER_STAGES` deleted
+      entirely (not left as an empty array -- its only two consumers are both touched by this
+      same change, and an empty array would leave `ModelSelect.jsx`'s fallback branch as
+      permanently dead code), plus `STAGE_LABELS.deployment`/`STAGE_ROLE_LABELS.deployment`;
+      `AgentSelect.jsx`'s `DISPLAY_STAGES = [...STAGE_SEQUENCE, "deployment"]` splice deleted
+      (the only reason deployment ever appeared in the agent picker); `ModelSelect.jsx`'s
+      `isSelectable`/dead-branch deleted.
+    - **Forward-gate the agent picker** (`frontend/src/components/chat/AgentSelect.jsx` /
+      `components/workspace/WorkspaceSelectionContext.jsx`): direct user request -- while still
+      on, say, the Coder Agent stage (not yet approved), a human should not be able to jump
+      straight to Security/QA's chat. Centralized "what stage is currently reachable" in
+      `WorkspaceSelectionContext` (mounted once per open workspace, already the shared home for
+      "what are the three sibling panels looking at right now") rather than the leaf
+      `AgentSelect` -- reuses the exact `useGraphStatus`+`useFeatureArtifacts` ->
+      `deriveStageStatus` -> `deriveCurrentStage` pipeline already proven in
+      `FeatureListItem.jsx`, React-Query-cache-deduped against whatever `ResultTab`/`OutputPanel`
+      already fetch for the same feature, so this adds no new network request. `AgentSelect`
+      disables every `SELECTABLE_AGENT_STAGES` option whose index exceeds the current stage's --
+      stages at or before current stay freely selectable, so revisiting an earlier agent's chat
+      history is never blocked, only forward-jumping past the pipeline's frontier is.
+      **A real edge-case bug caught by the Plan-agent review before this was ever written**:
+      `deriveCurrentStage` returns `undefined` once every stage is APPROVED (a fully-completed
+      feature) -- the naive `|| "requirement"` fallback (copied from `FeatureListItem.jsx`'s own
+      pre-existing use of this same function) would have incorrectly RE-LOCKED the picker down to
+      only Requirement for a finished feature. Fixed with
+      `deriveCurrentStage(...) ?? SELECTABLE_AGENT_STAGES.at(-1)` instead -- once every real stage
+      is approved, nothing is gated. Applied the identical, now-corrected fallback to
+      `FeatureListItem.jsx`'s own pre-existing instance of the exact same bug while touching this
+      pattern (a fully-completed feature's list-row status was misreporting as "Requirement" --
+      a one-line, low-risk consistency fix directly adjacent to this change, not new scope).
+    - **Modernize the version dropdown** (`frontend/src/components/chat/PillDropdown.jsx`, new
+      `frontend/src/components/output/VersionSelect.jsx`): three near-identical raw `<select>`
+      elements in `ResultTab.jsx` (shown as plain text, e.g. "v4 -- pending") replaced with a new
+      `VersionSelect` built on the existing `PillDropdown` (already used by `AgentSelect`/
+      `ModelSelect`, a custom rounded-popup picker instead of a native select). `PillDropdown`
+      gained a `direction: "up" | "down" = "up"` prop (only the popup's positioning classes
+      change; both existing call sites keep their current upward-opening behavior unchanged) --
+      `VersionSelect` uses `direction="down"` since it sits near the panel TOP, not the bottom
+      composer bar. Each version option's label is now `vN` plus a real, color-coded
+      `StatusBadge` (pending/approved/rejected/revision_requested) instead of plain text.
+      **A real specificity risk found and fixed while implementing this, flagged in advance by
+      the Plan-agent review**: `PillDropdown`'s trigger button hardcoded `max-w-[160px]` directly
+      in its base className string, with `triggerClassName` appended AFTER it -- two equal-
+      specificity Tailwind utility classes in one string do not reliably resolve by JSX
+      left-to-right order (Tailwind's generated CSS order depends on build-wide first-discovery
+      order, not per-file string position), so a caller's own `max-w-*` override was not
+      guaranteed to actually win. Fixed by moving `max-w-[160px]` OUT of the base string entirely
+      and into `triggerClassName`'s own prop DEFAULT -- a caller passing its own value is now the
+      only max-w class ever present for that instance, no conflict possible.
+    - Backend test suite unaffected by the frontend work; re-run after the Deployment Agent
+      removal to confirm zero breakage (it was never exercised by any real test -- no fixture
+      updates needed). Full suite: **883 passed** (unchanged count from item 81 -- pure removal,
+      no new backend tests needed). `npm run build` clean (1341 modules).
+    - **Real, live verification against the real Finodil "Login and Signup" feature**
+      (`proj_2ba24bc0`/`feature_917b691e`, genuinely at the Coder Agent stage with 4 real Coder
+      Agent versions -- the same feature items 79-81 worked on), through an actual browser, not
+      just the API: confirmed via screenshot that the tab bar (Result/Files/Preview) now shows
+      only tab buttons, with "Using Architecture Plan v3 for Coder Agent"/"Using UI/UX Output v1
+      for Coder Agent" rendering directly under the Result content instead, right above "All
+      Artifacts"; confirmed "Deployment" appears nowhere on the page and the live backend's own
+      OpenAPI schema has zero `/deployment` paths (`GET /openapi.json`, grepped directly);
+      confirmed via `is_disabled()` (not just a screenshot) that opening the agent picker while
+      on the Coder stage shows Security/QA genuinely `disabled=True` while Requirement/Domain/
+      Architecture/UI-UX/Coder stay enabled, screenshot-confirmed visually greyed-out too;
+      confirmed the version dropdown opens downward with real colored status badges per version
+      (v4/v3/v2/v1, all "Pending" for this real in-progress feature), and that clicking a
+      different version (v1) genuinely swaps the rendered merge-report content (v1's real,
+      pre-Docker-fix "Sandbox unavailable" failure text, correctly different from v4's real
+      "Verification: PASSED") while the "Download report" link stays present -- a functional
+      check, not just a visual one. Separately confirmed the Requirement stage (which has no
+      "Using X" pill by design) renders with no visual gap/artifact where the pill would have
+      been, and that stage remained freely selectable in the picker despite the feature's current
+      stage being Coder (revisiting an earlier stage is never blocked). Zero console/page errors
+      across every screenshot taken.
+
+83. **Architecture Plan requirement tables, a real "revoke approval" capability (with a
+    genuinely-reachable git bug found and fixed along the way), a renamed "Full diff" heading,
+    and a Coder-Agent-approval popup that auto-runs Security Agent.** Four direct user requests
+    against the real, live Finodil "Login and Signup" feature. Investigated directly (3 parallel
+    Explore agents -- the table-rendering root cause, the approval/revoke mechanism plus the real
+    git state, the "Full diff" heading's actual source -- plus direct reading of `ResultTab.jsx`'s
+    existing `APPROVE_CONTINUATION_BY_STAGE` mechanism). Plan file:
+    `C:\Users\ASUS\.claude\plans\soft-petting-star.md` at time of writing.
+    - **Ask 1 -- tabular Requirement Interpretation**: root-caused directly against the real
+      generated `login_and_signup_architecture_plan_v1.json` -- `DocumentValue.jsx`'s array-of-
+      objects -> `<table>` renderer already existed and already produced exactly the wanted ID/
+      Description/Priority table, but `isFlatObject`/`isTableCellValue` was all-or-nothing across
+      the WHOLE array: a single Domain-Agent-enriched row carrying a nested `domain_citation`
+      object disqualified the entire array from table form, falling every row (including plain
+      ones) back to stacked ID/DESCRIPTION/PRIORITY label cards -- exactly what the user's
+      screenshot showed. Fixed in `DocumentValue.jsx` only (no changes to
+      `ArchitecturePlanDocumentViewer.jsx`/`SubSectionList`, so Functional Requirements,
+      Acceptance Criteria, Non-Functional Requirements, and Validation Rules are all fixed
+      identically by one change): `isTableCellValue` now also accepts a plain nested object whose
+      own values are themselves scalars/flat arrays; the `<td>` render branch gained a case
+      rendering such a cell as a compact `key: value` summary in small italic gray text instead
+      of `[object Object]`. `EnrichedItemList.jsx` (the SRS's own deliberately different
+      color-coded card view) was left untouched, per its own separate rationale.
+    - **Ask 2 -- a real, reusable "revoke approval" capability, applied live**: no existing status
+      transition moved an artifact from `approved` back to `pending`, and for the Coder Agent
+      specifically, approving had already run a real `git merge --no-ff` into `main` and deleted
+      the feature branch (confirmed via `git log --graph` against the real repo before writing
+      any code) -- a real revoke had to reverse both the data flag and, for Coder Agent, the git
+      state, or the approval record and the real code would silently disagree. New
+      `workspace_service.undo_merge_feature_branch(project_id, feature_id)`: finds the merge
+      commit by searching main's history for the exact, real message
+      `merge_feature_branch` itself writes (`f"Merge {branch_name} into main"` -- confirmed via
+      direct `git log` inspection, not guessed), recreates the feature branch at its pre-merge
+      tip, and reverses the merge on `main` via a real, non-destructive `git revert -m 1
+      --no-edit` (never a reset/force-push). New `ApprovalService.revoke_approval` (mirrors
+      `artifact_service.delete_artifact`'s own "operate on the whole version, not one
+      artifact_id" convention -- reverts the whole same-type-same-version sibling group together,
+      e.g. a JSON+Markdown pair); reuses the existing `_cascade_architecture_plan_decision`/
+      `_cascade_uiux_screenshot_decision` helpers (now returning the artifact_ids they touched,
+      not `None`, so `revoke_approval`'s own `reverted_artifact_ids` response is honest and
+      complete -- a real gap caught by this item's own new tests, not assumed correct) for
+      Architecture Plan/UI-UX Preview Screenshot specifically, since those already fully cover
+      their own format-pair + sibling-type cascade and running the generic loop too would
+      double-revert. New route `POST /artifacts/{artifact_id}/approval/revoke` +
+      `ApprovalRevokeRequest`/`ApprovalRevokeResponse` schemas. Frontend: new
+      `revokeApproval`/`useRevokeApprovalMutation` (mirrors `useApprovalMutation`, including
+      fixing that same pre-existing hook's own un-awaited `invalidateQueries` calls while touching
+      it -- the same bug class items 45/49 already fixed elsewhere); a "Revoke approval" action
+      added to `GovernancePanel.jsx`'s "already approved, nothing pending" branch and to
+      `ArtifactRow.jsx` for any individually-approved row, both behind a `ConfirmDialog` naming
+      the real git consequence for the coder stage specifically. `APPROVAL_WARNINGS.coder`'s text
+      updated from "Neither is undoable" (no longer accurate) to describe the real revoke path.
+    - **A second, real, more serious git bug found ONLY by live-testing the whole loop
+      end-to-end (approve -> revoke -> re-approve), not by any unit test written first**: after
+      `undo_merge_feature_branch`'s `git revert`, a plain subsequent `merge_feature_branch` call
+      (the existing, unchanged approval-side merge, triggered by re-approving the SAME code with
+      no new commits) silently no-op'd ("Already up to date") instead of actually re-applying the
+      branch's changes -- reverting a merge does NOT remove the merged branch's commits from
+      main's ancestry graph, only undoes their effect, so git's ancestry-based merge algorithm
+      correctly-but-unhelpfully concluded there was nothing new to merge. Confirmed live and
+      directly: after re-approving via the real UI, the artifact showed `approved` while `main`'s
+      actual working tree still had none of the login/signup code (`find app/api` showed only the
+      scaffold's own `health/route.ts`), and the feature branch had been deleted by the "merge"
+      that never actually merged anything. Fixed in `merge_feature_branch` per `git revert`'s own
+      manual ("Reverting a merge commit"): checks whether the branch tip is already an ancestor
+      of `main` (`git merge-base --is-ancestor`); if so, finds the matching `Revert "Merge ...
+      into main"` commit and reverts THAT REVERT instead of attempting a normal merge -- this
+      restores the real content without rewriting history, and correctly falls through to a
+      normal merge instead whenever the branch actually has new commits (revise() adds commits
+      that are never ancestors of the earlier revert, so the ancestry check correctly returns
+      false in that case). New `_find_merge_commit_for_branch` helper, shared by both
+      `merge_feature_branch` and `undo_merge_feature_branch` (DRY, was duplicated inline before).
+      **Real state repaired directly afterward**: manually confirmed the feature branch and
+      `main` were both left correct (branch restored via the fixed revoke call, `main` still
+      correctly unmerged) via `git log --graph`/`git branch`/`find app/api` -- the real Finodil
+      project ends this item in exactly the state the user asked for (Coder Agent v4 genuinely
+      `pending`, real feature branch restored with all real prior work, `main` clean).
+    - **Ask 3 -- rename "Full diff"**: root-caused to a backend-generated Markdown `## ` heading
+      (`coder_agent/diff_builder.py::build_merge_report_markdown`), not frontend JSX --
+      `DiffViewer.jsx` just splits the one Markdown string on the fenced ` ```diff ` block and
+      never hardcodes the heading text. Renamed to `"## Detailed Code Changes (Line-by-Line
+      Diff)"`; `DiffViewer.jsx`'s own code comment updated to match. Also directly edited the
+      real, already-saved Finodil merge report Markdown files (v1-v4) on disk, replacing the old
+      heading text in place -- a safe, cosmetic-only substitution so the user's real,
+      already-generated output reflects the rename immediately without a re-run.
+    - **Ask 4 -- Coder Agent approval popup + auto-run Security Agent**: extended the existing,
+      already-proven `APPROVE_CONTINUATION_BY_STAGE`/`ConfirmDialog`/`handleConfirmedApprove`
+      mechanism (`ResultTab.jsx`, previously covering Requirement->Domain->Architecture->UI/UX)
+      with a `coder -> security` entry -- this is also the FIRST time approving Coder Agent's
+      output goes through any confirmation popup at all (previously skipped straight to
+      `approval.mutate(...)`), so the real, serious merge warning is now finally surfaced at the
+      actual moment of clicking Approve, not just in `GovernancePanel`'s fine print. New
+      `SecurityAgentFlowContext.jsx` (mirrors `UiuxAgentFlowContext.jsx`, wrapping a single shared
+      `useRunSecurityAgent` mutation) fixes the exact "two independent mutation instances can't
+      see each other's pending state" bug item 61 already found for UI/UX Agent -- without it,
+      `SecurityReportView.jsx` and the new auto-trigger would each hold separate state, so a scan
+      started from the popup would show no visible progress anywhere. `useSecurityAgent.js`'s own
+      pre-existing un-awaited `invalidateQueries` calls fixed too, for the same reliability
+      reason. New `isSecurityGenerating` branch in `ResultTab.jsx`'s `LiveGenerationView` chain
+      (isFinalizing mode, spinner + elapsed timer -- Security Agent has no streaming route, a scan
+      is one plain POST) so switching to the Security stage mid-scan shows real progress instead
+      of `SecurityReportView`'s bare empty state.
+    - **A real, live-found display bug in the shared confirm-dialog mechanism itself, affecting
+      every stage that uses it, not just this new one**: `confirmingArtifact` was looked up via
+      `stageArtifacts.find(...)`, but `stageArtifacts` deliberately excludes Coder Agent's own
+      gating type (`code_diff`, in `UNLISTED_ARTIFACT_TYPES`) -- so the popup's `version`
+      interpolation silently rendered as `"Approving vundefined..."` for the Coder stage
+      specifically, confirmed via a real screenshot before the fix. The underlying approval call
+      itself was unaffected (it uses `confirmingArtifactId` directly, never the resolved object),
+      so this was a display-only bug, not a functional one -- still fixed, by switching the
+      lookup to the unfiltered `allArtifacts` prop instead, which is safe for every other stage
+      too since none of their own gating types are excluded from `stageArtifacts`.
+    - Tests: `tests/test_workspace_undo_merge.py` (new, 4 -- real git repos via `tmp_path`,
+      mirroring `test_workspace_scaffold.py`'s own fixture convention: restores branch + reverts
+      main on undo, safe no-op with no prior merge, safe no-op with no repo history at all, and
+      the exact live-found re-merge-after-revert bug reproduced and confirmed fixed).
+      `tests/test_approval_revoke.py` (new, 9 -- moves to pending with an honest approval record,
+      raises for a not-approved/unknown artifact, reverts a JSON+Markdown pair together, never
+      touches a different version's sibling, cascades Architecture Plan to its diagrams with no
+      double-revert, calls/skips the git undo correctly for a coder vs. non-coder artifact type).
+      `tests/test_approval_revoke_route.py` (new, 4, real `TestClient`). Full suite: **900
+      passed** (up from 883), including the `merge_feature_branch` fix's own regression test.
+      `npm run build` clean (1342 modules).
+    - **Real, live verification against the real Finodil "Login and Signup" feature**, not
+      synthetic: screenshots confirmed the Requirement Interpretation tables render cleanly with
+      real ID/Description/Priority/Origin/Domain Citation columns (matching the user's own
+      reported screenshot's exact content, now fixed); the real revoke endpoint was called
+      against the real, already-approved-and-merged `code_diff` v4 artifact and confirmed via
+      `git log --graph`/`git branch` to produce a genuine revert commit (history preserved, not
+      rewritten) and a restored `feature/login-and-signup` branch; the Result tab's diff section
+      was confirmed to read the new heading both in a fresh render and in the real, in-place-
+      edited Finodil artifacts; the real approve popup was driven through an actual browser,
+      confirmed to name the merge consequence and Security Agent correctly, and confirming it
+      switched to the Security stage and fired a real `POST .../security/run` request (which is
+      also what surfaced the re-merge-after-revert git bug above, live, before it could reach the
+      user again). Zero console/page errors across every screenshot taken.
+
+84. **Opening a project (or switching features) now jumps straight to the last-executed agent,
+    instead of always resetting to Requirement -- plus a real, pre-existing React Router race
+    bug found and fixed along the way.** Direct user request, with the real Finodil project as
+    the explicit example: "the user lastly worked on the Coder Agent... the system must show the
+    lastly executed agent whenever the user opens a project." Investigated directly (3 parallel
+    Explore agents: project-open navigation + `deriveCurrentStage` reuse-ability, feature/agent
+    "last activity" timestamp tracking, and the project/feature list click-through path). Plan
+    file: `C:\Users\ASUS\.claude\plans\soft-petting-star.md` at time of writing.
+    - **Part A -- which agent to show, reusing existing machinery, no new backend calls**:
+      confirmed `deriveCurrentStage` (`frontend/src/lib/deriveCurrentStage.js`, already used by
+      item 82's forward-gated agent picker) already correctly answers "which agent's UI
+      represents this feature's real current position" for exactly the stated example (every
+      earlier stage approved, Coder Agent has real pending output -> resolves to `"coder"`).
+      `WorkspaceSelectionContext.jsx` already computed this as `currentStage` for the selected
+      feature; only needed a new mechanism to actually USE it as `selectedAgent`'s default when
+      no explicit `?agent=` is present. New `autoSelectedFeatureRef` (tracks which `featureId` an
+      agent has already been auto-resolved for, so it only ever fires once per feature -- never
+      fights a later manual pick) + a `useEffect` that seeds `selectedAgent` from `currentStage`
+      once it's ready.
+    - **A real bug found live, before this was usable at all**: the first version's effect used
+      `if (!currentStage) return` as its "still loading" guard -- but `currentStage` is NEVER
+      actually falsy while data is loading, because `deriveStageStatus` treats a not-yet-arrived
+      `artifacts` array the same as a genuinely empty one (`artifacts || []`), so
+      `deriveCurrentStage` immediately (and wrongly) returns `"requirement"` before the real data
+      ever arrives, and the ref guard then locks that wrong answer in forever for the feature.
+      Confirmed live: opening the real Finodil project landed on `?agent=requirement` instead of
+      `coder`. Fixed by gating on the underlying queries' own real `isLoading` flags
+      (`useGraphStatus`/`useFeatureArtifacts`) instead of `currentStage`'s truthiness -- re-verified
+      live afterward, correctly lands on `?agent=coder`.
+    - **Part B -- which feature to default to when a project is opened fresh**: `Feature.
+      updated_at` existed on the schema but was dead data (set once at creation, confirmed via
+      direct grep across `app/`, never bumped by any real action). Confirmed every real
+      user-initiated action in this system funnels through exactly 3 backend choke points:
+      `stage_event_service.record()` (every run/revise/clarify/confirm across all 6 agent stages)
+      and `ApprovalService.submit_approval`/`revoke_approval` (every approve/reject/
+      revision-request/revoke) -- each gained an identical 2-line `feature["updated_at"] = ...`
+      update (mirrors `routes/projects.py`'s own existing `project["updated_at"] = datetime.
+      utcnow()` pattern), making the field real without touching ~30 individual call sites.
+      `ProjectWorkspacePage.jsx`'s `effectiveFeatureId` fallback changed from `features?.[0]?.
+      feature_id` (backend insertion order, confirmed via reading `list_project_features` --  no
+      `.sort()` at all) to a plain client-side `reduce` picking the feature with the latest
+      `updated_at` -- no new network call, no change to the general API response order (the
+      sidebar's own feature list keeps its current display order; only the default SELECTION
+      changes). `Feature.current_agent` (a separate, similarly-dead field) deliberately left
+      untouched -- `deriveCurrentStage` already gives Part A everything it needs without it, and
+      fixing it properly would need touching every individual agent's own `run()`/`revise()`.
+    - **A second, real, more serious pre-existing bug found ONLY by live-testing the actual
+      manual-feature-switch flow (not predicted by reading the code, not something this item's
+      own changes introduced)**: clicking a DIFFERENT feature in the sidebar while the URL had no
+      explicit featureId in its path (exactly the state a fresh project-open leaves you in, both
+      before AND after this item's own Part B change -- the default selection has never written
+      its own featureId into the URL path) silently reverted the ENTIRE navigation, including the
+      pathname, back to wherever the URL was before the click -- confirmed directly via network-
+      request monitoring: the real `GET /features/{id}/...` calls for the target feature fired
+      (proving the internal state briefly did change), but the final, settled URL and on-screen
+      content both reverted to the PREVIOUS feature. Root-caused to `WorkspaceSelectionContext.
+      jsx`'s `selectFeature`, which called TWO separate router-mutating functions in the same
+      handler -- `onSelectFeature(id)` (a `navigate()` to the new path) immediately followed by
+      `setAgentQueryParam(null)` (a `setSearchParams()` call to clear `?agent=`) -- the second
+      call resolves against a STALE captured `location.pathname` from before the first call's
+      change had committed, so its own `{replace: true}` overwrote the just-set path back to the
+      old one. Fixed by removing the now-redundant second call entirely: `navigate()` to a plain
+      path with no `?query` string already fully replaces the location (clearing any prior search
+      string) as a normal side effect -- one router call instead of two, no race possible.
+      **This was a genuinely pre-existing bug**, not introduced by this session's own Part A/B
+      work, but it directly blocked verifying (and would have undermined in real use) the very
+      feature this item exists to build, so it was fixed here rather than filed away separately.
+    - Tests: `tests/test_feature_last_activity.py` (new, 5 -- `stage_event_service.record()` and
+      both `approval_service` methods bump the real feature's `updated_at`; a safe no-op for an
+      unknown feature_id; a direct end-to-end proof that a real action on an OLDER feature makes
+      it "more recently active" than a newer-but-untouched one, matching exactly what
+      `ProjectWorkspacePage.jsx`'s own `reduce` picks the max of). Full suite: **905 passed** (up
+      from 900). `npm run build` clean (1342 modules). No frontend test framework exists in this
+      repo (per every prior item's own note), so the loading-race bug and the router-race bug were
+      both found and fixed via live browser verification, not unit tests.
+    - **Real, live verification, not synthetic**: opening the real Finodil project fresh (bare
+      `/projects/proj_2ba24bc0`, no featureId/agent) now correctly lands on
+      `?agent=coder` with the Coder Agent's real merge report/verification steps showing --
+      exactly the user's own stated example. Opening the real, 5-feature TaskFlow project fresh
+      correctly landed on "Task Add" (`feature_bdacfeef`, real highest `updated_at`) rather than
+      "Task Comments" (`feature_5521adbd`, what the old `features[0]` array-order fallback would
+      have picked -- direct, real proof the fix changes real behavior, not a coincidental match).
+      Manually clicking "Task Comments" in that same project's sidebar afterward correctly
+      navigated to `/features/feature_5521adbd?agent=coder` (its own real, extensive Coder Agent
+      history -- v18 setup instructions, real verification steps) -- confirming the router-race
+      fix and Part A's auto-select compose correctly together. A full reload with an explicit
+      `?agent=requirement` on the real Finodil feature (whose actual progress is Coder) correctly
+      still showed Requirement Agent's content, confirming item 44's original deep-link/reload
+      behavior is unregressed by any of this. Zero console/page errors across every screenshot.
 
 ## Where to look
 

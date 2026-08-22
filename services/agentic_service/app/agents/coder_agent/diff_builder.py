@@ -169,7 +169,7 @@ def build_merge_report_markdown(
 
     diff_text = diff.get("diff_text", "")
     truncated = len(diff_text) > MAX_DIFF_TEXT_CHARS
-    lines.append("## Full diff" + (" (truncated)" if truncated else ""))
+    lines.append("## Detailed Code Changes (Line-by-Line Diff)" + (" (truncated)" if truncated else ""))
     lines.append("```diff")
     lines.append(diff_text[:MAX_DIFF_TEXT_CHARS])
     lines.append("```")

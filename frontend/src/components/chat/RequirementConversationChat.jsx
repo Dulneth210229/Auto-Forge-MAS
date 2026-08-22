@@ -164,8 +164,17 @@ export default function RequirementConversationChat({
     runningStage === "requirement" || isReplying || editTurnStream.isPending || reviseStream.isPending;
   const showPreSrsComposer = !hasOutput && conversation && !isConfirmed && !isGenerating && !showManualForm;
   // Editing a past reply discards it and everything after it, then regenerates -- only safe while
-  // the conversation is still in the gathering phase, same as replying normally.
+  // the conversation is still in the gathering phase, same as replying normally, and NOT while an
+  // SRS confirm-generation is already in flight (that would discard the very state it's generating
+  // from). Kept gated on !isGenerating, unlike the composer below.
   const canEditTurns = showPreSrsComposer;
+  // A real, reported bug: the composer used to share showPreSrsComposer's own !isGenerating term,
+  // which UNMOUNTED the entire input box the instant SRS confirm-generation started (LiveGenerationView
+  // in the separate Result panel is not what did this -- see RequirementSrsOutputPanel.jsx). Fixed by
+  // dropping that one term here -- the composer now stays mounted and merely disables itself + offers
+  // a Stop control during generation, exactly mirroring how the reply-stream phase (isReplying) has
+  // always behaved.
+  const canShowPreSrsComposer = !hasOutput && conversation && !isConfirmed && !showManualForm;
   const revisionReactionText = extractStreamingJsonStringField(revisionStreamedText, "revision_summary");
 
   return (
@@ -371,15 +380,25 @@ export default function RequirementConversationChat({
         </div>
       )}
 
-      {showPreSrsComposer && (
+      {canShowPreSrsComposer && (
         <form onSubmit={handleReplySubmit} className="flex-shrink-0">
           <ChatComposerBox
             value={replyText}
             onChange={(event) => setReplyText(event.target.value)}
-            placeholder="Answer the question(s) above, attach a document, or add anything else..."
-            disabled={isReplying || editTurnStream.isPending}
-            pending={isReplying}
-            onStop={respondStream.isPending ? stopReplyStream : undefined}
+            placeholder={
+              isGenerating
+                ? "Generating the final SRS -- please wait..."
+                : "Answer the question(s) above, attach a document, or add anything else..."
+            }
+            disabled={isReplying || editTurnStream.isPending || isGenerating}
+            pending={isReplying || isGenerating}
+            onStop={
+              respondStream.isPending
+                ? stopReplyStream
+                : confirmStream.isPending
+                  ? stopConfirmStream
+                  : undefined
+            }
             selectedAgent={selectedAgent}
             onSelectAgent={selectAgent}
             isAgentRunning={isAgentRunning}

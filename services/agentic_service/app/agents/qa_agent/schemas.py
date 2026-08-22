@@ -1,248 +1,66 @@
 """
-QA Agent request, response, and report schemas.
-"""
+QA Agent internal schemas.
 
-from datetime import datetime
-from typing import Literal
+Replaces the earlier aggregate-only shapes (a report that only ever said "3 passed, 1 failed")
+with real per-test-case structure: a QaTestCase (what was PLANNED -- name, category, which real
+file/function it targets, what inputs/behavior it covers) and a QaTestCaseResult (what actually
+happened when it ran -- status, duration, failure message), matched together by name so the
+report can show both halves for every test. See agent.py's own module docstring for how
+generation and execution produce these.
+"""
 
 from pydantic import BaseModel, Field
 
+TEST_CATEGORIES = ("unit", "integration", "regression")
 
-# ------------------------------------------------------------------
-# Request Schema
-# ------------------------------------------------------------------
 
-
-class TestingRunRequest(BaseModel):
-    """
-    Request payload for running the QA Agent.
-    """
-
-    enable_llm_generation: bool = Field(
-        default=True,
-        description="Generate tests using the configured LLM.",
-    )
-
-    enable_regression: bool = Field(
-        default=False,
-        description="Generate regression test cases.",
-    )
-
-    enable_security_validation: bool = Field(
-        default=False,
-        description="Generate security validation test cases.",
-    )
-
-    human_comment: str | None = Field(
-        default=None,
-        description="Optional human instructions for the QA Agent.",
-        examples=["Generate comprehensive functional test cases."],
-    )
-
-
-# ------------------------------------------------------------------
-# Validation Result
-# ------------------------------------------------------------------
-
-
-class ValidationResult(BaseModel):
-    """
-    Result returned by the Test Validator.
-    """
-
-    valid: bool = True
-
-    score: int = Field(
-        default=100,
-        ge=0,
-        le=100,
-    )
-
-    validation_errors: list[str] = Field(
-        default_factory=list,
-    )
-
-    validation_warnings: list[str] = Field(
-        default_factory=list,
-    )
-
-
-# ------------------------------------------------------------------
-# Generated Test File
-# ------------------------------------------------------------------
-
-
-class GeneratedTestFile(BaseModel):
-    """
-    Information about a generated test file.
-    """
-
-    source_file: str
-
-    test_file: str
-
-    framework: Literal[
-        "pytest",
-        "jest",
-    ] | None = None
-
-    generated_code: str | None = None
-
-    status: Literal[
-        "SUCCESS",
-        "FAILED",
-    ]
-
-    error: str | None = None
-
-    validation_score: int = Field(
-        default=100,
-        ge=0,
-        le=100,
-    )
-
-    validation_errors: list[str] = Field(
-        default_factory=list,
-    )
-
-    validation_warnings: list[str] = Field(
-        default_factory=list,
-    )
-
-
-# ------------------------------------------------------------------
-# Execution Result
-# ------------------------------------------------------------------
-
-
-class ExecutionResult(BaseModel):
-    """
-    Aggregated result of executing generated test cases.
-    """
-
-    success: bool = False
-
-    exit_code: int = -1
-
-    total_tests: int = 0
-
-    passed: int = 0
-
-    failed: int = 0
-
-    skipped: int = 0
-
-    duration_seconds: float = 0.0
-
-    stdout: str = ""
-
-    stderr: str = ""
-
-
-# ------------------------------------------------------------------
-# Finding Schema
-# ------------------------------------------------------------------
-
-
-class QAFinding(BaseModel):
-    """
-    Individual QA finding.
-    """
-
-    title: str
-
-    description: str
-
-    severity: Literal[
-        "Low",
-        "Medium",
-        "High",
-        "Critical",
-    ]
-
-    file: str | None = None
-
-    line: int | None = None
-
-    recommendation: str
-
-    confidence: float = Field(
-        default=1.0,
-        ge=0.0,
-        le=1.0,
-    )
-
-
-# ------------------------------------------------------------------
-# Summary Schema
-# ------------------------------------------------------------------
-
-
-class QASummary(BaseModel):
-    """
-    Overall QA summary.
-    """
-
-    total_tests: int = 0
-
-    passed: int = 0
-
-    failed: int = 0
-
-    skipped: int = 0
-
-    pass_rate: float = Field(
-        default=0.0,
-        ge=0.0,
-        le=100.0,
-    )
-
-    status: Literal[
-        "GENERATED",
-        "PASSED",
-        "FAILED",
-    ] = "GENERATED"
-
-
-# ------------------------------------------------------------------
-# Metrics
-# ------------------------------------------------------------------
-
-
-class QAMetrics(BaseModel):
-    """
-    QA execution metrics.
-    """
-
-    generated_test_files: int = 0
-
-    generation_time_seconds: float = 0.0
-
-    execution_time_seconds: float = 0.0
-
-    total_duration_seconds: float = 0.0
-
-
-# ------------------------------------------------------------------
-# QA Report
-# ------------------------------------------------------------------
-
-
-class QAReport(BaseModel):
-    """
-    Final QA report.
-    """
-
+class QAAgentInput(BaseModel):
     feature_id: str
+
+
+class QaTestCase(BaseModel):
+    """One planned test case -- the generation-time half. `test_file` and `method` are filled in
+    by the caller (generator.py) after generation, not by the LLM itself."""
+
+    name: str
+    category: str = "unit"  # one of TEST_CATEGORIES
+    target_file: str = ""
+    target_function: str = ""
+    inputs: str = ""
+    expected_behavior: str = ""
+    test_file: str = ""
+    method: str = "llm"  # "llm" | "deterministic-fallback"
+
+
+class QaLLMGenerationResult(BaseModel):
+    """The exact JSON shape the LLM is asked to return for one generation call (see prompt.py) --
+    parsed via extract_json_object with a graceful fallback on malformed output, the same
+    resilience pattern already proven for Security Agent's LLM review layer."""
+
+    test_cases: list[QaTestCase] = Field(default_factory=list)
+    test_code: str = ""
+
+
+class QaTestCaseResult(BaseModel):
+    """One test case's real execution outcome, parsed from Jest's --json output. Matched back to
+    its QaTestCase by `name` (see agent.py's own matching step) -- Jest's own result has no
+    concept of "category"/"inputs"/"expected_behavior", only what actually ran."""
+
+    name: str
+    test_file: str = ""
+    status: str = "skipped"  # "passed" | "failed" | "skipped"
+    duration_ms: int | None = None
+    failure_message: str | None = None
 
     summary: QASummary
 
-    findings: list[QAFinding] = Field(
-        default_factory=list,
-    )
-
-    metrics: QAMetrics
-
-    generated_at: datetime = Field(
-        default_factory=datetime.utcnow,
-    )
+class QAAgentOutput(BaseModel):
+    qa_report_json: dict = {}
+    status: str = "completed"
+    framework_used: str = "jest"
+    tests_generated: int = 0
+    tests_passed: int = 0
+    tests_failed: int = 0
+    tests_skipped: int = 0
+    artifact_ids: list[str] = []
+    message: str = ""

@@ -3,7 +3,7 @@ import { useGraphStatus } from "../../hooks/usePipeline";
 import { useFeatureArtifacts } from "../../hooks/useArtifacts";
 import { deriveStageStatus, STATUS } from "../../lib/deriveStageStatus";
 import { deriveCurrentStage } from "../../lib/deriveCurrentStage";
-import { GATED_STAGES, STAGE_LABELS } from "../../lib/pipelineStages";
+import { SELECTABLE_AGENT_STAGES, STAGE_LABELS } from "../../lib/pipelineStages";
 import StatusBadge from "../common/StatusBadge";
 
 const DOT_STYLES = {
@@ -26,10 +26,15 @@ export default function FeatureListItem({ feature, isSelected, onSelect, onDelet
 
   const allArtifacts = artifacts || [];
   const stageStatuses = {};
-  for (const stage of GATED_STAGES) {
+  for (const stage of SELECTABLE_AGENT_STAGES) {
     stageStatuses[stage] = deriveStageStatus({ stage, graphStatus, artifacts: allArtifacts });
   }
-  const currentStage = deriveCurrentStage(graphStatus, stageStatuses) || "requirement";
+  // deriveCurrentStage returns undefined once every stage is APPROVED (a fully-completed
+  // feature) -- fall back to the LAST stage, not the first, so a finished feature's row doesn't
+  // misreport its current stage as "Requirement" (the same fix applied to
+  // WorkspaceSelectionContext's own identical computation).
+  const currentStage =
+    deriveCurrentStage(graphStatus, stageStatuses) ?? SELECTABLE_AGENT_STAGES[SELECTABLE_AGENT_STAGES.length - 1];
   const currentStatus = stageStatuses[currentStage] || STATUS.NOT_STARTED;
 
   return (

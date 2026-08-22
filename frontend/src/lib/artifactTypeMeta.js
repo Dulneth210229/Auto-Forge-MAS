@@ -46,6 +46,8 @@ export const ARTIFACT_TYPE_STAGE = {
   code_manifest: "coder",
   requirement_code_map: "coder",
   setup_instructions: "coder",
+  security_report: "security",
+  qa_report: "qa",
 };
 
 // The single (artifact_type, artifact_format) pair that gates each stage's approval --
@@ -64,6 +66,14 @@ export const STAGE_GATING_ARTIFACT = {
   // (approval_service.py's _cascade_uiux_screenshot_decision).
   uiux: { type: "ui_preview_screenshot", format: "png" },
   coder: { type: "code_diff", format: "markdown" },
+  // Auto-approved (soft-gate) stage, like every security_report artifact itself -- registered
+  // here purely so deriveStageStatus.js can tell "has run at least once" (shows Approved, since
+  // it's never anything but auto-approved) from "never run yet" (shows Action Required, from
+  // MANUAL_RUN_STAGES), not because a human ever makes a real approve/reject decision on it.
+  security: { type: "security_report", format: "json" },
+  // Same reasoning as security above -- auto-approved, registered purely so deriveStageStatus.js
+  // can distinguish "has run at least once" from "never run yet."
+  qa: { type: "qa_report", format: "json" },
 };
 
 // Back-compat plain type map, still useful for "which stage does this artifact_type belong
@@ -92,6 +102,14 @@ const DOCUMENT_VIEWER_TYPES = {
   ui_metadata: "ui-metadata-document",
 };
 
+// Artifact types where MULTIPLE genuinely distinct files can legitimately share one version --
+// currently only ui_preview_screenshot (a feature with more than one page/UI gets one screenshot
+// PER PAGE, all sharing the run's one version number). dedupeArtifactVersions' own type::version
+// key assumes at most one meaningful artifact per (type, version) -- correct for the JSON+
+// Markdown-pair case it was built for, but would silently collapse N genuinely different pages
+// down to just one if applied here too. Types listed here are never collapsed by it.
+const MULTI_ITEM_PER_VERSION_ARTIFACT_TYPES = ["ui_preview_screenshot"];
+
 // Every gating artifact_type saves a JSON+Markdown pair sharing one version (see
 // STAGE_GATING_ARTIFACT's own docstring) -- both are real, valid artifact records, but showing
 // both as separate rows in a version list reads as the same version being duplicated. Keeps only
@@ -102,7 +120,9 @@ export function dedupeArtifactVersions(artifacts) {
   const kept = new Map();
 
   for (const artifact of artifacts) {
-    const key = `${artifact.artifact_type}::${artifact.version}`;
+    const key = MULTI_ITEM_PER_VERSION_ARTIFACT_TYPES.includes(artifact.artifact_type)
+      ? `${artifact.artifact_type}::${artifact.version}::${artifact.artifact_id}`
+      : `${artifact.artifact_type}::${artifact.version}`;
     const existing = kept.get(key);
 
     if (!existing) {
@@ -137,4 +157,21 @@ export function pickViewer(artifact) {
   if (artifact.artifact_format === "html") return "html";
   if (artifact.artifact_format === "code") return "code";
   return "raw";
+}
+
+// A feature with more than one page/UI gets one Preview Screenshot per page, all sharing the
+// SAME version number (see artifact_service.save_binary_artifact's version_override fix) -- with
+// nothing to tell them apart, every row/thumbnail read as an identical "Preview Screenshot vN"
+// duplicate. Best-effort filename-derived label (no dedicated backend field for this -- the
+// filename is already the only place the real page identity survives). Shared by ArtifactRow.jsx
+// (per-row label) and UiuxVersionGroupList.jsx (per-thumbnail label) so both use the same logic.
+export function screenshotPageLabel(artifact) {
+  if (!artifact.file_path) return null;
+  const base = artifact.file_path
+    .split(/[\\/]/)
+    .pop()
+    .replace(/\.png$/i, "")
+    .replace(/_v\d+$/, "");
+  if (!base) return null;
+  return base.split("_").map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
 }

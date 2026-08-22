@@ -44,6 +44,18 @@ def _seed_artifact(feature_id: str, agent_name: str, artifact_type: str, file_pa
     return artifact_id
 
 
+@pytest.fixture(autouse=True)
+def _assume_tool_calling_supported():
+    """These pre-existing tests exercise the agentic revision-planning/coding path specifically
+    (mocking generate_via_exploration/_code_with_retries directly). Without this, the real,
+    unmocked model_capabilities.supports_tool_calling() probe runs against whatever Ollama server
+    happens to be configured in this environment -- unreachable in CI/local dev without a running
+    Ollama -- and its designed-safe default (False on any probe failure) silently routes these
+    tests into the new non-agentic batch coding path instead, which they never mock for."""
+    with patch("app.services.model_capabilities.supports_tool_calling", AsyncMock(return_value=True)):
+        yield
+
+
 @pytest.fixture
 def feature_with_prior_run(tmp_path):
     project_id = generate_id("project")
@@ -826,13 +838,17 @@ async def test_revise_short_circuits_on_uri_only_comment(agent, feature_with_pri
         patch("app.agents.coder_agent.agent.preview_service") as mock_preview,
         patch.object(agent.planner, "generate_via_exploration") as mock_generate,
     ):
-        mock_preview.get_status.return_value = {"status": "stopped", "preview_url": None, "started_at": None}
+        # restart_if_running (relocated onto preview_service itself -- see that module's own
+        # restart_if_running docstring) is the ONE call CoderAgent makes now; its own no-op-when-
+        # stopped/restart-when-running logic is covered directly by test_preview_service.py.
+        mock_preview.restart_if_running.return_value = False
 
         output = await agent.revise(feature_id, request)
 
     assert isinstance(output, CoderAgentEnvSaveResult)
     assert output.saved is True
     assert output.preview_restarted is False
+    mock_preview.restart_if_running.assert_called_once_with(feature_id)
     mock_workspace.write_env_local.assert_called_once_with(project_id, {"MONGODB_URI": uri})
     # The whole point: no planning, no coding loop, nothing touched the workspace.
     mock_generate.assert_not_called()
@@ -849,14 +865,12 @@ async def test_revise_short_circuit_restarts_a_running_preview(agent, feature_wi
         patch("app.agents.coder_agent.agent.workspace_service"),
         patch("app.agents.coder_agent.agent.preview_service") as mock_preview,
     ):
-        mock_preview.get_status.return_value = {
-            "status": "running", "preview_url": "http://localhost:54321", "started_at": "now"
-        }
+        mock_preview.restart_if_running.return_value = True
 
         output = await agent.revise(feature_id, request)
 
     assert output.preview_restarted is True
-    mock_preview.start_preview.assert_called_once_with(feature_id)
+    mock_preview.restart_if_running.assert_called_once_with(feature_id)
     assert "Restarting the live preview" in output.message
 
 

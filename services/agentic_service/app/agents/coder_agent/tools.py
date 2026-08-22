@@ -120,7 +120,11 @@ def _is_allowed_shell_command(command: str) -> bool:
 
 
 def build_coder_tools(
-    project_id: str, feature_id: str, code_plan_json: dict[str, Any] | None = None
+    project_id: str,
+    feature_id: str,
+    code_plan_json: dict[str, Any] | None = None,
+    ui_integration_manifest_json: dict[str, Any] | None = None,
+    ui_design_read_tracker: dict[str, set[str]] | None = None,
 ) -> list[BaseTool]:
     """
     Build the Coder Agent tools, scoped to one project's workspace, one
@@ -130,6 +134,19 @@ def build_coder_tools(
     code_plan_json is optional so existing callers/tests that only need the
     file/shell tools don't have to supply a plan -- list_unimplemented_planned_files
     degrades to reporting "no plan available" rather than raising when omitted.
+
+    ui_integration_manifest_json/ui_design_read_tracker are a matched pair for
+    list_unread_ui_designs: the manifest is what to check against (the real
+    pages/components an approved UI/UX design exists for), and the tracker is
+    an EXTERNALLY-OWNED, plain mutable dict the CALLER creates fresh per
+    coding attempt (e.g. {"components": set(), "pages": set()}) and passes in
+    -- read_ui_component_design/read_ui_page_design write into it whenever
+    they successfully resolve a real artifact, so the caller can inspect,
+    after this agent instance's turn ends, whether any design was actually
+    read (a tool closure has no other way to report anything back out). Both
+    are optional and independent of code_plan_json so existing callers/tests
+    are unaffected; list_unread_ui_designs degrades to reporting "nothing to
+    check" when either is omitted.
     """
 
     workspace_service.ensure_project_repo(project_id)
@@ -282,6 +299,9 @@ def build_coder_tools(
         if not artifact:
             return f"No approved UI component design found for this feature named: {component_name}"
 
+        if ui_design_read_tracker is not None:
+            ui_design_read_tracker.setdefault("components", set()).add(_slugify(component_name))
+
         return Path(artifact["file_path"]).read_text(encoding="utf-8")
 
     @tool
@@ -298,7 +318,50 @@ def build_coder_tools(
         if not artifact:
             return f"No approved UI page design found for this feature matching: {page_id_or_route}"
 
+        if ui_design_read_tracker is not None:
+            ui_design_read_tracker.setdefault("pages", set()).add(_slugify(page_id_or_route))
+
         return Path(artifact["file_path"]).read_text(encoding="utf-8")
+
+    @tool
+    def list_unread_ui_designs() -> str:
+        """
+        Report which of this feature's approved UI/UX page/component designs you have NOT yet
+        read via read_ui_component_design/read_ui_page_design during this attempt. Call this
+        before ending your turn whenever an approved UI/UX design exists for this feature (it
+        will tell you plainly if none does) -- read whatever it lists before finishing, so the
+        frontend code you write actually matches the approved visual design instead of being a
+        freehand guess.
+        """
+        if not ui_integration_manifest_json:
+            return "No approved UI/UX design exists for this feature -- nothing to check."
+
+        pages = ui_integration_manifest_json.get("pages") or []
+        if not pages:
+            return "No approved UI/UX design exists for this feature -- nothing to check."
+
+        read_pages = (ui_design_read_tracker or {}).get("pages", set())
+        read_components = (ui_design_read_tracker or {}).get("components", set())
+
+        unread: list[str] = []
+        for page in pages:
+            page_id = page.get("page_id")
+            if page_id and _slugify(page_id) not in read_pages:
+                unread.append(f"- page '{page_id}' -- call read_ui_page_design({page_id!r})")
+
+            for component in page.get("components") or []:
+                name = component.get("name")
+                if name and _slugify(name) not in read_components:
+                    unread.append(f"- component '{name}' -- call read_ui_component_design({name!r})")
+
+        if not unread:
+            return "Every approved UI/UX page/component design has been read this attempt."
+
+        return (
+            "The following approved UI/UX designs have NOT been read yet -- read the ones "
+            "relevant to whatever frontend page/component you are about to write, before "
+            "ending your turn:\n" + "\n".join(unread)
+        )
 
     @tool
     def list_unimplemented_planned_files() -> str:
@@ -403,6 +466,7 @@ def build_coder_tools(
         read_project_manifest,
         read_ui_component_design,
         read_ui_page_design,
+        list_unread_ui_designs,
         list_unimplemented_planned_files,
         check_syntax,
     ]
@@ -486,8 +550,17 @@ def build_revision_planning_tools(
     return read_only_tools + [check_component_styling, submit_code_plan], captured
 
 
+def _slugify(value: str) -> str:
+    """Same normalization _find_approved_component_artifact/_find_approved_page_html_artifact
+    already use to match a queried name against a file_path -- shared here so
+    list_unread_ui_designs cross-references the read tracker against the manifest using the
+    IDENTICAL normalization the read tools themselves used to record a hit, regardless of exact
+    phrasing differences (e.g. "item-listing" vs "Item Listing" vs "item_listing_page")."""
+    return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
+
+
 def _find_approved_component_artifact(feature_id: str, component_name: str) -> dict[str, Any] | None:
-    slug = re.sub(r"[^a-z0-9]+", "_", component_name.lower()).strip("_")
+    slug = _slugify(component_name)
 
     matching = []
 
@@ -517,7 +590,7 @@ def _find_approved_page_html_artifact(feature_id: str, page_id_or_route: str) ->
     """Same lookup shape as _find_approved_component_artifact, sibling type (UI_PAGE_HTML) --
     matches a page's slugified page_id/route against the artifact's file_path, e.g. either
     "item-listing-page" or "/item-listing" resolve to the same "item_listing_page" slug."""
-    slug = re.sub(r"[^a-z0-9]+", "_", page_id_or_route.lower()).strip("_")
+    slug = _slugify(page_id_or_route)
 
     matching = []
 

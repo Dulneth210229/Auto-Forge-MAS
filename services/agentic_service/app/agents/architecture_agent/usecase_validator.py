@@ -340,6 +340,15 @@ class UseCaseQualityValidator:
             if relation_type == "extend" and (source not in use_case_ids or target not in use_case_ids):
                 errors.append("Extend relationship must be extension use case -> base use case.")
 
+            if relation_type == "generalization":
+                both_use_cases = source in use_case_ids and target in use_case_ids
+                both_actors = source in actor_ids and target in actor_ids
+                if not (both_use_cases or both_actors):
+                    errors.append(
+                        "Generalization relationship must connect two use cases or two actors, "
+                        "not a mix."
+                    )
+
         return errors
 
     def _validate_traceability(
@@ -348,10 +357,22 @@ class UseCaseQualityValidator:
         usecase_analysis_json: dict[str, Any],
         usecase_json: dict[str, Any],
     ) -> list[str]:
+        """
+        Every functional requirement, acceptance criterion, AND validation rule should be
+        traceable to at least one use case/relationship -- previously only functional_requirements
+        (FR) coverage was checked here, even though the prompt already asks the LLM to cite FR/
+        AC/VR ids in related_requirements. Reported separately per requirement kind so a human
+        reviewer sees exactly which category has a real gap.
+        """
         errors: list[str] = []
-        fr_ids = self._collect_ids(srs_json.get("functional_requirements", []))
 
-        if not fr_ids:
+        required_by_kind = {
+            "FR": self._collect_ids(srs_json.get("functional_requirements", [])),
+            "AC": self._collect_ids(srs_json.get("acceptance_criteria", [])),
+            "VR": self._collect_ids(srs_json.get("validation_rules", [])),
+        }
+
+        if not any(required_by_kind.values()):
             return errors
 
         covered_ids: set[str] = set()
@@ -368,10 +389,10 @@ class UseCaseQualityValidator:
             if isinstance(trace, dict) and trace.get("source_id"):
                 covered_ids.add(str(trace["source_id"]))
 
-        missing_ids = [fr_id for fr_id in fr_ids if fr_id not in covered_ids]
-
-        if missing_ids:
-            errors.append(f"Use case diagram missing traceability for FR IDs: {missing_ids}")
+        for kind, required_ids in required_by_kind.items():
+            missing_ids = [req_id for req_id in required_ids if req_id not in covered_ids]
+            if missing_ids:
+                errors.append(f"Use case diagram missing traceability for {kind} IDs: {missing_ids}")
 
         return errors
 

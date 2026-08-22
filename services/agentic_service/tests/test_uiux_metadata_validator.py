@@ -37,7 +37,6 @@ def _complete_page(**overrides) -> dict:
         "route": "/login",
         "actors": ["Customer", "Admin"],
         "covers_requirements": ["US-001", "US-002", "AC-001", "AC-002"],
-        "layout_regions": ["header", "main", "footer"],
         "components": [
             {
                 "name": "LoginForm",

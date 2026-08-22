@@ -23,12 +23,7 @@ import UiMetadataViewer from "../documents/UiMetadataViewer";
 // by ArtifactViewerModal's popup path (it doesn't have sibling-lookup context) -- the document
 // still renders correctly there, just without the inline highlighting.
 //
-// featureId/editable (optional): only ever passed by ResultTab for the SRS it currently shows,
-// and only when it's genuinely the latest version -- lets SrsDocumentViewer offer field-by-field
-// inline editing. ArtifactViewerModal's generic popup path passes neither, so editing is
-// structurally unreachable there (a historical version, or any artifact reached from a "View"
-// link elsewhere in the app, is never editable) with no extra flag needed.
-export default function ArtifactContentView({ artifact, domainImprovementsArtifact, featureId, editable }) {
+export default function ArtifactContentView({ artifact, domainImprovementsArtifact }) {
   const viewer = artifact ? pickViewer(artifact) : null;
   const { data, isLoading, error } = useArtifactContent(viewer && viewer !== "image" ? artifact?.artifact_id : null);
   const { data: domainImprovementsData } = useArtifactContent(domainImprovementsArtifact?.artifact_id ?? null);
@@ -52,9 +47,6 @@ export default function ArtifactContentView({ artifact, domainImprovementsArtifa
               data={data?.content_json}
               artifactType={artifact.artifact_type}
               domainImprovements={domainImprovementsData?.content_json}
-              featureId={featureId}
-              editable={editable}
-              artifactId={artifact.artifact_id}
             />
           )}
           {viewer === "architecture-document" && <ArchitecturePlanDocumentViewer data={data?.content_json} />}

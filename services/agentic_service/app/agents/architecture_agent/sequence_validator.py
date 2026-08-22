@@ -18,6 +18,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from app.agents.architecture_agent.sequence_fragment_kinds import FRAGMENT_OPENER_KINDS
+
 
 class SequenceDiagramValidationError(Exception):
     """Raised when the generated sequence diagram model is invalid."""
@@ -123,7 +125,7 @@ class SequenceDiagramValidator:
 
             kind = str(interaction.get("kind", "message"))
 
-            if kind in ["alt_start", "opt_start", "loop_start"]:
+            if kind in FRAGMENT_OPENER_KINDS:
                 fragment_stack.append(kind)
                 continue
 
@@ -183,7 +185,7 @@ class SequenceDiagramValidator:
 
             kind = str(interaction.get("kind", "message"))
 
-            if kind in ("alt_start", "opt_start", "loop_start"):
+            if kind in FRAGMENT_OPENER_KINDS:
                 fragment_stack.append(kind)
                 continue
 

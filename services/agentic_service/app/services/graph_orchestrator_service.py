@@ -58,11 +58,14 @@ logger = get_logger(__name__)
 # get a real human approval gate.
 STAGE_SEQUENCE = ["requirement", "domain", "architecture", "uiux", "coder", "security", "qa"]
 
-# Stages that stop for a human approval gate.
+# Stages that stop for a human approval gate. "uiux" is back here per direct user request:
+# human approval is required again for the UI/UX stage's output (only the Preview Screenshot is
+# the human's approval surface -- see approval_service.py's UI/UX cascade). uiux_node itself is
+# unchanged -- it just gets a real approve_uiux interrupt node built for it again.
 GATED_STAGES = ["requirement", "domain", "architecture", "uiux", "coder"]
 
-# Stages that run automatically with no human gate (no agent implementation
-# yet for security/qa -- there is nothing for a human to review).
+# Stages that run automatically with no human gate -- security/qa only: no agent implementation
+# yet, nothing for a human to review.
 AUTO_APPROVED_STAGES = ["security", "qa"]
 
 
@@ -155,49 +158,34 @@ def _coder_node(state: FeaturePipelineState) -> dict[str, Any]:
 
 def _security_node(state: FeaturePipelineState) -> dict[str, Any]:
     """
-    Security Agent call. Still a placeholder (see app/agents/security_agent/
-    agent.py) that always returns {"status": "skipped"} without touching the
-    workspace -- calling it for real now (rather than a generic pass-through)
-    means the graph already has a real node target to route to, per the
-    doc's Milestone 7 instruction, so nothing here needs to change again
-    except the agent's own internals once it's implemented for real. Stays
-    auto-approved (no interrupt() gate) since there is no real output yet for
-    a human to review -- flip to a real gate the moment that changes.
+    Security Agent call -- runs the real scan (pattern/secret/dependency + LLM review layers,
+    see app/agents/security_agent/agent.py) and saves a versioned Critical/Moderate/Warning
+    report. Deliberately stays auto-approved (no interrupt() gate): this is a soft gate by
+    design -- a Critical finding is clearly surfaced on the report for a human to act on (e.g.
+    via the frontend's "Send to Coder Agent" action), never used to block pipeline advancement.
     """
     feature_id = state["feature_id"]
-    logger.info("Running Security Agent (placeholder) for feature_id=%s", feature_id)
+    logger.info("Running Security Agent for feature_id=%s", feature_id)
 
-    asyncio.run(security_agent.run(feature_id=feature_id))
+    output = asyncio.run(security_agent.run(feature_id=feature_id))
 
     return {
         "last_agent": "security",
-        "last_artifact_ids": [],
+        "last_artifact_ids": output.artifact_ids,
         "human_comment": None,
     }
 
 
 def _qa_node(state: FeaturePipelineState) -> dict[str, Any]:
     """
-    Run the real QA Agent.
-
-    The QA Agent automatically generates test cases, saves all QA artifacts,
-    and returns their artifact IDs. The stage is currently auto-approved
-    (no interrupt gate), but this node is ready to become a gated stage
-    once QA outputs require human review.
+    QA Agent call -- writes and executes real Unit/Integration/Regression tests (see
+    app/agents/qa_agent/agent.py) and saves a versioned report. Auto-approved (no interrupt()
+    gate): stays in AUTO_APPROVED_STAGES, a human reviews the report after the fact.
     """
-
     feature_id = state["feature_id"]
+    logger.info("Running QA Agent for feature_id=%s", feature_id)
 
-    logger.info(
-        "Running QA Agent for feature_id=%s",
-        feature_id,
-    )
-
-    output = asyncio.run(
-        qa_agent.run(
-            feature_id=feature_id,
-        )
-    )
+    output = asyncio.run(qa_agent.run(feature_id=feature_id))
 
     return {
         "last_agent": "qa",

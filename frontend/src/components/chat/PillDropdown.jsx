@@ -15,9 +15,19 @@ export default function PillDropdown({
   leading,
   title,
   emptyLabel = "...",
-  triggerClassName = "",
+  // A max-width default, not baked into the base class string -- a caller passing its own
+  // max-w-* class here is the ONLY max-w class ever present for that instance (Tailwind's
+  // generated-CSS order for two equal-specificity utility classes is not reliably predictable
+  // from JSX string position alone, so appending an override string after a hardcoded one is not
+  // a safe way to let a caller widen/narrow the trigger).
+  triggerClassName = "max-w-[160px]",
   menuClassName = "",
   scrollable = true,
+  // "up" (default) matches this component's original two call sites, both living near the
+  // bottom of their panel (the composer bar) where a downward menu would run off the viewport.
+  // "down" is for a trigger near the TOP of its panel instead (e.g. a Result tab's version
+  // picker) -- only the popup's own positioning classes change, everything else is identical.
+  direction = "up",
 }) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef(null);
@@ -51,7 +61,7 @@ export default function PillDropdown({
         disabled={disabled}
         title={title}
         onClick={() => setOpen((current) => !current)}
-        className={`inline-flex items-center gap-1.5 text-xs font-medium rounded-full bg-gray-100 dark:bg-white/10 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed pl-3 pr-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-accent-500 cursor-pointer max-w-[160px] ${triggerClassName}`}
+        className={`inline-flex items-center gap-1.5 text-xs font-medium rounded-full bg-gray-100 dark:bg-white/10 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed pl-3 pr-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-accent-500 cursor-pointer ${triggerClassName}`}
       >
         {leading}
         <span className="truncate">{selected?.label ?? emptyLabel}</span>
@@ -70,7 +80,7 @@ export default function PillDropdown({
 
       {open && (
         <div
-          className={`absolute bottom-full left-0 mb-2 min-w-[190px] ${
+          className={`absolute ${direction === "down" ? "top-full mt-2" : "bottom-full mb-2"} left-0 min-w-[190px] ${
             scrollable ? "max-h-64 overflow-y-auto" : ""
           } rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-lg ring-1 ring-black/5 dark:ring-white/10 py-1 z-20 ${menuClassName}`}
         >

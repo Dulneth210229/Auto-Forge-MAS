@@ -12,12 +12,13 @@ from datetime import datetime
 from app.agents.coder_agent.agent import coder_agent
 from app.agents.uiux_agent.agent import uiux_agent
 from app.core.enums import AgentName, ApprovalStatus, ArtifactType
-from app.schemas.approval_schema import ApprovalRequest, ApprovalResponse
+from app.schemas.approval_schema import ApprovalRequest, ApprovalResponse, ApprovalRevokeResponse
 from app.services.graph_orchestrator_service import (
     GraphNotRunningError,
     graph_orchestrator_service,
 )
 from app.services.in_memory_store import store
+from app.services.workspace_service import workspace_service
 from app.utils.id_generator import generate_id
 from app.utils.logger import get_logger
 
@@ -30,9 +31,12 @@ logger = get_logger(__name__)
 # use?) -- ENHANCED_SRS joins this set for the exact same reason, now that approving it can
 # auto-start Architecture Agent against "the" approved version. ARCHITECTURE_PLAN joins for the
 # same reason, per direct user request: only one Architecture Plan version is ever "the approved
-# one". Deliberately narrow, not every gating artifact_type: e.g. UI/UX's ui_component_code
-# artifacts are legitimately, independently approved several at a time (distinct components, not
-# versions of one document).
+# one". UI_PREVIEW_SCREENSHOT joins too, per direct user request restoring human approval for the
+# UI/UX stage: only one version's worth of UI/UX output (screenshot(s) + everything that rides
+# along with it, see _cascade_uiux_screenshot_decision) is ever "the approved one". Deliberately
+# narrow, not every gating artifact_type: e.g. UI/UX's ui_component_code artifacts are NOT here --
+# they're not independently approved at all anymore (see the cascade below), so there's nothing
+# for exclusivity to apply to.
 EXCLUSIVE_VERSIONED_ARTIFACT_TYPES = {
     ArtifactType.SRS, ArtifactType.ENHANCED_SRS, ArtifactType.ARCHITECTURE_PLAN,
     ArtifactType.UI_PREVIEW_SCREENSHOT,
@@ -48,12 +52,14 @@ ARCHITECTURE_SIBLING_DIAGRAM_TYPES = {
     ArtifactType.USE_CASE_DIAGRAM, ArtifactType.SEQUENCE_DIAGRAM, ArtifactType.CLASS_DIAGRAM,
 }
 
-# Every UI/UX artifact type EXCEPT ui_preview_screenshot itself -- these no longer have their own
-# independent approval decision either (per direct user request, mirroring the architecture
-# diagram cascade above): approving/rejecting/requesting revision on the Preview Screenshot
-# cascades the same decision to all of these, of the SAME version, automatically. A different
-# page's screenshot (same version) is handled separately in the cascade itself, since it's the
-# same type as the anchor artifact, not a "sibling type."
+# Every UI/UX artifact_type EXCEPT the screenshot itself -- these ride along with every UI/UX
+# generation, always sharing its exact version number (_save_artifacts computes ONE version and
+# reuses it for all of them). Per direct user request, only the Preview Screenshot is ever an
+# independent human approval decision -- approving/rejecting/requesting revision on it cascades
+# the same decision to all of these, of the SAME version, automatically. Other screenshots of the
+# SAME version (a feature with more than one page) are handled separately in
+# _cascade_uiux_screenshot_decision -- they're the same artifact_type as the one just decided on,
+# not a "sibling type", so this set alone doesn't cover them.
 UIUX_SIBLING_ARTIFACT_TYPES = {
     ArtifactType.UI_METADATA, ArtifactType.UI_INTEGRATION_MANIFEST,
     ArtifactType.UI_COMPONENT_CODE, ArtifactType.UI_PAGE_HTML,
@@ -110,6 +116,13 @@ class ApprovalService:
         # Update artifact status directly.
         artifact["approval_status"] = request.status
 
+        # Feature.updated_at was previously dead data (set once at creation, never bumped) --
+        # an approval decision is a real, meaningful "something happened on this feature" moment,
+        # same reasoning as stage_event_service.record()'s own identical update.
+        feature = store.features.get(artifact["feature_id"])
+        if feature:
+            feature["updated_at"] = approved_at
+
         is_approved = request.status in [ApprovalStatus.APPROVED, ApprovalStatus.APPROVED.value]
 
         # See EXCLUSIVE_VERSIONED_ARTIFACT_TYPES's own docstring for why SRS/Enhanced SRS get this
@@ -133,16 +146,12 @@ class ApprovalService:
                     continue
                 if other.get("approval_status") in [ApprovalStatus.APPROVED, ApprovalStatus.APPROVED.value]:
                     other["approval_status"] = ApprovalStatus.PENDING
-                    # The reverted sibling is a DIFFERENT Architecture Plan version -- its own
-                    # diagrams must revert too, or that old version's plan/diagram pair goes out
-                    # of sync (plan back to pending, diagrams still showing approved).
+                    # The reverted sibling is a DIFFERENT Architecture Plan/UI-UX version -- its
+                    # own siblings must revert too, or that old version's parts go out of sync
+                    # (e.g. plan back to pending, diagrams still showing approved).
                     if _is_architecture_plan_type(other.get("artifact_type")):
                         self._cascade_architecture_plan_decision(other, ApprovalStatus.PENDING)
-                    # Same reasoning, UI/UX side: the reverted sibling is a DIFFERENT Preview
-                    # Screenshot version -- its own metadata/manifest/components/page-html cascade
-                    # must revert too, or that old version goes out of sync (screenshot back to
-                    # pending, everything else still showing approved).
-                    if _is_uiux_screenshot_type(other.get("artifact_type")):
+                    elif _is_uiux_screenshot_type(other.get("artifact_type")):
                         self._cascade_uiux_screenshot_decision(other, ApprovalStatus.PENDING)
 
         # Approving/rejecting/requesting revision on the Architecture Plan applies the exact same
@@ -152,10 +161,8 @@ class ApprovalService:
         # artifact_type internally rather than being nested under is_approved/is_rejected below.
         self._cascade_architecture_plan_decision(artifact, request.status)
 
-        # Same pattern, UI/UX side: approving/rejecting/requesting revision on the Preview
-        # Screenshot applies the exact same decision to the underlying metadata, integration
-        # manifest, every component, and every page-html artifact of the SAME version -- per
-        # direct user request, these no longer have an independent approval decision either.
+        # Same idea for the UI/UX stage's Preview Screenshot -- the human's sole approval surface
+        # for that whole stage (see UIUX_SIBLING_ARTIFACT_TYPES's own docstring).
         self._cascade_uiux_screenshot_decision(artifact, request.status)
 
         # If this artifact belongs to a feature with an active graph run paused on
@@ -175,35 +182,6 @@ class ApprovalService:
                 "Failed to resume graph run for feature_id=%s after approval",
                 artifact["feature_id"],
             )
-
-        # UI/UX Agent: merge new components/tokens into the project's shared
-        # design_system.json, but only now that this exact version has been
-        # approved -- a rejected run must never reach this line, so there is
-        # no separate "rollback" path to maintain. Triggers on either UI_METADATA
-        # (the old, direct-approval target) or UI_PREVIEW_SCREENSHOT (the new one,
-        # per direct user request) being the artifact DIRECTLY approved --
-        # apply_design_system_patch resolves the actual UI_METADATA artifact by
-        # version internally regardless of which one triggered the call.
-        is_uiux_metadata_or_screenshot = (
-            artifact["agent_name"] in [AgentName.UIUX, AgentName.UIUX.value]
-            and artifact["artifact_type"] in [
-                ArtifactType.UI_METADATA, ArtifactType.UI_METADATA.value,
-                ArtifactType.UI_PREVIEW_SCREENSHOT, ArtifactType.UI_PREVIEW_SCREENSHOT.value,
-            ]
-        )
-
-        if is_approved and is_uiux_metadata_or_screenshot:
-            try:
-                uiux_agent.apply_design_system_patch(
-                    feature_id=artifact["feature_id"],
-                    version=artifact["version"],
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to apply design system patch for feature_id=%s version=%s",
-                    artifact["feature_id"],
-                    artifact["version"],
-                )
 
         # Coder Agent: merge the approved feature branch into main and update
         # project_manifest.json, or discard the branch on rejection -- gated
@@ -239,7 +217,125 @@ class ApprovalService:
 
         return ApprovalResponse(**approval)
 
-    def _cascade_architecture_plan_decision(self, artifact: dict, status) -> None:
+    def revoke_approval(
+        self, artifact_id: str, revoked_by: str = "human_user", reviewer_comment: str | None = None
+    ) -> ApprovalRevokeResponse:
+        """
+        Moves an already-APPROVED artifact back to PENDING -- the one status transition
+        submit_approval never exposes (approve/reject/revision_request only ever move forward).
+        Direct user request: an approved artifact can't currently be un-approved to request
+        changes, even though every other pipeline decision can be revised.
+
+        Reverts the WHOLE version-sibling group (same feature_id + artifact_type + version),
+        mirroring artifact_service.delete_artifact's own established "operate on the whole
+        version, not one artifact_id" convention -- a gating type's JSON+Markdown pair always
+        share one version and must move together. For an artifact_type with its own dedicated
+        cascade (Architecture Plan's diagrams, UI/UX's Preview Screenshot siblings), that cascade
+        is reused instead of the generic same-type loop (it already covers the format-pair case
+        too, so running both would double-revert and write duplicate approval records).
+
+        For a Coder Agent code_diff artifact specifically, also attempts to reverse the real git
+        merge approving it already ran (see workspace_service.undo_merge_feature_branch) -- a
+        genuine, consequential git operation, reported back honestly via git_reverted/
+        restored_branch rather than silently left for the data model and the real code to
+        disagree. Never raises for the git step failing -- the data-level revoke has already
+        succeeded by that point and must not be rolled back just because the git side hit a
+        problem; the failure is logged instead, matching every other post-approval hook's own
+        never-raises precedent in this file.
+
+        Raises ValueError if the artifact doesn't exist or isn't currently approved.
+        """
+        artifact = store.artifacts.get(artifact_id)
+        if not artifact:
+            raise ValueError("Artifact not found.")
+
+        if artifact.get("approval_status") not in (ApprovalStatus.APPROVED, ApprovalStatus.APPROVED.value):
+            raise ValueError("Only an approved artifact can have its approval revoked.")
+
+        approved_at = datetime.utcnow()
+        reverted_ids: list[str] = []
+
+        def _revert_one(target: dict, by: str, comment: str) -> None:
+            target["approval_status"] = ApprovalStatus.PENDING
+            revoke_id = generate_id("approval")
+            store.approvals[revoke_id] = {
+                "approval_id": revoke_id,
+                "artifact_id": target["artifact_id"],
+                "feature_id": target["feature_id"],
+                "agent_name": target["agent_name"],
+                "status": ApprovalStatus.PENDING,
+                "reviewer_comment": comment,
+                "approved_by": by,
+                "approved_at": approved_at,
+            }
+            reverted_ids.append(target["artifact_id"])
+
+        _revert_one(artifact, revoked_by, reviewer_comment or "Approval revoked by the user to request changes.")
+
+        has_dedicated_cascade = _is_architecture_plan_type(
+            artifact.get("artifact_type")
+        ) or _is_uiux_screenshot_type(artifact.get("artifact_type"))
+        if not has_dedicated_cascade:
+            for other in store.artifacts.values():
+                if other["artifact_id"] == artifact_id:
+                    continue
+                if other.get("feature_id") != artifact["feature_id"]:
+                    continue
+                if other.get("artifact_type") != artifact["artifact_type"]:
+                    continue
+                if other.get("version") != artifact.get("version"):
+                    continue
+                if other.get("approval_status") not in (ApprovalStatus.APPROVED, ApprovalStatus.APPROVED.value):
+                    continue
+                _revert_one(
+                    other,
+                    "system:approval_revoke_cascade",
+                    f"Reverted together with v{artifact['version']} -- not an independent decision.",
+                )
+
+        # Both self-gate on artifact_type -- a no-op (empty list) for anything that isn't an
+        # Architecture Plan/UI-UX Preview Screenshot, so calling both unconditionally is safe
+        # (mirrors submit_approval's own unconditional calls to these same two methods).
+        reverted_ids.extend(self._cascade_architecture_plan_decision(artifact, ApprovalStatus.PENDING))
+        reverted_ids.extend(self._cascade_uiux_screenshot_decision(artifact, ApprovalStatus.PENDING))
+
+        # Same reasoning as submit_approval's own identical update -- a revoke is a real,
+        # meaningful "something happened on this feature" moment too.
+        feature = store.features.get(artifact["feature_id"])
+        if feature:
+            feature["updated_at"] = approved_at
+
+        git_reverted = False
+        restored_branch = None
+        is_coder_diff = (
+            artifact["agent_name"] in [AgentName.CODER, AgentName.CODER.value]
+            and artifact["artifact_type"] in [ArtifactType.CODE_DIFF, ArtifactType.CODE_DIFF.value]
+        )
+        if is_coder_diff:
+            try:
+                feature = store.features.get(artifact["feature_id"])
+                project_id = feature.get("project_id") if feature else None
+                if project_id:
+                    restored_branch = workspace_service.undo_merge_feature_branch(
+                        project_id, artifact["feature_id"]
+                    )
+                    git_reverted = restored_branch is not None
+            except Exception:
+                logger.exception(
+                    "Failed to undo merge for feature_id=%s version=%s during approval revoke",
+                    artifact["feature_id"],
+                    artifact["version"],
+                )
+
+        return ApprovalRevokeResponse(
+            artifact_id=artifact_id,
+            status=ApprovalStatus.PENDING,
+            reverted_artifact_ids=reverted_ids,
+            git_reverted=git_reverted,
+            restored_branch=restored_branch,
+        )
+
+    def _cascade_architecture_plan_decision(self, artifact: dict, status) -> list[str]:
         """
         Applies `status` to every sibling artifact generated alongside this Architecture Plan
         artifact (its own other format -- JSON/Markdown -- plus all 3 diagram types, both PUML
@@ -256,10 +352,15 @@ class ApprovalService:
 
         Never raises: a cascade failure must not prevent the human's own approval action from
         succeeding, same precedent as every other post-approval hook in this file.
+
+        Returns the artifact_ids actually touched -- revoke_approval uses this to report an
+        honest, complete reverted_artifact_ids list back to the caller (most callers, e.g.
+        submit_approval, ignore the return value).
         """
         if not _is_architecture_plan_type(artifact.get("artifact_type")):
-            return
+            return []
 
+        touched_ids: list[str] = []
         try:
             approved_at = datetime.utcnow()
             for sibling in store.artifacts.values():
@@ -298,6 +399,7 @@ class ApprovalService:
                     "approved_by": "system:architecture_plan_cascade",
                     "approved_at": approved_at,
                 }
+                touched_ids.append(sibling["artifact_id"])
         except Exception:
             logger.exception(
                 "Failed to cascade Architecture Plan decision for feature_id=%s version=%s",
@@ -305,28 +407,37 @@ class ApprovalService:
                 artifact.get("version"),
             )
 
-    def _cascade_uiux_screenshot_decision(self, artifact: dict, status) -> None:
-        """
-        Applies `status` to every UI/UX sibling artifact of this Preview Screenshot -- the
-        underlying ui_metadata (JSON+Markdown), ui_integration_manifest, every ui_component_code,
-        every ui_page_html, AND any other ui_preview_screenshot (a different page) -- that shares
-        the SAME feature_id and SAME version. Self-gates on artifact_type (a no-op for anything
-        that isn't a Preview Screenshot artifact), so callers can invoke it unconditionally.
-        Mirrors _cascade_architecture_plan_decision exactly -- same reasoning, same
-        synthetic-approval-record convention, different anchor type.
+        return touched_ids
 
-        Writes a synthetic approval record per cascaded sibling -- without one, a cascaded
-        artifact would be a silent gap in list_feature_approvals (its status visibly changed but
-        no record of why/when). approved_by is deliberately "system:uiux_screenshot_cascade",
-        never the human's own name, so a future reader can immediately tell this wasn't an
-        independent click.
+    def _cascade_uiux_screenshot_decision(self, artifact: dict, status) -> list[str]:
+        """
+        Applies `status` to every other UI/UX artifact of the SAME feature_id and SAME version as
+        this Preview Screenshot -- every UIUX_SIBLING_ARTIFACT_TYPES entry (metadata, integration
+        manifest, every component, every page's HTML) AND any OTHER Preview Screenshot of that
+        same version (a feature with more than one page/UI -- see agent.py's _save_artifacts,
+        which now correctly saves every page's screenshot under one shared version). Self-gates on
+        artifact_type (a no-op for anything that isn't a Preview Screenshot), so callers can invoke
+        it unconditionally.
+
+        Approving (not rejecting/requesting revision) also triggers apply_design_system_patch for
+        this version -- restored to being approval-gated, exactly like every other artifact type
+        in this file: a rejected/still-pending run must never pollute the shared design system.
+
+        Writes a synthetic approval record per cascaded sibling, same "report, don't misrepresent"
+        convention as _cascade_architecture_plan_decision -- approved_by is
+        "system:uiux_screenshot_cascade", never the human's own name.
 
         Never raises: a cascade failure must not prevent the human's own approval action from
         succeeding, same precedent as every other post-approval hook in this file.
+
+        Returns the artifact_ids actually touched -- revoke_approval uses this to report an
+        honest, complete reverted_artifact_ids list back to the caller (most callers, e.g.
+        submit_approval, ignore the return value).
         """
         if not _is_uiux_screenshot_type(artifact.get("artifact_type")):
-            return
+            return []
 
+        touched_ids: list[str] = []
         try:
             approved_at = datetime.utcnow()
             for sibling in store.artifacts.values():
@@ -341,8 +452,8 @@ class ApprovalService:
                     sibling.get("artifact_type") in (sibling_type, sibling_type.value)
                     for sibling_type in UIUX_SIBLING_ARTIFACT_TYPES
                 )
-                is_other_screenshot = _is_uiux_screenshot_type(sibling.get("artifact_type"))
-                if not (is_sibling_type or is_other_screenshot):
+                is_another_screenshot = _is_uiux_screenshot_type(sibling.get("artifact_type"))
+                if not (is_sibling_type or is_another_screenshot):
                     continue
 
                 sibling["approval_status"] = status
@@ -356,18 +467,24 @@ class ApprovalService:
                     "status": status,
                     "reviewer_comment": (
                         f"Auto-{status.value if hasattr(status, 'value') else status} together "
-                        f"with Preview Screenshot v{artifact['version']} -- not an independent "
-                        f"human decision."
+                        f"with UI/UX Preview Screenshot v{artifact['version']} -- not an "
+                        f"independent human decision."
                     ),
                     "approved_by": "system:uiux_screenshot_cascade",
                     "approved_at": approved_at,
                 }
+                touched_ids.append(sibling["artifact_id"])
+
+            if status in (ApprovalStatus.APPROVED, ApprovalStatus.APPROVED.value):
+                uiux_agent.apply_design_system_patch(artifact["feature_id"], artifact["version"])
         except Exception:
             logger.exception(
-                "Failed to cascade Preview Screenshot decision for feature_id=%s version=%s",
+                "Failed to cascade UI/UX screenshot decision for feature_id=%s version=%s",
                 artifact.get("feature_id"),
                 artifact.get("version"),
             )
+
+        return touched_ids
 
     def list_feature_approvals(self, feature_id: str) -> list[ApprovalResponse]:
         """

@@ -1,24 +1,38 @@
 import { useEffect, useRef, useState } from "react";
 import { listGatingArtifactVersions } from "../../lib/deriveStageStatus";
-import { ARTIFACT_TYPE_STAGE, STAGE_GATING_ARTIFACT, dedupeArtifactVersions } from "../../lib/artifactTypeMeta";
+import {
+  ARTIFACT_TYPE_STAGE,
+  STAGE_GATING_ARTIFACT,
+  ARTIFACT_TYPE_LABELS,
+  dedupeArtifactVersions,
+} from "../../lib/artifactTypeMeta";
+import { STAGE_LABELS } from "../../lib/pipelineStages";
 import { getEffectiveActiveArtifact } from "../../lib/activeArtifactSelection";
 import { artifactDownloadUrl, featureCodeDownloadUrl } from "../../api/client";
 import { declutterJsonForDisplay } from "../../lib/streamingJsonDisplay";
+import { looksLikeMongoUri } from "../../lib/mongoUri";
 import ArtifactContentView from "../artifacts/ArtifactContentView";
 import ArchitectureDiagramsGallery from "../pipeline/ArchitectureDiagramsGallery";
 import UiuxPagePreviewsPanel from "../pipeline/UiuxPagePreviewsPanel";
 import { LiveGenerationView } from "../pipeline/RequirementConversationParts";
 import GovernancePanel from "../pipeline/GovernancePanel";
+import ApprovalPanel from "../pipeline/ApprovalPanel";
 import ArtifactList from "../pipeline/ArtifactList";
+import UiuxVersionGroupList from "../pipeline/UiuxVersionGroupList";
 import ErrorBanner from "../common/ErrorBanner";
 import ConfirmDialog from "../common/ConfirmDialog";
 import RequirementSrsOutputPanel from "./RequirementSrsOutputPanel";
+import VersionSelect from "./VersionSelect";
+import SecurityReportView from "../security/SecurityReportView";
+import SecurityDecisionDialog from "../security/SecurityDecisionDialog";
+import QaReportView from "../qa/QaReportView";
 import { useWorkspaceSelection } from "../workspace/WorkspaceSelectionContext";
 import { useRequirementConversationFlowContext } from "../workspace/RequirementConversationFlowContext";
 import { useDomainAgentFlowContext } from "../workspace/DomainAgentFlowContext";
 import { useArchitectureAgentFlowContext } from "../workspace/ArchitectureAgentFlowContext";
 import { useUiuxAgentFlowContext } from "../workspace/UiuxAgentFlowContext";
 import { useCoderAgentFlowContext } from "../workspace/CoderAgentFlowContext";
+import { useSecurityAgentFlowContext } from "../workspace/SecurityAgentFlowContext";
 import { useFeature, useSetActiveArtifactSelection } from "../../hooks/useFeatures";
 import { useApprovalMutation } from "../../hooks/useApprovalMutation";
 
@@ -61,6 +75,31 @@ const APPROVE_CONTINUATION_BY_STAGE = {
     message: (version) =>
       `Approving v${version} makes it the Architecture Plan this feature uses going forward (any other approved Architecture Plan version is superseded back to pending). UI/UX Agent will start automatically and generate page-level UI metadata, component code, and preview screenshots -- watch it live in the Result panel.`,
   },
+  // UI/UX -> Coder is the fourth link in this chain, and the first one where approving also
+  // LOCKS every other pending version's Approve button (direct user request, reversing the
+  // immediately-prior session's own "free approval" choice for UI/UX specifically -- see
+  // UiuxVersionGroupList's own comment) -- once Coder Agent starts consuming one version as its
+  // visual reference, a stray approve on a different version mid-build would be confusing and
+  // could re-trigger a second, conflicting run.
+  uiux: {
+    nextAgent: "coder",
+    autoRun: true,
+    title: "Approve this UI/UX version and start Coder Agent?",
+    message: (version) =>
+      `Approving v${version} locks it as the UI/UX design this feature builds from -- every other version is locked from approval until you reject this one. Coder Agent will start automatically and build the real frontend + backend to match this design as closely as possible -- watch it live in the Result panel.`,
+  },
+  // Coder -> Security is the fifth link, and the first that comes through this dialog at all --
+  // previously the Coder Agent's own approve button skipped this popup entirely (no entry existed
+  // here), so its real, serious warning was only ever visible in GovernancePanel's fine print, not
+  // at the moment of actually clicking Approve. Direct user request: name the merge consequence
+  // here too, then auto-start a real vulnerability scan.
+  coder: {
+    nextAgent: "security",
+    autoRun: true,
+    title: "Approve this Coder Agent output and start Security Agent?",
+    message: (version) =>
+      `Approving v${version} runs a real git merge --no-ff into main and permanently deletes the feature branch (see the warning below -- this part cannot be undone by re-running anything, only by explicitly revoking this approval afterward). Security Agent will then start automatically and scan the merged code for vulnerabilities -- watch it live in the Result panel.`,
+  },
 };
 
 // domain_improvements is Domain Agent's own "what changed and why" side-record for the SAME
@@ -87,13 +126,15 @@ const APPROVE_CONTINUATION_BY_STAGE = {
 // Architecture Plan cascades the same decision to them automatically on the backend (see
 // approval_service.py's _cascade_architecture_plan_decision). They're viewable only through
 // ArchitectureDiagramsGallery now, not listed generically here.
-// ui_metadata/ui_integration_manifest/ui_component_code/ui_page_html: same pattern, per direct
-// user request -- the ONE artifact a human interacts with for the uiux stage is now
-// ui_preview_screenshot (STAGE_GATING_ARTIFACT.uiux); approving/rejecting/requesting revision on
-// it cascades the same decision to all four of these, of the same version, automatically (see
-// approval_service.py's _cascade_uiux_screenshot_decision). Raw metadata/manifest/component/page
-// source is still viewable via the Preview tab and the "View" link on the Preview Screenshot
-// itself where relevant -- just not as separate listed/approvable rows here.
+// ui_metadata/ui_integration_manifest/ui_component_code/ui_page_html: per direct user request,
+// the WHOLE UI/UX stage no longer requires any human approval decision at all -- every UI/UX
+// artifact (including ui_preview_screenshot, STAGE_GATING_ARTIFACT.uiux) is saved already
+// approved on the backend (see uiux_agent/agent.py's _save_artifacts). These four stay excluded
+// from the listed rows for the same reason as always -- they're internal working documents, not
+// individually meaningful decision points -- and ui_preview_screenshot itself still shows in
+// GovernancePanel below as a plain "approved, nothing pending" status line. Raw metadata/
+// manifest/component/page source is still viewable via the Preview tab and the "View" link on
+// the Preview Screenshot itself where relevant -- just not as separate listed rows here.
 const UNLISTED_ARTIFACT_TYPES = [
   "domain_improvements", "code_plan", "code_diff", "code_manifest", "requirement_code_map",
   "use_case_diagram", "sequence_diagram", "class_diagram",
@@ -105,6 +146,45 @@ const UNLISTED_ARTIFACT_TYPES = [
 // the instant a newer one exists (there's nothing to compare/choose between, unlike the gating
 // code_diff's own version history), so only the latest is kept.
 const LATEST_VERSION_ONLY_ARTIFACT_TYPES = ["setup_instructions"];
+
+// stage -> the real previous-stage artifact(s) it actually reads, for the "Using X vN for Y
+// Agent" indicator -- generalized (direct user request, with a screenshot of the original
+// Requirement->Domain-only version as the reference example) to every stage that has a real,
+// approved-artifact input. Confirmed against each agent's own real run()/revise() code, not
+// guessed:
+// - domain reads the approved SRS.
+// - architecture reads the approved Enhanced SRS when one exists, falling back to the plain SRS
+//   only if it doesn't (srs_for_generation = enhanced_srs_json or srs_json, at every real call
+//   site in architecture_agent/agent.py) -- resolved at render time below, never hardcoded to
+//   just one.
+// - uiux reads the approved Architecture Plan.
+// - coder reads BOTH the Architecture Plan and the UI/UX Integration Manifest independently (at
+//   every real call site in coder_agent/agent.py) -- the human-recognizable version to show for
+//   the latter is ui_preview_screenshot's (its real gating/cascade-anchored type since item 64;
+//   the manifest shares that exact version through the same approval cascade).
+//
+// Moved here from OutputPanel.jsx's own tab-bar header (direct user request: this indicator was
+// cluttering the tab row next to Result/Files/Preview -- it now renders inline in the Result
+// tab's own content instead, see the render block below).
+const PREVIOUS_STAGE_INPUTS_BY_STAGE = {
+  domain: [{ artifactType: "srs" }],
+  architecture: [{ artifactType: "enhanced_srs", fallbackArtifactType: "srs" }],
+  uiux: [{ artifactType: "architecture_plan" }],
+  coder: [
+    { artifactType: "architecture_plan" },
+    { artifactType: "ui_preview_screenshot", artifactFormat: "png", label: "UI/UX Output" },
+  ],
+};
+
+// Security and QA scan the live generated workspace directly off disk (confirmed: neither
+// security_agent.py's nor qa_agent.py's run() ever calls a "find latest approved artifact"
+// lookup for their main input) -- there is no formal, approved-artifact version behind "what
+// they used" the way every other stage has one. An honest, plain, non-versioned label instead of
+// a pill, so this indicator never implies a version number that doesn't actually exist.
+const NO_ARTIFACT_VERSION_LABEL_BY_STAGE = {
+  security: "Scanning the latest generated code",
+  qa: "Testing the latest generated code",
+};
 
 function keepLatestVersionOnly(artifacts, types) {
   const latestVersionByType = {};
@@ -242,6 +322,7 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
   // coding attempts, verification, diffing) covers the rest, shown the same isFinalizing way
   // Architecture's diagram-generation tail already is.
   const {
+    handleRunStream: handleRunCoderStream,
     runStream: coderRunStream,
     runStreamedText: coderRunStreamedText,
     runStreamStarted: coderRunStreamStarted,
@@ -262,11 +343,32 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
   const coderPhase = isCoderRevising ? coderRevisionPhase : coderRunPhase;
   const coderPhaseStartedAt = isCoderRevising ? coderRevisionPhaseStartedAt : coderRunPhaseStartedAt;
 
-  // UI/UX Agent has no streaming route -- runUiux is one plain mutation shared (via
-  // UiuxAgentFlowContext) with ChatPanel's own composer, so a run auto-started from this
-  // component's handleConfirmedApprove is still visible as "pending" wherever else it's read.
-  const { runUiux } = useUiuxAgentFlowContext();
-  const isUiuxGenerating = stage === "uiux" && runUiux.isPending;
+  // Same idea, UI/UX Agent -- ui_metadata_json streams live, then a "phase" tail (component
+  // generation, page assembly/rendering) covers the rest, shown the same isFinalizing way
+  // Architecture/Coder's own non-streamable tails already are. Read unconditionally regardless of
+  // stage -- cheap, and this is also what handleConfirmedApprove below needs to auto-start a run
+  // from the architecture-approval branch.
+  const {
+    handleRunStream: handleRunUiuxStream,
+    runStream: uiuxRunStream,
+    runStreamedText: uiuxRunStreamedText,
+    runStreamStarted: uiuxRunStreamStarted,
+    runPhase: uiuxRunPhase,
+    runPhaseStartedAt: uiuxRunPhaseStartedAt,
+    reviseStream: uiuxReviseStream,
+    revisionStreamedText: uiuxRevisionStreamedText,
+    revisionStreamStarted: uiuxRevisionStreamStarted,
+    revisionPhase: uiuxRevisionPhase,
+    revisionPhaseStartedAt: uiuxRevisionPhaseStartedAt,
+  } = useUiuxAgentFlowContext();
+  const isUiuxStage = stage === "uiux";
+  const isUiuxRevising = isUiuxStage && uiuxReviseStream.isPending;
+  const isUiuxRunning = isUiuxStage && uiuxRunStream.isPending;
+  const isUiuxGenerating = isUiuxRevising || isUiuxRunning;
+  const uiuxStreamedText = isUiuxRevising ? uiuxRevisionStreamedText : uiuxRunStreamedText;
+  const uiuxStreamStarted = isUiuxRevising ? uiuxRevisionStreamStarted : uiuxRunStreamStarted;
+  const uiuxPhase = isUiuxRevising ? uiuxRevisionPhase : uiuxRunPhase;
+  const uiuxPhaseStartedAt = isUiuxRevising ? uiuxRevisionPhaseStartedAt : uiuxRunPhaseStartedAt;
 
   // Deduped for display: every gating artifact_type saves a JSON+Markdown pair sharing one
   // version, and listing both as separate rows read as the same version being duplicated (a real
@@ -310,11 +412,35 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
   // Domain -> Architecture is the opposite, deliberately: Architecture Agent needs no comparable
   // human-guidance step (there's nothing analogous to "here's a database schema" to wait for), so
   // approving auto-starts it immediately -- see APPROVE_CONTINUATION_BY_STAGE's own `autoRun`.
+  //
+  // UI/UX -> Coder is the fourth link, also auto-run -- and the first stage where approving ALSO
+  // locks every other pending version from being approved (UiuxVersionGroupList's own
+  // `approveLocked`, computed here indirectly since this same `requestApproveConfirmation` is
+  // what it calls) -- direct user request, so a stray approve on a different UI/UX version can't
+  // re-trigger a second, conflicting Coder Agent run once one is already building.
   const approveContinuation = APPROVE_CONTINUATION_BY_STAGE[stage];
   const [confirmingArtifactId, setConfirmingArtifactId] = useState(null);
+  // Security is a parallel special case, not another APPROVE_CONTINUATION_BY_STAGE entry -- every
+  // other entry's shape is "approve -> auto-run the next agent," but approving a security report
+  // needs to ask the human what to do next (proceed anyway, or send it to the Coder Agent to fix)
+  // rather than silently continuing -- see SecurityDecisionDialog.jsx's own docstring for why no
+  // further loop-tracking state is needed beyond this one id.
+  const [securityDecisionArtifactId, setSecurityDecisionArtifactId] = useState(null);
+  // Optional MongoDB URI a human can supply right in the UI/UX-approval popup (one of two new
+  // entry points for this, alongside the standalone Database Connection panel reachable from
+  // FeatureListPanel -- see DatabaseConnectionPanel.jsx) -- only ever read/reset for the uiux
+  // stage's own dialog instance, every other stage's dialog never renders the field at all.
+  const [mongoUriDraft, setMongoUriDraft] = useState("");
+  const mongoUriIsValid = looksLikeMongoUri(mongoUriDraft);
   const srsApproval = useApprovalMutation(featureId);
+  // Shared with SecurityReportView.jsx (see SecurityAgentFlowContext's own docstring) -- read
+  // unconditionally regardless of stage, same as every other agent's flow-context hook above, so
+  // handleConfirmedApprove can auto-start a scan from the coder-approval branch below.
+  const { runSecurity } = useSecurityAgentFlowContext();
+  const isSecurityGenerating = stage === "security" && runSecurity.isPending;
 
   function requestApproveConfirmation(artifactId) {
+    setMongoUriDraft("");
     setConfirmingArtifactId(artifactId);
   }
 
@@ -341,38 +467,139 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
       if (approveContinuation.nextAgent === "architecture") {
         handleRunArchitectureStream({ use_enhanced_srs_if_available: true, architecture_notes: null, human_comment: null });
       } else if (approveContinuation.nextAgent === "uiux") {
-        runUiux.mutate({});
+        handleRunUiuxStream({ use_enhanced_srs_if_available: true, human_comment: null });
+      } else if (approveContinuation.nextAgent === "coder") {
+        // Safe by construction: run()/run_stream() (always what this fires, since UI/UX -> Coder
+        // is always a FIRST run, never a revision) never short-circuit on a URI-only comment the
+        // way revise() does -- passing one here saves it via the existing extract_mongodb_uri
+        // call in run_stream() AND still runs the full plan/code/verify cycle using the
+        // URI-stripped remainder for planning.
+        handleRunCoderStream({ use_enhanced_srs_if_available: true, human_comment: mongoUriDraft.trim() || null });
+      } else if (approveContinuation.nextAgent === "security") {
+        // Security Agent has no streaming route (a scan is one plain POST) -- runSecurity is the
+        // shared SecurityAgentFlowContext instance, so SecurityReportView's own Run/Re-run button
+        // and the isSecurityGenerating view below both observe this exact same pending state.
+        runSecurity.mutate({});
       }
     }
   }
 
+  // Security's own approve handler -- no confirmation dialog first (unlike every other gated
+  // stage, there's nothing to warn about before approving; the real decision point is the popup
+  // AFTER approval, not before it), just the real approval call, then open the decision popup.
+  async function handleSecurityApprove(artifactId, comment) {
+    await srsApproval.mutateAsync({ artifactId, status: "approved", reviewer_comment: comment ?? null });
+    setSecurityDecisionArtifactId(artifactId);
+  }
+
+  // Shared by every approve-trigger surface for this stage (the "All Artifacts" list's own
+  // per-row Approve button AND GovernancePanel's "Stage Actions" one) so approving from either
+  // place opens the same decision popup, not just one of them.
+  const onApproveClickForStage =
+    stage === "security" ? handleSecurityApprove : approveContinuation ? requestApproveConfirmation : undefined;
+
+  // allArtifacts, not stageArtifacts -- a real bug found live: code_diff (the Coder stage's own
+  // gating type) is deliberately excluded from stageArtifacts (see UNLISTED_ARTIFACT_TYPES), so
+  // looking it up there resolved to undefined and the popup read "Approving vundefined...".
+  // allArtifacts is the unfiltered list and always has whatever's being confirmed, regardless of
+  // whether that type happens to be hidden from the "All Artifacts" listing.
   const confirmingArtifact = confirmingArtifactId
-    ? stageArtifacts.find((a) => a.artifact_id === confirmingArtifactId)
+    ? allArtifacts.find((a) => a.artifact_id === confirmingArtifactId)
     : null;
+
+  // Direct user correction: a UI/UX run/revision producing several pages at once must be
+  // presented (and approved) as ONE version, not as N independent-looking per-page rows -- the
+  // backend already treats it that way (shared version number + approval cascade, see
+  // approval_service.py's UI/UX cascade); UiuxVersionGroupList makes that true on screen too.
+  // Every other stage keeps the generic ArtifactList exactly as before.
+  const uiuxVersionCount = stage === "uiux" ? new Set(stageArtifacts.map((a) => a.version)).size : null;
 
   return (
     <div className="flex flex-col gap-5">
+      {(() => {
+        const noArtifactLabel = NO_ARTIFACT_VERSION_LABEL_BY_STAGE[stage];
+        if (noArtifactLabel) {
+          return (
+            <span className="self-start text-xs font-semibold text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-white/5 rounded-full px-3 py-1 whitespace-nowrap truncate">
+              {noArtifactLabel}
+            </span>
+          );
+        }
+
+        const descriptors = PREVIOUS_STAGE_INPUTS_BY_STAGE[stage];
+        if (!descriptors) return null;
+
+        const agentLabel = `${STAGE_LABELS[stage] || stage} Agent`;
+
+        const pills = descriptors
+          .map((descriptor) => {
+            const format = descriptor.artifactFormat || "json";
+            let effective = getEffectiveActiveArtifact(
+              allArtifacts, feature?.active_artifact_selection, descriptor.artifactType, format
+            );
+            let resolvedType = descriptor.artifactType;
+            if (!effective && descriptor.fallbackArtifactType) {
+              effective = getEffectiveActiveArtifact(
+                allArtifacts, feature?.active_artifact_selection, descriptor.fallbackArtifactType, format
+              );
+              resolvedType = descriptor.fallbackArtifactType;
+            }
+            if (!effective) return null;
+
+            const label = descriptor.label || ARTIFACT_TYPE_LABELS[resolvedType] || resolvedType;
+            return { key: resolvedType, label, version: effective.version };
+          })
+          .filter(Boolean);
+
+        if (pills.length === 0) return null;
+
+        return (
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {pills.map((pill) => (
+              <span
+                key={pill.key}
+                title={`${agentLabel} will use ${pill.label} v${pill.version} -- pin a different approved version from its row's radio button below.`}
+                className="text-xs font-semibold text-accent-700 dark:text-accent-400 bg-accent-50 dark:bg-accent-500/10 rounded-full px-3 py-1 whitespace-nowrap truncate"
+              >
+                Using {pill.label} v{pill.version} for {agentLabel}
+              </span>
+            ))}
+          </div>
+        );
+      })()}
+
+      {stage !== "security" && stage !== "qa" && (
       <div>
         <h3 className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wide mb-2">
-          All Artifacts ({stageArtifacts.length})
+          All Artifacts ({stage === "uiux" ? uiuxVersionCount : stageArtifacts.length})
         </h3>
         <ErrorBanner error={setActiveSelection.error} fallback="Failed to change which version is in use." />
-        <ArtifactList
-          artifacts={stageArtifacts}
-          onView={viewArtifact}
-          // Only used to gate the (separate, revise-only) Revise button -- approval controls are
-          // no longer suppressed for any row of the gating type (see ArtifactList's docstring).
-          gatingArtifactType={STAGE_GATING_ARTIFACT[stage]?.type ?? null}
-          featureId={featureId}
-          onApproveClick={approveContinuation ? requestApproveConfirmation : undefined}
-          activeArtifactType={activeArtifactType}
-          activeArtifactId={effectiveActiveArtifact?.artifact_id}
-          settingActive={setActiveSelection.isPending}
-          onSetActive={(artifactId) =>
-            setActiveSelection.mutate({ artifact_type: activeArtifactType, artifact_id: artifactId })
-          }
-        />
+        {stage === "uiux" ? (
+          <UiuxVersionGroupList
+            artifacts={stageArtifacts}
+            featureId={featureId}
+            onView={viewArtifact}
+            onApproveClick={approveContinuation ? requestApproveConfirmation : undefined}
+          />
+        ) : (
+          <ArtifactList
+            artifacts={stageArtifacts}
+            onView={viewArtifact}
+            // Only used to gate the (separate, revise-only) Revise button -- approval controls are
+            // no longer suppressed for any row of the gating type (see ArtifactList's docstring).
+            gatingArtifactType={STAGE_GATING_ARTIFACT[stage]?.type ?? null}
+            featureId={featureId}
+            onApproveClick={onApproveClickForStage}
+            activeArtifactType={activeArtifactType}
+            activeArtifactId={effectiveActiveArtifact?.artifact_id}
+            settingActive={setActiveSelection.isPending}
+            onSetActive={(artifactId) =>
+              setActiveSelection.mutate({ artifact_type: activeArtifactType, artifact_id: artifactId })
+            }
+          />
+        )}
       </div>
+      )}
 
       {isRevising ? (
         <LiveGenerationView
@@ -410,32 +637,122 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
         />
       ) : isUiuxGenerating ? (
         <LiveGenerationView
+          displayText={declutterJsonForDisplay(uiuxStreamedText)}
+          hasStarted={uiuxStreamStarted}
+          connectingLabel="Connecting to UI/UX Agent..."
+          generatingLabel={isUiuxRevising ? "Applying your requested change..." : "Generating ui_metadata..."}
+          isFinalizing={Boolean(uiuxPhase)}
+          finalizingLabel={uiuxPhase?.label}
+          phaseStartedAt={uiuxPhaseStartedAt}
+        />
+      ) : isSecurityGenerating ? (
+        // No streamed text -- a scan is one plain, non-streaming POST -- so this is isFinalizing
+        // mode from the start (spinner + elapsed timer only), matching Architecture/Coder/UI-UX's
+        // own non-streamable tails. Otherwise switching to the Security stage mid-scan (from the
+        // Coder-approval auto-trigger) would show SecurityReportView's bare "No security scan has
+        // been run yet" empty state instead of any visible progress.
+        <LiveGenerationView
           displayText=""
           hasStarted={false}
-          connectingLabel="Connecting to UI/UX Agent..."
-          generatingLabel="Generating pages, components, and previews..."
           isFinalizing
-          finalizingLabel="Generating pages, components, and previews..."
-          phaseStartedAt={runUiux.submittedAt || null}
+          finalizingLabel="Scanning the merged code for vulnerabilities..."
+          phaseStartedAt={runSecurity.submittedAt || null}
         />
       ) : versions.length === 0 && isRequirementStage ? (
         <RequirementSrsOutputPanel />
+      ) : stage === "security" ? (
+        // Unlike every other stage, Security Agent has no chat/revise flow to trigger a first
+        // run from (see pipelineStages.js's MANUAL_RUN_STAGES/REVISABLE_STAGES) -- SecurityReportView
+        // itself renders the "Run Security Scan" empty-state action when `artifact` is null, so
+        // this branch (unlike the generic ones below) fires regardless of versions.length.
+        //
+        // Deliberately skips the generic "All Artifacts" full-list AND GovernancePanel further
+        // down (both suppressed for this stage, see their own render guards) -- a compact version
+        // dropdown plus one inline approval control replaces both, so picking a version and
+        // approving/rejecting it happen in the same place instead of two differently-resolved
+        // surfaces (direct user request).
+        (() => {
+          const selectedSecurityArtifact = versions.find((v) => v.version === selectedVersion) || versions[0] || null;
+          const securityApproveLocked = selectedSecurityArtifact
+            ? Boolean(
+                stageArtifacts.find(
+                  (a) =>
+                    a.artifact_type === "security_report" &&
+                    a.approval_status === "approved" &&
+                    a.artifact_id !== selectedSecurityArtifact.artifact_id
+                )
+              )
+            : false;
+
+          return (
+            <div className="flex flex-col gap-4">
+              {versions.length > 0 && (
+                <div className="flex items-center justify-between">
+                  <VersionSelect versions={versions} selectedVersion={selectedVersion} onChange={setSelectedVersion} />
+                  {selectedSecurityArtifact && (
+                    <a
+                      href={artifactDownloadUrl(selectedSecurityArtifact.artifact_id)}
+                      className="text-sm text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 font-semibold"
+                    >
+                      Download report
+                    </a>
+                  )}
+                </div>
+              )}
+
+              {selectedSecurityArtifact &&
+                (selectedSecurityArtifact.approval_status === "pending" ? (
+                  <ApprovalPanel
+                    featureId={featureId}
+                    artifact={selectedSecurityArtifact}
+                    approveLocked={securityApproveLocked}
+                    onApproveClick={(comment) => handleSecurityApprove(selectedSecurityArtifact.artifact_id, comment)}
+                  />
+                ) : (
+                  <p className="text-xs text-gray-400 dark:text-gray-500">
+                    v{selectedSecurityArtifact.version} is {selectedSecurityArtifact.approval_status}.
+                  </p>
+                ))}
+
+              <SecurityReportView artifact={selectedSecurityArtifact} />
+            </div>
+          );
+        })()
+      ) : stage === "qa" ? (
+        // Same reasoning as the security branch above, minus the approval popup entirely -- QA
+        // stays auto-approved (see pipelineStages.js's AUTO_APPROVED_STAGES), so there's no
+        // pending/approved distinction to render here, just the version dropdown plus
+        // QaReportView (which owns its own "Re-run" / "Send Failing Tests to Coder Agent" actions).
+        // Also fires the "Run QA Scan" empty state itself when `artifact` is null, same as
+        // SecurityReportView, so this branch fires regardless of versions.length too.
+        (() => {
+          const selectedQaArtifact = versions.find((v) => v.version === selectedVersion) || versions[0] || null;
+          return (
+            <div className="flex flex-col gap-4">
+              {versions.length > 0 && (
+                <div className="flex items-center justify-between">
+                  <VersionSelect versions={versions} selectedVersion={selectedVersion} onChange={setSelectedVersion} />
+                  {selectedQaArtifact && (
+                    <a
+                      href={artifactDownloadUrl(selectedQaArtifact.artifact_id)}
+                      className="text-sm text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 font-semibold"
+                    >
+                      Download report
+                    </a>
+                  )}
+                </div>
+              )}
+
+              <QaReportView artifact={selectedQaArtifact} featureId={featureId} />
+            </div>
+          );
+        })()
       ) : versions.length === 0 ? (
         <p className="text-sm text-gray-400 dark:text-gray-500 italic">No output yet for this stage.</p>
       ) : (
         <div>
           <div className="flex items-center justify-between mb-3">
-            <select
-              value={selectedVersion ?? ""}
-              onChange={(e) => setSelectedVersion(Number(e.target.value))}
-              className="text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md p-1.5 focus:outline-none focus:border-accent-500"
-            >
-              {versions.map((v) => (
-                <option key={v.artifact_id} value={v.version} className="dark:bg-gray-800">
-                  v{v.version} -- {v.approval_status}
-                </option>
-              ))}
-            </select>
+            <VersionSelect versions={versions} selectedVersion={selectedVersion} onChange={setSelectedVersion} />
             <div className="flex items-center gap-3">
               {(() => {
                 const artifact = versions.find((v) => v.version === selectedVersion) || versions[0];
@@ -473,18 +790,11 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
                       (a) => a.artifact_type === "domain_improvements" && a.version === artifact.version
                     )
                   : null;
-              // Field-by-field inline editing is only offered for the SRS's own latest version --
-              // editing a historical version, or the Enhanced SRS artifact below, doesn't make
-              // sense (SrsDocumentViewer itself also gates on artifactType === "srs").
-              const isLatestSrsVersion =
-                isRequirementStage && artifact.version === versions[0]?.version;
               return (
                 <div>
                   <ArtifactContentView
                     artifact={artifact}
                     domainImprovementsArtifact={domainImprovements}
-                    featureId={featureId}
-                    editable={isLatestSrsVersion}
                   />
                   {stage === "architecture" && <ArchitectureDiagramsGallery allArtifacts={allArtifacts} />}
                   {domainImprovements && (
@@ -499,6 +809,7 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
         </div>
       )}
 
+      {stage !== "security" && stage !== "qa" && (
       <div className="pt-4 border-t border-gray-100 dark:border-gray-800">
         <h3 className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wide mb-2">Governance</h3>
         <GovernancePanel
@@ -506,15 +817,19 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
           featureId={featureId}
           allArtifacts={allArtifacts}
           stageArtifacts={stageArtifacts}
-          onApproveClick={approveContinuation ? requestApproveConfirmation : undefined}
+          onApproveClick={onApproveClickForStage}
         />
       </div>
+      )}
 
       {approveContinuation && (
         <ConfirmDialog
           open={Boolean(confirmingArtifactId)}
           onClose={() => {
-            if (!srsApproval.isPending) setConfirmingArtifactId(null);
+            if (!srsApproval.isPending) {
+              setConfirmingArtifactId(null);
+              setMongoUriDraft("");
+            }
           }}
           onConfirm={handleConfirmedApprove}
           title={approveContinuation.title}
@@ -523,10 +838,41 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
           confirmingLabel="Approving..."
           tone="primary"
           confirming={srsApproval.isPending}
+          confirmDisabled={stage === "uiux" && mongoUriDraft.trim().length > 0 && !mongoUriIsValid}
           error={srsApproval.error}
           errorFallback="Failed to submit approval decision."
-        />
+        >
+          {stage === "uiux" && (
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">
+                MongoDB connection string (optional)
+              </label>
+              <input
+                type="text"
+                value={mongoUriDraft}
+                onChange={(e) => setMongoUriDraft(e.target.value)}
+                placeholder="mongodb+srv://user:password@cluster0.xxx.mongodb.net/mydb"
+                className="w-full px-3 py-2 text-sm font-mono border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md focus:outline-none focus:border-accent-500"
+              />
+              {mongoUriDraft.trim().length > 0 && !mongoUriIsValid && (
+                <p className="text-xs text-red-600 dark:text-red-400 mt-1">
+                  Must start with mongodb:// or mongodb+srv://
+                </p>
+              )}
+              <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                Leave blank to keep serving seed data, or add/change it later from the Database
+                Connection panel.
+              </p>
+            </div>
+          )}
+        </ConfirmDialog>
       )}
+
+      <SecurityDecisionDialog
+        artifactId={securityDecisionArtifactId}
+        featureId={featureId}
+        onClose={() => setSecurityDecisionArtifactId(null)}
+      />
     </div>
   );
 }

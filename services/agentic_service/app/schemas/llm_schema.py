@@ -84,6 +84,13 @@ class AgentLLMOverrideUpdateRequest(BaseModel):
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     max_tokens: int | None = Field(default=None, ge=1)
     timeout_seconds: int | None = Field(default=None, ge=1)
+    supports_tool_calling: bool | None = Field(
+        default=None,
+        description="Human override for whether this agent's current model genuinely supports "
+        "real tool-calling (only meaningful for coder_agent today). null (the default) means "
+        "'auto-detect' -- see app/services/model_capabilities.py. Only set this explicitly if "
+        "the auto-detected result is known to be wrong for your setup.",
+    )
 
 
 class AgentLLMSettingsResponse(BaseModel):
@@ -100,6 +107,11 @@ class AgentLLMSettingsResponse(BaseModel):
     timeout_seconds: int
     is_override: bool = Field(
         ..., description="True if any field above differs from the global default."
+    )
+    supports_tool_calling_override: bool | None = Field(
+        default=None,
+        description="The raw human override, if any (null means auto-detect is in effect). See "
+        "AgentLLMOverrideUpdateRequest's own field for the full explanation.",
     )
 
 
@@ -131,6 +143,17 @@ class OllamaModelsResponse(BaseModel):
     Response for GET /settings/llm/models -- the model names currently available on the
     Ollama server configured in LLMSettings.base_url (i.e. `ollama list`/`GET /api/tags`
     against whatever server the user has live-configured, not a hardcoded default).
+    """
+
+    models: list[str] = Field(default_factory=list)
+
+
+class AnthropicModelsResponse(BaseModel):
+    """
+    Response for GET /settings/llm/anthropic/models -- the real, current model IDs Anthropic's
+    own GET /v1/models reports for this account (never a hardcoded list, same "always live"
+    precedent as OllamaModelsResponse). Empty if ANTHROPIC_API_KEY isn't configured -- a missing
+    key degrades this to "no Claude models to offer," not an error.
     """
 
     models: list[str] = Field(default_factory=list)

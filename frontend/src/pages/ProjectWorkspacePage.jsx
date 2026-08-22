@@ -13,6 +13,7 @@ import { DomainAgentFlowProvider } from "../components/workspace/DomainAgentFlow
 import { ArchitectureAgentFlowProvider } from "../components/workspace/ArchitectureAgentFlowContext";
 import { UiuxAgentFlowProvider } from "../components/workspace/UiuxAgentFlowContext";
 import { CoderAgentFlowProvider } from "../components/workspace/CoderAgentFlowContext";
+import { SecurityAgentFlowProvider } from "../components/workspace/SecurityAgentFlowContext";
 import ChatPanel from "../components/chat/ChatPanel";
 import OutputPanel from "../components/output/OutputPanel";
 import ArtifactViewerModal from "../components/artifacts/ArtifactViewerModal";
@@ -31,20 +32,22 @@ function WorkspaceBody({ projectId }) {
         <ArchitectureAgentFlowProvider featureId={selectedFeatureId}>
           <UiuxAgentFlowProvider featureId={selectedFeatureId}>
             <CoderAgentFlowProvider featureId={selectedFeatureId}>
-              <div className="h-full">
-                <ResizableWorkspace
-                  left={<FeatureListPanel projectId={projectId} />}
-                  middle={
-                    selectedFeatureId ? (
-                      <ChatPanel featureId={selectedFeatureId} />
-                    ) : (
-                      <EmptyChatPanel projectId={projectId} />
-                    )
-                  }
-                  right={selectedFeatureId ? <OutputPanel featureId={selectedFeatureId} /> : <EmptyOutputPanel />}
-                />
-                <ArtifactViewerModal artifact={viewingArtifact} onClose={() => viewArtifact(null)} />
-              </div>
+              <SecurityAgentFlowProvider featureId={selectedFeatureId}>
+                <div className="h-full">
+                  <ResizableWorkspace
+                    left={<FeatureListPanel projectId={projectId} />}
+                    middle={
+                      selectedFeatureId ? (
+                        <ChatPanel featureId={selectedFeatureId} />
+                      ) : (
+                        <EmptyChatPanel projectId={projectId} />
+                      )
+                    }
+                    right={selectedFeatureId ? <OutputPanel featureId={selectedFeatureId} /> : <EmptyOutputPanel />}
+                  />
+                  <ArtifactViewerModal artifact={viewingArtifact} onClose={() => viewArtifact(null)} />
+                </div>
+              </SecurityAgentFlowProvider>
             </CoderAgentFlowProvider>
           </UiuxAgentFlowProvider>
         </ArchitectureAgentFlowProvider>
@@ -71,9 +74,20 @@ export default function ProjectWorkspacePage() {
     return <LoadingSpinner label="Loading project..." />;
   }
 
-  // No featureId in the URL yet -- default to the first feature (if any) so the workspace isn't
-  // empty on first load after coming from the projects list.
-  const effectiveFeatureId = featureId || features?.[0]?.feature_id || null;
+  // No featureId in the URL yet (a fresh project open, e.g. clicking a project card, which
+  // always navigates to the bare /projects/:projectId) -- default to whichever feature was most
+  // recently worked on (highest updated_at, now a real, reliably-bumped signal -- see
+  // stage_event_service.record()/approval_service.py's own updated_at writes), not just array
+  // index 0. Direct user request. A plain reduce, not a new query -- `features` is already
+  // fetched; ties (e.g. an all-fresh project where nothing has ever been touched) resolve to
+  // whichever comes first, matching the previous behavior for that case exactly.
+  const mostRecentlyActiveFeature =
+    features && features.length > 0
+      ? features.reduce((latest, current) =>
+          new Date(current.updated_at) > new Date(latest.updated_at) ? current : latest
+        )
+      : null;
+  const effectiveFeatureId = featureId || mostRecentlyActiveFeature?.feature_id || null;
 
   return (
     <WorkspaceSelectionProvider featureId={effectiveFeatureId} onSelectFeature={handleSelectFeature}>

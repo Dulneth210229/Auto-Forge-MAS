@@ -23,6 +23,15 @@ from __future__ import annotations
 import re
 from typing import Any
 
+# Matches a single per-field SRS `data_requirements` string, e.g. "price (number, required,
+# minimum value 0.01)" -> ("price", "number, required, minimum value 0.01"). Duplicated from
+# architecture_agent/agent.py's identical DATA_FIELD_DEFINITION_PATTERN rather than imported --
+# agent.py imports ArchitectureClassModeler from this module, so importing back would be
+# circular. requirement_schema.py documents data_requirements as "the concrete fields of ONE
+# coherent entity"; without this, raw SRS `data_requirements` used to be enumerated as one
+# separate entity per item (the same real, confirmed bug fixed in agent.py's _build_data_view).
+_DATA_FIELD_DEFINITION_PATTERN = re.compile(r"^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\(([^)]*)\)")
+
 
 class ArchitectureClassModeler:
     """
@@ -317,7 +326,14 @@ class ArchitectureClassModeler:
             })
 
         entity_ids = []
-        for index, entity in enumerate(data_entities or data_requirements, start=1):
+        # data_entities (from an already-built data_view) may legitimately contain multiple
+        # real, distinct entities -- iterate those as-is. Only the raw-SRS data_requirements
+        # fallback (used when data_view has no entities at all) needs consolidating: it's a
+        # flat list of per-FIELD strings describing one entity, not a list of separate entities.
+        entity_records = data_entities or self._consolidate_data_requirements(
+            data_requirements, feature_pascal
+        )
+        for index, entity in enumerate(entity_records, start=1):
             class_id = f"CLS_ENTITY_{index:03d}"
             entity_ids.append(class_id)
             entity_name = self._extract_name(entity) or f"{feature_pascal}Data"
@@ -440,6 +456,48 @@ class ArchitectureClassModeler:
             if not self._looks_like_bad_inferred_field(record["name"]):
                 fields.append(record)
         return self._dedupe_fields(fields)
+
+    def _consolidate_data_requirements(
+        self, data_requirements: list[Any], feature_pascal: str
+    ) -> list[dict[str, Any]]:
+        """
+        Raw SRS `data_requirements` is a flat list of per-FIELD strings describing ONE entity
+        (e.g. "price (number, required, minimum value 0.01)") -- aggregates them into a single
+        entity record instead of one entity per item. Returns [] when data_requirements is
+        empty, matching the "nothing to build" contract the caller already expects.
+        """
+        if not data_requirements:
+            return []
+
+        fields = []
+        for item in data_requirements:
+            text = self._text(item)
+            parsed = self._parse_field_definition(text)
+            fields.append(parsed or {"name": self._camel(text), "type": "String", "visibility": "+"})
+
+        return [{"name": f"{feature_pascal}Data", "fields": fields}]
+
+    def _parse_field_definition(self, description: str) -> dict[str, Any] | None:
+        """
+        Parses "name (details)" (e.g. "price (number, required, minimum value 0.01)") into a
+        _field_record-compatible dict. Returns None when the text doesn't match this shape.
+        """
+        match = _DATA_FIELD_DEFINITION_PATTERN.match(description)
+        if not match:
+            return None
+
+        field_name, detail = match.group(1), match.group(2).lower()
+
+        if any(keyword in detail for keyword in ("number", "integer", "float", "decimal")):
+            field_type = "Number"
+        elif any(keyword in detail for keyword in ("timestamp", "date")):
+            field_type = "Date"
+        elif "boolean" in detail or re.search(r"\bbool\b", detail):
+            field_type = "Boolean"
+        else:
+            field_type = "String"
+
+        return {"name": self._camel(field_name), "type": field_type, "visibility": "+"}
 
     def _fields_from_requirements(self, requirements: list[Any]) -> list[dict[str, Any]]:
         fields: list[dict[str, Any]] = []

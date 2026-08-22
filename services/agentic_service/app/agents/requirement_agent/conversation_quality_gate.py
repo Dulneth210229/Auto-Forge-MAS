@@ -25,6 +25,39 @@ from app.schemas.requirement_conversation_schema import QualityGateResult
 _ENDPOINT_PATTERN = re.compile(r"^(GET|POST|PUT|PATCH|DELETE)\s+/\S+", re.IGNORECASE)
 _VAGUE_FIELD_WORD_LIMIT = 6
 
+# A real, reported bug: a well-annotated field spec like "name -- string, required (user's full
+# name or display name)" was flagged as "vague" by the plain word-count check below purely for
+# being long -- but length from a type/constraint annotation is exactly the opposite of vague. A
+# data_requirements entry that has an early field-name-like token followed by a separator
+# ("name --", "email:", "createdAt (") is a structured spec regardless of how many words of
+# detail follow it, so it skips the word-count check entirely; only an entry with no such
+# structure (a genuine prose sentence, e.g. "the full name of the user who is registering") falls
+# through to the word-count heuristic.
+_FIELD_SPEC_SEPARATOR_PATTERN = re.compile(r"^\s*[\w][\w\s]{0,30}?\s*[—:-]\s*\S")
+_SENTENCE_STARTER_WORDS = {
+    "the", "a", "an", "this", "that", "these", "those", "it", "when", "if", "there", "we", "you",
+}
+
+
+def _looks_like_a_structured_field_spec(field: str) -> bool:
+    text = field.strip()
+    if not text:
+        return False
+
+    first_word = text.split()[0].strip("(),.:—-").lower()
+    if first_word in _SENTENCE_STARTER_WORDS:
+        return False
+
+    if _FIELD_SPEC_SEPARATOR_PATTERN.match(text):
+        return True
+
+    # "createdAt (auto-generated timestamp)" -- a name immediately followed by a parenthesized
+    # note, no dash/colon separator at all.
+    if text.startswith(f"{text.split()[0]} (") and text.rstrip().endswith(")"):
+        return True
+
+    return False
+
 
 def assess(srs_preview: dict, defaulted_fields: list[str], feature_description: str = "") -> QualityGateResult:
     """
@@ -54,7 +87,10 @@ def assess(srs_preview: dict, defaulted_fields: list[str], feature_description: 
 
     data_requirements = srs_preview.get("data_requirements") or []
     for field in data_requirements:
-        if len(str(field).split()) > _VAGUE_FIELD_WORD_LIMIT:
+        text = str(field)
+        if _looks_like_a_structured_field_spec(text):
+            continue
+        if len(text.split()) > _VAGUE_FIELD_WORD_LIMIT:
             reasons.append(
                 f'Data requirement "{field}" reads like a vague sentence, not a concrete field name.'
             )

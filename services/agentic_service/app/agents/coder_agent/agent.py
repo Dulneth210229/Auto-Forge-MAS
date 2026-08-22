@@ -37,6 +37,7 @@ from typing import Any, AsyncGenerator
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.errors import GraphRecursionError
 
+from app.agents.coder_agent import batch_coder
 from app.agents.coder_agent.coding_loop import build_coder_react_agent, build_task_message
 from app.agents.coder_agent.diff_builder import (
     build_code_manifest,
@@ -53,15 +54,18 @@ from app.agents.coder_agent.prompt import (
     CODE_PLANNER_SYSTEM_PROMPT,
     build_code_plan_repair_prompt,
     build_code_planner_user_prompt,
+    build_implementation_spec_for_single_file,
+    build_implementation_spec_section,
 )
 from app.agents.coder_agent.schemas import CoderAgentEnvSaveResult, CoderAgentInput, CoderAgentOutput
-from app.agents.coder_agent.tools import search_workspace_content
+from app.agents.coder_agent.tools import _resolve_within, search_workspace_content
 from app.agents.coder_agent.verify import coder_verifier
 from app.core.enums import AgentName, ApprovalStatus, ArtifactFormat, ArtifactType
 from app.schemas.coder_schema import CoderAgentReviseRequest, CoderAgentRunRequest
 from app.services.artifact_service import artifact_service
 from app.services.in_memory_store import store
 from app.services.llm_provider_service import llm_provider_service
+from app.services import model_capabilities
 from app.services.project_memory_service import project_memory_service
 from app.services.preview_service import preview_service
 from app.services.workspace_service import MAIN_BRANCH, workspace_service
@@ -178,6 +182,7 @@ _TOOL_ACTIVITY_LABELS: dict[str, Any] = {
     "read_project_manifest": lambda args: "Checking the project manifest",
     "read_ui_component_design": lambda args: f"Reading UI design for {args.get('component_name', '?')}",
     "read_ui_page_design": lambda args: f"Reading UI page design for {args.get('page_id_or_route', '?')}",
+    "list_unread_ui_designs": lambda args: "Checking which approved UI designs remain unread",
     "list_unimplemented_planned_files": lambda args: "Checking which planned files remain",
     "check_syntax": lambda args: f"Checking syntax of {args.get('path', '?')}",
     "check_component_styling": lambda args: "Scanning component styling",
@@ -314,12 +319,15 @@ class CoderAgent:
             project["project_id"]
         ).head.commit.hexsha
 
-        verify_result, coding_attempts = await self._code_with_retries(
+        verify_result, coding_attempts = await self._run_coding_phase(
             project["project_id"],
             feature_id,
             code_plan_json,
-            revision_start_sha=revision_start_sha,
-            original_request=human_comment_for_planning,
+            revision_start_sha,
+            human_comment_for_planning,
+            ui_integration_manifest_json,
+            srs_json=srs_for_planning,
+            architecture_plan_json=architecture_plan_json,
         )
 
         diff = workspace_service.diff_against_main(project["project_id"], feature_id)
@@ -403,7 +411,7 @@ class CoderAgent:
         if uri:
             workspace_service.write_env_local(project["project_id"], {"MONGODB_URI": uri})
             if is_uri_only(request.revision_comment, uri):
-                restarted = self._maybe_restart_running_preview(feature_id)
+                restarted = preview_service.restart_if_running(feature_id)
                 message = (
                     "Database connection saved. Restarting the live preview to use your real data."
                     if restarted
@@ -508,12 +516,15 @@ class CoderAgent:
             keyword_hint_files=keyword_hint_files,
         )
 
-        verify_result, coding_attempts = await self._code_with_retries(
+        verify_result, coding_attempts = await self._run_coding_phase(
             project["project_id"],
             feature_id,
             code_plan_json,
-            revision_start_sha=revision_start_sha,
-            original_request=revision_comment_for_planning,
+            revision_start_sha,
+            revision_comment_for_planning,
+            ui_integration_manifest_json,
+            srs_json=srs_json,
+            architecture_plan_json=architecture_plan_json,
         )
 
         diff = workspace_service.diff_against_main(project["project_id"], feature_id)
@@ -748,14 +759,35 @@ class CoderAgent:
         ).head.commit.hexsha
 
         result_holder: dict[str, Any] = {}
-        async for event in self._code_with_retries_stream(
-            project["project_id"],
-            feature_id,
-            code_plan_json,
-            result_holder,
-            revision_start_sha=revision_start_sha,
-            original_request=human_comment_for_planning,
-        ):
+        if await model_capabilities.supports_tool_calling(AgentName.CODER.value):
+            coding_stream = self._code_with_retries_stream(
+                project["project_id"],
+                feature_id,
+                code_plan_json,
+                result_holder,
+                revision_start_sha=revision_start_sha,
+                original_request=human_comment_for_planning,
+                ui_integration_manifest_json=ui_integration_manifest_json,
+                srs_json=srs_for_planning,
+                architecture_plan_json=agent_input.architecture_plan_json,
+            )
+        else:
+            logger.info(
+                "coder_agent's current model does not support real tool-calling -- using the "
+                "non-agentic batch coding path for feature_id=%s", feature_id,
+            )
+            coding_stream = self._code_with_batch_generation_stream(
+                project["project_id"],
+                feature_id,
+                code_plan_json,
+                result_holder,
+                revision_start_sha=revision_start_sha,
+                original_request=human_comment_for_planning,
+                srs_json=srs_for_planning,
+                architecture_plan_json=agent_input.architecture_plan_json,
+            )
+
+        async for event in coding_stream:
             yield event
 
         verify_result = result_holder["verify_result"]
@@ -858,7 +890,7 @@ class CoderAgent:
         if uri:
             workspace_service.write_env_local(project["project_id"], {"MONGODB_URI": uri})
             if is_uri_only(request.revision_comment, uri):
-                restarted = self._maybe_restart_running_preview(feature_id)
+                restarted = preview_service.restart_if_running(feature_id)
                 yield {"type": "phase", "phase": "database_connection_saved", "label": "Database connection saved."}
                 if restarted:
                     yield {
@@ -988,14 +1020,35 @@ class CoderAgent:
             return
 
         result_holder: dict[str, Any] = {}
-        async for event in self._code_with_retries_stream(
-            project["project_id"],
-            feature_id,
-            code_plan_json,
-            result_holder,
-            revision_start_sha=revision_start_sha,
-            original_request=revision_comment_for_planning,
-        ):
+        if await model_capabilities.supports_tool_calling(AgentName.CODER.value):
+            coding_stream = self._code_with_retries_stream(
+                project["project_id"],
+                feature_id,
+                code_plan_json,
+                result_holder,
+                revision_start_sha=revision_start_sha,
+                original_request=revision_comment_for_planning,
+                ui_integration_manifest_json=ui_integration_manifest_json,
+                srs_json=srs_json,
+                architecture_plan_json=architecture_plan_json,
+            )
+        else:
+            logger.info(
+                "coder_agent's current model does not support real tool-calling -- using the "
+                "non-agentic batch coding path for feature_id=%s", feature_id,
+            )
+            coding_stream = self._code_with_batch_generation_stream(
+                project["project_id"],
+                feature_id,
+                code_plan_json,
+                result_holder,
+                revision_start_sha=revision_start_sha,
+                original_request=revision_comment_for_planning,
+                srs_json=srs_json,
+                architecture_plan_json=architecture_plan_json,
+            )
+
+        async for event in coding_stream:
             yield event
 
         verify_result = result_holder["verify_result"]
@@ -1052,6 +1105,9 @@ class CoderAgent:
         result_holder: dict[str, Any],
         revision_start_sha: str | None = None,
         original_request: str | None = None,
+        ui_integration_manifest_json: dict[str, Any] | None = None,
+        srs_json: dict[str, Any] | None = None,
+        architecture_plan_json: dict[str, Any] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """
         Streaming counterpart to _code_with_retries -- identical retry/gap-detection/verify
@@ -1079,6 +1135,12 @@ class CoderAgent:
         prior_failure_output = None
         already_touched: dict[str, list[str]] | None = None
         verify_result: dict[str, Any] = {"passed": False, "steps": []}
+        # See the identical comment in _code_with_retries -- created once for the whole call,
+        # not per-attempt.
+        ui_design_read_tracker: dict[str, set[str]] = {"components": set(), "pages": set()}
+        implementation_spec_section = build_implementation_spec_section(
+            code_plan_json, srs_json or {}, architecture_plan_json or {}
+        )
 
         for attempt in range(1, MAX_CODING_ATTEMPTS + 1):
             yield {
@@ -1087,9 +1149,13 @@ class CoderAgent:
                 "label": f"Coding (attempt {attempt} of {MAX_CODING_ATTEMPTS})...",
             }
 
-            react_agent = build_coder_react_agent(project_id, feature_id, code_plan_json)
+            attempt_start_sha = workspace_service.ensure_project_repo(project_id).head.commit.hexsha
+            react_agent = build_coder_react_agent(
+                project_id, feature_id, code_plan_json, ui_integration_manifest_json, ui_design_read_tracker
+            )
             task_message = build_task_message(
-                code_plan_json, prior_failure_output, already_touched, original_request
+                code_plan_json, prior_failure_output, already_touched, original_request,
+                implementation_spec_section=implementation_spec_section,
             )
             hit_recursion_limit = False
             attempt_error: str | None = None
@@ -1183,7 +1249,31 @@ class CoderAgent:
 
             gaps = self._find_plan_gaps(code_plan_json, already_touched)
 
-            if gaps or hit_recursion_limit or attempt_error or touched_error:
+            # Skipped entirely (not just short-circuited inside the helper) when there's no
+            # manifest to check against -- see the identical comment in _code_with_retries.
+            design_gap: str | None = None
+            if ui_integration_manifest_json:
+                try:
+                    this_attempt_touched = workspace_service.get_touched_files(
+                        project_id, feature_id, since=attempt_start_sha
+                    )
+                    design_gap = self._find_unread_ui_design_gap(
+                        ui_integration_manifest_json, this_attempt_touched, ui_design_read_tracker
+                    )
+                except Exception:
+                    # Non-fatal by design -- this is an additive quality check, not a
+                    # correctness gate; a failure here (e.g. get_touched_files itself erroring)
+                    # just means this one attempt skips the check rather than the whole run
+                    # failing over it.
+                    logger.exception(
+                        "Streamed coding attempt %d/%d for feature_id=%s: UI-fidelity gap check "
+                        "itself failed -- skipping the check for this attempt",
+                        attempt,
+                        MAX_CODING_ATTEMPTS,
+                        feature_id,
+                    )
+
+            if gaps or hit_recursion_limit or attempt_error or touched_error or design_gap:
                 logger.warning(
                     "Streamed coding attempt %d/%d for feature_id=%s left %d planned file(s) "
                     "untouched",
@@ -1212,6 +1302,8 @@ class CoderAgent:
                         f"(error: {touched_error}) -- proceed carefully and re-check your work.\n\n"
                         + (prior_failure_output or "")
                     )
+                if design_gap:
+                    prior_failure_output = design_gap + "\n\n" + (prior_failure_output or "")
                 verify_result = {
                     "passed": False,
                     "steps": [
@@ -1272,23 +1364,6 @@ class CoderAgent:
             and artifact.get("artifact_type") in [ArtifactType.CODE_PLAN, ArtifactType.CODE_PLAN.value]
             and artifact.get("artifact_format") in [ArtifactFormat.JSON, ArtifactFormat.JSON.value]
         ]
-
-    def _maybe_restart_running_preview(self, feature_id: str) -> bool:
-        """
-        Restarts the live preview ONLY if one is currently running/stale for
-        this feature -- never starts one from stopped. preview_service's own
-        design is explicit Start only, never automatic; this is a narrow,
-        deliberate exception scoped to "refresh an already-running preview
-        so it picks up a freshly-saved .env.local," never "launch a new one
-        as a side effect of a chat message." Returns whether a restart
-        actually happened.
-        """
-        status = preview_service.get_status(feature_id)
-        if status["status"] == "stopped":
-            return False
-
-        preview_service.start_preview(feature_id)  # already does stop+restart internally
-        return True
 
     def _collect_cumulative_plan_files(self, feature_id: str) -> list[dict[str, Any]]:
         """
@@ -1713,6 +1788,183 @@ class CoderAgent:
 
         raise last_error
 
+    async def _run_coding_phase(
+        self,
+        project_id: str,
+        feature_id: str,
+        code_plan_json: dict[str, Any],
+        revision_start_sha: str | None,
+        original_request: str | None,
+        ui_integration_manifest_json: dict[str, Any] | None,
+        srs_json: dict[str, Any] | None = None,
+        architecture_plan_json: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], int]:
+        """
+        Single dispatch point shared by run()/revise() -- checks whether coder_agent's currently
+        selected model genuinely supports real tool-calling
+        (model_capabilities.supports_tool_calling, see that module's own docstring for the full
+        detection story) and routes to the real, iterative agentic coding loop if so, or the
+        non-agentic batch generator (batch_coder.py, see its own module docstring for the honest
+        scope tradeoff) if not. Fully automatic based on whichever model is currently selected for
+        coder_agent in Settings -- no separate manual mode toggle.
+
+        srs_json/architecture_plan_json, when given, are threaded into whichever coding path runs
+        so the real spec (not just the terse code_plan_json) reaches the step that actually
+        writes file content -- see build_implementation_spec_section/_for_single_file's own
+        docstrings in prompt.py for why this exists.
+        """
+        if await model_capabilities.supports_tool_calling(AgentName.CODER.value):
+            return await self._code_with_retries(
+                project_id, feature_id, code_plan_json,
+                revision_start_sha=revision_start_sha, original_request=original_request,
+                ui_integration_manifest_json=ui_integration_manifest_json,
+                srs_json=srs_json, architecture_plan_json=architecture_plan_json,
+            )
+
+        logger.info(
+            "coder_agent's current model does not support real tool-calling -- using the "
+            "non-agentic batch coding path for feature_id=%s", feature_id,
+        )
+        return await self._code_with_batch_generation(
+            project_id, feature_id, code_plan_json,
+            revision_start_sha=revision_start_sha, original_request=original_request,
+            srs_json=srs_json, architecture_plan_json=architecture_plan_json,
+        )
+
+    async def _code_with_batch_generation(
+        self,
+        project_id: str,
+        feature_id: str,
+        code_plan_json: dict[str, Any],
+        revision_start_sha: str | None = None,
+        original_request: str | None = None,
+        srs_json: dict[str, Any] | None = None,
+        architecture_plan_json: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], int]:
+        """
+        Non-agentic counterpart to _code_with_retries -- see batch_coder.py's own module
+        docstring for the full design and its honest scope limit. Same outer MAX_CODING_ATTEMPTS
+        retry shape and (verify_result, attempts_used) return contract as the agentic path, so
+        every caller downstream of this (diffing, artifact-saving, merge-report building) needs
+        zero changes regardless of which coding path actually ran.
+
+        srs_json/architecture_plan_json, when given, feed
+        prompt.build_implementation_spec_for_single_file per planned file -- see that function's
+        own docstring for why (the plan's own rationale/maps_to are deliberately terse).
+        """
+        workspace_root = workspace_service.get_repo_path(project_id)
+        prior_failure_output: str | None = None
+        verify_result: dict[str, Any] = {"passed": False, "steps": []}
+
+        for attempt in range(1, MAX_CODING_ATTEMPTS + 1):
+            written_paths: list[str] = []
+            missing_paths: list[str] = []
+
+            for file_entry in code_plan_json.get("files", []) or []:
+                path = file_entry.get("path", "")
+                action = file_entry.get("action")
+
+                if action == "delete":
+                    target = workspace_root / path
+                    if target.exists():
+                        target.unlink()
+                    written_paths.append(path)
+                    continue
+
+                target = _resolve_within(workspace_root, path)
+                current_content = target.read_text(encoding="utf-8") if target.exists() else None
+
+                implementation_spec = build_implementation_spec_for_single_file(
+                    file_entry, srs_json or {}, architecture_plan_json or {}
+                )
+                content = await batch_coder.generate_file_content(
+                    feature_id, file_entry, current_content, written_paths, prior_failure_output,
+                    implementation_spec=implementation_spec,
+                )
+
+                if content is None:
+                    missing_paths.append(path)
+                    logger.warning(
+                        "Batch coding attempt %d/%d for feature_id=%s: no content produced for %s",
+                        attempt, MAX_CODING_ATTEMPTS, feature_id, path,
+                    )
+                    continue
+
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content, encoding="utf-8")
+                written_paths.append(path)
+
+            try:
+                workspace_service.commit_changes(
+                    project_id, feature_id, message=f"Coder Agent batch attempt {attempt}: {feature_id}"
+                )
+            except Exception as commit_error:
+                logger.exception(
+                    "Batch coding attempt %d/%d for feature_id=%s: commit_changes itself failed",
+                    attempt, MAX_CODING_ATTEMPTS, feature_id,
+                )
+                missing_paths.append(f"(commit failed: {commit_error})")
+
+            if missing_paths:
+                prior_failure_output = (
+                    "The previous batch attempt failed to produce content for these planned "
+                    "file(s), fix them this time:\n" + "\n".join(f"- {path}" for path in missing_paths)
+                )
+                verify_result = {
+                    "passed": False,
+                    "steps": [{"name": "batch file generation", "status": "failed", "output": prior_failure_output}],
+                }
+                continue
+
+            verify_result = self.verifier.verify(
+                project_id, feature_id, code_plan_json, original_request,
+                ui_expectations=(srs_json or {}).get("ui_expectations"),
+            )
+
+            if verify_result["passed"]:
+                return verify_result, attempt
+
+            logger.warning(
+                "Batch coding attempt %d/%d failed verification for feature_id=%s",
+                attempt, MAX_CODING_ATTEMPTS, feature_id,
+            )
+            prior_failure_output = self._summarize_verify_failure(verify_result)
+
+        return verify_result, MAX_CODING_ATTEMPTS
+
+    async def _code_with_batch_generation_stream(
+        self,
+        project_id: str,
+        feature_id: str,
+        code_plan_json: dict[str, Any],
+        result_holder: dict[str, Any],
+        revision_start_sha: str | None = None,
+        original_request: str | None = None,
+        srs_json: dict[str, Any] | None = None,
+        architecture_plan_json: dict[str, Any] | None = None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """
+        Streaming counterpart to _code_with_batch_generation. There is no meaningful token-level
+        streaming for a sequence of one-shot, non-agentic file-generation calls (unlike the
+        agentic loop's live tool activity) -- this wraps the real, already-verified
+        _code_with_batch_generation logic with one "phase" event announcing the mode, then
+        populates result_holder exactly like _code_with_retries_stream does, so callers can
+        dispatch between the two without any other change.
+        """
+        yield {
+            "type": "phase",
+            "phase": "batch_coding",
+            "label": "coder_agent's current model doesn't support real tool-calling -- writing "
+            "each planned file with a direct, non-agentic generation call instead...",
+        }
+        verify_result, coding_attempts = await self._code_with_batch_generation(
+            project_id, feature_id, code_plan_json,
+            revision_start_sha=revision_start_sha, original_request=original_request,
+            srs_json=srs_json, architecture_plan_json=architecture_plan_json,
+        )
+        result_holder["verify_result"] = verify_result
+        result_holder["coding_attempts"] = coding_attempts
+
     async def _code_with_retries(
         self,
         project_id: str,
@@ -1720,15 +1972,37 @@ class CoderAgent:
         code_plan_json: dict[str, Any],
         revision_start_sha: str | None = None,
         original_request: str | None = None,
+        ui_integration_manifest_json: dict[str, Any] | None = None,
+        srs_json: dict[str, Any] | None = None,
+        architecture_plan_json: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], int]:
         prior_failure_output = None
         already_touched: dict[str, list[str]] | None = None
         verify_result: dict[str, Any] = {"passed": False, "steps": []}
+        # Created ONCE for the whole call, not per-attempt -- see _find_unread_ui_design_gap's
+        # own docstring for why. Once any attempt of this run has genuinely read a relevant
+        # design, that satisfies "did this run consult the approved design at all" for every
+        # later attempt too, even one that only re-touches an unrelated frontend file (e.g. a
+        # nav-link patch) while fixing something else -- a real run confirmed re-demanding a
+        # fresh read on every single attempt could consume the run's last attempt on repeated
+        # compliance instead of ever reaching a second real verify() call.
+        ui_design_read_tracker: dict[str, set[str]] = {"components": set(), "pages": set()}
+        # Also computed ONCE, not per-attempt -- invariant across retries (same rationale as the
+        # tracker above), and gives every attempt the real SRS/implementation_plan detail the
+        # plan's own terse rationale/maps_to never carry (see prompt.build_implementation_spec_
+        # section's own docstring).
+        implementation_spec_section = build_implementation_spec_section(
+            code_plan_json, srs_json or {}, architecture_plan_json or {}
+        )
 
         for attempt in range(1, MAX_CODING_ATTEMPTS + 1):
-            react_agent = build_coder_react_agent(project_id, feature_id, code_plan_json)
+            attempt_start_sha = workspace_service.ensure_project_repo(project_id).head.commit.hexsha
+            react_agent = build_coder_react_agent(
+                project_id, feature_id, code_plan_json, ui_integration_manifest_json, ui_design_read_tracker
+            )
             task_message = build_task_message(
-                code_plan_json, prior_failure_output, already_touched, original_request
+                code_plan_json, prior_failure_output, already_touched, original_request,
+                implementation_spec_section=implementation_spec_section,
             )
             hit_recursion_limit = False
             attempt_error: str | None = None
@@ -1805,7 +2079,32 @@ class CoderAgent:
 
             gaps = self._find_plan_gaps(code_plan_json, already_touched)
 
-            if gaps or hit_recursion_limit or attempt_error or touched_error:
+            # Skipped entirely (not just short-circuited inside the helper) when there's no
+            # manifest to check against -- both an optimization (one fewer real get_touched_files
+            # call for the common case of a feature with no approved UI/UX design at all) and
+            # what keeps this a strictly additive change for every existing caller that never
+            # passes ui_integration_manifest_json.
+            design_gap: str | None = None
+            if ui_integration_manifest_json:
+                try:
+                    this_attempt_touched = workspace_service.get_touched_files(
+                        project_id, feature_id, since=attempt_start_sha
+                    )
+                    design_gap = self._find_unread_ui_design_gap(
+                        ui_integration_manifest_json, this_attempt_touched, ui_design_read_tracker
+                    )
+                except Exception:
+                    # Non-fatal by design -- see the identical comment in
+                    # _code_with_retries_stream.
+                    logger.exception(
+                        "Coding attempt %d/%d for feature_id=%s: UI-fidelity gap check itself "
+                        "failed -- skipping the check for this attempt",
+                        attempt,
+                        MAX_CODING_ATTEMPTS,
+                        feature_id,
+                    )
+
+            if gaps or hit_recursion_limit or attempt_error or touched_error or design_gap:
                 logger.warning(
                     "Coding attempt %d/%d for feature_id=%s left %d planned file(s) untouched",
                     attempt,
@@ -1833,6 +2132,8 @@ class CoderAgent:
                         f"(error: {touched_error}) -- proceed carefully and re-check your work.\n\n"
                         + (prior_failure_output or "")
                     )
+                if design_gap:
+                    prior_failure_output = design_gap + "\n\n" + (prior_failure_output or "")
                 verify_result = {
                     "passed": False,
                     "steps": [
@@ -1846,7 +2147,8 @@ class CoderAgent:
                 continue
 
             verify_result = self.verifier.verify(
-                project_id, feature_id, code_plan_json, original_request
+                project_id, feature_id, code_plan_json, original_request,
+                ui_expectations=(srs_json or {}).get("ui_expectations"),
             )
 
             if verify_result["passed"]:
@@ -1892,6 +2194,73 @@ class CoderAgent:
         return (
             "The following planned files were never created, modified, or deleted in this "
             "attempt -- implement these before doing anything else:\n" + "\n".join(lines)
+        )
+
+    def _find_unread_ui_design_gap(
+        self,
+        ui_integration_manifest_json: dict[str, Any] | None,
+        this_attempt_touched: dict[str, list[str]],
+        ui_design_read_tracker: dict[str, set[str]],
+    ) -> str | None:
+        """
+        Deterministic backstop for the advisory list_unread_ui_designs self-check tool: if an
+        approved UI/UX design exists for this feature and THIS ATTEMPT (checked per-attempt via
+        the caller's `since=attempt_start_sha` -- a plan can naturally split backend-first, so
+        whichever attempt is the one that actually writes frontend code is the one this needs to
+        catch, regardless of its number) wrote/modified a frontend file (under app/ or
+        components/, the Next.js scaffold's real frontend roots, matching
+        style_checker.check_component_styling's own established scan scope) while
+        `ui_design_read_tracker` (an object the CALLER creates ONCE per whole `_code_with_retries`
+        call, not per attempt -- see that method's own comment) is still completely empty, treat
+        it like a plan gap and retry with an explicit instruction to read the design first --
+        rather than trusting the prompt-only instruction alone, this codebase's own
+        repeatedly-documented "ask nicely -> decide deterministically" lesson.
+
+        Deliberately coarse in TWO ways, both accepted tradeoffs, not oversights:
+        1. "Was anything read at ALL," not "was the SPECIFIC relevant design read" -- avoids
+           needing a reliable path->component/page mapping this pipeline doesn't otherwise have;
+           still catches the single most likely real failure mode, the model ignoring the design
+           reference outright.
+        2. Per-RUN, not per-attempt, since the tracker persists across every attempt of one call:
+           once ANY attempt has read a relevant design, every LATER attempt is free to touch a
+           DIFFERENT, never-read design (or re-touch an unrelated frontend file, e.g. a nav-link
+           patch, while fixing something else entirely) without tripping this check again. A real,
+           live run confirmed the per-attempt-reset alternative is actively harmful: a later
+           attempt trying to fix a genuine bug got rejected by this exact check for re-touching an
+           already-correct nav-link file without a fresh read that attempt, consuming the run's
+           last attempt before its real fix could ever reach a second real verify() call. Weaker
+           as a per-page/component guarantee, but matches what a human reviewer actually means by
+           "did this run consult the approved design" -- once, not every single time.
+        """
+        if not ui_integration_manifest_json or not ui_integration_manifest_json.get("pages"):
+            return None
+
+        touched_paths = set(this_attempt_touched.get("added", [])) | set(
+            this_attempt_touched.get("modified", [])
+        )
+        # .tsx specifically (not just an app/ prefix) is what actually distinguishes a real
+        # page/component file from an app/api/.../route.ts backend file -- both live under app/
+        # in Next.js's file-based routing, but only pages/components (.tsx) are ever a UI/UX
+        # visual-fidelity concern.
+        touched_frontend = any(
+            path.startswith(("app/", "components/")) and path.endswith(".tsx") for path in touched_paths
+        )
+
+        if not touched_frontend:
+            return None
+
+        read_any = bool(ui_design_read_tracker.get("components")) or bool(
+            ui_design_read_tracker.get("pages")
+        )
+        if read_any:
+            return None
+
+        return (
+            "This attempt wrote or modified frontend code (under app/ or components/) but never "
+            "called read_ui_component_design or read_ui_page_design, even though an approved "
+            "UI/UX design exists for this feature. Call list_unread_ui_designs, then read the "
+            "design(s) relevant to the page/component you are writing, and make your TSX "
+            "faithfully match its layout, Tailwind classes, and content before continuing."
         )
 
     def _summarize_verify_failure(self, verify_result: dict[str, Any]) -> str:

@@ -181,8 +181,8 @@
     "data_view": {
       "data_entities": [
         {
-          "name": "TaskSearchResult",
-          "purpose": "Represents a matched task",
+          "name": "TaskSearchData",
+          "purpose": "Core data entity for the Task Search feature.",
           "fields": [
             {
               "name": "representsAMatchedTask",
@@ -422,9 +422,9 @@
           ]
         },
         {
-          "path": "models/TaskSearchResult.ts",
+          "path": "models/TaskSearchData.ts",
           "action": "create",
-          "purpose": "Mongoose model for the TaskSearchResult entity (must use the `mongoose.models.TaskSearchResult || mongoose.model(...)` guard to avoid OverwriteModelError).",
+          "purpose": "Mongoose model for the TaskSearchData entity (must use the `mongoose.models.TaskSearchData || mongoose.model(...)` guard to avoid OverwriteModelError).",
           "implements_endpoints": []
         }
       ],
@@ -450,8 +450,8 @@
       ],
       "models": [
         {
-          "name": "TaskSearchResult",
-          "file": "models/TaskSearchResult.ts",
+          "name": "TaskSearchData",
+          "file": "models/TaskSearchData.ts",
           "fields": [
             {
               "name": "representsAMatchedTask",
@@ -499,7 +499,7 @@
       }
     },
     "implementation_order": [
-      "Create the Mongoose model(s): models/TaskSearchResult.ts",
+      "Create the Mongoose model(s): models/TaskSearchData.ts",
       "Create app/api/task-search/route.ts implementing /api/task-search, validating required request fields before use (400 on missing/malformed) -- it is automatically live the instant the file exists, no separate mount step needed.",
       "Create lib/api/taskSearch.ts with one function per endpoint.",
       "Create app/task-search/page.tsx (a Client Component, `\"use client\"` as its first line), reusing approved UI/UX components where available instead of re-authoring their markup.",

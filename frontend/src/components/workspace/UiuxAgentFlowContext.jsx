@@ -1,18 +1,17 @@
 import { createContext, useContext } from "react";
-import { useRunUiux } from "../../hooks/useAgentMutations";
+import { useUiuxAgentFlow } from "../../hooks/useUiuxAgentFlow";
 
 const UiuxAgentFlowContext = createContext(null);
 
-// Mirrors DomainAgentFlowContext.jsx's shape, but lighter -- UI/UX Agent has no streaming backend
-// route (unlike Domain/Architecture), so there's no stream state to manage, just one shared
-// useRunUiux mutation instance. ResultTab (to auto-trigger a run right after Architecture Plan
-// approval) and ChatPanel (the composer's pending/Stop-button state) both need to observe the
-// SAME in-flight mutation -- two independent useRunUiux(featureId) calls would each hold their
-// own separate pending state, so a run started from ResultTab would never show as running in the
-// chat composer.
+// Mirrors DomainAgentFlowContext.jsx/ArchitectureAgentFlowContext.jsx exactly: UiuxAgentChat (the
+// chat feed) and ResultTab (the live ui_metadata document view, plus the auto-continue trigger
+// right after Architecture Plan approval) both need to observe the SAME in-flight stream -- two
+// independent useUiuxAgentFlow() calls would each hold their own separate mutation state, so the
+// Result panel would never see a stream the chat panel started, or vice versa for the
+// auto-continue flow that starts a run from ResultTab itself.
 export function UiuxAgentFlowProvider({ featureId, children }) {
-  const runUiux = useRunUiux(featureId);
-  return <UiuxAgentFlowContext.Provider value={{ runUiux }}>{children}</UiuxAgentFlowContext.Provider>;
+  const flow = useUiuxAgentFlow(featureId);
+  return <UiuxAgentFlowContext.Provider value={flow}>{children}</UiuxAgentFlowContext.Provider>;
 }
 
 export function useUiuxAgentFlowContext() {

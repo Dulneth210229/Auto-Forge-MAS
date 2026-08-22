@@ -247,6 +247,60 @@ def test_stop_removes_the_session_and_stops_the_container(service, feature_and_p
     assert service.get_status(feature_id) == {"status": "stopped", "preview_url": None, "started_at": None}
 
 
+def test_find_running_feature_for_project_returns_none_when_nothing_running(service, feature_and_project):
+    project_id, _feature_id = feature_and_project
+    assert service.find_running_feature_for_project(project_id) is None
+
+
+def test_find_running_feature_for_project_finds_the_one_running_feature(service, feature_and_project, tmp_path):
+    project_id, feature_id = feature_and_project
+    (tmp_path / ".next").mkdir()
+    (tmp_path / ".next" / "BUILD_ID").write_text("abc123", encoding="utf-8")
+
+    with patch("app.services.preview_service.workspace_service") as mock_ws, patch(
+        "app.services.preview_service.sandbox_service"
+    ) as mock_sandbox:
+        mock_ws.get_repo_path.return_value = tmp_path
+        mock_ws.ensure_project_repo.return_value = _mock_repo("sha-1")
+        mock_sandbox.start_background_service.return_value = {"container": MagicMock(), "host_port": 44444}
+
+        with patch.object(service, "_wait_until_ready", return_value=True):
+            service.start_preview(feature_id)
+
+        assert service.find_running_feature_for_project(project_id) == feature_id
+        assert service.find_running_feature_for_project("proj_does_not_exist") is None
+
+
+def test_restart_if_running_is_a_noop_when_stopped(service, feature_and_project):
+    _project_id, feature_id = feature_and_project
+    assert service.restart_if_running(feature_id) is False
+
+
+def test_restart_if_running_restarts_when_running(service, feature_and_project, tmp_path):
+    _project_id, feature_id = feature_and_project
+    (tmp_path / ".next").mkdir()
+    (tmp_path / ".next" / "BUILD_ID").write_text("abc123", encoding="utf-8")
+
+    with patch("app.services.preview_service.workspace_service") as mock_ws, patch(
+        "app.services.preview_service.sandbox_service"
+    ) as mock_sandbox:
+        mock_ws.get_repo_path.return_value = tmp_path
+        mock_ws.ensure_project_repo.return_value = _mock_repo("sha-1")
+        first_container = MagicMock()
+        mock_sandbox.start_background_service.return_value = {"container": first_container, "host_port": 11111}
+
+        with patch.object(service, "_wait_until_ready", return_value=True):
+            service.start_preview(feature_id)
+
+            mock_sandbox.start_background_service.return_value = {"container": MagicMock(), "host_port": 22222}
+            restarted = service.restart_if_running(feature_id)
+
+        mock_sandbox.stop_background_service.assert_any_call(first_container)
+
+    assert restarted is True
+    assert service.get_status(feature_id)["preview_url"] == "http://localhost:22222"
+
+
 def test_sweep_orphaned_containers_delegates_to_sandbox_service(service):
     with patch("app.services.preview_service.sandbox_service") as mock_sandbox:
         mock_sandbox.find_containers_by_label.return_value = [MagicMock(), MagicMock()]

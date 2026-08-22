@@ -2,15 +2,17 @@ import { useState } from "react";
 import { useApprovalMutation } from "../../hooks/useApprovalMutation";
 import ErrorBanner from "../common/ErrorBanner";
 
-// `onApproveClick`, when provided (only the Requirement stage's SRS passes this), is called with
-// the trimmed comment instead of approving directly -- the caller (GovernancePanel) owns the
-// confirm-dialog + auto-run-Domain-Agent orchestration for that case. This component itself must
-// NOT own that orchestration: it gets unmounted the instant the artifact's approval_status stops
-// being "pending" (this component's own parent swaps it out for a plain status line), which
-// happens mid-flight the moment the approval call succeeds -- an async sequence started here
-// would be abandoned right after that first step, never reaching the "start Domain Agent" part.
-// Reject/Request Revision have no such multi-step follow-up, so they stay handled locally.
-export default function ApprovalPanel({ featureId, artifact, warning, onApproveClick }) {
+// `onApproveClick`, when provided (every stage with an APPROVE_CONTINUATION_BY_STAGE entry in
+// ResultTab.jsx -- currently Requirement/Domain/Architecture/UI-UX), is called with the trimmed
+// comment instead of approving directly -- the caller (ResultTab, via GovernancePanel or
+// UiuxVersionGroupList) owns the confirm-dialog + auto-continue orchestration for that case. This
+// component itself must NOT own that orchestration: it gets unmounted the instant the artifact's
+// approval_status stops being "pending" (this component's own parent swaps it out for a plain
+// status line), which happens mid-flight the moment the approval call succeeds -- an async
+// sequence started here would be abandoned right after that first step, never reaching the
+// "start the next agent" part. Reject/Request Revision have no such multi-step follow-up, so they
+// stay handled locally.
+export default function ApprovalPanel({ featureId, artifact, warning, onApproveClick, approveLocked = false }) {
   const [comment, setComment] = useState("");
   const approval = useApprovalMutation(featureId);
 
@@ -51,7 +53,8 @@ export default function ApprovalPanel({ featureId, artifact, warning, onApproveC
       <div className="flex gap-2">
         <button
           onClick={handleApproveClick}
-          disabled={approval.isPending}
+          disabled={approval.isPending || approveLocked}
+          title={approveLocked ? "Another version is already approved -- reject it first to approve a different one" : undefined}
           className="bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-sm font-semibold py-1.5 px-3 rounded"
         >
           Approve

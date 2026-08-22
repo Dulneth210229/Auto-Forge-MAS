@@ -118,7 +118,7 @@ Integration design should follow the API expectations and dependencies listed in
 
 ### 7.1 Backend Files
 - `app/api/task-search/route.ts` (create): Next.js Route Handler implementing GET for Task Search (/api/task-search), with request validation before any handler logic.
-- `models/TaskSearchResult.ts` (create): Mongoose model for the TaskSearchResult entity (must use the `mongoose.models.TaskSearchResult || mongoose.model(...)` guard to avoid OverwriteModelError).
+- `models/TaskSearchData.ts` (create): Mongoose model for the TaskSearchData entity (must use the `mongoose.models.TaskSearchData || mongoose.model(...)` guard to avoid OverwriteModelError).
 
 ### 7.2 Endpoints
 - **GET /api/task-search**
@@ -129,7 +129,7 @@ Integration design should follow the API expectations and dependencies listed in
   - error: 500 when an unexpected server error occurs
 
 ### 7.3 Data Models
-- **TaskSearchResult** (`models/TaskSearchResult.ts`)
+- **TaskSearchData** (`models/TaskSearchData.ts`)
   - `representsAMatchedTask`: String 
 
 ### 7.4 Frontend Pages / Components / Services
@@ -140,7 +140,7 @@ Integration design should follow the API expectations and dependencies listed in
 - nav link: to: /task-search, label: Task Search
 
 ### 7.5 Implementation Order
-1. Create the Mongoose model(s): models/TaskSearchResult.ts
+1. Create the Mongoose model(s): models/TaskSearchData.ts
 2. Create app/api/task-search/route.ts implementing /api/task-search, validating required request fields before use (400 on missing/malformed) -- it is automatically live the instant the file exists, no separate mount step needed.
 3. Create lib/api/taskSearch.ts with one function per endpoint.
 4. Create app/task-search/page.tsx (a Client Component, `"use client"` as its first line), reusing approved UI/UX components where available instead of re-authoring their markup.
@@ -190,8 +190,8 @@ Integration design should follow the API expectations and dependencies listed in
 ## 9. Data Model Plan
 
 **Data Entities:**
-- **TaskSearchResult**
-  - Purpose: Represents a matched task
+- **TaskSearchData**
+  - Purpose: Core data entity for the Task Search feature.
   - Fields:
     - name: representsAMatchedTask, type: String, required: False
   - Relationships:

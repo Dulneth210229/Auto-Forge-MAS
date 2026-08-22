@@ -17,6 +17,7 @@ from app.api.routes import (
     llm_settings,
     knowledge,
     preview,
+    database_connection,
 )
 
 api_router = APIRouter()
@@ -30,3 +31,4 @@ api_router.include_router(agents.router)
 api_router.include_router(llm_settings.router)
 api_router.include_router(knowledge.router)
 api_router.include_router(preview.router)
+api_router.include_router(database_connection.router)

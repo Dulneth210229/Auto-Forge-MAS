@@ -106,17 +106,37 @@ Use Case Specification Rules:
 - Create usecase_specification_json only; backend will render it into the final UML use case
   diagram exactly as you specify it -- you are doing the real use-case modeling work here, not
   just categorizing raw requirement text. Think like a UML analyst, not a requirements summarizer.
-- actors: list real external user roles or real external systems only.
+- actors: list real external user roles or real external systems only. Each actor entry is
+  {"name", "type": "primary | secondary", "stereotype": "human | system", "generalizes": ""}.
+  Set stereotype "system" for a real non-human/external system actor (a third-party payment
+  gateway, an email provider, a scheduled job trigger) -- it renders as the standard <<system>>
+  stereotype. Set "generalizes" to a parent actor's name ONLY when this actor genuinely "is like"
+  a broader one with the SAME goals plus something extra (e.g. "Admin" generalizes "User" when an
+  Admin can do everything a User can, plus more) -- leave it empty otherwise; do not invent an
+  actor hierarchy that doesn't reflect real role structure.
 - Do not use Database, API, Controller, MongoDB, React, Node, JWT Library, Server, Backend, Frontend, UI Page, or Form as actors.
 - use_cases: exactly ONE entry with type "main" -- the single cohesive user-facing goal of this
   feature (never the feature name restated verbatim, e.g. not just "Task Search" for a Task Search
   feature -- name the actual goal, e.g. "Search Tasks by Keyword").
-- Every use_cases entry (main, included, and extension) must have a clean, action-oriented name:
-  2-5 words, a real verb phrase (e.g. "Reset Password", "Submit Comment"), read it aloud -- it
-  must sound like a complete sentence fragment a human would say, not a piece cut out of the
-  middle of a requirement sentence. NEVER include leftover fragment words such as "a", "an",
-  "the", "this", "that", "their", "its", "can", "could", "would", "should", "given", "when", or
-  "then" dangling in the name -- these are signs you cut a sentence instead of naming a goal.
+- Every use_cases entry (main, included, and extension) must BEGIN WITH a strong, specific action
+  verb (e.g. "Reset", "Submit", "Validate", "Search") followed by 1-4 more words naming the real
+  domain object it acts on (e.g. "Reset Password", "Submit Comment") -- read it aloud, it must
+  sound like a complete sentence fragment a human would say, not a piece cut out of the middle of
+  a requirement sentence. NEVER include leftover fragment words such as "a", "an", "the", "this",
+  "that", "their", "its", "can", "could", "would", "should", "given", "when", or "then" dangling
+  in the name -- these are signs you cut a sentence instead of naming a goal.
+- participating_actors: for EVERY use_cases entry, list the real actor name(s) (matching the
+  actors list above) that genuinely appear in THIS use case's own logic -- not just the feature's
+  actor list wholesale. A use case only an Admin ever triggers should list only "Admin", even if
+  the feature's main flow is driven by a different actor. Leave it as just the main use case's own
+  primary actor(s) if you are unsure -- never list an actor that has no real role in that specific
+  use case's steps.
+- generalizes: for a use case entry, name a DIFFERENT use case (main or otherwise) it is a
+  significantly-different-business-logic VARIANT of -- e.g. "Pay By Card" and "Pay By Wallet"
+  might both generalize a broader "Make Payment" use case, if their internal logic is genuinely
+  substantially different (not just a minor detail). Leave it empty for the normal case -- this
+  is NOT a substitute for include/extend, and most features need zero generalization
+  relationships at all.
 - type "included": ONLY mandatory behaviours that are genuinely separate, reusable, user-observable
   steps -- not an internal implementation detail. Do NOT decompose one action into several parallel
   micro-steps that always happen together (e.g. do NOT create "Validate Email", "Validate
@@ -135,9 +155,10 @@ Use Case Specification Rules:
   the same real behaviour under different names (e.g. "Initiate Password Reset" and "Recover
   Account Access" are the same thing) -- merge them into one entry with the union of their
   related_requirements instead of keeping both.
-- Every SRS functional requirement must be covered by at least one use case's related_requirements
-  -- this is required for completeness, but covering it does NOT mean inventing a separate use
-  case per requirement; group requirements that describe the same real user goal into one entry.
+- Every SRS functional requirement, acceptance criterion, AND validation rule must be covered by
+  at least one use case's related_requirements -- this is required for completeness (checked
+  deterministically for all three), but covering it does NOT mean inventing a separate use case
+  per requirement; group requirements that describe the same real user goal into one entry.
 - Do not put NFRs, constraints, risks, stack, MVC, database design, API design, or security notes into the use case diagram.
 - Do not add UML notes. Constraints, NFRs, risks, and security rules stay inside the Architecture Plan only.
 - Do not add unrelated features outside the approved feature scope.
@@ -305,7 +326,7 @@ The JSON must have exactly this top-level structure:
     "system_boundary": "",
     "diagram_title": "",
     "actors": [
-      {"name": "", "type": "primary | secondary", "description": ""}
+      {"name": "", "type": "primary | secondary", "stereotype": "human | system", "generalizes": "", "description": ""}
     ],
     "use_cases": [
       {
@@ -313,6 +334,8 @@ The JSON must have exactly this top-level structure:
         "type": "main | included | extension",
         "description": "",
         "related_requirements": ["FR-001"],
+        "participating_actors": [""],
+        "generalizes": "",
         "included_in": "",
         "extends": ""
       }
@@ -789,9 +812,22 @@ Sequence Diagram Specification Rules:
     list, retrying, polling) -- never insert a loop that doesn't reflect
     real repeated behavior.
   - Use opt_start/end only for a real optional/alternative flow.
+  - Use par_start/end ONLY for genuinely CONCURRENT/simultaneous actions
+    (e.g. sending a notification email and writing an audit log entry at
+    the same time) -- never for steps that actually happen one after
+    another; sequential steps are plain ordered messages, not a par
+    fragment.
+  - Use break_start/end for an alternative that, when triggered, ends the
+    WHOLE enclosing interaction immediately (e.g. an early-exit validation
+    failure that aborts the rest of the flow) -- distinct from alt/opt,
+    which only skip within themselves and let the flow continue afterward.
   - Use message_type "async" only for a genuine fire-and-forget interaction;
     "return" for a response going back up the call stack; "self" only for a
     lifeline validating/processing its own state.
+- If the SRS's own acceptance criteria for this flow describe a genuine
+  success-vs-failure or conditional branch, the diagram MUST include a
+  corresponding alt/opt fragment for it -- do not produce a purely linear
+  diagram when the feature's real acceptance criteria imply branching.
 - Every message needs accurate related_requirements (real SRS FR/AC/VR ids).
 - Do not put NFRs, constraints, risks, architecture style, or design-
   tradeoff text into a message.
@@ -820,7 +856,7 @@ sequence_specification_json shape:
       "message_type": "sync | async | return | self",
       "related_requirements": ["FR-001"]
     },
-    {"kind": "alt_start | else | opt_start | loop_start | end", "condition": ""}
+    {"kind": "alt_start | else | opt_start | loop_start | par_start | break_start | end", "condition": ""}
   ]
 }
 """
@@ -885,6 +921,17 @@ Class Diagram Specification Rules:
   notation (1, 0..1, 0..*, 1..*, or an exact number) reflecting the real
   cardinality between those two classes. Leave both blank for dependency/
   inheritance/generalization.
+- Stereotype must match the class's own name: a name ending in
+  Controller/Handler is "control"; ending in Service/Manager is "control" or
+  "service"; ending in Repository/DAO/Repo is "repository"; ending in
+  DTO/Request/Response/Payload is "dto". Never assign a stereotype that
+  contradicts the class's own name -- this is checked deterministically and
+  will fail validation.
+- Visibility modifiers: "+" (public) for the real public API surface a
+  caller invokes; "-" (private) for internal implementation details/helper
+  state; "#" (protected) only for a base class member a subclass is expected
+  to use. Default to "+" for operations others call and "-" for
+  internal-only attributes -- do not mark everything "+" by default.
 - Reuse the exact Controller/Service/Boundary names from
   read_finalized_sequence_names for this feature.
 - Every class/relationship needs accurate related_requirements where
@@ -944,6 +991,108 @@ submit_class_specification.
 """
 
 
+USECASE_DIAGRAM_AGENTIC_SYSTEM_PROMPT = """
+You are the Architecture Agent's dedicated Use Case Diagram generator in
+AutoForge. Your ONLY job is to produce usecase_specification_json for
+exactly one approved feature, using read-only tools to ground it in this
+feature's real, specific structure -- never a generic template reused
+across features. Follow real UML use case diagram conventions (the standard
+this diagram must conform to, e.g. agilemodeling.com's own style rules) --
+you are doing real UML modeling here, not just categorizing raw requirement
+text.
+
+Your tools:
+- read_functional_requirements: this feature's real functional requirements.
+- read_acceptance_criteria: this feature's real acceptance criteria.
+- read_interface_and_data_context: the approved Architecture Plan's real API
+  endpoints, request/response models, and data entities for this feature.
+- read_user_roles_and_stories: this feature's real SRS user_roles and
+  user_stories -- ground actor stereotype/generalization and each use
+  case's participating_actors in these.
+- validate_usecase_draft: run your draft specification through the real
+  validator and see the exact errors, if any. Call this before submitting,
+  and again after fixing anything it flags.
+- submit_usecase_specification: submit your final specification exactly
+  once, when confident. This is your only way to finish.
+
+Use Case Specification Rules:
+- actors: real external user roles or real external systems only -- never
+  Database/API/Controller/MongoDB/React/Node/JWT Library/Server/Backend/
+  Frontend/UI Page/Form. Each actor needs a stereotype ("human" for a real
+  person/role, "system" for a real non-human/external system this feature
+  integrates with -- a payment gateway, an email provider, a scheduled job
+  trigger). Set "generalizes" to a parent actor's name ONLY when this actor
+  genuinely "is like" a broader one (same goals, plus something extra) --
+  leave it empty otherwise.
+- use_cases: exactly ONE entry with type "main" -- the real cohesive
+  user-facing goal of this feature (never the feature name restated
+  verbatim). Every name (main, included, extension) BEGINS WITH a strong,
+  specific action verb followed by 1-4 more words naming the real domain
+  object it acts on -- read it aloud, it must sound like a real goal a human
+  would state, never a fragment cut out of a requirement sentence.
+- type "included": ONLY mandatory, genuinely separate, reusable, user-
+  observable steps -- never decompose one action into parallel micro-steps
+  that always happen together.
+- type "extension": optional, alternative, recovery, or error behaviours.
+- participating_actors: for EVERY use case, list the real actor name(s) that
+  genuinely appear in THAT use case's own logic -- not the feature's whole
+  actor list by default. A use case only an Admin ever triggers lists only
+  "Admin", even if the feature's main flow is driven by a different actor.
+- generalizes: name a DIFFERENT use case this one is a significantly-
+  different-business-logic VARIANT of -- most features need zero of these;
+  never use it as a substitute for include/extend.
+- related_requirements: every entry must list the real SRS FR/AC/VR ids it
+  covers -- every FR, AC, and VR must be covered by at least one use case,
+  checked deterministically.
+- Before submitting, scan your own use_cases for near-duplicates (the same
+  real behaviour under different names) and merge them.
+- Call validate_usecase_draft before submitting. If it reports errors, fix
+  them and validate again. Submit only once validation passes or you are
+  confident the remaining issue is a false positive.
+
+Return your result via the tool call only -- do not output the
+specification as chat text.
+
+usecase_specification_json shape:
+{
+  "system_boundary": "",
+  "diagram_title": "",
+  "actors": [
+    {"name": "", "type": "primary | secondary", "stereotype": "human | system", "generalizes": "", "description": ""}
+  ],
+  "use_cases": [
+    {
+      "name": "",
+      "type": "main | included | extension",
+      "description": "",
+      "related_requirements": ["FR-001"],
+      "participating_actors": [""],
+      "generalizes": "",
+      "included_in": "",
+      "extends": ""
+    }
+  ]
+}
+"""
+
+
+def build_usecase_diagram_user_prompt(feature_name: str) -> str:
+    """
+    Short user-turn prompt for the dedicated use case diagram agentic step --
+    points at the read tools rather than dumping context into the prompt.
+    """
+
+    return f"""
+Feature: {feature_name}
+
+Generate the usecase_specification_json for this feature. Use your
+read-only tools to ground actors/use cases/relationships in this feature's
+real functional requirements, acceptance criteria, user roles/stories, and
+the approved architecture plan's real endpoints/data entities -- then call
+validate_usecase_draft before submitting via submit_usecase_specification.
+"""
+
+
 DIAGRAM_FOCUSED_BOTH_SYSTEM_PROMPT = """
 You are generating the Sequence and Class diagram specifications for exactly
 one approved feature. You have no tools here -- everything you need is in
@@ -957,14 +1106,23 @@ Rules:
   THIS feature; participants (actor/boundary/control/entity/database/
   external) named consistently with the class specification below; use
   loop_start/async message types only for genuinely repeated/fire-and-forget
-  behavior; every message needs accurate related_requirements; no duplicate
-  messages outside a loop.
+  behavior; use par_start/end ONLY for genuinely concurrent/simultaneous
+  actions (never sequential steps); use break_start/end for an alternative
+  that ends the whole interaction immediately (an early-exit failure); if
+  the SRS's own acceptance criteria imply a success-vs-failure branch, the
+  diagram MUST include a corresponding alt/opt for it; every message needs
+  accurate related_requirements; no duplicate messages outside a loop.
 - class_specification_json: Controller/Service/Repository/DTO/Entity
   layering, but every dto/entity needs REAL, feature-specific attributes
   (never a placeholder single "id" field); every association/aggregation/
   composition relationship needs source_multiplicity/target_multiplicity in
   standard UML notation (1, 0..1, 0..*, 1..*); reuse the SAME Controller/
-  Service/Boundary names as the sequence specification.
+  Service/Boundary names as the sequence specification; a class's stereotype
+  must match its own name (Controller/Handler -> "control", Service/Manager
+  -> "control" or "service", Repository/DAO/Repo -> "repository",
+  DTO/Request/Response/Payload -> "dto") -- never a mismatch, this is
+  checked deterministically. Visibility: "+" public API surface, "-"
+  internal-only, "#" only for a base-class member a subclass uses.
 - Return only valid JSON, no markdown fences, no explanation outside JSON.
 
 Return exactly this top-level structure:
@@ -976,7 +1134,7 @@ Return exactly this top-level structure:
     ],
     "interactions": [
       {"kind": "message", "from": "", "to": "", "message": "", "message_type": "sync | async | return | self", "related_requirements": ["FR-001"]},
-      {"kind": "alt_start | else | opt_start | loop_start | end", "condition": ""}
+      {"kind": "alt_start | else | opt_start | loop_start | par_start | break_start | end", "condition": ""}
     ]
   },
   "class_specification_json": {
@@ -1042,6 +1200,12 @@ Rules:
 - Every association/aggregation/composition relationship needs
   source_multiplicity/target_multiplicity in standard UML notation (1,
   0..1, 0..*, 1..*).
+- A class's stereotype must match its own name: Controller/Handler ->
+  "control", Service/Manager -> "control" or "service", Repository/DAO/Repo
+  -> "repository", DTO/Request/Response/Payload -> "dto" -- never a
+  mismatch, this is checked deterministically. Visibility modifiers: "+"
+  for the real public API surface, "-" for internal-only details, "#" only
+  for a base-class member a subclass uses.
 - Reuse the EXACT Controller/Service/Boundary names already used in the
   finalized sequence specification below -- do not invent different names
   for the same components.
@@ -1099,6 +1263,81 @@ Return the class_specification_json object now.
 """
 
 
+USECASE_DIAGRAM_FOCUSED_SYSTEM_PROMPT = """
+You are generating the Use Case diagram specification for exactly one
+approved feature. You have no tools here -- everything you need is in the
+context below. Ground it in this feature's REAL, specific requirements and
+follow real UML use case diagram conventions -- never a generic template.
+
+Rules:
+- actors: real external user roles/systems only. Each needs a stereotype
+  ("human" or "system" -- "system" only for a real non-human/external
+  system) and an optional "generalizes" (a parent actor's name, only for a
+  genuine "is like, plus more" relationship).
+- use_cases: exactly ONE "main" entry (the real feature goal, never the
+  feature name restated). Every name BEGINS WITH a strong action verb.
+- participating_actors: for EVERY use case, the real actor name(s) that
+  genuinely appear in THAT use case's own logic -- not the whole actor list
+  by default.
+- generalizes: name a different use case this one is a significantly-
+  different variant of -- leave empty for the normal case.
+- related_requirements: real SRS FR/AC/VR ids -- every FR, AC, and VR must
+  be covered by at least one use case.
+- Do not decompose one action into parallel "included" micro-steps that
+  always happen together.
+- Return only valid JSON, no markdown fences, no explanation outside JSON.
+
+Return exactly this object:
+{
+  "system_boundary": "",
+  "diagram_title": "",
+  "actors": [
+    {"name": "", "type": "primary | secondary", "stereotype": "human | system", "generalizes": "", "description": ""}
+  ],
+  "use_cases": [
+    {"name": "", "type": "main | included | extension", "description": "",
+     "related_requirements": ["FR-001"], "participating_actors": [""], "generalizes": ""}
+  ]
+}
+"""
+
+
+def build_usecase_diagram_focused_prompt(
+    feature_name: str,
+    srs_json: dict,
+    architecture_plan_json: dict,
+) -> str:
+    """
+    Small, focused fallback prompt used when the dedicated agentic use case exploration step
+    failed (or was skipped, e.g. for revise()) -- one non-agentic call, much cheaper than the
+    multi-turn exploration tier, still grounded in this feature's real SRS + Architecture Plan
+    rather than falling straight to the deterministic template.
+    """
+
+    design_views = architecture_plan_json.get("design_views", {}) if isinstance(architecture_plan_json, dict) else {}
+
+    return f"""
+Feature: {feature_name}
+
+SRS functional requirements:
+{safe_json_dumps(srs_json.get("functional_requirements", []))}
+
+SRS acceptance criteria:
+{safe_json_dumps(srs_json.get("acceptance_criteria", []))}
+
+SRS validation rules:
+{safe_json_dumps(srs_json.get("validation_rules", []))}
+
+SRS user roles and user stories:
+{safe_json_dumps({"user_roles": srs_json.get("user_roles", []), "user_stories": srs_json.get("user_stories", [])})}
+
+Approved architecture plan -- context view (actors, external systems):
+{safe_json_dumps(design_views.get("context_view", {}))}
+
+Return the usecase_specification_json object now.
+"""
+
+
 USECASE_REPAIR_SYSTEM_PROMPT = """
 You are repairing a UML use case specification that failed quality validation.
 You do NOT regenerate the whole Architecture Plan -- only the use case
@@ -1120,9 +1359,17 @@ Rules:
   action -- combine into a single entry unless each is genuinely an
   independent, reusable, user-observable goal).
 - Every entry must set related_requirements to real SRS FR/AC/VR ids from
-  the context below -- accurate, not guessed.
+  the context below -- accurate, not guessed (all three kinds are checked,
+  not just FR).
 - Merge any two entries that describe the same real behaviour under
   different names.
+- Every use_cases entry needs participating_actors: the real actor name(s)
+  (matching the actors list) that genuinely appear in THAT use case's own
+  logic -- not the whole actor list by default.
+- Set an actor's stereotype to "system" only for a real non-human/external
+  system actor; leave "generalizes" empty on both actors and use cases
+  unless a real, significantly-different-business-logic variant
+  relationship genuinely applies.
 - Return only valid JSON. No markdown fences, no explanation outside JSON.
 """
 
@@ -1183,8 +1430,8 @@ Rules:
 - interactions must reflect this feature's real flow -- not a generic
   template. Remove duplicate messages (same from/to pair and text) that
   appear outside a loop fragment.
-- Combined fragments (alt_start/else/opt_start/loop_start) must each have a
-  matching end, correctly nested.
+- Combined fragments (alt_start/else/opt_start/loop_start/par_start/
+  break_start) must each have a matching end, correctly nested.
 - Every message must set related_requirements to real SRS FR/AC/VR ids from
   the context below -- accurate, not guessed.
 - Return only valid JSON. No markdown fences, no explanation outside JSON.
@@ -1243,6 +1490,11 @@ Rules:
   source_multiplicity and target_multiplicity using standard UML notation
   (1, 0..1, 0..*, 1..*). Leave both blank for dependency/inheritance/
   generalization.
+- A class's stereotype must match its own name (Controller/Handler ->
+  "control", Service/Manager -> "control" or "service", Repository/DAO/Repo
+  -> "repository", DTO/Request/Response/Payload -> "dto") -- if the
+  validation error below names a mismatch, fix it; otherwise never introduce
+  a new one while fixing something else.
 - Every class must set related_requirements to real SRS FR/AC/VR ids from
   the context below where applicable -- accurate, not guessed.
 - Return only valid JSON. No markdown fences, no explanation outside JSON.

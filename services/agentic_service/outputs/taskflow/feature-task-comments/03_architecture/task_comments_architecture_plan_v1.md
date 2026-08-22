@@ -118,7 +118,7 @@ Integration design should follow the API expectations and dependencies listed in
 
 ### 7.1 Backend Files
 - `app/api/task-comments/route.ts` (create): Next.js Route Handler implementing POST for Task Comments (/api/task-comments), with request validation before any handler logic.
-- `models/Comment.ts` (create): Mongoose model for the Comment entity (must use the `mongoose.models.Comment || mongoose.model(...)` guard to avoid OverwriteModelError).
+- `models/TaskCommentsData.ts` (create): Mongoose model for the TaskCommentsData entity (must use the `mongoose.models.TaskCommentsData || mongoose.model(...)` guard to avoid OverwriteModelError).
 
 ### 7.2 Endpoints
 - **POST /api/task-comments**
@@ -129,7 +129,7 @@ Integration design should follow the API expectations and dependencies listed in
   - error: 500 when an unexpected server error occurs
 
 ### 7.3 Data Models
-- **Comment** (`models/Comment.ts`)
+- **TaskCommentsData** (`models/TaskCommentsData.ts`)
   - `storesCommentText`: String 
   - `author`: String 
   - `taskId`: String 
@@ -142,7 +142,7 @@ Integration design should follow the API expectations and dependencies listed in
 - nav link: to: /task-comments, label: Task Comments
 
 ### 7.5 Implementation Order
-1. Create the Mongoose model(s): models/Comment.ts
+1. Create the Mongoose model(s): models/TaskCommentsData.ts
 2. Create app/api/task-comments/route.ts implementing /api/task-comments, validating required request fields before use (400 on missing/malformed) -- it is automatically live the instant the file exists, no separate mount step needed.
 3. Create lib/api/taskComments.ts with one function per endpoint.
 4. Create app/task-comments/page.tsx (a Client Component, `"use client"` as its first line), reusing approved UI/UX components where available instead of re-authoring their markup.
@@ -192,8 +192,8 @@ Integration design should follow the API expectations and dependencies listed in
 ## 9. Data Model Plan
 
 **Data Entities:**
-- **Comment**
-  - Purpose: Stores comment text, author, task id
+- **TaskCommentsData**
+  - Purpose: Core data entity for the Task Comments feature.
   - Fields:
     - name: storesCommentText, type: String, required: False
     - name: author, type: String, required: False

@@ -27,7 +27,7 @@ class "TaskSearchErrorResponse" as CLS_RESPONSE_002 <<dto>> {
   +results: Array
 }
 
-class "TaskSearchResult" as CLS_ENTITY_001 <<entity>> {
+class "TaskSearchData" as CLS_ENTITY_001 <<entity>> {
   +representsAMatchedTask: String
 }
 

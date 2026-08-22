@@ -75,6 +75,34 @@ def test_write_env_local_returns_false_when_nothing_changes(project_id):
     assert changed is False
 
 
+def test_remove_env_local_keys_returns_false_when_file_absent(project_id):
+    assert workspace_service.remove_env_local_keys(project_id, ["MONGODB_URI"]) is False
+
+
+def test_remove_env_local_keys_returns_false_when_key_not_present(project_id):
+    workspace_service.write_env_local(project_id, {"FOO": "bar"})
+    assert workspace_service.remove_env_local_keys(project_id, ["MONGODB_URI"]) is False
+    assert workspace_service.read_env_local(project_id) == {"FOO": "bar"}
+
+
+def test_remove_env_local_keys_removes_only_the_given_key(project_id):
+    workspace_service.write_env_local(project_id, {"MONGODB_URI": "mongodb://localhost/db", "FOO": "bar"})
+
+    changed = workspace_service.remove_env_local_keys(project_id, ["MONGODB_URI"])
+
+    assert changed is True
+    assert workspace_service.read_env_local(project_id) == {"FOO": "bar"}
+
+
+def test_remove_env_local_keys_leaves_the_file_present_but_empty(project_id):
+    workspace_service.write_env_local(project_id, {"MONGODB_URI": "mongodb://localhost/db"})
+    workspace_service.remove_env_local_keys(project_id, ["MONGODB_URI"])
+
+    env_path = workspace_service.get_repo_path(project_id) / ".env.local"
+    assert env_path.exists()
+    assert workspace_service.read_env_local(project_id) == {}
+
+
 def test_env_local_is_gitignored_and_never_committed(project_id):
     workspace_service.write_env_local(project_id, {"MONGODB_URI": "mongodb://localhost/db"})
     repo = workspace_service.ensure_project_repo(project_id)

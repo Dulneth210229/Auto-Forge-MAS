@@ -181,8 +181,8 @@
     "data_view": {
       "data_entities": [
         {
-          "name": "Comment",
-          "purpose": "Stores comment text, author, task id",
+          "name": "TaskCommentsData",
+          "purpose": "Core data entity for the Task Comments feature.",
           "fields": [
             {
               "name": "storesCommentText",
@@ -432,9 +432,9 @@
           ]
         },
         {
-          "path": "models/Comment.ts",
+          "path": "models/TaskCommentsData.ts",
           "action": "create",
-          "purpose": "Mongoose model for the Comment entity (must use the `mongoose.models.Comment || mongoose.model(...)` guard to avoid OverwriteModelError).",
+          "purpose": "Mongoose model for the TaskCommentsData entity (must use the `mongoose.models.TaskCommentsData || mongoose.model(...)` guard to avoid OverwriteModelError).",
           "implements_endpoints": []
         }
       ],
@@ -460,8 +460,8 @@
       ],
       "models": [
         {
-          "name": "Comment",
-          "file": "models/Comment.ts",
+          "name": "TaskCommentsData",
+          "file": "models/TaskCommentsData.ts",
           "fields": [
             {
               "name": "storesCommentText",
@@ -519,7 +519,7 @@
       }
     },
     "implementation_order": [
-      "Create the Mongoose model(s): models/Comment.ts",
+      "Create the Mongoose model(s): models/TaskCommentsData.ts",
       "Create app/api/task-comments/route.ts implementing /api/task-comments, validating required request fields before use (400 on missing/malformed) -- it is automatically live the instant the file exists, no separate mount step needed.",
       "Create lib/api/taskComments.ts with one function per endpoint.",
       "Create app/task-comments/page.tsx (a Client Component, `\"use client\"` as its first line), reusing approved UI/UX components where available instead of re-authoring their markup.",
