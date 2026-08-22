@@ -7170,6 +7170,160 @@ milestone — that file is scratch, **this file is the durable one**.
       still showed Requirement Agent's content, confirming item 44's original deep-link/reload
       behavior is unregressed by any of this. Zero console/page errors across every screenshot.
 
+85. **An "Approve & Move to Security" button next to the Coder Agent's version dropdown, plus a
+    real, live-streaming Security Agent chat mirroring QA Agent's own.** Three direct user
+    requests. Investigated directly (2 parallel Explore agents: the existing Coder-approval popup
+    mechanism's exact reusability, and QA Agent's own chat implementation as the precise template
+    to mirror). Plan file: `C:\Users\ASUS\.claude\plans\soft-petting-star.md` at time of writing.
+    - **Asks #1/#2 -- a new, more prominent trigger for an already-built mechanism**: confirmed
+      the popup + auto-run-Security flow (`APPROVE_CONTINUATION_BY_STAGE.coder`,
+      `requestApproveConfirmation`, one shared `ConfirmDialog`, `handleConfirmedApprove`'s
+      `nextAgent === "security"` branch) already existed in full from the immediately preceding
+      session (item 82's Ask 4) -- this needed only a new, more visible trigger, not new backend
+      work. `ResultTab.jsx`'s version-dropdown row hoisted its previously-duplicated inline
+      `versions.find(...)` lookup into one `selectedVersionArtifact`, reused by both the existing
+      "Download report" link and a new "Approve & Move to Security" button (rendered only for
+      `stage === "coder"` when the selected version is genuinely `pending`), which simply calls
+      `requestApproveConfirmation(selectedVersionArtifact.artifact_id)` -- the exact same function
+      `GovernancePanel`/`ArtifactRow`'s own Approve buttons already call, guaranteeing identical
+      popup wording regardless of which surface triggered it.
+    - **Ask #3 -- a real Security Agent chat, mirroring QA Agent's own (item 75) precisely**:
+      new `store.security_conversations` Mongo collection (identical shape to `qa_conversations`
+      -- one document per `feature_id`, upserted in place, unique index, cascade-deleted with the
+      feature/project). New `SecurityChatMessageRequest`/`SecurityChatTurn`/
+      `SecurityChatHistoryResponse` schemas (`security_schema.py`), identical to QA's own. New
+      `SecurityAgent._get_chat_history`/`_append_chat_turns`/`chat_stream` (`agent.py`) mirroring
+      QA's methods exactly (same NDJSON `{"type":"token"|"done"|"error",...}` event shape, same
+      stream-then-persist-both-turns flow) -- loads report context via the already-existing
+      shared `artifact_service.get_selected_or_latest_approved_artifact` (item 36) rather than a
+      new private per-agent finder, since Security Agent never had one of its own (`run()` always
+      generates a fresh report, it never looks a prior one up) -- a small, deliberate improvement
+      over blindly copying QA's own private-duplicate pattern. New `_summarize_report_for_chat`
+      renders the real gate decision, tier counts, and each finding's severity/rule_id/CWE/
+      file:line/message (matching `SecurityReportView.jsx`'s own exact real field names). New
+      `SECURITY_CHAT_SYSTEM_PROMPT` (`prompt.py`), mirroring `QA_CHAT_SYSTEM_PROMPT`'s exact
+      "answer only from the real report, discuss don't edit code" framing -- code-editing stays
+      the separate, already-built "Send to Coder Agent" button (`securityReportToRevisionComment.js`),
+      untouched by this work. New `GET /security/chat` + `POST /security/chat/stream` routes
+      (`agents.py`), identical shape to the existing QA routes. Frontend: new
+      `getSecurityChatHistory`/`securityChatStream` (`api/agents.js`), new
+      `useSecurityChatFlow.js` (mirrors `useQaChatFlow.js` **exactly**, including its already-
+      correct `onSuccess: async () => { await queryClient.invalidateQueries(...) }` -- the
+      item-49 disappearing-bubble fix copied forward from the start, not reintroduced and fixed
+      later), new `SecurityAgentChat.jsx` (mirrors `QaAgentChat.jsx`'s structure) -- deliberately
+      reuses the SAME shared `useSecurityAgentFlowContext()` mutation the Result panel's Run/
+      Re-run button and the Coder-approval auto-trigger already observe for its own empty-state
+      "Run Security Scan" action, rather than a new independent mutation (avoiding reintroducing
+      the exact "two independent mutation instances can't see each other's pending state" bug
+      item 61 already found and fixed for UI/UX Agent). `ChatPanel.jsx` gained a
+      `selectedAgent === "security"` dispatch branch, removing the old disabled "Security Agent
+      can't be messaged directly right now" placeholder for this stage specifically. Several
+      now-stale "Security Agent has no chat" comments across the frontend (`useSecurityAgent.js`,
+      `SecurityAgentFlowContext.jsx`, `SecurityReportView.jsx`, `ResultTab.jsx`,
+      `QaAgentChat.jsx`) updated to reflect the new reality while touching this area.
+    - Tests: `tests/test_security_agent.py` gained a new `TestSecurityChat` class (6 tests --
+      report summarization including every real field, graceful degradation on missing optional
+      fields, empty history for a fresh feature, turn persistence/accumulation, and two real
+      `chat_stream` async-generator tests confirming token-then-done events plus real turn
+      persistence, and a provider-unreachable case yielding a clean error event with nothing
+      persisted). `tests/test_security_agent_routes.py` gained 6 new route tests mirroring
+      `test_qa_agent_routes.py`'s own chat-route coverage exactly (404 on unknown feature, empty/
+      persisted history, NDJSON event passthrough, error-event translation on an unexpected
+      exception). Full suite: **917 passed** (up from 905). `npm run build` clean (1344 modules).
+    - **Real, live verification against the real Finodil "Login and Signup" feature**, not
+      synthetic: confirmed the new button renders next to the version dropdown for the real
+      pending Coder Agent v4, clicking it shows the exact same popup text already proven in item
+      82's own verification, and confirming it produced a real git merge (`git log` showed a
+      genuine "Reapply" commit -- direct, live proof the item-84 merge-after-revert fix also
+      composes correctly with this new trigger). Directly triggered a real security scan
+      (`POST /security/run`) to get real report content to verify the chat against (0 findings,
+      gate=pass -- a real, accurate result now that item 73's `.env.local` exclusion fix is in
+      place). Drove the real chat through an actual browser: composer genuinely enabled (old
+      disabled placeholder confirmed absent), a real question ("Were any vulnerabilities found in
+      the latest scan? What was the gate decision?") produced a real, live-streamed reply
+      correctly grounded in the actual report ("No vulnerabilities were found... gate decision is
+      clear"), and a full fresh page reload confirmed both the question and the reply persisted
+      (`store.security_conversations` working as intended). Zero console/page errors.
+    - **An honest, unresolved observation from this same live pass, not a defect in this item's
+      own new code**: the auto-triggered scan fired by the new button's popup confirmation (via
+      the UNCHANGED `handleConfirmedApprove`/`runSecurity.mutate({})` chain, already proven
+      working in item 82) took longer than several minutes of live polling to produce its second
+      report version -- root-caused, not left unexplained: `GET /settings/llm/agents` confirmed
+      Security Agent has no per-agent override entry at all (a known, pre-existing gap noted in
+      item 82: `OVERRIDABLE_AGENTS` still doesn't include security_agent/qa_agent), so it falls
+      back to the global default model, `qwen2.5-coder:14b` via Ollama -- the same class of
+      GPU/VRAM-constrained slow-local-inference characteristic this project has documented
+      repeatedly elsewhere (items 24/51/63/74), not a new regression. A real, direct
+      `POST /security/run` call (used to produce the report the chat verification above ran
+      against) did complete successfully well inside its request budget, confirming the backend
+      route itself is fast and correct -- the observed delay is specific to whichever model
+      happens to be configured for a given run, not this item's own code.
+
+86. **A real, reported "Network Error" on every single artifact in a feature -- root-caused to
+    an unhandled crash on a missing file, not a real network problem, and fixed for every project
+    going forward.** Direct user report with screenshots: opening the real "Item Listing (CRUD)"
+    feature in "Sample E-commerce" showed a generic "Network Error" for every stage's output
+    (Requirement, Domain, Architecture, UI/UX, Coder), plus "No diff content found in this
+    artifact" for Coder specifically.
+    - **Root-caused directly, not guessed**: `curl`ing the real, live `GET /artifacts/{id}/content`
+      endpoint for this feature's SRS artifact returned a bare `500 Internal Server Error` with no
+      body -- confirmed via the artifact's own metadata that `size_bytes: null` (a real signal,
+      per `_hydrate_artifact_response`'s own established "None if the file is missing rather than
+      raising" convention), and confirmed directly via `Glob` that the file's real disk path
+      (`outputs/sample-e-commerce/...`) doesn't exist AT ALL -- the entire `outputs/sample-e-commerce/`
+      AND `workspaces/sample-e-commerce/` directories are missing from this branch's checkout,
+      even though the shared MongoDB Atlas database (used across the whole team) still has full
+      version/approval history for this project. `artifact_service.read_artifact_content`/
+      `read_artifact_binary` do a raw `open(file_path, ...)`, raising an uncaught
+      `FileNotFoundError` that propagates as an unhandled 500 -- which the BROWSER reports as a
+      bare "Network Error" with no message at all, because an unhandled exception skips FastAPI's
+      normal exception-handling pipeline, which is also what re-applies `CORSMiddleware`'s
+      headers to the response -- without them the browser can't even read the 500's body, so
+      axios reports a connection failure, not "500". This directly explains the exact reported
+      symptom, confirmed by testing: after the fix, the SAME broken artifact returns a real,
+      readable 404 instead.
+    - **Fix, `app/api/routes/artifacts.py`**: both `GET /artifacts/{id}/content` and
+      `GET /artifacts/{id}/download` (a "sibling" route sharing the exact same read functions, per
+      item 31's own documented design) now wrap their file-read calls in a
+      `try/except (FileNotFoundError, OSError)`, translating to a real, graceful
+      `HTTPException(404, detail="This artifact's file could not be found on disk (path: ...). It
+      may have been deleted, moved, or never synced to this environment.")` -- a genuine,
+      honest error instead of a crash, for ANY project this happens to, not just this one.
+      Confirmed no frontend changes were needed at all: `ErrorBanner.jsx` already reads
+      `error?.response?.data?.detail` first, so every existing content viewer
+      (`ArtifactContentView.jsx` and everything built on it) automatically renders the new, clear
+      message the moment the backend starts returning proper JSON error bodies -- the bug was
+      entirely a backend graceful-degradation gap, not a frontend display gap.
+    - **The second, related complaint ("when the user moves from one feature to another the
+      output must stay as it is")**: investigated and concluded this describes the SAME symptom
+      in different words, not a separate routing/state bug -- React Query's `artifactContent`
+      queries are already correctly keyed per `artifact_id`, so switching features was never
+      showing stale content from a different feature; it was showing this SPECIFIC feature's own
+      real (missing-file) error, now fixed to read clearly instead of crashing.
+    - **A genuinely separate, bigger question surfaced by root-causing this, deliberately left to
+      the user's own explicit decision rather than acted on unilaterally**: git history confirms
+      these exact 63 files DO exist -- on a teammate's branch, `origin/tharuka_m` -- but were
+      never merged into this branch (`new-anthropic_m`); the shared Mongo database has records
+      for this project because the teammate ran the real pipeline on their own branch/checkout.
+      Asked the user directly whether to pull those files in from `origin/tharuka_m` to restore
+      this specific feature's real content -- **user chose to leave it as-is** (the error-handling
+      fix alone, without merging another branch's files into this one). This item's own fix
+      still applies universally regardless of that choice -- any other real or future case of a
+      shared-database record pointing at a locally-missing file now degrades gracefully instead
+      of crashing with a confusing "Network Error."
+    - Tests: `tests/test_artifact_content_routes.py` (new, 5 -- `/content` returns a real 404
+      with the exact clear message for a missing JSON file, still works normally when the file is
+      genuinely present, returns 404 for a missing PNG too; `/download` mirrors both the missing-
+      file-404 and present-file-200 cases). Full suite: **922 passed** (up from 917). `npm run
+      build` clean (1344 modules, unaffected -- a pure backend fix).
+    - **Real, live verification against the exact reported feature**: `curl`ing the real, live
+      broken SRS artifact directly confirmed the fix (500 -> a real 404 with the clear message).
+      Drove the real browser to the same feature afterward: confirmed the old bare "Network
+      Error" text is gone everywhere, replaced by the real, honest "This artifact's file could
+      not be found on disk..." message (screenshot confirmed on the Coder stage specifically, the
+      exact same message the user's own screenshot showed as unhelpful red boxes). Zero page
+      errors.
+
 ## Where to look
 
 - Full build spec (read this first, in order, before any new milestone): `instructions .md`

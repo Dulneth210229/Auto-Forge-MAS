@@ -54,10 +54,11 @@ export default function SecurityReportView({ artifact }) {
   // the approval popup shows its real progress here too, not just wherever it was started.
   const { runSecurity } = useSecurityAgentFlowContext();
 
-  // No report exists yet (never scanned, or the feature has no generated code yet) -- unlike
-  // every other stage, Security Agent has no chat/revise flow to trigger a first run from, so
-  // this empty-state action IS the only way to trigger one (see ResultTab.jsx's own comment on
-  // why this branch renders regardless of whether an artifact exists).
+  // No report exists yet (never scanned, or the feature has no generated code yet) -- Security
+  // Agent has no revise() flow (a re-run IS the whole operation), so this empty-state action is
+  // one of two real ways to trigger a first run (SecurityAgentChat's own empty-state button is
+  // the other, sharing the same useSecurityAgentFlowContext() mutation -- see ResultTab.jsx's own
+  // comment on why this branch renders regardless of whether an artifact exists).
   if (!artifact) {
     return (
       <div className="flex flex-col items-start gap-3">

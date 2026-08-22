@@ -1,9 +1,11 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { runSecurity } from "../api/agents";
 
-// Security Agent has no chat/revision flow (see MANUAL_RUN_STAGES/REVISABLE_STAGES in
-// pipelineStages.js) -- just a direct re-run trigger, so a plain useMutation is enough here,
-// unlike the streaming useXAgentFlow hooks the other agents use.
+// Security Agent has no revision flow (see REVISABLE_STAGES in pipelineStages.js -- re-running
+// IS the whole operation) -- just a direct re-run trigger, so a plain useMutation is enough here,
+// unlike the streaming useXAgentFlow hooks the other agents use for a real run/revise. Its real
+// chat (a genuinely different, separate concern -- discussing an already-generated report, not
+// producing one) has its own dedicated streaming hook, useSecurityChatFlow.js.
 export function useRunSecurityAgent(featureId) {
   const queryClient = useQueryClient();
 

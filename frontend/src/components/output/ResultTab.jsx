@@ -661,10 +661,12 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
       ) : versions.length === 0 && isRequirementStage ? (
         <RequirementSrsOutputPanel />
       ) : stage === "security" ? (
-        // Unlike every other stage, Security Agent has no chat/revise flow to trigger a first
-        // run from (see pipelineStages.js's MANUAL_RUN_STAGES/REVISABLE_STAGES) -- SecurityReportView
-        // itself renders the "Run Security Scan" empty-state action when `artifact` is null, so
-        // this branch (unlike the generic ones below) fires regardless of versions.length.
+        // Unlike every other stage, Security Agent has no revise() flow to trigger a first run
+        // from (see pipelineStages.js's REVISABLE_STAGES -- a re-run IS the whole operation) --
+        // SecurityReportView itself renders the "Run Security Scan" empty-state action when
+        // `artifact` is null, so this branch (unlike the generic ones below) fires regardless of
+        // versions.length. (SecurityAgentChat, the Result tab's chat-panel counterpart, has its
+        // own separate empty-state trigger for the same underlying action.)
         //
         // Deliberately skips the generic "All Artifacts" full-list AND GovernancePanel further
         // down (both suppressed for this stage, see their own render guards) -- a compact version
@@ -751,20 +753,30 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
         <p className="text-sm text-gray-400 dark:text-gray-500 italic">No output yet for this stage.</p>
       ) : (
         <div>
+          {(() => {
+            // Hoisted once and reused everywhere this section needs "the artifact behind the
+            // currently-selected version" -- previously computed separately (identically) in two
+            // different inline IIFEs; also now backs the new Approve & Move to Security button.
+            const selectedVersionArtifact = versions.find((v) => v.version === selectedVersion) || versions[0];
+            return (
           <div className="flex items-center justify-between mb-3">
             <VersionSelect versions={versions} selectedVersion={selectedVersion} onChange={setSelectedVersion} />
             <div className="flex items-center gap-3">
-              {(() => {
-                const artifact = versions.find((v) => v.version === selectedVersion) || versions[0];
-                return (
-                  <a
-                    href={artifactDownloadUrl(artifact.artifact_id)}
-                    className="text-sm text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 font-semibold"
-                  >
-                    Download report
-                  </a>
-                );
-              })()}
+              <a
+                href={artifactDownloadUrl(selectedVersionArtifact.artifact_id)}
+                className="text-sm text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 font-semibold"
+              >
+                Download report
+              </a>
+              {stage === "coder" && selectedVersionArtifact.approval_status === "pending" && (
+                <button
+                  type="button"
+                  onClick={() => requestApproveConfirmation(selectedVersionArtifact.artifact_id)}
+                  className="text-sm bg-green-600 hover:bg-green-700 text-white font-semibold px-3 py-1.5 rounded-md"
+                >
+                  Approve & Move to Security
+                </button>
+              )}
               {stage === "coder" && (
                 <a
                   href={featureCodeDownloadUrl(featureId)}
@@ -775,6 +787,8 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
               )}
             </div>
           </div>
+            );
+          })()}
 
           {stage === "uiux" ? (
             <UiuxPagePreviewsPanel allArtifacts={allArtifacts} />

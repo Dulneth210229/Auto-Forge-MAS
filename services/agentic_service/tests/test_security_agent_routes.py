@@ -1,12 +1,13 @@
 """
-Unit tests for POST /features/{feature_id}/agents/security/run -- the first API route this
-agent has ever had (previously zero, unlike every other agent's /run + /revise[/stream] set).
-Real TestClient (established convention, see test_database_connection_routes.py);
-security_agent.run() itself is mocked (its own real-scan behavior is already covered by
-test_security_agent.py and the scanner unit tests) -- this file only exercises the route's own
-wiring: 404 on an unknown feature, the AgentRunResponse shape, and error translation.
+Unit tests for POST /features/{feature_id}/agents/security/run, GET .../security/chat, and
+POST .../security/chat/stream. Real TestClient (established convention, see
+test_qa_agent_routes.py, which this chat-test portion mirrors exactly); security_agent.run()/
+chat_stream() are mocked -- their own real behavior is covered by test_security_agent.py and the
+scanner unit tests. This file only exercises the routes' own wiring: 404 on an unknown feature,
+response shapes, error translation, and NDJSON event passthrough.
 """
 
+import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -35,6 +36,7 @@ def feature_id():
 
     store.database["features"].delete_one({"feature_id": fid})
     store.database["projects"].delete_one({"project_id": project_id})
+    store.database["security_conversations"].delete_one({"feature_id": fid})
 
 
 def test_run_returns_404_for_unknown_feature():
@@ -97,3 +99,82 @@ def test_run_translates_unexpected_exception_to_500(feature_id):
 
     assert response.status_code == 500
     assert "Security Agent failed" in response.json()["detail"]
+
+
+def test_get_chat_history_returns_404_for_unknown_feature():
+    response = client.get("/api/v1/features/feature_does_not_exist/agents/security/chat")
+    assert response.status_code == 404
+
+
+def test_get_chat_history_returns_empty_when_no_conversation_yet(feature_id):
+    response = client.get(f"/api/v1/features/{feature_id}/agents/security/chat")
+
+    assert response.status_code == 200
+    assert response.json() == {"turns": []}
+
+
+def test_get_chat_history_returns_persisted_turns(feature_id):
+    store.security_conversations[feature_id] = {
+        "feature_id": feature_id,
+        "turns": [
+            {"role": "user", "content": "Why is this Critical?", "created_at": "2026-08-22T00:00:00+00:00"},
+            {"role": "assistant", "content": "Because X.", "created_at": "2026-08-22T00:00:01+00:00"},
+        ],
+    }
+
+    response = client.get(f"/api/v1/features/{feature_id}/agents/security/chat")
+
+    assert response.status_code == 200
+    turns = response.json()["turns"]
+    assert len(turns) == 2
+    assert turns[0]["content"] == "Why is this Critical?"
+    assert turns[1]["role"] == "assistant"
+
+
+def test_chat_stream_returns_404_for_unknown_feature():
+    response = client.post(
+        "/api/v1/features/feature_does_not_exist/agents/security/chat/stream", json={"message": "hi"}
+    )
+    assert response.status_code == 404
+
+
+def _fake_chat_stream(events):
+    async def _gen(**kwargs):
+        for event in events:
+            yield event
+    return _gen
+
+
+def test_chat_stream_yields_ndjson_events(feature_id):
+    events = [
+        {"type": "token", "text": "Hel"},
+        {"type": "token", "text": "lo"},
+        {"type": "done", "message": "Hello"},
+    ]
+
+    with patch("app.api.routes.agents.security_agent.chat_stream", new=_fake_chat_stream(events)):
+        response = client.post(
+            f"/api/v1/features/{feature_id}/agents/security/chat/stream", json={"message": "hi"}
+        )
+
+    assert response.status_code == 200
+    lines = [line for line in response.text.strip().split("\n") if line]
+    parsed = [json.loads(line) for line in lines]
+    assert parsed == events
+
+
+def test_chat_stream_surfaces_error_event_on_unexpected_exception(feature_id):
+    async def _raising_gen(**kwargs):
+        raise RuntimeError("provider unreachable")
+        yield  # pragma: no cover -- makes this a generator
+
+    with patch("app.api.routes.agents.security_agent.chat_stream", new=_raising_gen):
+        response = client.post(
+            f"/api/v1/features/{feature_id}/agents/security/chat/stream", json={"message": "hi"}
+        )
+
+    assert response.status_code == 200
+    lines = [line for line in response.text.strip().split("\n") if line]
+    parsed = [json.loads(line) for line in lines]
+    assert parsed[-1]["type"] == "error"
+    assert "Security chat failed" in parsed[-1]["message"]

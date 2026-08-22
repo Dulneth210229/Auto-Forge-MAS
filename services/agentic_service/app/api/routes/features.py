@@ -165,6 +165,7 @@ def delete_feature(feature_id: str):
     store.stage_events.collection.delete_many({"feature_id": feature_id})
     store.requirement_conversations.collection.delete_one({"feature_id": feature_id})
     store.qa_conversations.collection.delete_one({"feature_id": feature_id})
+    store.security_conversations.collection.delete_one({"feature_id": feature_id})
 
     repo_path = workspace_service.get_repo_path(project_id)
     if (repo_path / ".git").exists():

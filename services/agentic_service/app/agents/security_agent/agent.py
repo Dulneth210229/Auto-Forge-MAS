@@ -31,11 +31,12 @@ graph's own start()/resume() flow, not this artifact-level approval requirement.
 
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, AsyncGenerator
 
 from pydantic import ValidationError
 
 from app.agents.security_agent import severity
-from app.agents.security_agent.prompt import SECURITY_AGENT_SYSTEM_PROMPT
+from app.agents.security_agent.prompt import SECURITY_AGENT_SYSTEM_PROMPT, SECURITY_CHAT_SYSTEM_PROMPT
 from app.agents.security_agent.schemas import SecurityAgentOutput, SecurityLLMReviewResult
 from app.agents.security_agent.scanners import (
     scan_dangerous_patterns,
@@ -46,6 +47,7 @@ from app.core.enums import AgentName, ApprovalStatus, ArtifactFormat, ArtifactTy
 from app.services.artifact_service import artifact_service
 from app.services.in_memory_store import store
 from app.services.workspace_service import workspace_service
+from app.utils.file_manager import read_json_file
 from app.utils.json_utils import extract_json_object
 from app.utils.logger import get_logger
 
@@ -238,6 +240,99 @@ class SecurityAgent:
                 f"unaffected and are this report's evidence.",
                 [],
             )
+
+    def _load_latest_security_report(self, feature_id: str) -> dict | None:
+        # Reuses the generic, already-existing artifact_service helper (item 36 in this project's
+        # own CLAUDE.md) rather than a private per-agent duplicate -- Security Agent has never had
+        # one of its own (run() always generates a fresh report, it never looks a prior one up).
+        artifact = artifact_service.get_selected_or_latest_approved_artifact(
+            feature_id, ArtifactType.SECURITY_REPORT.value, ArtifactFormat.JSON.value,
+        )
+        if not artifact:
+            return None
+        return read_json_file(artifact["file_path"])
+
+    def _summarize_report_for_chat(self, report: dict) -> str:
+        lines = [
+            f"Security report for {report.get('feature_name', 'this feature')} "
+            f"(generated {report.get('generated_at')}): {report.get('findings_count', 0)} finding(s) -- "
+            f"{report.get('critical_count', 0)} critical, {report.get('moderate_count', 0)} moderate, "
+            f"{report.get('warning_count', 0)} warning. Gate decision: {report.get('gate_decision', 'unknown')}.",
+        ]
+        for finding in report.get("findings", []):
+            loc = f"{finding.get('file')}:{finding.get('line')}" if finding.get("line") else finding.get("file", "")
+            line = (
+                f"- [{(finding.get('severity') or '').upper()}] {finding.get('rule_id', '')} "
+                f"({finding.get('cwe', 'N/A')}) -- {loc} -- {finding.get('message', '')}"
+            )
+            lines.append(line)
+        dependency_scan = report.get("dependency_scan") or {}
+        lines.append(
+            f"Dependency scan: npm audit exit code {dependency_scan.get('audit_exit_code')} "
+            f"({'offline' if dependency_scan.get('audit_ran_offline') else 'online'})."
+        )
+        lines.append(f"LLM review layer: {report.get('llm_review_status', 'unknown')}.")
+        return "\n".join(lines)
+
+    def _get_chat_history(self, feature_id: str) -> list[dict]:
+        document = store.security_conversations.get(feature_id)
+        return document.get("turns", []) if document else []
+
+    def _append_chat_turns(self, feature_id: str, new_turns: list[dict]) -> None:
+        existing = self._get_chat_history(feature_id)
+        store.security_conversations[feature_id] = {"feature_id": feature_id, "turns": existing + new_turns}
+
+    async def chat_stream(self, feature_id: str, message: str) -> AsyncGenerator[dict[str, Any], None]:
+        """
+        Pure Q&A about this feature's latest security report -- see prompt.py's
+        SECURITY_CHAT_SYSTEM_PROMPT for the explicit "discuss, never edit code" boundary (a
+        separate, already-existing frontend action -- SecurityReportView.jsx's "Send to Coder
+        Agent" button, via securityReportToRevisionComment.js -- re-uses the Coder Agent's own
+        real revise() flow for actually fixing something). Streams real tokens via the configured
+        provider's own `.stream()` (Ollama or Anthropic, whichever this agent is currently set to
+        -- llm_provider_service.get_provider, the same one-shot/no-tool-calling call shape this
+        agent's own LLM review layer already uses), then persists both the human's message and
+        the full reply to store.security_conversations so a reload doesn't lose the conversation.
+
+        Mirrors qa_agent.agent.QAAgent.chat_stream exactly -- same NDJSON event shape
+        ({"type": "token"|"done"|"error", ...}), same never-block-on-a-missing-report behavior.
+        """
+        from app.services.llm_provider_service import llm_provider_service
+
+        report = self._load_latest_security_report(feature_id)
+        report_context = (
+            self._summarize_report_for_chat(report) if report
+            else "No security report has been generated for this feature yet."
+        )
+
+        history = self._get_chat_history(feature_id)
+        transcript_lines = [f"{turn['role'].capitalize()}: {turn['content']}" for turn in history]
+        transcript_lines.append(f"User: {message}")
+        prompt = "\n\n".join(transcript_lines)
+        system_prompt = f"{SECURITY_CHAT_SYSTEM_PROMPT}\n\nCurrent security report:\n{report_context}"
+
+        try:
+            provider = llm_provider_service.get_provider(agent_name=AgentName.SECURITY.value)
+        except Exception as error:  # noqa: BLE001
+            yield {"type": "error", "message": f"Security chat could not reach a configured provider: {error}"}
+            return
+
+        full_reply = ""
+        try:
+            async for chunk in provider.stream(prompt, system_prompt=system_prompt):
+                full_reply += chunk
+                yield {"type": "token", "text": chunk}
+        except Exception as error:  # noqa: BLE001
+            yield {"type": "error", "message": f"Security chat failed: {error}"}
+            return
+
+        now = datetime.now(timezone.utc).isoformat()
+        self._append_chat_turns(feature_id, [
+            {"role": "user", "content": message, "created_at": now},
+            {"role": "assistant", "content": full_reply, "created_at": now},
+        ])
+
+        yield {"type": "done", "message": full_reply}
 
 
 security_agent = SecurityAgent()

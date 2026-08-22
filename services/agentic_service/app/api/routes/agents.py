@@ -51,7 +51,12 @@ from app.schemas.architecture_schema import (
 )
 from app.schemas.uiux_schema import UIUXAgentReviseRequest, UIUXAgentRunRequest
 from app.schemas.coder_schema import CoderAgentRunRequest, CoderAgentReviseRequest
-from app.schemas.security_schema import SecurityAgentRunRequest
+from app.schemas.security_schema import (
+    SecurityAgentRunRequest,
+    SecurityChatHistoryResponse,
+    SecurityChatMessageRequest,
+    SecurityChatTurn,
+)
 from app.schemas.qa_schema import QAAgentRunRequest, QAChatHistoryResponse, QAChatMessageRequest, QAChatTurn
 from app.services.in_memory_store import store
 from app.services.plantuml_service import plantuml_service
@@ -1029,6 +1034,37 @@ async def run_security_agent(feature_id: str, request: SecurityAgentRunRequest):
             status_code=500,
             detail=f"Security Agent failed: {_readable_error(error)}"
         )
+
+
+@router.get("/security/chat", response_model=SecurityChatHistoryResponse)
+def get_security_chat_history(feature_id: str):
+    """Real, persisted chat history (store.security_conversations) -- reloading the page must not
+    lose the conversation. Mirrors get_qa_chat_history exactly. See
+    security_agent.agent.SecurityAgent.chat_stream for how turns are appended."""
+    _validate_feature(feature_id)
+    document = store.security_conversations.get(feature_id)
+    turns = document.get("turns", []) if document else []
+    return SecurityChatHistoryResponse(turns=[SecurityChatTurn(**turn) for turn in turns])
+
+
+@router.post("/security/chat/stream")
+async def security_chat_stream(feature_id: str, request: SecurityChatMessageRequest):
+    """
+    Real, token-by-token streaming Q&A about the feature's latest security report -- deliberately
+    pure discussion, no code-editing side effects (see security_agent/prompt.py's
+    SECURITY_CHAT_SYSTEM_PROMPT). Mirrors qa_chat_stream exactly: same NDJSON event shape as every
+    other streaming route in this file.
+    """
+    _validate_feature(feature_id)
+
+    async def event_stream():
+        try:
+            async for event in security_agent.chat_stream(feature_id=feature_id, message=request.message):
+                yield json.dumps(event) + "\n"
+        except Exception as error:
+            yield json.dumps({"type": "error", "message": f"Security chat failed: {_readable_error(error)}"}) + "\n"
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
 
     # ----------------------------------------------------

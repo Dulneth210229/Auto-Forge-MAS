@@ -242,3 +242,124 @@ class TestSecurityReportRequiresApproval:
                 f"artifact {artifact_id} was saved as {saved['approval_status']!r} -- "
                 "the Security Report must require real human approval, not auto-approve."
             )
+
+
+class TestSecurityChat:
+    """Real Security Agent chat -- mirrors QA Agent's own chat_stream shape exactly (no dedicated
+    agent-level test file exists for QA's own chat either, per this project's established
+    convention -- the streaming loop itself is only meaningfully verified live against a real
+    provider; these tests cover the deterministic, non-LLM pieces: report summarization and turn
+    persistence)."""
+
+    @pytest.fixture
+    def feature_id(self):
+        fid = generate_id("feature")
+        yield fid
+        store.database["security_conversations"].delete_one({"feature_id": fid})
+
+    def test_summarize_report_for_chat_includes_gate_and_every_finding(self):
+        agent = SecurityAgent()
+        report = {
+            "feature_name": "Login and Signup",
+            "generated_at": "2026-08-22T00:00:00+00:00",
+            "gate_decision": "fail",
+            "findings_count": 2,
+            "critical_count": 1,
+            "moderate_count": 1,
+            "warning_count": 0,
+            "findings": [
+                {
+                    "severity": "critical", "rule_id": "SEC-SECRET-001", "cwe": "CWE-798",
+                    "file": ".env.local", "line": 3, "message": "Hardcoded MongoDB credential.",
+                },
+                {
+                    "severity": "moderate", "rule_id": "SEC-PATTERN-002", "cwe": "CWE-79",
+                    "file": "app/page.tsx", "line": None, "message": "Possible XSS sink.",
+                },
+            ],
+            "dependency_scan": {"audit_exit_code": 0, "audit_ran_offline": True},
+            "llm_review_status": "Skipped -- LLM provider unreachable in this run.",
+        }
+
+        summary = agent._summarize_report_for_chat(report)
+
+        assert "Login and Signup" in summary
+        assert "fail" in summary
+        assert "1 critical" in summary
+        assert "CWE-798" in summary and ".env.local:3" in summary
+        assert "CWE-79" in summary and "app/page.tsx" in summary
+        assert "npm audit exit code 0" in summary
+        assert "offline" in summary
+        assert "LLM provider unreachable" in summary
+
+    def test_summarize_report_for_chat_never_raises_on_missing_optional_fields(self):
+        # A real report always has these keys (agent.py's own run() always fills them), but the
+        # summarizer should degrade gracefully rather than KeyError if that ever drifts.
+        agent = SecurityAgent()
+        summary = agent._summarize_report_for_chat({"findings": []})
+        assert isinstance(summary, str)
+
+    def test_get_chat_history_is_empty_for_a_feature_with_no_conversation_yet(self, feature_id):
+        agent = SecurityAgent()
+        assert agent._get_chat_history(feature_id) == []
+
+    def test_append_chat_turns_persists_and_accumulates(self, feature_id):
+        agent = SecurityAgent()
+
+        agent._append_chat_turns(feature_id, [
+            {"role": "user", "content": "Why is this Critical?", "created_at": "2026-08-22T00:00:00+00:00"},
+            {"role": "assistant", "content": "Because it's a real hardcoded secret.", "created_at": "2026-08-22T00:00:01+00:00"},
+        ])
+        agent._append_chat_turns(feature_id, [
+            {"role": "user", "content": "How do I fix it?", "created_at": "2026-08-22T00:00:02+00:00"},
+        ])
+
+        history = agent._get_chat_history(feature_id)
+        assert len(history) == 3
+        assert history[0]["content"] == "Why is this Critical?"
+        assert history[2]["content"] == "How do I fix it?"
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_yields_tokens_then_done_and_persists_the_turn(self, feature_id):
+        agent = SecurityAgent()
+
+        async def _fake_stream(prompt, system_prompt=None):
+            yield "Real "
+            yield "answer."
+
+        fake_provider = type("FakeProvider", (), {"stream": staticmethod(_fake_stream)})()
+
+        with (
+            patch.object(agent, "_load_latest_security_report", return_value=None),
+            patch(
+                "app.services.llm_provider_service.llm_provider_service.get_provider",
+                return_value=fake_provider,
+            ),
+        ):
+            events = [event async for event in agent.chat_stream(feature_id=feature_id, message="hi")]
+
+        assert events[0] == {"type": "token", "text": "Real "}
+        assert events[1] == {"type": "token", "text": "answer."}
+        assert events[-1] == {"type": "done", "message": "Real answer."}
+
+        history = agent._get_chat_history(feature_id)
+        assert len(history) == 2
+        assert history[0] == {"role": "user", "content": "hi", "created_at": history[0]["created_at"]}
+        assert history[1]["content"] == "Real answer."
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_yields_error_event_and_persists_nothing_when_provider_unreachable(self, feature_id):
+        agent = SecurityAgent()
+
+        with (
+            patch.object(agent, "_load_latest_security_report", return_value=None),
+            patch(
+                "app.services.llm_provider_service.llm_provider_service.get_provider",
+                side_effect=RuntimeError("no provider configured"),
+            ),
+        ):
+            events = [event async for event in agent.chat_stream(feature_id=feature_id, message="hi")]
+
+        assert len(events) == 1
+        assert events[0]["type"] == "error"
+        assert agent._get_chat_history(feature_id) == []

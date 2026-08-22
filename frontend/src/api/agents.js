@@ -374,10 +374,20 @@ export async function reviseCoderStream(featureId, { revision_comment, revised_b
   );
 }
 
-// Security Agent -- no revise/streaming variants (see security_schema.py's own docstring): a
-// re-run IS the whole operation.
+// Security Agent -- run has no revise/streaming variant either (see security_schema.py's own
+// docstring: a re-run IS the whole operation), but chat DOES stream, live Q&A about the latest
+// report -- same "run vs. chat" split as QA Agent below.
 export async function runSecurity(featureId, { human_comment } = {}, signal) {
   return postCancelable(`${base(featureId)}/security/run`, { human_comment }, signal);
+}
+
+export async function getSecurityChatHistory(featureId) {
+  const { data } = await apiClient.get(`${base(featureId)}/security/chat`);
+  return data;
+}
+
+export async function securityChatStream(featureId, { message }, onEvent, signal) {
+  return streamNdjsonPost(`${API_BASE_URL}${base(featureId)}/security/chat/stream`, { message }, onEvent, signal);
 }
 
 // QA Agent -- run has no streaming variant either (real LLM calls + a real sandboxed test run,
