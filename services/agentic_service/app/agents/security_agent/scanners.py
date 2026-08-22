@@ -81,22 +81,47 @@ function visit(node) {
 visit(sf);
 """
 
-# (rule_id, node_type, name_pattern, severity, cwe, message)
-PATTERN_RULES: list[tuple[str, str, str, str, str, str]] = [
+# (rule_id, node_type, name_pattern, severity, cwe, message, root_cause_template, recommendation)
+# root_cause_template is formatted with {file}/{line} once the real location is known, at the
+# point each finding dict is constructed below.
+PATTERN_RULES: list[tuple[str, str, str, str, str, str, str, str]] = [
     ("SEC-JS-001", "CallExpression", r"^eval$", "critical", "CWE-95",
-     "eval() executes a string as code; any tainted input reaching it is arbitrary code execution."),
+     "eval() executes a string as code; any tainted input reaching it is arbitrary code execution.",
+     "A direct eval() call was found at {file}:{line}, executing a runtime string as JavaScript code.",
+     "Remove eval() entirely; parse or validate the input explicitly (e.g. JSON.parse for data) "
+     "instead of executing it as code."),
     ("SEC-JS-002", "NewExpression", r"^Function$", "high", "CWE-95",
-     "new Function(...) constructs and executes code from a string, the same risk class as eval()."),
+     "new Function(...) constructs and executes code from a string, the same risk class as eval().",
+     "A `new Function(...)` constructor call was found at {file}:{line}, compiling a runtime "
+     "string into an executable function.",
+     "Remove the dynamic Function constructor; replace it with a fixed, statically-defined "
+     "function or a safe data-only structure."),
     ("SEC-JS-003", "CallExpression", r"^(exec|execSync)$", "high", "CWE-78",
-     "child_process.exec/execSync runs a string through a shell; unsanitized input is OS command injection."),
+     "child_process.exec/execSync runs a string through a shell; unsanitized input is OS command injection.",
+     "A child_process exec()/execSync() call was found at {file}:{line}, running a string through "
+     "an OS shell.",
+     "Use execFile()/execFileSync() with an explicit argument array instead of a shell string, and "
+     "never interpolate user input into the command."),
     ("SEC-JS-004", "CallExpression", r"^write$", "medium", "CWE-79",
-     "document.write() with dynamic content is a classic DOM-based XSS sink."),
+     "document.write() with dynamic content is a classic DOM-based XSS sink.",
+     "A document.write() call was found at {file}:{line}, injecting content directly into the "
+     "document without escaping.",
+     "Avoid document.write(); use safe DOM APIs (textContent, or a templating layer that escapes "
+     "by default) to insert content."),
     ("SEC-JS-005", "JsxAttribute", r"^dangerouslySetInnerHTML$", "high", "CWE-79",
-     "dangerouslySetInnerHTML bypasses React's default escaping; unsanitized HTML here is stored/DOM XSS."),
+     "dangerouslySetInnerHTML bypasses React's default escaping; unsanitized HTML here is stored/DOM XSS.",
+     "A dangerouslySetInnerHTML attribute was found at {file}:{line}, rendering raw HTML without "
+     "React's default escaping.",
+     "Remove dangerouslySetInnerHTML and render the content as plain text/JSX, or sanitize the "
+     "HTML through a trusted library (e.g. DOMPurify) before rendering it."),
     ("SEC-JS-006", "ElementAccessExpression", r"^(sort|order|field|key|column)$", "medium", "CWE-915",
      "Dynamic bracket property access keyed directly by a request-controlled parameter name "
      "(e.g. obj[req.query.sort]) is an object-injection / prototype-pollution-adjacent pattern; "
-     "the accessor should be validated against an explicit allow-list of field names."),
+     "the accessor should be validated against an explicit allow-list of field names.",
+     "A dynamic bracket property access (obj[{name}]) was found at {file}:{line}, using a "
+     "request-controlled value as the property name.",
+     "Validate the property name against an explicit allow-list of known-safe field names before "
+     "using it to index the object."),
     # AST_SCAN_JS's own emit() only ever captures the CALLEE's final segment for a property-access
     # call (callee.name.text, see PropertyAccessExpression handling below) -- for `Math.random()`
     # that's "random", never "Math". A real, confirmed bug found via live testing: the rule
@@ -108,7 +133,10 @@ PATTERN_RULES: list[tuple[str, str, str, str, str, str]] = [
     # alone.
     ("SEC-JS-007", "CallExpression", r"^(random)$", "low", "CWE-338",
      "Math.random() is not cryptographically secure; do not use it to generate tokens, IDs used "
-     "as secrets, or password-reset codes."),
+     "as secrets, or password-reset codes.",
+     "A Math.random() call was found at {file}:{line}, likely used to generate a token/ID/code.",
+     "Use a cryptographically secure generator instead (e.g. Node's crypto.randomBytes/"
+     "crypto.randomUUID) for anything used as a token, ID, or reset code."),
 ]
 
 
@@ -163,6 +191,14 @@ def _iter_source_files(repo_path: Path):
             yield path
 
 
+def list_scannable_files(repo_path: Path) -> list[Path]:
+    """Public wrapper around _iter_source_files -- lets deep_scan.py (the new AI-model deep-code-
+    read scan layer) reuse the exact same file-discovery scope (SCANNABLE_EXTENSIONS,
+    EXCLUDED_DIR_NAMES) the deterministic pattern scanner already uses, without reaching into a
+    private name from another module."""
+    return list(_iter_source_files(repo_path))
+
+
 def scan_dangerous_patterns(repo_path: Path) -> list[dict[str, Any]]:
     """
     AST-based scan (real TypeScript-compiler parse, not text matching) for a
@@ -180,7 +216,7 @@ def scan_dangerous_patterns(repo_path: Path) -> list[dict[str, Any]]:
             continue
         rel = str(source_file.relative_to(repo_path))
         for event in events:
-            for rule_id, node_type, name_pattern, severity, cwe, message in PATTERN_RULES:
+            for rule_id, node_type, name_pattern, severity, cwe, message, root_cause_template, recommendation in PATTERN_RULES:
                 if event["nodeType"] != node_type:
                     continue
                 if event["name"] is None or not re.match(name_pattern, event["name"]):
@@ -198,17 +234,32 @@ def scan_dangerous_patterns(repo_path: Path) -> list[dict[str, Any]]:
                     "file": rel,
                     "line": event["line"],
                     "message": message,
+                    "root_cause": root_cause_template.format(file=rel, line=event["line"], name=event["name"]),
+                    "recommendation": recommendation,
                 })
     return findings
 
 
-SECRET_RULES: list[tuple[str, str, str]] = [
-    ("SEC-SECRET-AWS-KEY", r"AKIA[0-9A-Z]{16}", "AWS access key ID literal"),
+RECOMMENDATION_MOVE_TO_ENV = (
+    "Move this value to `.env.local` (gitignored) and read it via `process.env.X` at runtime; "
+    "rotate the exposed credential/key immediately, since it may already be compromised."
+)
+
+# (rule_id, pattern, message, recommendation) -- root_cause is templated uniformly at finding-
+# construction time below (every secret rule has the identical "hardcoded literal in source"
+# root cause shape, so no per-rule template is needed the way PATTERN_RULES needs one).
+SECRET_RULES: list[tuple[str, str, str, str]] = [
+    ("SEC-SECRET-AWS-KEY", r"AKIA[0-9A-Z]{16}", "AWS access key ID literal", RECOMMENDATION_MOVE_TO_ENV),
     ("SEC-SECRET-GENERIC-KEY", r"(?i)(api[_-]?key|secret[_-]?key|access[_-]?token)\s*[:=]\s*['\"][A-Za-z0-9_\-]{16,}['\"]",
-     "Hardcoded API key / secret / access token literal"),
-    ("SEC-SECRET-PRIVATE-KEY", r"-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----", "Embedded private key block"),
-    ("SEC-SECRET-MONGO-URI", r"mongodb(\+srv)?://[^:\s\"']+:[^@\s\"']+@", "MongoDB connection string with an embedded, hardcoded credential"),
-    ("SEC-SECRET-JWT", r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}", "Literal JWT token embedded in source"),
+     "Hardcoded API key / secret / access token literal", RECOMMENDATION_MOVE_TO_ENV),
+    ("SEC-SECRET-PRIVATE-KEY", r"-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----", "Embedded private key block",
+     "Remove the private key from source entirely; store it in a secrets manager or an untracked "
+     "file outside the repo, and rotate the key since it may already be compromised."),
+    ("SEC-SECRET-MONGO-URI", r"mongodb(\+srv)?://[^:\s\"']+:[^@\s\"']+@", "MongoDB connection string with an embedded, hardcoded credential",
+     RECOMMENDATION_MOVE_TO_ENV),
+    ("SEC-SECRET-JWT", r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}", "Literal JWT token embedded in source",
+     "Remove the hardcoded JWT; issue tokens dynamically at runtime instead of embedding one in "
+     "source, and invalidate this token if it grants any real access."),
 ]
 
 SECRET_SCAN_EXTENSIONS = SCANNABLE_EXTENSIONS | {".env", ".json", ".yml", ".yaml", ".md"}
@@ -242,7 +293,7 @@ def scan_secrets(repo_path: Path) -> list[dict[str, Any]]:
             continue
         rel = str(path.relative_to(repo_path))
         for i, line in enumerate(text.splitlines(), start=1):
-            for rule_id, pattern, message in SECRET_RULES:
+            for rule_id, pattern, message, recommendation in SECRET_RULES:
                 if re.search(pattern, line):
                     findings.append({
                         "id": f"{rule_id}:{rel}:{i}",
@@ -253,6 +304,8 @@ def scan_secrets(repo_path: Path) -> list[dict[str, Any]]:
                         "file": rel,
                         "line": i,
                         "message": message,
+                        "root_cause": f"A hardcoded secret literal ({message.lower()}) was found directly in source at {rel}:{i}.",
+                        "recommendation": recommendation,
                     })
     return findings
 
@@ -296,6 +349,11 @@ def scan_dependencies(
             "file": "package-lock.json",
             "line": None,
             "message": f"npm audit flagged '{pkg_name}': {vuln.get('via', [''])[0] if isinstance(vuln.get('via'), list) else ''}".strip(),
+            "root_cause": (
+                f"npm audit reports package '{pkg_name}' has a known vulnerability in the "
+                f"currently installed version (see package-lock.json)."
+            ),
+            "recommendation": f"Run `npm audit fix`, or upgrade '{pkg_name}' to a patched version.",
         })
 
     metadata = audit_data.get("metadata", {}).get("vulnerabilities", {})

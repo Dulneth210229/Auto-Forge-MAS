@@ -101,6 +101,55 @@ def test_run_translates_unexpected_exception_to_500(feature_id):
     assert "Security Agent failed" in response.json()["detail"]
 
 
+def test_scan_with_model_returns_404_for_unknown_feature():
+    response = client.post(
+        "/api/v1/features/feature_does_not_exist/agents/security/scan-with-model", json={}
+    )
+    assert response.status_code == 404
+
+
+def test_scan_with_model_returns_agent_run_response_shape(feature_id):
+    fake_output = SecurityAgentOutput(
+        status="completed",
+        gate_decision="fail",
+        findings_count=5,
+        critical_count=2,
+        moderate_count=2,
+        warning_count=1,
+        artifact_ids=["artifact_json", "artifact_md"],
+        message="5 finding(s), gate=fail.",
+        scan_type="ai_model_deep_scan",
+    )
+
+    with patch(
+        "app.api.routes.agents.security_agent.run_ai_model_scan", new=AsyncMock(return_value=fake_output)
+    ):
+        response = client.post(
+            f"/api/v1/features/{feature_id}/agents/security/scan-with-model", json={}
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["feature_id"] == feature_id
+    assert body["agent_name"] == "security_agent"
+    assert body["status"] == "completed"
+    assert body["artifact_ids"] == ["artifact_json", "artifact_md"]
+    assert "5 finding" in body["message"]
+
+
+def test_scan_with_model_translates_unexpected_exception_to_500(feature_id):
+    with patch(
+        "app.api.routes.agents.security_agent.run_ai_model_scan",
+        new=AsyncMock(side_effect=RuntimeError("boom")),
+    ):
+        response = client.post(
+            f"/api/v1/features/{feature_id}/agents/security/scan-with-model", json={}
+        )
+
+    assert response.status_code == 500
+    assert "AI-model scan failed" in response.json()["detail"]
+
+
 def test_get_chat_history_returns_404_for_unknown_feature():
     response = client.get("/api/v1/features/feature_does_not_exist/agents/security/chat")
     assert response.status_code == 404

@@ -381,6 +381,13 @@ export async function runSecurity(featureId, { human_comment } = {}, signal) {
   return postCancelable(`${base(featureId)}/security/run`, { human_comment }, signal);
 }
 
+// A separate trigger from runSecurity above -- runs the AI-model deep-code-read scan instead of
+// the standard deterministic+summary-review scan. Saves a new version of the same security_report
+// artifact (report.scan_type distinguishes which kind of scan produced it).
+export async function runSecurityDeepScan(featureId, { human_comment } = {}, signal) {
+  return postCancelable(`${base(featureId)}/security/scan-with-model`, { human_comment }, signal);
+}
+
 export async function getSecurityChatHistory(featureId) {
   const { data } = await apiClient.get(`${base(featureId)}/security/chat`);
   return data;

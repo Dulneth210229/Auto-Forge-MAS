@@ -5,6 +5,7 @@ then discard it entirely), and the graph node's artifact_ids propagation (previo
 regardless of what the agent actually produced).
 """
 
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -81,7 +82,8 @@ class TestLLMReviewLayer:
             "additional_findings": [
                 {"title": "Missing rate limiting", "description": "No rate limit on login.",
                  "severity": "high", "file": "app/api/login/route.ts", "line": 12,
-                 "cwe": "CWE-307", "recommendation": "Add rate limiting.", "confidence": "medium"}
+                 "cwe": "CWE-307", "root_cause": "No rate-limit middleware wraps this route.",
+                 "recommendation": "Add rate limiting.", "confidence": "medium"}
             ],
             "notes": "Reviewed the deterministic findings."
         }"""
@@ -96,6 +98,12 @@ class TestLLMReviewLayer:
         assert findings[0]["line"] == 12
         assert findings[0]["layer"] == "llm"
         assert "Missing rate limiting" in findings[0]["message"]
+        # Real, confirmed fix in this pass: recommendation used to be squashed into `message`
+        # (discarded as a distinct field) -- it and root_cause must now be their own fields, and
+        # message must NOT contain the recommendation text anymore.
+        assert findings[0]["root_cause"] == "No rate-limit middleware wraps this route."
+        assert findings[0]["recommendation"] == "Add rate limiting."
+        assert "Add rate limiting" not in findings[0]["message"]
         assert "1 additional finding" in status
         assert "Reviewed the deterministic findings." in status
 
@@ -242,6 +250,132 @@ class TestSecurityReportRequiresApproval:
                 f"artifact {artifact_id} was saved as {saved['approval_status']!r} -- "
                 "the Security Report must require real human approval, not auto-approve."
             )
+
+
+class TestScannerRootCauseAndRecommendation:
+    """Every deterministic layer must populate root_cause/recommendation on every finding it
+    produces, not just the LLM-driven ones -- a direct part of this pass's own request."""
+
+    def test_pattern_finding_has_root_cause_and_recommendation(self, tmp_path):
+        from app.agents.security_agent.scanners import scan_dangerous_patterns
+
+        (tmp_path / "danger.ts").write_text("eval(userInput);\n", encoding="utf-8")
+
+        with patch(
+            "app.agents.security_agent.scanners._run_node",
+            return_value=[{"nodeType": "CallExpression", "name": "eval", "line": 1, "extra": None}],
+        ):
+            findings = scan_dangerous_patterns(tmp_path)
+
+        assert len(findings) == 1
+        assert "danger.ts:1" in findings[0]["root_cause"]
+        assert "eval" in findings[0]["root_cause"]
+        assert findings[0]["recommendation"]
+
+    def test_secret_finding_has_root_cause_and_recommendation(self, tmp_path):
+        from app.agents.security_agent.scanners import scan_secrets
+
+        (tmp_path / "lib").mkdir()
+        (tmp_path / "lib" / "mongodb.ts").write_text(
+            'const uri = "mongodb+srv://user:pass@cluster.mongodb.net/db";\n', encoding="utf-8"
+        )
+
+        findings = scan_secrets(tmp_path)
+
+        assert len(findings) == 1
+        assert "hardcoded secret" in findings[0]["root_cause"].lower()
+        assert ".env.local" in findings[0]["recommendation"]
+
+    def test_dependency_finding_has_root_cause_and_recommendation(self, tmp_path):
+        from app.agents.security_agent.scanners import scan_dependencies
+
+        fake_audit_json = (
+            '{"vulnerabilities": {"lodash": {"severity": "high", "via": ["Prototype Pollution"]}}, '
+            '"metadata": {"vulnerabilities": {}}}'
+        )
+        fake_run = lambda pid, cmd, cwd, timeout: {"stdout": fake_audit_json, "exit_code": 0, "stderr": ""}
+
+        result = scan_dependencies("proj_1", tmp_path, run_command_fn=fake_run)
+
+        assert len(result["findings"]) == 1
+        assert "lodash" in result["findings"][0]["root_cause"]
+        assert "npm audit fix" in result["findings"][0]["recommendation"]
+
+
+class TestRunAiModelScan:
+    """SecurityAgent.run_ai_model_scan -- the new, separate AI-model deep-code-read scan trigger.
+    deep_scan.run_ai_model_deep_scan itself is mocked here (its own unit tests live in
+    test_security_deep_scan.py); this covers the agent-level wiring: deterministic layers still
+    run, scan_type is stamped correctly, and both reports save as the same artifact type."""
+
+    @pytest.fixture
+    def feature_id(self, tmp_path):
+        project_id = generate_id("project")
+        fid = generate_id("feature")
+        store.projects[project_id] = {"project_id": project_id, "project_name": "Deep Scan Test"}
+        store.features[fid] = {
+            "feature_id": fid, "project_id": project_id, "feature_name": "Deep Scan Test Feature",
+        }
+        (tmp_path / "repo").mkdir()
+
+        yield fid
+
+        store.database["features"].delete_one({"feature_id": fid})
+        store.database["projects"].delete_one({"project_id": project_id})
+
+    @pytest.mark.asyncio
+    async def test_run_ai_model_scan_uses_deep_scan_layer_and_stamps_scan_type(self, feature_id, tmp_path):
+        agent = SecurityAgent()
+        fake_deep_finding = {
+            "id": "SEC-AI-DEEPSCAN:1", "rule_id": "SEC-AI-DEEPSCAN", "layer": "ai_model_deep_scan",
+            "severity": "critical", "cwe": "CWE-943", "file": "app/api/auth/login/route.ts", "line": 20,
+            "message": "NoSQL injection -- client filter merged into query.",
+            "root_cause": "req.body fields are spread directly into the Mongoose query filter.",
+            "recommendation": "Only allow a fixed set of known-safe query fields.",
+        }
+
+        with (
+            patch("app.agents.security_agent.agent.workspace_service.get_repo_path", return_value=tmp_path / "repo"),
+            patch("app.agents.security_agent.agent.scan_dangerous_patterns", return_value=[]),
+            patch("app.agents.security_agent.agent.scan_secrets", return_value=[]),
+            patch(
+                "app.agents.security_agent.agent.scan_dependencies",
+                return_value={"findings": [], "audit_exit_code": 0, "audit_ran_offline": True, "dependency_summary": {}},
+            ),
+            patch(
+                "app.agents.security_agent.agent.run_ai_model_deep_scan",
+                new=AsyncMock(return_value=("AI model deep scan ran over 1 batch(es)...", [fake_deep_finding])),
+            ),
+        ):
+            output = await agent.run_ai_model_scan(feature_id=feature_id)
+
+        assert output.status == "completed"
+        assert output.scan_type == "ai_model_deep_scan"
+        assert output.findings_count == 1
+        assert output.critical_count == 1
+        assert output.gate_decision == "fail"
+        assert len(output.artifact_ids) == 2
+
+        from app.utils.file_manager import read_json_file
+
+        saved = store.artifacts[output.artifact_ids[0]]
+        report = read_json_file(saved["file_path"])
+        assert report["scan_type"] == "ai_model_deep_scan"
+        assert report["findings"][0]["root_cause"] == fake_deep_finding["root_cause"]
+        assert report["findings"][0]["recommendation"] == fake_deep_finding["recommendation"]
+
+    @pytest.mark.asyncio
+    async def test_run_ai_model_scan_skips_cleanly_when_no_workspace(self, feature_id):
+        agent = SecurityAgent()
+
+        with patch(
+            "app.agents.security_agent.agent.workspace_service.get_repo_path",
+            return_value=Path("/definitely/does/not/exist"),
+        ):
+            output = await agent.run_ai_model_scan(feature_id=feature_id)
+
+        assert output.status == "skipped"
+        assert output.scan_type == "ai_model_deep_scan"
 
 
 class TestSecurityChat:

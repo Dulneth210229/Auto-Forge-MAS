@@ -36,6 +36,7 @@ from typing import Any, AsyncGenerator
 from pydantic import ValidationError
 
 from app.agents.security_agent import severity
+from app.agents.security_agent.deep_scan import run_ai_model_deep_scan
 from app.agents.security_agent.prompt import SECURITY_AGENT_SYSTEM_PROMPT, SECURITY_CHAT_SYSTEM_PROMPT
 from app.agents.security_agent.schemas import SecurityAgentOutput, SecurityLLMReviewResult
 from app.agents.security_agent.scanners import (
@@ -55,10 +56,12 @@ logger = get_logger(__name__)
 
 
 def _build_markdown_report(report: dict) -> str:
+    scan_type_label = "AI model deep scan" if report.get("scan_type") == "ai_model_deep_scan" else "Standard scan"
     lines = [
         f"# Security Report -- {report['project_name']} / {report['feature_name']}",
         "",
         f"Generated: {report['generated_at']}",
+        f"Scan type: **{scan_type_label}**",
         f"Gate decision: **{report['gate_decision'].upper()}**",
         f"Total findings: {report['findings_count']} "
         f"({report['critical_count']} critical, {report['moderate_count']} moderate, "
@@ -83,6 +86,10 @@ def _build_markdown_report(report: dict) -> str:
                     f"- **[{finding['severity'].upper()}]** `{finding['rule_id']}` "
                     f"({finding['cwe']}) -- {loc} -- {finding['message']}"
                 )
+                if finding.get("root_cause"):
+                    lines.append(f"  - Root cause: {finding['root_cause']}")
+                if finding.get("recommendation"):
+                    lines.append(f"  - Suggested fix: {finding['recommendation']}")
             lines.append("")
 
     lines += [
@@ -102,6 +109,9 @@ def _build_markdown_report(report: dict) -> str:
 
 class SecurityAgent:
     async def run(self, **kwargs) -> SecurityAgentOutput:
+        """Standard scan: 3 deterministic layers (pattern/secret/dependency) plus the summary-only
+        LLM review layer (_run_llm_review_layer -- sees only a findings summary, never real
+        source). See run_ai_model_scan for the deeper, source-reading alternative."""
         feature_id = kwargs["feature_id"]
         feature = store.features.get(feature_id)
         project = store.projects.get(feature["project_id"])
@@ -118,11 +128,60 @@ class SecurityAgent:
         pattern_findings = scan_dangerous_patterns(repo_path)
         secret_findings = scan_secrets(repo_path)
         dependency_result = scan_dependencies(project["project_id"], repo_path)
-
         deterministic_findings = pattern_findings + secret_findings + dependency_result["findings"]
-        llm_review_status, llm_findings = await self._run_llm_review_layer(deterministic_findings)
-        all_findings = deterministic_findings + llm_findings
 
+        llm_review_status, llm_findings = await self._run_llm_review_layer(deterministic_findings)
+
+        return self._build_and_save_report(
+            feature_id=feature_id, feature=feature, project=project,
+            deterministic_findings=deterministic_findings, dependency_result=dependency_result,
+            llm_review_status=llm_review_status, llm_findings=llm_findings,
+            scan_type="standard",
+        )
+
+    async def run_ai_model_scan(self, feature_id: str) -> SecurityAgentOutput:
+        """AI-model deep-code-read scan: the same 3 deterministic layers as run() (so this scan is
+        never LESS complete than a standard one) PLUS deep_scan.run_ai_model_deep_scan in place of
+        the summary-only LLM review layer -- that layer is shown REAL source file contents
+        directly, not just a findings summary, and is strictly more informative, so running both
+        layers for one "scan by the model" request would only double LLM cost for no benefit."""
+        feature = store.features.get(feature_id)
+        project = store.projects.get(feature["project_id"])
+
+        repo_path = workspace_service.get_repo_path(project["project_id"])
+
+        if not repo_path.exists():
+            logger.warning("Security Agent: repo path %s does not exist, skipping scan", repo_path)
+            return SecurityAgentOutput(
+                status="skipped",
+                message=f"No workspace found at {repo_path} for this feature yet.",
+                scan_type="ai_model_deep_scan",
+            )
+
+        pattern_findings = scan_dangerous_patterns(repo_path)
+        secret_findings = scan_secrets(repo_path)
+        dependency_result = scan_dependencies(project["project_id"], repo_path)
+        deterministic_findings = pattern_findings + secret_findings + dependency_result["findings"]
+
+        deep_scan_status, deep_scan_findings = await run_ai_model_deep_scan(repo_path)
+
+        return self._build_and_save_report(
+            feature_id=feature_id, feature=feature, project=project,
+            deterministic_findings=deterministic_findings, dependency_result=dependency_result,
+            llm_review_status=deep_scan_status, llm_findings=deep_scan_findings,
+            scan_type="ai_model_deep_scan",
+        )
+
+    def _build_and_save_report(
+        self, *, feature_id: str, feature: dict, project: dict,
+        deterministic_findings: list[dict], dependency_result: dict,
+        llm_review_status: str, llm_findings: list[dict], scan_type: str,
+    ) -> SecurityAgentOutput:
+        """Shared tail for both run() and run_ai_model_scan() -- computes the gate/tier counts via
+        the unchanged severity.py functions, builds and saves the JSON+Markdown report pair (same
+        ArtifactType.SECURITY_REPORT, same PENDING/soft-gate flow either way), differing only in
+        which findings/status feed in and the scan_type label carried on the saved report."""
+        all_findings = deterministic_findings + llm_findings
         tier_counts = severity.count_by_tier(all_findings)
         gate = severity.gate_decision(all_findings)
 
@@ -130,6 +189,7 @@ class SecurityAgent:
             "project_name": project["project_name"],
             "feature_name": feature["feature_name"],
             "generated_at": datetime.now(timezone.utc).isoformat(),
+            "scan_type": scan_type,
             "gate_decision": gate,
             "findings_count": len(all_findings),
             "critical_count": tier_counts["critical"],
@@ -162,8 +222,8 @@ class SecurityAgent:
         )
 
         logger.info(
-            "Security Agent finished for feature_id=%s: %d findings, gate=%s",
-            feature_id, len(all_findings), gate,
+            "Security Agent finished for feature_id=%s: %d findings, gate=%s, scan_type=%s",
+            feature_id, len(all_findings), gate, scan_type,
         )
 
         return SecurityAgentOutput(
@@ -176,6 +236,7 @@ class SecurityAgent:
             warning_count=tier_counts["warning"],
             artifact_ids=[json_artifact.artifact_id, md_artifact.artifact_id],
             message=f"{len(all_findings)} finding(s), gate={gate}.",
+            scan_type=scan_type,
         )
 
     async def _run_llm_review_layer(self, findings: list[dict]) -> tuple[str, list[dict]]:
@@ -220,10 +281,9 @@ class SecurityAgent:
                     "cwe": item.cwe or "N/A",
                     "file": item.file,
                     "line": item.line,
-                    "message": (
-                        f"{item.title} -- {item.description} "
-                        f"Recommendation: {item.recommendation}"
-                    ).strip(),
+                    "message": f"{item.title} -- {item.description}".strip(" -"),
+                    "root_cause": item.root_cause,
+                    "recommendation": item.recommendation,
                 }
                 for index, item in enumerate(review.additional_findings, start=1)
             ]
@@ -265,6 +325,10 @@ class SecurityAgent:
                 f"- [{(finding.get('severity') or '').upper()}] {finding.get('rule_id', '')} "
                 f"({finding.get('cwe', 'N/A')}) -- {loc} -- {finding.get('message', '')}"
             )
+            if finding.get("root_cause"):
+                line += f" | Root cause: {finding['root_cause']}"
+            if finding.get("recommendation"):
+                line += f" | Fix: {finding['recommendation']}"
             lines.append(line)
         dependency_scan = report.get("dependency_scan") or {}
         lines.append(

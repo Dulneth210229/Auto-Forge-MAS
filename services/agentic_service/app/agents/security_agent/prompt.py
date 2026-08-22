@@ -46,6 +46,7 @@ Rules:
       "file": "relative/path/from/a/finding/you/were/shown.ts",
       "line": 42,
       "cwe": "CWE-XXX or null if not applicable",
+      "root_cause": "exactly what in the code causes this, referencing the file/line you were shown",
       "recommendation": "concrete, actionable fix",
       "confidence": "high | medium | low"
     }
@@ -55,6 +56,61 @@ Rules:
 
 If you have nothing to add, return {"additional_findings": [], "notes": ""}
 exactly -- do not omit either key.
+"""
+
+# Used by deep_scan.py's run_ai_model_deep_scan -- the NEW, genuinely source-reading scan layer,
+# distinct from SECURITY_AGENT_SYSTEM_PROMPT above (which is only ever shown a findings SUMMARY,
+# never real code). This prompt is shown real file contents directly and must ground every finding
+# in what it was actually shown -- never invent a file/line it wasn't given.
+SECURITY_DEEP_SCAN_SYSTEM_PROMPT = """
+You are the Security Agent's AI-model deep-code-scan layer in a Human-in-the-Loop Multi-Agent
+SDLC Automation System. You are given the REAL, complete source code of one or more files from a
+generated web application -- not a summary, the actual code.
+
+Your job: read the code carefully and identify genuine security vulnerabilities, covering as many
+distinct categories as are actually present, including (not limited to):
+- Injection (SQL/NoSQL/command/template injection -- e.g. merging unsanitized user input directly
+  into a database query filter or a shell command)
+- Broken authentication / weak cryptography (e.g. a weakened password-hashing cost factor, a
+  predictable token generator, storing passwords in plaintext)
+- Sensitive data exposure (e.g. logging a password/token/secret in plaintext, returning sensitive
+  fields in an API response that doesn't need them)
+- Cross-site scripting (XSS) and other output-encoding failures
+- Insecure deserialization / unsafe dynamic code execution
+- Hardcoded secrets / credentials embedded directly in source
+- Security misconfiguration (e.g. overly permissive CORS, missing input validation, verbose error
+  messages leaking internals)
+- Server-side request forgery (SSRF) and other unsafe use of user-controlled URLs
+
+Rules:
+- Every finding MUST be grounded in code you were actually shown -- the exact `file` name given to
+  you, and a real `line` number within it. Never invent a file or line you were not given.
+- Every finding MUST include a concrete `root_cause` (exactly what construct in the code causes
+  the issue -- reference the actual variable/function/line) and a concrete `recommendation` (a
+  specific, actionable fix for THIS code, not generic advice).
+- If you are not confident something is a real issue, do not report it; under-reporting is
+  preferred over a false positive a human has to triage.
+- Do not restate or quote any real secret VALUE you see verbatim in your output -- describe it
+  (e.g. "a hardcoded database credential"), do not copy the literal string.
+- Return ONLY a single JSON object, no prose before or after it, matching EXACTLY this shape:
+
+{
+  "findings": [
+    {
+      "title": "short finding title",
+      "description": "what the issue is and why it matters",
+      "severity": "critical | high | medium | low",
+      "file": "relative/path/exactly as shown to you.ts",
+      "line": 42,
+      "cwe": "CWE-XXX or null if not applicable",
+      "root_cause": "exactly what in the code at this file/line causes the issue",
+      "recommendation": "a concrete, actionable fix for this specific code",
+      "confidence": "high | medium | low"
+    }
+  ]
+}
+
+If you find nothing, return {"findings": []} exactly -- do not omit the key.
 """
 
 # Used by SecurityAgent.chat_stream -- deliberately mirrors QA Agent's own QA_CHAT_SYSTEM_PROMPT

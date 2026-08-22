@@ -1,5 +1,12 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { runSecurity } from "../api/agents";
+import { runSecurity, runSecurityDeepScan } from "../api/agents";
+
+const SECURITY_INVALIDATION_KEYS = (featureId) => [
+  ["artifacts", featureId],
+  ["feature", featureId],
+  ["events", featureId],
+  ["graphStatus", featureId],
+];
 
 // Security Agent has no revision flow (see REVISABLE_STAGES in pipelineStages.js -- re-running
 // IS the whole operation) -- just a direct re-run trigger, so a plain useMutation is enough here,
@@ -17,12 +24,25 @@ export function useRunSecurityAgent(featureId) {
     // actually refetched, producing a real empty-frame gap. Same bug class already found and
     // fixed for Domain/Requirement/QA chat elsewhere in this codebase.
     onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["artifacts", featureId] }),
-        queryClient.invalidateQueries({ queryKey: ["feature", featureId] }),
-        queryClient.invalidateQueries({ queryKey: ["events", featureId] }),
-        queryClient.invalidateQueries({ queryKey: ["graphStatus", featureId] }),
-      ]);
+      await Promise.all(
+        SECURITY_INVALIDATION_KEYS(featureId).map((queryKey) => queryClient.invalidateQueries({ queryKey }))
+      );
+    },
+  });
+}
+
+// A separate mutation from useRunSecurityAgent above -- triggers the AI-model deep-code-read scan
+// (a genuinely new source-reading layer, distinct from the standard scan's summary-only LLM
+// review) instead of a standard scan. Same awaited-invalidation shape for the same reason.
+export function useRunSecurityAgentDeepScan(featureId) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (payload) => runSecurityDeepScan(featureId, payload),
+    onSuccess: async () => {
+      await Promise.all(
+        SECURITY_INVALIDATION_KEYS(featureId).map((queryKey) => queryClient.invalidateQueries({ queryKey }))
+      );
     },
   });
 }

@@ -1,6 +1,7 @@
 # Security Report -- Approval Test / Approval Test Feature
 
-Generated: 2026-08-22T15:42:57.766082+00:00
+Generated: 2026-08-22T16:34:20.092551+00:00
+Scan type: **Standard scan**
 Gate decision: **PASS**
 Total findings: 0 (0 critical, 0 moderate, 0 warning)
 

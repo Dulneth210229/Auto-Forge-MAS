@@ -29,10 +29,25 @@ function FindingRow({ finding }) {
         <p className="text-xs text-gray-400 dark:text-gray-500 font-mono mt-0.5">
           {finding.rule_id} -- {loc} -- {finding.cwe}
         </p>
+        {finding.root_cause && (
+          <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
+            <span className="font-semibold">Root cause:</span> {finding.root_cause}
+          </p>
+        )}
+        {finding.recommendation && (
+          <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5">
+            <span className="font-semibold">Suggested fix:</span> {finding.recommendation}
+          </p>
+        )}
       </div>
     </div>
   );
 }
+
+const SCAN_TYPE_LABEL = {
+  ai_model_deep_scan: "AI model deep scan",
+  standard: "Standard scan",
+};
 
 // Renders a Security Agent report (the JSON artifact security_agent/agent.py's run() saves),
 // grouped into Critical/Moderate/Warning per the severity taxonomy (severityTiers.js, mirroring
@@ -52,7 +67,8 @@ export default function SecurityReportView({ artifact }) {
   // Shared with ResultTab.jsx's Coder-Agent-approval auto-trigger (see SecurityAgentFlowContext's
   // own docstring) -- not a fresh useRunSecurityAgent(featureId) instance, so a scan started from
   // the approval popup shows its real progress here too, not just wherever it was started.
-  const { runSecurity } = useSecurityAgentFlowContext();
+  const { runSecurity, runSecurityDeepScan } = useSecurityAgentFlowContext();
+  const anyScanPending = runSecurity.isPending || runSecurityDeepScan.isPending;
 
   // No report exists yet (never scanned, or the feature has no generated code yet) -- Security
   // Agent has no revise() flow (a re-run IS the whole operation), so this empty-state action is
@@ -66,14 +82,26 @@ export default function SecurityReportView({ artifact }) {
           No security scan has been run yet for this feature.
         </p>
         <ErrorBanner error={runSecurity.error} fallback="Failed to run the security scan." />
-        <button
-          type="button"
-          onClick={() => runSecurity.mutate({})}
-          disabled={runSecurity.isPending}
-          className="text-sm bg-accent-600 hover:bg-accent-700 disabled:opacity-50 text-white font-semibold px-3 py-1.5 rounded-md"
-        >
-          {runSecurity.isPending ? "Scanning..." : "Run Security Scan"}
-        </button>
+        <ErrorBanner error={runSecurityDeepScan.error} fallback="Failed to run the AI model scan." />
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => runSecurity.mutate({})}
+            disabled={anyScanPending}
+            className="text-sm bg-accent-600 hover:bg-accent-700 disabled:opacity-50 text-white font-semibold px-3 py-1.5 rounded-md"
+          >
+            {runSecurity.isPending ? "Scanning..." : "Run Security Scan"}
+          </button>
+          <button
+            type="button"
+            onClick={() => runSecurityDeepScan.mutate({})}
+            disabled={anyScanPending}
+            title="Have the configured AI model read the real generated source code directly and look for vulnerabilities"
+            className="text-sm bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-semibold px-3 py-1.5 rounded-md"
+          >
+            {runSecurityDeepScan.isPending ? "Scanning with model..." : "Scan with AI Model"}
+          </button>
+        </div>
       </div>
     );
   }
@@ -98,19 +126,34 @@ export default function SecurityReportView({ artifact }) {
             {report.findings_count} finding(s) -- {report.critical_count} critical, {report.moderate_count} moderate,{" "}
             {report.warning_count} warning
           </p>
+          <p className="text-xs opacity-70 mt-0.5">
+            Scan type: {SCAN_TYPE_LABEL[report.scan_type] || "Standard scan"}
+          </p>
         </div>
-        <button
-          type="button"
-          onClick={() => runSecurity.mutate({})}
-          disabled={runSecurity.isPending}
-          title="Re-scan the current code without going through the Coder Agent"
-          className="text-sm bg-white dark:bg-white/10 hover:bg-gray-50 dark:hover:bg-white/20 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 disabled:opacity-50 font-semibold px-3 py-1.5 rounded-md flex-shrink-0"
-        >
-          {runSecurity.isPending ? "Scanning..." : "Re-run Scan"}
-        </button>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <button
+            type="button"
+            onClick={() => runSecurity.mutate({})}
+            disabled={anyScanPending}
+            title="Re-scan the current code without going through the Coder Agent"
+            className="text-sm bg-white dark:bg-white/10 hover:bg-gray-50 dark:hover:bg-white/20 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 disabled:opacity-50 font-semibold px-3 py-1.5 rounded-md"
+          >
+            {runSecurity.isPending ? "Scanning..." : "Re-run Scan"}
+          </button>
+          <button
+            type="button"
+            onClick={() => runSecurityDeepScan.mutate({})}
+            disabled={anyScanPending}
+            title="Have the configured AI model read the real generated source code directly and look for vulnerabilities"
+            className="text-sm bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-semibold px-3 py-1.5 rounded-md"
+          >
+            {runSecurityDeepScan.isPending ? "Scanning with model..." : "Scan with AI Model"}
+          </button>
+        </div>
       </div>
 
       <ErrorBanner error={runSecurity.error} fallback="Failed to run the security scan." />
+      <ErrorBanner error={runSecurityDeepScan.error} fallback="Failed to run the AI model scan." />
 
       {!hasFindings ? (
         <p className="text-sm text-gray-400 dark:text-gray-500 italic">No findings from any scan layer.</p>

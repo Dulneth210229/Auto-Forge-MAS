@@ -1036,6 +1036,44 @@ async def run_security_agent(feature_id: str, request: SecurityAgentRunRequest):
         )
 
 
+@router.post("/security/scan-with-model", response_model=AgentRunResponse)
+async def run_security_agent_deep_scan(feature_id: str, request: SecurityAgentRunRequest):
+    """
+    Run the Security Agent's AI-model deep-code-read scan -- a separate trigger from
+    /security/run: the same 3 deterministic layers, plus a genuinely new layer that shows the
+    configured model REAL generated source code directly (not just a findings summary) and asks
+    it to identify vulnerabilities, each with a concrete root cause and suggested fix. Saves a new
+    version of the same security_report artifact (scan_type: "ai_model_deep_scan"), so it flows
+    through the exact same approval/version-history/chat machinery as a standard scan.
+    """
+    _validate_feature(feature_id)
+    stage_event_service.record(feature_id, AgentName.SECURITY, "run", request.human_comment)
+
+    try:
+        output = await security_agent.run_ai_model_scan(feature_id=feature_id)
+
+        return AgentRunResponse(
+            feature_id=feature_id,
+            agent_name=AgentName.SECURITY,
+            status="completed",
+            message=output.message,
+            artifact_ids=output.artifact_ids,
+        )
+
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+    except Exception as error:
+        print("========== SECURITY AGENT (AI MODEL SCAN) ERROR ==========")
+        print(traceback.format_exc())
+        print("============================================================")
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Security Agent AI-model scan failed: {_readable_error(error)}"
+        )
+
+
 @router.get("/security/chat", response_model=SecurityChatHistoryResponse)
 def get_security_chat_history(feature_id: str):
     """Real, persisted chat history (store.security_conversations) -- reloading the page must not
