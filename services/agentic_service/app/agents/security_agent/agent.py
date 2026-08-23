@@ -36,7 +36,7 @@ from typing import Any, AsyncGenerator
 from pydantic import ValidationError
 
 from app.agents.security_agent import severity
-from app.agents.security_agent.deep_scan import run_ai_model_deep_scan
+from app.agents.security_agent.deep_scan import run_ai_model_deep_scan, run_ai_model_deep_scan_stream
 from app.agents.security_agent.prompt import SECURITY_AGENT_SYSTEM_PROMPT, SECURITY_CHAT_SYSTEM_PROMPT
 from app.agents.security_agent.schemas import SecurityAgentOutput, SecurityLLMReviewResult
 from app.agents.security_agent.scanners import (
@@ -171,6 +171,66 @@ class SecurityAgent:
             llm_review_status=deep_scan_status, llm_findings=deep_scan_findings,
             scan_type="ai_model_deep_scan",
         )
+
+    async def run_ai_model_scan_stream(self, feature_id: str) -> AsyncGenerator[dict[str, Any], None]:
+        """
+        Streaming sibling of run_ai_model_scan -- real, live progress instead of one blocking
+        response, so a human watching the Result panel sees a genuine percentage instead of a bare
+        "Scanning with model..." label. Stopping mid-scan needs no special handling here: FastAPI/
+        Starlette cancels this generator when the client disconnects (already proven elsewhere in
+        this codebase, see item 44 in CLAUDE.md), and _build_and_save_report is only ever reached
+        at the very end -- a stopped scan simply never saves a report.
+
+        Events:
+            {"type": "phase", "phase": "...", "label": "..."}
+            {"type": "progress", "current": i, "total": N, "label": "..."}
+            {"type": "error", "message": "..."}
+            {"type": "done", "artifact_ids": [...], "message": "...", "gate_decision": "...", "findings_count": N}
+        """
+        feature = store.features.get(feature_id)
+        project = store.projects.get(feature["project_id"])
+
+        repo_path = workspace_service.get_repo_path(project["project_id"])
+
+        if not repo_path.exists():
+            logger.warning("Security Agent: repo path %s does not exist, skipping scan", repo_path)
+            yield {"type": "error", "message": f"No workspace found at {repo_path} for this feature yet."}
+            return
+
+        yield {
+            "type": "phase", "phase": "deterministic",
+            "label": "Running pattern, secret, and dependency scans...",
+        }
+        pattern_findings = scan_dangerous_patterns(repo_path)
+        secret_findings = scan_secrets(repo_path)
+        dependency_result = scan_dependencies(project["project_id"], repo_path)
+        deterministic_findings = pattern_findings + secret_findings + dependency_result["findings"]
+
+        deep_scan_status = "AI model deep scan did not run."
+        deep_scan_findings: list[dict[str, Any]] = []
+        async for event in run_ai_model_deep_scan_stream(repo_path):
+            if event["type"] == "deep_scan_result":
+                deep_scan_status = event["status"]
+                deep_scan_findings = event["findings"]
+            else:
+                yield event
+
+        yield {"type": "phase", "phase": "saving", "label": "Saving the security report..."}
+
+        output = self._build_and_save_report(
+            feature_id=feature_id, feature=feature, project=project,
+            deterministic_findings=deterministic_findings, dependency_result=dependency_result,
+            llm_review_status=deep_scan_status, llm_findings=deep_scan_findings,
+            scan_type="ai_model_deep_scan",
+        )
+
+        yield {
+            "type": "done",
+            "artifact_ids": output.artifact_ids,
+            "message": output.message,
+            "gate_decision": output.gate_decision,
+            "findings_count": output.findings_count,
+        }
 
     def _build_and_save_report(
         self, *, feature_id: str, feature: dict, project: dict,

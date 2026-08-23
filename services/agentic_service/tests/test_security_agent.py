@@ -378,6 +378,94 @@ class TestRunAiModelScan:
         assert output.scan_type == "ai_model_deep_scan"
 
 
+class TestRunAiModelScanStream:
+    """SecurityAgent.run_ai_model_scan_stream -- the live-progress sibling of run_ai_model_scan.
+    deep_scan.run_ai_model_deep_scan_stream itself is mocked here (its own unit tests live in
+    test_security_deep_scan.py); this covers the agent-level orchestration: a deterministic-layer
+    phase event fires first, progress/phase events from the deep-scan layer are forwarded, a
+    saving phase fires before the report is actually saved, and the final done event carries real
+    artifact_ids -- the exact same report a human would see from the non-streaming run_ai_model_scan."""
+
+    @pytest.fixture
+    def feature_id(self, tmp_path):
+        project_id = generate_id("project")
+        fid = generate_id("feature")
+        store.projects[project_id] = {"project_id": project_id, "project_name": "Deep Scan Stream Test"}
+        store.features[fid] = {
+            "feature_id": fid, "project_id": project_id, "feature_name": "Deep Scan Stream Test Feature",
+        }
+        (tmp_path / "repo").mkdir()
+
+        yield fid
+
+        store.database["features"].delete_one({"feature_id": fid})
+        store.database["projects"].delete_one({"project_id": project_id})
+
+    @pytest.mark.asyncio
+    async def test_forwards_progress_and_ends_with_a_real_done_event(self, feature_id, tmp_path):
+        agent = SecurityAgent()
+
+        async def fake_deep_scan_stream(repo_path):
+            yield {"type": "phase", "phase": "ai_scan", "label": "Starting AI model scan across 2 batch(es)..."}
+            yield {"type": "progress", "current": 1, "total": 2, "label": "Scanned batch 1 of 2..."}
+            yield {"type": "progress", "current": 2, "total": 2, "label": "Scanned batch 2 of 2..."}
+            yield {
+                "type": "deep_scan_result",
+                "status": "AI model deep scan ran over 2 batch(es)... (2 succeeded, 0 failed): 1 finding(s).",
+                "findings": [{
+                    "id": "SEC-AI-DEEPSCAN:1", "rule_id": "SEC-AI-DEEPSCAN", "layer": "ai_model_deep_scan",
+                    "severity": "critical", "cwe": "CWE-943", "file": "app/api/auth/login/route.ts", "line": 20,
+                    "message": "NoSQL injection.", "root_cause": "...", "recommendation": "...",
+                }],
+            }
+
+        with (
+            patch("app.agents.security_agent.agent.workspace_service.get_repo_path", return_value=tmp_path / "repo"),
+            patch("app.agents.security_agent.agent.scan_dangerous_patterns", return_value=[]),
+            patch("app.agents.security_agent.agent.scan_secrets", return_value=[]),
+            patch(
+                "app.agents.security_agent.agent.scan_dependencies",
+                return_value={"findings": [], "audit_exit_code": 0, "audit_ran_offline": True, "dependency_summary": {}},
+            ),
+            patch("app.agents.security_agent.agent.run_ai_model_deep_scan_stream", new=fake_deep_scan_stream),
+        ):
+            events = [event async for event in agent.run_ai_model_scan_stream(feature_id=feature_id)]
+
+        types_in_order = [e["type"] for e in events]
+        assert types_in_order == ["phase", "phase", "progress", "progress", "phase", "done"]
+        assert events[0] == {
+            "type": "phase", "phase": "deterministic",
+            "label": "Running pattern, secret, and dependency scans...",
+        }
+        assert events[-2] == {"type": "phase", "phase": "saving", "label": "Saving the security report..."}
+
+        done = events[-1]
+        assert done["type"] == "done"
+        assert len(done["artifact_ids"]) == 2
+        assert done["gate_decision"] == "fail"
+        assert done["findings_count"] == 1
+
+        from app.utils.file_manager import read_json_file
+
+        saved = store.artifacts[done["artifact_ids"][0]]
+        report = read_json_file(saved["file_path"])
+        assert report["scan_type"] == "ai_model_deep_scan"
+        assert report["findings"][0]["file"] == "app/api/auth/login/route.ts"
+
+    @pytest.mark.asyncio
+    async def test_yields_an_error_event_and_saves_nothing_when_no_workspace(self, feature_id):
+        agent = SecurityAgent()
+
+        with patch(
+            "app.agents.security_agent.agent.workspace_service.get_repo_path",
+            return_value=Path("/definitely/does/not/exist"),
+        ):
+            events = [event async for event in agent.run_ai_model_scan_stream(feature_id=feature_id)]
+
+        assert len(events) == 1
+        assert events[0]["type"] == "error"
+
+
 class TestSecurityChat:
     """Real Security Agent chat -- mirrors QA Agent's own chat_stream shape exactly (no dedicated
     agent-level test file exists for QA's own chat either, per this project's established

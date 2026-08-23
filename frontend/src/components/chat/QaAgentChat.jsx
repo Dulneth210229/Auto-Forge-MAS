@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQaChatFlow, useQaChatHistory } from "../../hooks/useQaChatFlow";
-import { useRunQaAgent } from "../../hooks/useQaAgent";
+import { useQaAgentFlowContext } from "../workspace/QaAgentFlowContext";
 import ChatComposerBox from "./ChatComposerBox";
 import LoadingSpinner from "../common/LoadingSpinner";
 import ErrorBanner from "../common/ErrorBanner";
@@ -57,7 +57,7 @@ export default function QaAgentChat({ featureId, feature, runningStage, selected
     chatStream, handleSendMessage, stopStream,
     streamedText, streamStarted, streamError, pendingHumanMessage,
   } = useQaChatFlow(featureId);
-  const runQa = useRunQaAgent(featureId);
+  const { runQa } = useQaAgentFlowContext();
   const [message, setMessage] = useState("");
 
   const hasReport = (allArtifacts || []).some((a) => a.artifact_type === "qa_report");

@@ -14,6 +14,7 @@ import { ArchitectureAgentFlowProvider } from "../components/workspace/Architect
 import { UiuxAgentFlowProvider } from "../components/workspace/UiuxAgentFlowContext";
 import { CoderAgentFlowProvider } from "../components/workspace/CoderAgentFlowContext";
 import { SecurityAgentFlowProvider } from "../components/workspace/SecurityAgentFlowContext";
+import { QaAgentFlowProvider } from "../components/workspace/QaAgentFlowContext";
 import ChatPanel from "../components/chat/ChatPanel";
 import OutputPanel from "../components/output/OutputPanel";
 import ArtifactViewerModal from "../components/artifacts/ArtifactViewerModal";
@@ -33,20 +34,22 @@ function WorkspaceBody({ projectId }) {
           <UiuxAgentFlowProvider featureId={selectedFeatureId}>
             <CoderAgentFlowProvider featureId={selectedFeatureId}>
               <SecurityAgentFlowProvider featureId={selectedFeatureId}>
-                <div className="h-full">
-                  <ResizableWorkspace
-                    left={<FeatureListPanel projectId={projectId} />}
-                    middle={
-                      selectedFeatureId ? (
-                        <ChatPanel featureId={selectedFeatureId} />
-                      ) : (
-                        <EmptyChatPanel projectId={projectId} />
-                      )
-                    }
-                    right={selectedFeatureId ? <OutputPanel featureId={selectedFeatureId} /> : <EmptyOutputPanel />}
-                  />
-                  <ArtifactViewerModal artifact={viewingArtifact} onClose={() => viewArtifact(null)} />
-                </div>
+                <QaAgentFlowProvider featureId={selectedFeatureId}>
+                  <div className="h-full">
+                    <ResizableWorkspace
+                      left={<FeatureListPanel projectId={projectId} />}
+                      middle={
+                        selectedFeatureId ? (
+                          <ChatPanel featureId={selectedFeatureId} />
+                        ) : (
+                          <EmptyChatPanel projectId={projectId} />
+                        )
+                      }
+                      right={selectedFeatureId ? <OutputPanel featureId={selectedFeatureId} /> : <EmptyOutputPanel />}
+                    />
+                    <ArtifactViewerModal artifact={viewingArtifact} onClose={() => viewArtifact(null)} />
+                  </div>
+                </QaAgentFlowProvider>
               </SecurityAgentFlowProvider>
             </CoderAgentFlowProvider>
           </UiuxAgentFlowProvider>

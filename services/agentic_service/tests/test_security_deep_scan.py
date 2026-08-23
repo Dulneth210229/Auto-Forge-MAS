@@ -14,6 +14,7 @@ from app.agents.security_agent.deep_scan import (
     MAX_DEEP_SCAN_BATCH_CHARS,
     _batch_files,
     run_ai_model_deep_scan,
+    run_ai_model_deep_scan_stream,
 )
 
 
@@ -161,3 +162,120 @@ class TestRunAiModelDeepScan:
                 status, findings = await run_ai_model_deep_scan(tmp_path)
 
         assert [f["id"] for f in findings] == ["SEC-AI-DEEPSCAN:1", "SEC-AI-DEEPSCAN:2"]
+
+
+class TestRunAiModelDeepScanStream:
+    """The streaming sibling of run_ai_model_deep_scan -- must yield real per-batch progress and
+    end with a deep_scan_result event carrying the exact same (status, findings) shape the
+    non-streaming version returns as a tuple, for the same input."""
+
+    @pytest.mark.asyncio
+    async def test_no_scannable_files_yields_a_result_event_without_calling_the_provider(self, tmp_path):
+        events = [event async for event in run_ai_model_deep_scan_stream(tmp_path)]
+
+        assert len(events) == 1
+        assert events[0]["type"] == "deep_scan_result"
+        assert events[0]["findings"] == []
+        assert "No scannable source files" in events[0]["status"]
+
+    @pytest.mark.asyncio
+    async def test_yields_phase_then_progress_per_batch_then_a_final_result(self, tmp_path):
+        with patch(
+            "app.agents.security_agent.deep_scan._batch_files",
+            return_value=[[("a.ts", "content")], [("b.ts", "content")], [("c.ts", "content")]],
+        ):
+            fake_provider = AsyncMock()
+            fake_provider.invoke_agent.return_value = '{"findings": []}'
+
+            with patch(
+                "app.services.llm_provider_service.llm_provider_service.get_provider",
+                return_value=fake_provider,
+            ):
+                events = [event async for event in run_ai_model_deep_scan_stream(tmp_path)]
+
+        assert events[0] == {
+            "type": "phase", "phase": "ai_scan",
+            "label": "Starting AI model scan across 3 batch(es) of real source code...",
+        }
+        progress_events = [e for e in events if e["type"] == "progress"]
+        assert [(e["current"], e["total"]) for e in progress_events] == [(1, 3), (2, 3), (3, 3)]
+        assert events[-1]["type"] == "deep_scan_result"
+        assert "3 batch(es)" in events[-1]["status"]
+        assert "3 succeeded, 0 failed" in events[-1]["status"]
+
+    @pytest.mark.asyncio
+    async def test_a_failing_batch_still_yields_progress_and_a_correct_final_result(self, tmp_path):
+        with patch(
+            "app.agents.security_agent.deep_scan._batch_files",
+            return_value=[[("bad.ts", "content")], [("good.ts", "content")]],
+        ):
+            fake_provider = AsyncMock()
+            fake_provider.invoke_agent.side_effect = [
+                "not valid json at all",
+                '{"findings": [{"title": "Weak hash rounds", "description": "bcrypt cost 1.", '
+                '"severity": "high", "file": "good.ts", "line": 5, "cwe": "CWE-916", '
+                '"root_cause": "bcrypt.hash(password, 1)", "recommendation": "Use cost >= 10.", '
+                '"confidence": "high"}]}',
+            ]
+
+            with patch(
+                "app.services.llm_provider_service.llm_provider_service.get_provider",
+                return_value=fake_provider,
+            ):
+                events = [event async for event in run_ai_model_deep_scan_stream(tmp_path)]
+
+        progress_events = [e for e in events if e["type"] == "progress"]
+        assert len(progress_events) == 2
+        result_event = events[-1]
+        assert result_event["type"] == "deep_scan_result"
+        assert len(result_event["findings"]) == 1
+        assert result_event["findings"][0]["file"] == "good.ts"
+        assert "1 succeeded, 1 failed" in result_event["status"]
+
+    @pytest.mark.asyncio
+    async def test_unreachable_provider_yields_a_result_event_with_no_progress(self, tmp_path):
+        (tmp_path / "route.ts").write_text("export const x = 1;\n", encoding="utf-8")
+
+        with patch(
+            "app.services.llm_provider_service.llm_provider_service.get_provider",
+            side_effect=RuntimeError("provider not configured"),
+        ):
+            events = [event async for event in run_ai_model_deep_scan_stream(tmp_path)]
+
+        assert len(events) == 1
+        assert events[0]["type"] == "deep_scan_result"
+        assert events[0]["findings"] == []
+        assert "unreachable" in events[0]["status"]
+
+    @pytest.mark.asyncio
+    async def test_streaming_and_non_streaming_produce_identical_findings_for_the_same_input(self, tmp_path):
+        # Same real ids/content -- confirms the refactor (_scan_one_batch/_assign_ids shared by
+        # both callers) keeps both paths' output identical, not just individually correct.
+        with patch(
+            "app.agents.security_agent.deep_scan._batch_files",
+            return_value=[[("a.ts", "content")], [("b.ts", "content")]],
+        ):
+            one_finding = lambda file: (
+                '{"findings": [{"title": "t", "description": "d", "severity": "low", '
+                f'"file": "{file}", "line": 1, "cwe": null, "root_cause": "r", '
+                '"recommendation": "f", "confidence": "low"}]}'
+            )
+
+            fake_provider_a = AsyncMock()
+            fake_provider_a.invoke_agent.side_effect = [one_finding("a.ts"), one_finding("b.ts")]
+            with patch(
+                "app.services.llm_provider_service.llm_provider_service.get_provider",
+                return_value=fake_provider_a,
+            ):
+                _, non_streaming_findings = await run_ai_model_deep_scan(tmp_path)
+
+            fake_provider_b = AsyncMock()
+            fake_provider_b.invoke_agent.side_effect = [one_finding("a.ts"), one_finding("b.ts")]
+            with patch(
+                "app.services.llm_provider_service.llm_provider_service.get_provider",
+                return_value=fake_provider_b,
+            ):
+                events = [event async for event in run_ai_model_deep_scan_stream(tmp_path)]
+
+        streaming_findings = events[-1]["findings"]
+        assert streaming_findings == non_streaming_findings

@@ -1074,6 +1074,38 @@ async def run_security_agent_deep_scan(feature_id: str, request: SecurityAgentRu
         )
 
 
+@router.post("/security/scan-with-model/stream")
+async def run_security_agent_deep_scan_stream(feature_id: str, request: SecurityAgentRunRequest):
+    """
+    Streaming variant of /security/scan-with-model -- real, live progress (a percentage a human can
+    watch, computed client-side from current/total) instead of one blocking response, plus a real
+    stop: aborting the client's fetch cancels this generator (FastAPI/Starlette's own behavior, see
+    architecture_agent's own run_stream for the same established pattern), so nothing is saved if a
+    human stops the scan partway through.
+
+    Events:
+        {"type": "phase", "phase": "...", "label": "..."}
+        {"type": "progress", "current": i, "total": N, "label": "..."}
+        {"type": "error", "message": "..."}
+        {"type": "done", "artifact_ids": [...], "message": "...", "gate_decision": "...", "findings_count": N}
+    """
+    _validate_feature(feature_id)
+    stage_event_service.record(feature_id, AgentName.SECURITY, "run", request.human_comment)
+
+    async def event_stream():
+        try:
+            async for event in security_agent.run_ai_model_scan_stream(feature_id=feature_id):
+                yield json.dumps(event) + "\n"
+        except ValueError as error:
+            yield json.dumps({"type": "error", "message": str(error)}) + "\n"
+        except Exception as error:
+            yield json.dumps(
+                {"type": "error", "message": f"Security Agent AI-model scan failed: {_readable_error(error)}"}
+            ) + "\n"
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
+
+
 @router.get("/security/chat", response_model=SecurityChatHistoryResponse)
 def get_security_chat_history(feature_id: str):
     """Real, persisted chat history (store.security_conversations) -- reloading the page must not

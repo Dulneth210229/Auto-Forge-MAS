@@ -1,5 +1,6 @@
 import { createContext, useContext } from "react";
 import { useRunSecurityAgent, useRunSecurityAgentDeepScan } from "../../hooks/useSecurityAgent";
+import { useSecurityDeepScanFlow } from "../../hooks/useSecurityDeepScanFlow";
 
 const SecurityAgentFlowContext = createContext(null);
 
@@ -14,15 +15,18 @@ const SecurityAgentFlowContext = createContext(null);
 // own contexts do -- Security Agent's chat is a genuinely separate concern with its own separate
 // streaming hook, useSecurityChatFlow.js, not part of this context at all.
 //
-// Also wraps a SECOND, independent mutation, runSecurityDeepScan -- the AI-model deep-code-read
-// scan (a separate trigger from the standard scan, see SecurityReportView.jsx's own "Scan with AI
-// Model" button). Sharing this context guarantees both scans' pending state stays visible from
-// whichever surface started them, same reasoning as runSecurity above.
+// Also wraps `securityDeepScanFlow` -- the AI-model deep-code-read scan's LIVE, streamed variant
+// (real per-batch progress + a genuine stop, see useSecurityDeepScanFlow.js), which is what the UI
+// actually uses now. The plain, non-streaming `runSecurityDeepScan` mutation (useSecurityAgent.js)
+// is kept alongside, wired but unused by the UI -- matching this project's own established
+// precedent for a superseded-but-still-valid hook (e.g. useRunDomain/useReviseDomain after Domain
+// Agent got its own streaming chat).
 export function SecurityAgentFlowProvider({ featureId, children }) {
   const runSecurity = useRunSecurityAgent(featureId);
   const runSecurityDeepScan = useRunSecurityAgentDeepScan(featureId);
+  const securityDeepScanFlow = useSecurityDeepScanFlow(featureId);
   return (
-    <SecurityAgentFlowContext.Provider value={{ runSecurity, runSecurityDeepScan }}>
+    <SecurityAgentFlowContext.Provider value={{ runSecurity, runSecurityDeepScan, securityDeepScanFlow }}>
       {children}
     </SecurityAgentFlowContext.Provider>
   );

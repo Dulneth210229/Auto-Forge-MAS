@@ -33,8 +33,11 @@ import { useArchitectureAgentFlowContext } from "../workspace/ArchitectureAgentF
 import { useUiuxAgentFlowContext } from "../workspace/UiuxAgentFlowContext";
 import { useCoderAgentFlowContext } from "../workspace/CoderAgentFlowContext";
 import { useSecurityAgentFlowContext } from "../workspace/SecurityAgentFlowContext";
+import { useQaAgentFlowContext } from "../workspace/QaAgentFlowContext";
 import { useFeature, useSetActiveArtifactSelection } from "../../hooks/useFeatures";
 import { useApprovalMutation } from "../../hooks/useApprovalMutation";
+import { useArtifactContent } from "../../hooks/useArtifacts";
+import { buildSecurityRevisionComment } from "../../lib/securityReportToRevisionComment";
 
 // Both Requirement->Domain and Domain->Architecture support pinning a specific approved version
 // (direct user request for the latter, mirroring the former) -- extend this map (mirrors
@@ -328,6 +331,7 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
     runStreamStarted: coderRunStreamStarted,
     runPhase: coderRunPhase,
     runPhaseStartedAt: coderRunPhaseStartedAt,
+    handleReviseStream: handleCoderReviseStream,
     reviseStream: coderReviseStream,
     revisionStreamedText: coderRevisionStreamedText,
     revisionStreamStarted: coderRevisionStreamStarted,
@@ -497,6 +501,59 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
   // place opens the same decision popup, not just one of them.
   const onApproveClickForStage =
     stage === "security" ? handleSecurityApprove : approveContinuation ? requestApproveConfirmation : undefined;
+
+  // Two direct-action buttons next to the security version dropdown (direct user request) --
+  // an ADDITIONAL, always-visible path alongside SecurityDecisionDialog above (which still opens,
+  // unchanged, right after clicking Approve). Hoisted here (not just inside the render IIFE below)
+  // so both the handlers and the render block share one computation.
+  const selectedSecurityArtifact =
+    stage === "security" ? versions.find((v) => v.version === selectedVersion) || versions[0] || null : null;
+  const securityReportQuery = useArtifactContent(selectedSecurityArtifact?.artifact_id ?? null);
+  const securityReport = securityReportQuery.data?.content_json;
+  const securityHasFindings = (securityReport?.findings || []).length > 0;
+
+  const { runQa } = useQaAgentFlowContext();
+  const [fixVulnerabilitiesArtifactId, setFixVulnerabilitiesArtifactId] = useState(null);
+  const [isSendingFix, setIsSendingFix] = useState(false);
+  const [isContinuingToQa, setIsContinuingToQa] = useState(false);
+
+  // Reuses the exact same two calls SecurityDecisionDialog.handleSendToCoder already makes --
+  // small enough to duplicate directly here rather than extracting a shared cross-component
+  // helper. Deliberately does NOT change the report's own approval status; it's about to be
+  // superseded by a new scan either way.
+  async function handleConfirmedFixVulnerabilities() {
+    setIsSendingFix(true);
+    try {
+      await handleCoderReviseStream({
+        revision_comment: buildSecurityRevisionComment(securityReport),
+        revised_by: "security_agent_report",
+      });
+      runSecurity.mutate({ human_comment: "Re-scan after the Coder Agent's security-driven revision." });
+      setFixVulnerabilitiesArtifactId(null);
+    } finally {
+      setIsSendingFix(false);
+    }
+  }
+
+  // Deliberately a PLAIN approve call, not handleSecurityApprove -- that handler's whole job is
+  // opening SecurityDecisionDialog afterward, which this direct button is explicitly meant to
+  // skip (per the user's own explicit choice: also approve, but don't reopen the popup).
+  async function handleContinueToQa() {
+    if (!selectedSecurityArtifact) return;
+    setIsContinuingToQa(true);
+    try {
+      if (selectedSecurityArtifact.approval_status !== "approved") {
+        await srsApproval.mutateAsync({ artifactId: selectedSecurityArtifact.artifact_id, status: "approved" });
+      }
+      selectAgent("qa");
+      // Not awaited: QA's own pending state now lives in the shared QaAgentFlowContext, so
+      // QaReportView (once the chat switches over) shows real, live progress -- matching every
+      // other "fire the next agent, don't block this button on it" transition in this file.
+      runQa.mutate({ human_comment: "Continuing from Security Agent." });
+    } finally {
+      setIsContinuingToQa(false);
+    }
+  }
 
   // allArtifacts, not stageArtifacts -- a real bug found live: code_diff (the Coder stage's own
   // gating type) is deliberately excluded from stageArtifacts (see UNLISTED_ARTIFACT_TYPES), so
@@ -672,9 +729,11 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
         // down (both suppressed for this stage, see their own render guards) -- a compact version
         // dropdown plus one inline approval control replaces both, so picking a version and
         // approving/rejecting it happen in the same place instead of two differently-resolved
-        // surfaces (direct user request).
+        // surfaces (direct user request). "Awaiting your review" now renders BELOW the report
+        // (direct user request), and the two new "next step" buttons sit next to the version
+        // dropdown -- selectedSecurityArtifact/securityReport/securityHasFindings are all hoisted
+        // above (shared with handleConfirmedFixVulnerabilities/handleContinueToQa).
         (() => {
-          const selectedSecurityArtifact = versions.find((v) => v.version === selectedVersion) || versions[0] || null;
           const securityApproveLocked = selectedSecurityArtifact
             ? Boolean(
                 stageArtifacts.find(
@@ -689,18 +748,40 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
           return (
             <div className="flex flex-col gap-4">
               {versions.length > 0 && (
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between flex-wrap gap-2">
                   <VersionSelect versions={versions} selectedVersion={selectedVersion} onChange={setSelectedVersion} />
-                  {selectedSecurityArtifact && (
-                    <a
-                      href={artifactDownloadUrl(selectedSecurityArtifact.artifact_id)}
-                      className="text-sm text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 font-semibold"
+                  <div className="flex items-center gap-3">
+                    {selectedSecurityArtifact && (
+                      <a
+                        href={artifactDownloadUrl(selectedSecurityArtifact.artifact_id)}
+                        className="text-sm text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 font-semibold"
+                      >
+                        Download report
+                      </a>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setFixVulnerabilitiesArtifactId(selectedSecurityArtifact?.artifact_id ?? null)}
+                      disabled={!selectedSecurityArtifact || !securityHasFindings || coderReviseStream.isPending}
+                      title="Send this report to the Coder Agent to fix the findings, then re-scan"
+                      className="text-sm bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white font-semibold px-3 py-1.5 rounded-md"
                     >
-                      Download report
-                    </a>
-                  )}
+                      Fix Vulnerabilities
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleContinueToQa}
+                      disabled={!selectedSecurityArtifact || isContinuingToQa || srsApproval.isPending}
+                      title="Approve this report and move on to QA Agent"
+                      className="text-sm bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white font-semibold px-3 py-1.5 rounded-md"
+                    >
+                      {isContinuingToQa ? "Continuing..." : "Continue to QA Agent"}
+                    </button>
+                  </div>
                 </div>
               )}
+
+              <SecurityReportView artifact={selectedSecurityArtifact} />
 
               {selectedSecurityArtifact &&
                 (selectedSecurityArtifact.approval_status === "pending" ? (
@@ -715,8 +796,6 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
                     v{selectedSecurityArtifact.version} is {selectedSecurityArtifact.approval_status}.
                   </p>
                 ))}
-
-              <SecurityReportView artifact={selectedSecurityArtifact} />
             </div>
           );
         })()
@@ -745,7 +824,7 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
                 </div>
               )}
 
-              <QaReportView artifact={selectedQaArtifact} featureId={featureId} />
+              <QaReportView artifact={selectedQaArtifact} />
             </div>
           );
         })()
@@ -886,6 +965,22 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
         artifactId={securityDecisionArtifactId}
         featureId={featureId}
         onClose={() => setSecurityDecisionArtifactId(null)}
+      />
+
+      <ConfirmDialog
+        open={Boolean(fixVulnerabilitiesArtifactId)}
+        onClose={() => {
+          if (!isSendingFix) setFixVulnerabilitiesArtifactId(null);
+        }}
+        onConfirm={handleConfirmedFixVulnerabilities}
+        title="Send this report to the Coder Agent to fix?"
+        message="This sends the report's findings to the Coder Agent, which revises the code to address them. Once that finishes, the Security Agent automatically re-scans the fixed code."
+        confirmLabel="Send to Coder Agent"
+        confirmingLabel="Sending..."
+        tone="primary"
+        confirming={isSendingFix}
+        error={coderReviseStream.error || runSecurity.error}
+        errorFallback="Failed to send the report to the Coder Agent."
       />
     </div>
   );

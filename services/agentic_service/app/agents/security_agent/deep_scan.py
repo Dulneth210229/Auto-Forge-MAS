@@ -20,7 +20,7 @@ aborting the whole scan.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncGenerator
 
 from app.agents.security_agent.prompt import SECURITY_DEEP_SCAN_SYSTEM_PROMPT
 from app.agents.security_agent.scanners import list_scannable_files
@@ -74,6 +74,61 @@ def _render_batch(batch: list[tuple[str, str]]) -> str:
     return "\n".join(parts)
 
 
+def _get_provider():
+    from app.services.llm_provider_service import llm_provider_service
+
+    return llm_provider_service.get_provider(agent_name=AgentName.SECURITY.value)
+
+
+async def _scan_one_batch(provider, batch: list[tuple[str, str]]) -> tuple[list[dict[str, Any]], bool]:
+    """
+    Runs one real LLM call over one batch's real source code. Returns (findings without an `id`
+    yet, whether the batch succeeded) -- IDs are assigned once, globally, by _assign_ids, so this
+    function stays reusable by both the streaming and non-streaming callers without needing to
+    share a mutable counter. Never raises -- a provider/parse failure degrades to ([], False),
+    logged, never aborting the batches around it.
+    """
+    batch_text = _render_batch(batch)
+    try:
+        raw_output = await provider.invoke_agent([
+            {"role": "system", "content": SECURITY_DEEP_SCAN_SYSTEM_PROMPT},
+            {"role": "user", "content": f"Review this real source code:\n\n{batch_text}"},
+        ])
+        parsed = extract_json_object(raw_output)
+        result = SecurityDeepScanResult.model_validate(parsed)
+    except Exception as error:  # noqa: BLE001 -- one bad batch must not fail the whole scan
+        logger.warning(
+            "Security Agent AI-model deep scan: batch of %d file(s) failed, skipping: %s",
+            len(batch), error,
+        )
+        return [], False
+
+    findings = [
+        {
+            "rule_id": "SEC-AI-DEEPSCAN",
+            "layer": "ai_model_deep_scan",
+            "severity": item.severity,
+            "cwe": item.cwe or "N/A",
+            "file": item.file,
+            "line": item.line,
+            "message": f"{item.title} -- {item.description}".strip(" -"),
+            "root_cause": item.root_cause,
+            "recommendation": item.recommendation,
+        }
+        for item in result.findings
+    ]
+    return findings, True
+
+
+def _assign_ids(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Stamps a sequential SEC-AI-DEEPSCAN:{n} id onto every finding, in order -- called once,
+    over the full flattened list from every batch, so IDs are globally sequential regardless of
+    which batch a finding came from (matches this scan's pre-refactor behavior exactly)."""
+    for index, finding in enumerate(findings, start=1):
+        finding["id"] = f"SEC-AI-DEEPSCAN:{index}"
+    return findings
+
+
 async def run_ai_model_deep_scan(repo_path: Path) -> tuple[str, list[dict[str, Any]]]:
     """
     Returns (status message, list of SecurityFinding-shaped dicts). Never raises -- an unreachable
@@ -85,9 +140,7 @@ async def run_ai_model_deep_scan(repo_path: Path) -> tuple[str, list[dict[str, A
         return "No scannable source files found for the AI model to review.", []
 
     try:
-        from app.services.llm_provider_service import llm_provider_service
-
-        provider = llm_provider_service.get_provider(agent_name=AgentName.SECURITY.value)
+        provider = _get_provider()
     except Exception as error:  # noqa: BLE001 -- an unreachable provider must not fail the whole scan
         logger.warning("Security Agent AI-model deep scan: no provider available, skipping: %s", error)
         return (
@@ -99,43 +152,84 @@ async def run_ai_model_deep_scan(repo_path: Path) -> tuple[str, list[dict[str, A
     all_findings: list[dict[str, Any]] = []
     batches_ok = 0
     batches_failed = 0
-    finding_index = 1
 
     for batch in batches:
-        batch_text = _render_batch(batch)
-        try:
-            raw_output = await provider.invoke_agent([
-                {"role": "system", "content": SECURITY_DEEP_SCAN_SYSTEM_PROMPT},
-                {"role": "user", "content": f"Review this real source code:\n\n{batch_text}"},
-            ])
-            parsed = extract_json_object(raw_output)
-            result = SecurityDeepScanResult.model_validate(parsed)
-        except Exception as error:  # noqa: BLE001 -- one bad batch must not fail the whole scan
-            logger.warning(
-                "Security Agent AI-model deep scan: batch of %d file(s) failed, skipping: %s",
-                len(batch), error,
-            )
+        findings, ok = await _scan_one_batch(provider, batch)
+        if ok:
+            batches_ok += 1
+        else:
             batches_failed += 1
-            continue
+        all_findings.extend(findings)
 
-        batches_ok += 1
-        for item in result.findings:
-            all_findings.append({
-                "id": f"SEC-AI-DEEPSCAN:{finding_index}",
-                "rule_id": "SEC-AI-DEEPSCAN",
-                "layer": "ai_model_deep_scan",
-                "severity": item.severity,
-                "cwe": item.cwe or "N/A",
-                "file": item.file,
-                "line": item.line,
-                "message": f"{item.title} -- {item.description}".strip(" -"),
-                "root_cause": item.root_cause,
-                "recommendation": item.recommendation,
-            })
-            finding_index += 1
-
+    findings = _assign_ids(all_findings)
     status = (
         f"AI model deep scan ran over {len(batches)} batch(es) of real source code "
-        f"({batches_ok} succeeded, {batches_failed} failed): {len(all_findings)} finding(s)."
+        f"({batches_ok} succeeded, {batches_failed} failed): {len(findings)} finding(s)."
     )
-    return status, all_findings
+    return status, findings
+
+
+async def run_ai_model_deep_scan_stream(repo_path: Path) -> AsyncGenerator[dict[str, Any], None]:
+    """
+    Streaming sibling of run_ai_model_deep_scan -- same batching/provider-resolution, real per-batch
+    progress instead of a single blocking return. Never yields a "done" event itself (the caller,
+    SecurityAgent.run_ai_model_scan_stream, still has deterministic-layer and report-saving work
+    around this) -- its last event is always "deep_scan_result", carrying the same (status,
+    findings) shape run_ai_model_deep_scan returns as a tuple.
+
+    Events:
+        {"type": "phase", "phase": "ai_scan", "label": "..."}
+        {"type": "progress", "current": i, "total": N, "label": "..."}
+        {"type": "deep_scan_result", "status": "...", "findings": [...]}
+    """
+    batches = _batch_files(repo_path)
+    if not batches:
+        yield {
+            "type": "deep_scan_result",
+            "status": "No scannable source files found for the AI model to review.",
+            "findings": [],
+        }
+        return
+
+    try:
+        provider = _get_provider()
+    except Exception as error:  # noqa: BLE001
+        logger.warning("Security Agent AI-model deep scan: no provider available, skipping: %s", error)
+        yield {
+            "type": "deep_scan_result",
+            "status": (
+                f"Skipped -- LLM provider unreachable in this run ({type(error).__name__}). "
+                f"The deterministic layers in this report are unaffected and are its evidence."
+            ),
+            "findings": [],
+        }
+        return
+
+    total = len(batches)
+    yield {
+        "type": "phase", "phase": "ai_scan",
+        "label": f"Starting AI model scan across {total} batch(es) of real source code...",
+    }
+
+    all_findings: list[dict[str, Any]] = []
+    batches_ok = 0
+    batches_failed = 0
+
+    for index, batch in enumerate(batches, start=1):
+        findings, ok = await _scan_one_batch(provider, batch)
+        if ok:
+            batches_ok += 1
+        else:
+            batches_failed += 1
+        all_findings.extend(findings)
+        yield {
+            "type": "progress", "current": index, "total": total,
+            "label": f"Scanned batch {index} of {total}...",
+        }
+
+    findings = _assign_ids(all_findings)
+    status = (
+        f"AI model deep scan ran over {total} batch(es) of real source code "
+        f"({batches_ok} succeeded, {batches_failed} failed): {len(findings)} finding(s)."
+    )
+    yield {"type": "deep_scan_result", "status": status, "findings": findings}

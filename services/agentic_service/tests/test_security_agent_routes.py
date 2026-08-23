@@ -150,6 +150,68 @@ def test_scan_with_model_translates_unexpected_exception_to_500(feature_id):
     assert "AI-model scan failed" in response.json()["detail"]
 
 
+def _fake_agent_stream(events):
+    async def _gen(**kwargs):
+        for event in events:
+            yield event
+    return _gen
+
+
+def test_scan_with_model_stream_returns_404_for_unknown_feature():
+    response = client.post(
+        "/api/v1/features/feature_does_not_exist/agents/security/scan-with-model/stream", json={}
+    )
+    assert response.status_code == 404
+
+
+def test_scan_with_model_stream_yields_ndjson_events(feature_id):
+    events = [
+        {"type": "phase", "phase": "deterministic", "label": "Running pattern, secret, and dependency scans..."},
+        {"type": "phase", "phase": "ai_scan", "label": "Starting AI model scan across 2 batch(es) of real source code..."},
+        {"type": "progress", "current": 1, "total": 2, "label": "Scanned batch 1 of 2..."},
+        {"type": "progress", "current": 2, "total": 2, "label": "Scanned batch 2 of 2..."},
+        {"type": "phase", "phase": "saving", "label": "Saving the security report..."},
+        {"type": "done", "artifact_ids": ["a1", "a2"], "message": "1 finding(s), gate=fail.", "gate_decision": "fail", "findings_count": 1},
+    ]
+
+    with patch("app.api.routes.agents.security_agent.run_ai_model_scan_stream", new=_fake_agent_stream(events)):
+        response = client.post(
+            f"/api/v1/features/{feature_id}/agents/security/scan-with-model/stream", json={}
+        )
+
+    assert response.status_code == 200
+    lines = [line for line in response.text.strip().split("\n") if line]
+    parsed = [json.loads(line) for line in lines]
+    assert parsed == events
+
+
+def test_scan_with_model_stream_surfaces_error_event_on_unexpected_exception(feature_id):
+    async def _raising_gen(**kwargs):
+        raise RuntimeError("provider unreachable")
+        yield  # pragma: no cover -- makes this a generator
+
+    with patch("app.api.routes.agents.security_agent.run_ai_model_scan_stream", new=_raising_gen):
+        response = client.post(
+            f"/api/v1/features/{feature_id}/agents/security/scan-with-model/stream", json={}
+        )
+
+    assert response.status_code == 200
+    lines = [line for line in response.text.strip().split("\n") if line]
+    parsed = [json.loads(line) for line in lines]
+    assert parsed[-1]["type"] == "error"
+    assert "Security Agent AI-model scan failed" in parsed[-1]["message"]
+
+
+def test_scan_with_model_stream_accepts_optional_human_comment(feature_id):
+    with patch("app.api.routes.agents.security_agent.run_ai_model_scan_stream", new=_fake_agent_stream([])):
+        response = client.post(
+            f"/api/v1/features/{feature_id}/agents/security/scan-with-model/stream",
+            json={"human_comment": "Re-scan after the fix."},
+        )
+
+    assert response.status_code == 200
+
+
 def test_get_chat_history_returns_404_for_unknown_feature():
     response = client.get("/api/v1/features/feature_does_not_exist/agents/security/chat")
     assert response.status_code == 404

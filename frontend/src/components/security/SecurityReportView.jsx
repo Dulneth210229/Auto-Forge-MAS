@@ -2,6 +2,7 @@ import { useArtifactContent } from "../../hooks/useArtifacts";
 import { useSecurityAgentFlowContext } from "../workspace/SecurityAgentFlowContext";
 import { DISPLAY_TIERS, groupFindingsByTier, toDisplayTier } from "../../lib/severityTiers";
 import SeverityBadge from "./SeverityBadge";
+import ScanProgressBar from "./ScanProgressBar";
 import LoadingSpinner from "../common/LoadingSpinner";
 import ErrorBanner from "../common/ErrorBanner";
 
@@ -67,8 +68,9 @@ export default function SecurityReportView({ artifact }) {
   // Shared with ResultTab.jsx's Coder-Agent-approval auto-trigger (see SecurityAgentFlowContext's
   // own docstring) -- not a fresh useRunSecurityAgent(featureId) instance, so a scan started from
   // the approval popup shows its real progress here too, not just wherever it was started.
-  const { runSecurity, runSecurityDeepScan } = useSecurityAgentFlowContext();
-  const anyScanPending = runSecurity.isPending || runSecurityDeepScan.isPending;
+  const { runSecurity, securityDeepScanFlow } = useSecurityAgentFlowContext();
+  const { deepScanStream, handleDeepScanStream, stopDeepScanStream, progress, phaseLabel, scanError } = securityDeepScanFlow;
+  const anyScanPending = runSecurity.isPending || deepScanStream.isPending;
 
   // No report exists yet (never scanned, or the feature has no generated code yet) -- Security
   // Agent has no revise() flow (a re-run IS the whole operation), so this empty-state action is
@@ -82,7 +84,7 @@ export default function SecurityReportView({ artifact }) {
           No security scan has been run yet for this feature.
         </p>
         <ErrorBanner error={runSecurity.error} fallback="Failed to run the security scan." />
-        <ErrorBanner error={runSecurityDeepScan.error} fallback="Failed to run the AI model scan." />
+        <ErrorBanner error={scanError ? { message: scanError } : deepScanStream.error} fallback="Failed to run the AI model scan." />
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -94,14 +96,17 @@ export default function SecurityReportView({ artifact }) {
           </button>
           <button
             type="button"
-            onClick={() => runSecurityDeepScan.mutate({})}
+            onClick={() => handleDeepScanStream({})}
             disabled={anyScanPending}
             title="Have the configured AI model read the real generated source code directly and look for vulnerabilities"
             className="text-sm bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-semibold px-3 py-1.5 rounded-md"
           >
-            {runSecurityDeepScan.isPending ? "Scanning with model..." : "Scan with AI Model"}
+            {deepScanStream.isPending ? "Scanning with model..." : "Scan with AI Model"}
           </button>
         </div>
+        {deepScanStream.isPending && (
+          <ScanProgressBar progress={progress} phaseLabel={phaseLabel} onStop={stopDeepScanStream} />
+        )}
       </div>
     );
   }
@@ -142,18 +147,22 @@ export default function SecurityReportView({ artifact }) {
           </button>
           <button
             type="button"
-            onClick={() => runSecurityDeepScan.mutate({})}
+            onClick={() => handleDeepScanStream({})}
             disabled={anyScanPending}
             title="Have the configured AI model read the real generated source code directly and look for vulnerabilities"
             className="text-sm bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-semibold px-3 py-1.5 rounded-md"
           >
-            {runSecurityDeepScan.isPending ? "Scanning with model..." : "Scan with AI Model"}
+            {deepScanStream.isPending ? "Scanning with model..." : "Scan with AI Model"}
           </button>
         </div>
       </div>
 
+      {deepScanStream.isPending && (
+        <ScanProgressBar progress={progress} phaseLabel={phaseLabel} onStop={stopDeepScanStream} />
+      )}
+
       <ErrorBanner error={runSecurity.error} fallback="Failed to run the security scan." />
-      <ErrorBanner error={runSecurityDeepScan.error} fallback="Failed to run the AI model scan." />
+      <ErrorBanner error={scanError ? { message: scanError } : deepScanStream.error} fallback="Failed to run the AI model scan." />
 
       {!hasFindings ? (
         <p className="text-sm text-gray-400 dark:text-gray-500 italic">No findings from any scan layer.</p>
