@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useArtifactContent } from "../../hooks/useArtifacts";
-import { useRunQaAgent } from "../../hooks/useQaAgent";
+import { useQaAgentFlowContext } from "../workspace/QaAgentFlowContext";
 import { useCoderAgentFlowContext } from "../workspace/CoderAgentFlowContext";
 import { buildQaRevisionComment } from "../../lib/qaReportToRevisionComment";
 import QaStatusBadge from "./QaStatusBadge";
@@ -44,10 +44,14 @@ function TestCaseRow({ tc }) {
 // ran (real status, real failure message). Mirrors SecurityReportView.jsx's shape, but QA stays
 // auto-approved (no approval gate), so "Send Failing Tests to Coder Agent" is a direct,
 // always-visible action here rather than living behind a decision popup.
-export default function QaReportView({ artifact, featureId }) {
+//
+// runQa comes from the shared QaAgentFlowContext (not its own useRunQaAgent instance) -- a QA run
+// can now also be triggered from the Security stage's own "Continue to QA Agent" button, so this
+// view must observe the SAME mutation's pending state to show real progress after switching over.
+export default function QaReportView({ artifact }) {
   const { data, isLoading, error } = useArtifactContent(artifact?.artifact_id ?? null);
   const report = data?.content_json;
-  const runQa = useRunQaAgent(featureId);
+  const { runQa } = useQaAgentFlowContext();
   const { handleReviseStream, reviseStream } = useCoderAgentFlowContext();
   const [isSending, setIsSending] = useState(false);
 

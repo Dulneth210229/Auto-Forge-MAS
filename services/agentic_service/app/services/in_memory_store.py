@@ -557,6 +557,13 @@ class MongoStore:
             id_field="feature_id",
         )
 
+        # Same shape as qa_conversations above, for the Security Agent's own chat -- see
+        # app/api/routes/agents.py's /security/chat[/stream] routes.
+        self.security_conversations = MongoCollectionProxy(
+            collection=self.database["security_conversations"],
+            id_field="feature_id",
+        )
+
         self._create_indexes()
 
     def _create_indexes(self) -> None:
@@ -633,6 +640,11 @@ class MongoStore:
             unique=True,
         )
 
+        self.database["security_conversations"].create_index(
+            [("feature_id", ASCENDING)],
+            unique=True,
+        )
+
         self.database["knowledge_documents"].create_index(
             [("document_id", ASCENDING)],
             unique=True,
@@ -658,6 +670,7 @@ class MongoStore:
         self.stage_events.clear()
         self.requirement_conversations.clear()
         self.qa_conversations.clear()
+        self.security_conversations.clear()
         self.knowledge_documents.clear()
 
     def close(self) -> None:

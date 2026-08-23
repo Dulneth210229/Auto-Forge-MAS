@@ -19,12 +19,17 @@ class SecurityAgentInput(BaseModel):
 class SecurityFinding(BaseModel):
     id: str
     rule_id: str
-    layer: str  # "pattern" | "secret" | "dependency" | "llm"
+    layer: str  # "pattern" | "secret" | "dependency" | "llm" | "ai_model_deep_scan"
     severity: str  # raw producer vocabulary -- see severity.py for the display-tier mapping
     cwe: str
     file: str
     line: int | None = None
     message: str
+    # Populated by every layer as of this pass -- where in the code the issue occurs and how to
+    # fix it, distinct from `message` (what the issue is). None only for a finding shaped before
+    # this field existed (never produced going forward).
+    root_cause: str | None = None
+    recommendation: str | None = None
 
 
 class SecurityLLMFinding(BaseModel):
@@ -40,6 +45,7 @@ class SecurityLLMFinding(BaseModel):
     file: str = "unknown"
     line: int | None = None
     cwe: str | None = None
+    root_cause: str = ""
     recommendation: str = ""
     confidence: str = "medium"
 
@@ -47,6 +53,28 @@ class SecurityLLMFinding(BaseModel):
 class SecurityLLMReviewResult(BaseModel):
     additional_findings: list[SecurityLLMFinding] = Field(default_factory=list)
     notes: str = ""
+
+
+class SecurityDeepScanFinding(BaseModel):
+    """One finding as returned by the AI-model deep-code-read scan layer (deep_scan.py) --
+    unlike SecurityLLMFinding, the model producing this was shown REAL source code directly, not
+    just a findings summary. Same shape as SecurityLLMFinding by design (both convert into a
+    SecurityFinding dict the same way) but kept as its own class so a schema change to one layer's
+    prompt contract never silently affects the other's."""
+
+    title: str
+    description: str = ""
+    severity: str = "unknown"
+    file: str = "unknown"
+    line: int | None = None
+    cwe: str | None = None
+    root_cause: str = ""
+    recommendation: str = ""
+    confidence: str = "medium"
+
+
+class SecurityDeepScanResult(BaseModel):
+    findings: list[SecurityDeepScanFinding] = Field(default_factory=list)
 
 
 class SecurityAgentOutput(BaseModel):
@@ -59,3 +87,4 @@ class SecurityAgentOutput(BaseModel):
     warning_count: int = 0
     artifact_ids: list[str] = []
     message: str = ""
+    scan_type: str = "standard"  # "standard" | "ai_model_deep_scan"

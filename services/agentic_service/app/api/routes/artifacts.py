@@ -85,10 +85,30 @@ def get_artifact_content(artifact_id: str):
     if not artifact:
         raise HTTPException(status_code=404, detail="Artifact not found")
 
-    if artifact.artifact_format == ArtifactFormat.PNG:
-        return Response(content=artifact_service.read_artifact_binary(artifact_id), media_type="image/png")
+    # Real, live-found bug: read_artifact_content/read_artifact_binary raise a raw
+    # FileNotFoundError when the referenced file is missing on disk (e.g. a shared Mongo Atlas
+    # record whose local outputs/ file was never present in, or was removed from, this checkout --
+    # confirmed for a real project this way). Left uncaught, this propagates as an unhandled 500
+    # -- which the browser reports as a bare "Network Error" with no message at all (an unhandled
+    # exception here skips FastAPI's normal exception-handling pipeline, which is also what
+    # normally re-applies CORSMiddleware's headers to the response; without them the browser
+    # can't even read the 500, so axios reports connection failure, not "500"). A real,
+    # graceful HTTPException goes through that pipeline correctly and reaches the frontend as an
+    # honest, readable error instead.
+    try:
+        if artifact.artifact_format == ArtifactFormat.PNG:
+            return Response(content=artifact_service.read_artifact_binary(artifact_id), media_type="image/png")
 
-    text = artifact_service.read_artifact_content(artifact_id)
+        text = artifact_service.read_artifact_content(artifact_id)
+    except (FileNotFoundError, OSError):
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"This artifact's file could not be found on disk (path: {artifact.file_path}). "
+                "It may have been deleted, moved, or never synced to this environment."
+            ),
+        )
+
     content_type = "json" if artifact.artifact_format == ArtifactFormat.JSON else "text"
     content_json = None
 
@@ -122,10 +142,20 @@ def download_artifact(artifact_id: str):
     filename = Path(artifact.file_path).name
     media_type = _DOWNLOAD_MEDIA_TYPES.get(artifact.artifact_format, "text/plain")
 
-    if artifact.artifact_format == ArtifactFormat.PNG:
-        body = artifact_service.read_artifact_binary(artifact_id)
-    else:
-        body = artifact_service.read_artifact_content(artifact_id).encode("utf-8")
+    # Same missing-file gotcha as /content above -- same graceful-404 fix.
+    try:
+        if artifact.artifact_format == ArtifactFormat.PNG:
+            body = artifact_service.read_artifact_binary(artifact_id)
+        else:
+            body = artifact_service.read_artifact_content(artifact_id).encode("utf-8")
+    except (FileNotFoundError, OSError):
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"This artifact's file could not be found on disk (path: {artifact.file_path}). "
+                "It may have been deleted, moved, or never synced to this environment."
+            ),
+        )
 
     return Response(
         content=body,

@@ -14,6 +14,7 @@ import DomainAgentChat from "./DomainAgentChat";
 import ArchitectureAgentChat from "./ArchitectureAgentChat";
 import UiuxAgentChat from "./UiuxAgentChat";
 import CoderAgentChat from "./CoderAgentChat";
+import SecurityAgentChat from "./SecurityAgentChat";
 import QaAgentChat from "./QaAgentChat";
 import LoadingSpinner from "../common/LoadingSpinner";
 import ErrorBanner from "../common/ErrorBanner";
@@ -208,10 +209,27 @@ export default function ChatPanel({ featureId }) {
     );
   }
 
-  // QA Agent: its own dedicated chat -- unlike Security (which has no chat/revise flow at all,
-  // per direct user request it stays a read-only report + decision popup), QA gets a real,
-  // token-streaming, history-preserving Q&A surface for discussing test results and failures --
-  // see QaAgentChat.jsx's own docstring. Runs a QA scan itself (via its own empty-state button)
+  // Security Agent: its own dedicated chat -- direct user request, mirrors QA Agent's own chat
+  // shape exactly (see SecurityAgentChat.jsx's own docstring). Runs a scan itself (via the SAME
+  // shared useSecurityAgentFlowContext() mutation the Result panel's Run/Re-run button and the
+  // Coder-approval auto-trigger already observe) rather than through runMutationsByStage/
+  // reviseMutationsByStage (neither is registered for "security" -- there's no revise() shape,
+  // just run() and chat()).
+  if (selectedAgent === "security") {
+    return (
+      <SecurityAgentChat
+        featureId={featureId}
+        feature={feature}
+        runningStage={runningStage}
+        selectedAgent={selectedAgent}
+        selectAgent={selectAgent}
+        allArtifacts={allArtifacts}
+      />
+    );
+  }
+
+  // QA Agent: its own dedicated chat -- same shape as Security Agent's above, see
+  // QaAgentChat.jsx's own docstring. Runs a QA scan itself (via its own empty-state button)
   // rather than through runMutationsByStage/reviseMutationsByStage (neither is registered for
   // "qa" -- there's no revise() shape, just run() and chat()).
   if (selectedAgent === "qa") {

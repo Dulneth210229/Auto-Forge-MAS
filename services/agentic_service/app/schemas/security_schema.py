@@ -21,3 +21,20 @@ class SecurityAgentRunRequest(BaseModel):
         default=None,
         example="Re-scan after the Coder Agent's latest revision.",
     )
+
+
+class SecurityChatMessageRequest(BaseModel):
+    """One human chat turn -- see agents.py's /security/chat/stream route. Mirrors
+    QAChatMessageRequest exactly."""
+
+    message: str = Field(..., example="Why is the MongoDB credential finding marked Critical?")
+
+
+class SecurityChatTurn(BaseModel):
+    role: str  # "user" | "assistant"
+    content: str
+    created_at: str
+
+
+class SecurityChatHistoryResponse(BaseModel):
+    turns: list[SecurityChatTurn] = Field(default_factory=list)

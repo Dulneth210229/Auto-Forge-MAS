@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { useQaChatFlow, useQaChatHistory } from "../../hooks/useQaChatFlow";
-import { useQaAgentFlowContext } from "../workspace/QaAgentFlowContext";
+import { useSecurityChatFlow, useSecurityChatHistory } from "../../hooks/useSecurityChatFlow";
+import { useSecurityAgentFlowContext } from "../workspace/SecurityAgentFlowContext";
 import ChatComposerBox from "./ChatComposerBox";
 import LoadingSpinner from "../common/LoadingSpinner";
 import ErrorBanner from "../common/ErrorBanner";
@@ -25,7 +25,7 @@ function ChatHeader({ feature, runningStage }) {
   );
 }
 
-function QaChatBubble({ turn }) {
+function SecurityChatBubble({ turn }) {
   const isUser = turn.role === "user";
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
@@ -36,33 +36,34 @@ function QaChatBubble({ turn }) {
             : "bg-gray-100 dark:bg-white/10 text-gray-800 dark:text-gray-200 rounded-tl-sm"
         }`}
       >
-        {!isUser && <p className="text-xs text-gray-400 dark:text-gray-500 mb-0.5">QA Agent</p>}
+        {!isUser && <p className="text-xs text-gray-400 dark:text-gray-500 mb-0.5">Security Agent</p>}
         {turn.content || <span className="italic opacity-60">...</span>}
       </div>
     </div>
   );
 }
 
-// QA Agent's own dedicated chat -- deliberately NOT built on ChatBubble/timeline (every other
-// agent's chat reconstructs its conversation from artifact/event history, since those agents'
-// "chat" IS their run/revise activity log). QA chat is genuinely different: pure Q&A about an
-// already-generated report, backed by its own real, persisted turn history
-// (store.qa_conversations, see useQaChatFlow.js's useQaChatHistory) rather than being derived
-// from artifacts. Security Agent now has an equivalent chat too (SecurityAgentChat.jsx, same
-// shape), per a later, separate direct user request for live, streaming, history-preserving
-// discussion of test/security results.
-export default function QaAgentChat({ featureId, feature, runningStage, selectedAgent, selectAgent, allArtifacts }) {
-  const { data: history, isLoading: isLoadingHistory } = useQaChatHistory(featureId);
+// Security Agent's own dedicated chat -- mirrors QaAgentChat.jsx's exact structure/shape (pure
+// Q&A about an already-generated report, backed by its own real, persisted turn history --
+// store.security_conversations, see useSecurityChatFlow.js -- rather than derived from
+// artifact/event history the way every other agent's chat is). Direct user request: live,
+// streaming, history-preserving discussion of the vulnerabilities found. Reuses the SAME shared
+// useSecurityAgentFlowContext() mutation the Result panel's "Run/Re-run Scan" button and the
+// Coder-approval auto-trigger already observe (see SecurityAgentFlowContext.jsx) -- not a new,
+// independent mutation -- so a scan started from here shows its real progress everywhere else
+// too, and vice versa.
+export default function SecurityAgentChat({ featureId, feature, runningStage, selectedAgent, selectAgent, allArtifacts }) {
+  const { data: history, isLoading: isLoadingHistory } = useSecurityChatHistory(featureId);
   const {
     chatStream, handleSendMessage, stopStream,
     streamedText, streamStarted, streamError, pendingHumanMessage,
-  } = useQaChatFlow(featureId);
-  const { runQa } = useQaAgentFlowContext();
+  } = useSecurityChatFlow(featureId);
+  const { runSecurity } = useSecurityAgentFlowContext();
   const [message, setMessage] = useState("");
 
-  const hasReport = (allArtifacts || []).some((a) => a.artifact_type === "qa_report");
+  const hasReport = (allArtifacts || []).some((a) => a.artifact_type === "security_report");
   const turns = history?.turns || [];
-  const isAgentRunning = runningStage === "qa" || chatStream.isPending || runQa.isPending;
+  const isAgentRunning = runningStage === "security" || chatStream.isPending || runSecurity.isPending;
 
   function handleSubmit(event) {
     event.preventDefault();
@@ -81,16 +82,16 @@ export default function QaAgentChat({ featureId, feature, runningStage, selected
         {!hasReport && (
           <div className="bg-accent-50 dark:bg-accent-500/10 border border-accent-200 dark:border-accent-500/30 rounded-md px-3 py-2.5">
             <p className="text-sm font-semibold text-accent-900 dark:text-accent-200">
-              No QA scan has been run yet for this feature.
+              No security scan has been run yet for this feature.
             </p>
-            <ErrorBanner error={runQa.error} fallback="Failed to run the QA scan." />
+            <ErrorBanner error={runSecurity.error} fallback="Failed to run the security scan." />
             <button
               type="button"
-              onClick={() => runQa.mutate({})}
-              disabled={runQa.isPending}
+              onClick={() => runSecurity.mutate({})}
+              disabled={runSecurity.isPending}
               className="mt-2 text-xs font-semibold bg-white dark:bg-white/10 hover:bg-accent-100 dark:hover:bg-white/20 disabled:opacity-50 text-accent-700 dark:text-accent-300 border border-accent-300 dark:border-accent-500/40 rounded-full px-3 py-1"
             >
-              {runQa.isPending ? "Running..." : "Run QA Scan"}
+              {runSecurity.isPending ? "Scanning..." : "Run Security Scan"}
             </button>
           </div>
         )}
@@ -99,18 +100,20 @@ export default function QaAgentChat({ featureId, feature, runningStage, selected
           <LoadingSpinner label="Loading chat history..." />
         ) : turns.length === 0 && !chatStream.isPending ? (
           <p className="text-sm text-gray-400 dark:text-gray-500 italic">
-            No messages yet. Ask about the QA report below -- e.g. "why did the item unit test fail?"
+            No messages yet. Ask about the security report below -- e.g. "why is this finding Critical?"
           </p>
         ) : (
-          turns.map((turn, i) => <QaChatBubble key={i} turn={turn} />)
+          turns.map((turn, i) => <SecurityChatBubble key={i} turn={turn} />)
         )}
 
         {chatStream.isPending && pendingHumanMessage && (
-          <QaChatBubble turn={{ role: "user", content: pendingHumanMessage }} />
+          <SecurityChatBubble turn={{ role: "user", content: pendingHumanMessage }} />
         )}
-        {chatStream.isPending && streamStarted && <QaChatBubble turn={{ role: "assistant", content: streamedText }} />}
+        {chatStream.isPending && streamStarted && (
+          <SecurityChatBubble turn={{ role: "assistant", content: streamedText }} />
+        )}
 
-        <ErrorBanner error={chatStream.error || (streamError && { message: streamError })} fallback="QA chat request failed." />
+        <ErrorBanner error={chatStream.error || (streamError && { message: streamError })} fallback="Security chat request failed." />
       </div>
 
       <div className="flex-shrink-0 pt-1">
@@ -124,7 +127,7 @@ export default function QaAgentChat({ featureId, feature, runningStage, selected
             selectedAgent={selectedAgent}
             onSelectAgent={selectAgent}
             isAgentRunning={isAgentRunning}
-            placeholder="Ask QA Agent about the test results..."
+            placeholder="Ask Security Agent about the vulnerabilities found..."
           />
         </form>
       </div>

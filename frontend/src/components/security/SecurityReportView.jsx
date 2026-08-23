@@ -2,6 +2,7 @@ import { useArtifactContent } from "../../hooks/useArtifacts";
 import { useSecurityAgentFlowContext } from "../workspace/SecurityAgentFlowContext";
 import { DISPLAY_TIERS, groupFindingsByTier, toDisplayTier } from "../../lib/severityTiers";
 import SeverityBadge from "./SeverityBadge";
+import ScanProgressBar from "./ScanProgressBar";
 import LoadingSpinner from "../common/LoadingSpinner";
 import ErrorBanner from "../common/ErrorBanner";
 
@@ -29,10 +30,25 @@ function FindingRow({ finding }) {
         <p className="text-xs text-gray-400 dark:text-gray-500 font-mono mt-0.5">
           {finding.rule_id} -- {loc} -- {finding.cwe}
         </p>
+        {finding.root_cause && (
+          <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
+            <span className="font-semibold">Root cause:</span> {finding.root_cause}
+          </p>
+        )}
+        {finding.recommendation && (
+          <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5">
+            <span className="font-semibold">Suggested fix:</span> {finding.recommendation}
+          </p>
+        )}
       </div>
     </div>
   );
 }
+
+const SCAN_TYPE_LABEL = {
+  ai_model_deep_scan: "AI model deep scan",
+  standard: "Standard scan",
+};
 
 // Renders a Security Agent report (the JSON artifact security_agent/agent.py's run() saves),
 // grouped into Critical/Moderate/Warning per the severity taxonomy (severityTiers.js, mirroring
@@ -52,12 +68,15 @@ export default function SecurityReportView({ artifact }) {
   // Shared with ResultTab.jsx's Coder-Agent-approval auto-trigger (see SecurityAgentFlowContext's
   // own docstring) -- not a fresh useRunSecurityAgent(featureId) instance, so a scan started from
   // the approval popup shows its real progress here too, not just wherever it was started.
-  const { runSecurity } = useSecurityAgentFlowContext();
+  const { runSecurity, securityDeepScanFlow } = useSecurityAgentFlowContext();
+  const { deepScanStream, handleDeepScanStream, stopDeepScanStream, progress, phaseLabel, scanError } = securityDeepScanFlow;
+  const anyScanPending = runSecurity.isPending || deepScanStream.isPending;
 
-  // No report exists yet (never scanned, or the feature has no generated code yet) -- unlike
-  // every other stage, Security Agent has no chat/revise flow to trigger a first run from, so
-  // this empty-state action IS the only way to trigger one (see ResultTab.jsx's own comment on
-  // why this branch renders regardless of whether an artifact exists).
+  // No report exists yet (never scanned, or the feature has no generated code yet) -- Security
+  // Agent has no revise() flow (a re-run IS the whole operation), so this empty-state action is
+  // one of two real ways to trigger a first run (SecurityAgentChat's own empty-state button is
+  // the other, sharing the same useSecurityAgentFlowContext() mutation -- see ResultTab.jsx's own
+  // comment on why this branch renders regardless of whether an artifact exists).
   if (!artifact) {
     return (
       <div className="flex flex-col items-start gap-3">
@@ -65,14 +84,29 @@ export default function SecurityReportView({ artifact }) {
           No security scan has been run yet for this feature.
         </p>
         <ErrorBanner error={runSecurity.error} fallback="Failed to run the security scan." />
-        <button
-          type="button"
-          onClick={() => runSecurity.mutate({})}
-          disabled={runSecurity.isPending}
-          className="text-sm bg-accent-600 hover:bg-accent-700 disabled:opacity-50 text-white font-semibold px-3 py-1.5 rounded-md"
-        >
-          {runSecurity.isPending ? "Scanning..." : "Run Security Scan"}
-        </button>
+        <ErrorBanner error={scanError ? { message: scanError } : deepScanStream.error} fallback="Failed to run the AI model scan." />
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => runSecurity.mutate({})}
+            disabled={anyScanPending}
+            className="text-sm bg-accent-600 hover:bg-accent-700 disabled:opacity-50 text-white font-semibold px-3 py-1.5 rounded-md"
+          >
+            {runSecurity.isPending ? "Scanning..." : "Run Security Scan"}
+          </button>
+          <button
+            type="button"
+            onClick={() => handleDeepScanStream({})}
+            disabled={anyScanPending}
+            title="Have the configured AI model read the real generated source code directly and look for vulnerabilities"
+            className="text-sm bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-semibold px-3 py-1.5 rounded-md"
+          >
+            {deepScanStream.isPending ? "Scanning with model..." : "Scan with AI Model"}
+          </button>
+        </div>
+        {deepScanStream.isPending && (
+          <ScanProgressBar progress={progress} phaseLabel={phaseLabel} onStop={stopDeepScanStream} />
+        )}
       </div>
     );
   }
@@ -97,19 +131,38 @@ export default function SecurityReportView({ artifact }) {
             {report.findings_count} finding(s) -- {report.critical_count} critical, {report.moderate_count} moderate,{" "}
             {report.warning_count} warning
           </p>
+          <p className="text-xs opacity-70 mt-0.5">
+            Scan type: {SCAN_TYPE_LABEL[report.scan_type] || "Standard scan"}
+          </p>
         </div>
-        <button
-          type="button"
-          onClick={() => runSecurity.mutate({})}
-          disabled={runSecurity.isPending}
-          title="Re-scan the current code without going through the Coder Agent"
-          className="text-sm bg-white dark:bg-white/10 hover:bg-gray-50 dark:hover:bg-white/20 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 disabled:opacity-50 font-semibold px-3 py-1.5 rounded-md flex-shrink-0"
-        >
-          {runSecurity.isPending ? "Scanning..." : "Re-run Scan"}
-        </button>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <button
+            type="button"
+            onClick={() => runSecurity.mutate({})}
+            disabled={anyScanPending}
+            title="Re-scan the current code without going through the Coder Agent"
+            className="text-sm bg-white dark:bg-white/10 hover:bg-gray-50 dark:hover:bg-white/20 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 disabled:opacity-50 font-semibold px-3 py-1.5 rounded-md"
+          >
+            {runSecurity.isPending ? "Scanning..." : "Re-run Scan"}
+          </button>
+          <button
+            type="button"
+            onClick={() => handleDeepScanStream({})}
+            disabled={anyScanPending}
+            title="Have the configured AI model read the real generated source code directly and look for vulnerabilities"
+            className="text-sm bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-semibold px-3 py-1.5 rounded-md"
+          >
+            {deepScanStream.isPending ? "Scanning with model..." : "Scan with AI Model"}
+          </button>
+        </div>
       </div>
 
+      {deepScanStream.isPending && (
+        <ScanProgressBar progress={progress} phaseLabel={phaseLabel} onStop={stopDeepScanStream} />
+      )}
+
       <ErrorBanner error={runSecurity.error} fallback="Failed to run the security scan." />
+      <ErrorBanner error={scanError ? { message: scanError } : deepScanStream.error} fallback="Failed to run the AI model scan." />
 
       {!hasFindings ? (
         <p className="text-sm text-gray-400 dark:text-gray-500 italic">No findings from any scan layer.</p>

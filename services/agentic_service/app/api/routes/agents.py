@@ -84,6 +84,8 @@ from app.schemas.architecture_schema import (
 )
 from app.schemas.uiux_schema import UIUXAgentRunRequest
 from app.schemas.coder_schema import CoderAgentRunRequest, CoderAgentReviseRequest
+from app.schemas.security_schema import SecurityAgentRunRequest
+from app.schemas.qa_schema import QAAgentRunRequest, QAChatHistoryResponse, QAChatMessageRequest, QAChatTurn
 from app.services.in_memory_store import store
 from app.services.plantuml_service import plantuml_service
 from app.services.stage_event_service import stage_event_service
@@ -1558,10 +1560,95 @@ def run_deployment_agent(feature_id: str, request: AgentRunRequest):
     try:
         output = await security_agent.run(feature_id=feature_id)
 
-    return AgentRunResponse(
-        feature_id=feature_id,
-        agent_name=AgentName.DEPLOYMENT,
-        status="not_implemented_yet",
-        message="Deployment Agent endpoint is ready. Real logic will be added later.",
-        artifact_ids=[]
-    )
+        return AgentRunResponse(
+            feature_id=feature_id,
+            agent_name=AgentName.SECURITY,
+            status="completed",
+            message=output.message,
+            artifact_ids=output.artifact_ids,
+        )
+
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+    except Exception as error:
+        print("========== SECURITY AGENT ERROR ==========")
+        print(traceback.format_exc())
+        print("===========================================")
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Security Agent failed: {_readable_error(error)}"
+        )
+
+
+    # ----------------------------------------------------
+    # QA Agent
+    # ----------------------------------------------------
+@router.post("/qa/run", response_model=AgentRunResponse)
+async def run_qa_agent(feature_id: str, request: QAAgentRunRequest):
+    """
+    Run the QA Agent -- writes real Unit/Integration/Regression tests for the Coder Agent's
+    generated feature, executes them for real (Jest, sandboxed), and saves a versioned report
+    with per-test-case detail (target file/function, inputs, expected behavior, real status/
+    failure message). Auto-approved (soft-gate), same as Security Agent's own deterministic
+    layers -- a human reviews the report and can either re-run it or use the frontend's "Send
+    Failing Tests to Coder Agent" action, which triggers a real Coder Agent revise() and then
+    automatically re-runs this same route once that revision completes.
+    """
+    _validate_feature(feature_id)
+    stage_event_service.record(feature_id, AgentName.QA, "run", request.human_comment)
+
+    try:
+        output = await qa_agent.run(feature_id=feature_id)
+
+        return AgentRunResponse(
+            feature_id=feature_id,
+            agent_name=AgentName.QA,
+            status="completed",
+            message=output.message,
+            artifact_ids=output.artifact_ids,
+        )
+
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+    except Exception as error:
+        print("========== QA AGENT ERROR ==========")
+        print(traceback.format_exc())
+        print("=====================================")
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"QA Agent failed: {_readable_error(error)}"
+        )
+
+
+@router.get("/qa/chat", response_model=QAChatHistoryResponse)
+def get_qa_chat_history(feature_id: str):
+    """Real, persisted chat history (store.qa_conversations) -- reloading the page must not
+    lose the conversation. See qa_agent.agent.QAAgent.chat_stream for how turns are appended."""
+    _validate_feature(feature_id)
+    document = store.qa_conversations.get(feature_id)
+    turns = document.get("turns", []) if document else []
+    return QAChatHistoryResponse(turns=[QAChatTurn(**turn) for turn in turns])
+
+
+@router.post("/qa/chat/stream")
+async def qa_chat_stream(feature_id: str, request: QAChatMessageRequest):
+    """
+    Real, token-by-token streaming Q&A about the feature's latest QA report -- deliberately pure
+    discussion, no code-editing side effects (see qa_agent/prompt.py's QA_CHAT_SYSTEM_PROMPT).
+    Same NDJSON event shape as every other streaming route in this file: {"type":"token","text":
+    ...} then {"type":"done","message":...}, or {"type":"error","message":...}.
+    """
+    _validate_feature(feature_id)
+
+    async def event_stream():
+        try:
+            async for event in qa_agent.chat_stream(feature_id=feature_id, message=request.message):
+                yield json.dumps(event) + "\n"
+        except Exception as error:
+            yield json.dumps({"type": "error", "message": f"QA chat failed: {_readable_error(error)}"}) + "\n"
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
