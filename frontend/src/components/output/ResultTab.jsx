@@ -8,7 +8,7 @@ import {
 } from "../../lib/artifactTypeMeta";
 import { STAGE_LABELS } from "../../lib/pipelineStages";
 import { getEffectiveActiveArtifact } from "../../lib/activeArtifactSelection";
-import { artifactDownloadUrl, featureCodeDownloadUrl } from "../../api/client";
+import { artifactDownloadUrl, artifactDownloadPdfUrl, featureCodeDownloadUrl } from "../../api/client";
 import { declutterJsonForDisplay } from "../../lib/streamingJsonDisplay";
 import { looksLikeMongoUri } from "../../lib/mongoUri";
 import ArtifactContentView from "../artifacts/ArtifactContentView";
@@ -187,6 +187,18 @@ const PREVIOUS_STAGE_INPUTS_BY_STAGE = {
 const NO_ARTIFACT_VERSION_LABEL_BY_STAGE = {
   security: "Scanning the latest generated code",
   qa: "Testing the latest generated code",
+};
+
+// Requirement/Domain/Architecture's gating artifact is always the JSON half of a JSON+Markdown
+// version pair (dedupeArtifactVersions keeps the JSON row as "the" displayed version for these
+// three stages) -- so the plain "Download report" link always served raw JSON. These three
+// stages instead get a document-specific label and a real, formatted PDF (rendered server-side
+// from the same JSON via a dedicated pdf_builder template per agent, not a JSON dump). Every
+// other stage (uiux/coder/security/qa) keeps the original raw-file "Download report" link.
+const PDF_DOCUMENT_LABEL_BY_STAGE = {
+  requirement: "Download SRS",
+  domain: "Download Enhanced SRS",
+  architecture: "Download Architecture Plan",
 };
 
 function keepLatestVersionOnly(artifacts, types) {
@@ -837,15 +849,20 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
             // currently-selected version" -- previously computed separately (identically) in two
             // different inline IIFEs; also now backs the new Approve & Move to Security button.
             const selectedVersionArtifact = versions.find((v) => v.version === selectedVersion) || versions[0];
+            const pdfDocumentLabel = PDF_DOCUMENT_LABEL_BY_STAGE[stage];
             return (
           <div className="flex items-center justify-between mb-3">
             <VersionSelect versions={versions} selectedVersion={selectedVersion} onChange={setSelectedVersion} />
             <div className="flex items-center gap-3">
               <a
-                href={artifactDownloadUrl(selectedVersionArtifact.artifact_id)}
+                href={
+                  pdfDocumentLabel
+                    ? artifactDownloadPdfUrl(selectedVersionArtifact.artifact_id)
+                    : artifactDownloadUrl(selectedVersionArtifact.artifact_id)
+                }
                 className="text-sm text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 font-semibold"
               >
-                Download report
+                {pdfDocumentLabel || "Download report"}
               </a>
               {stage === "coder" && selectedVersionArtifact.approval_status === "pending" && (
                 <button

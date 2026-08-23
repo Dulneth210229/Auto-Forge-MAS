@@ -12,8 +12,12 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Response
 
-from app.core.enums import ArtifactFormat
+from app.agents.architecture_agent.pdf_builder import build_architecture_plan_html
+from app.agents.domain_agent.pdf_builder import build_enhanced_srs_html
+from app.agents.requirement_agent.pdf_builder import build_srs_html
+from app.core.enums import ArtifactFormat, ArtifactType
 from app.schemas.artifact_schema import ArtifactResponse
+from app.services import pdf_service
 from app.services.artifact_service import artifact_service
 from app.services.in_memory_store import store
 
@@ -22,6 +26,14 @@ _DOWNLOAD_MEDIA_TYPES = {
     ArtifactFormat.JSON: "application/json",
     ArtifactFormat.MARKDOWN: "text/markdown",
     ArtifactFormat.HTML: "text/html",
+}
+
+# The three document types this PDF-export route supports, each mapped to the
+# HTML template builder that mirrors its own frontend document viewer.
+_PDF_BUILDERS = {
+    ArtifactType.SRS: build_srs_html,
+    ArtifactType.ENHANCED_SRS: build_enhanced_srs_html,
+    ArtifactType.ARCHITECTURE_PLAN: build_architecture_plan_html,
 }
 
 router = APIRouter(tags=["Artifacts"])
@@ -162,3 +174,76 @@ def download_artifact(artifact_id: str):
         media_type=media_type,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.get("/artifacts/{artifact_id}/download-pdf")
+def download_artifact_pdf(artifact_id: str):
+    """
+    Download an artifact as a real, formatted PDF instead of its raw JSON file --
+    a sibling of /download, scoped to the three document-shaped artifact types
+    (SRS, Enhanced SRS, Architecture Plan) that have a dedicated pdf_builder
+    HTML template. Every other artifact type's /download behavior is unchanged.
+    """
+    artifact = artifact_service.get_artifact(artifact_id)
+
+    if not artifact:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    builder = _PDF_BUILDERS.get(artifact.artifact_type)
+    if builder is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"PDF export is not available for artifact_type='{artifact.artifact_type}'. "
+                "Only srs, enhanced_srs, and architecture_plan support PDF export."
+            ),
+        )
+
+    try:
+        raw_text = artifact_service.read_artifact_content(artifact_id)
+    except (FileNotFoundError, OSError):
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"This artifact's file could not be found on disk (path: {artifact.file_path}). "
+                "It may have been deleted, moved, or never synced to this environment."
+            ),
+        )
+
+    try:
+        content_json = json.loads(raw_text)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="This artifact's content is not valid JSON.")
+
+    if artifact.artifact_type == ArtifactType.ENHANCED_SRS:
+        domain_improvements_json = _find_domain_improvements_json(artifact.feature_id, artifact.version)
+        html = builder(content_json, domain_improvements_json)
+    else:
+        html = builder(content_json)
+
+    pdf_bytes = pdf_service.render_html_to_pdf(html)
+
+    document_name = f"{artifact.artifact_type.value}_v{artifact.version}.pdf"
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{document_name}"'},
+    )
+
+
+def _find_domain_improvements_json(feature_id: str, version: int) -> dict | None:
+    """
+    Load the Domain Improvements artifact saved alongside an Enhanced SRS at the
+    same version (the same sibling lookup the frontend already does), so the
+    Enhanced SRS PDF can render a "Domain Improvements" section -- returns None
+    if no such sibling exists or its content can't be read/parsed.
+    """
+    siblings = artifact_service.list_feature_artifacts(feature_id)
+    for sibling in siblings:
+        if sibling.artifact_type == ArtifactType.DOMAIN_IMPROVEMENTS and sibling.version == version:
+            try:
+                return json.loads(artifact_service.read_artifact_content(sibling.artifact_id))
+            except (FileNotFoundError, OSError, ValueError):
+                return None
+    return None
