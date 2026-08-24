@@ -120,8 +120,8 @@ export default function GovernancePanel({ stage, featureId, allArtifacts, stageA
               approveLocked={approveLocked}
             />
           ) : (
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-xs text-gray-400 dark:text-gray-500">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <p className="text-xs text-gray-400 dark:text-gray-500 min-w-0">
                 Latest version (v{gatingArtifact.version}) is {gatingArtifact.approval_status}. Nothing pending.
               </p>
               {gatingArtifact.approval_status === "approved" && (

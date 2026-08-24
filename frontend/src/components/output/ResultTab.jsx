@@ -762,7 +762,7 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
               {versions.length > 0 && (
                 <div className="flex items-center justify-between flex-wrap gap-2">
                   <VersionSelect versions={versions} selectedVersion={selectedVersion} onChange={setSelectedVersion} />
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-3 flex-wrap">
                     {selectedSecurityArtifact && (
                       <a
                         href={artifactDownloadUrl(selectedSecurityArtifact.artifact_id)}
@@ -823,7 +823,7 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
           return (
             <div className="flex flex-col gap-4">
               {versions.length > 0 && (
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between flex-wrap gap-2">
                   <VersionSelect versions={versions} selectedVersion={selectedVersion} onChange={setSelectedVersion} />
                   {selectedQaArtifact && (
                     <a
@@ -851,9 +851,9 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
             const selectedVersionArtifact = versions.find((v) => v.version === selectedVersion) || versions[0];
             const pdfDocumentLabel = PDF_DOCUMENT_LABEL_BY_STAGE[stage];
             return (
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
             <VersionSelect versions={versions} selectedVersion={selectedVersion} onChange={setSelectedVersion} />
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap">
               <a
                 href={
                   pdfDocumentLabel

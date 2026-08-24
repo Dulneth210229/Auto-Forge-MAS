@@ -48,7 +48,9 @@
 body {
   margin: 0;
   font-family: "Poppins", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  background-color: #f3f4f6;
+  /* Matches AppShell.jsx's root bg-gray-200 (see the neutral gray-* override above) so there's
+     no color flash before the stylesheet/CSS variables are ready. */
+  background-color: #e5e5e5;
 }
 
 html.dark body {

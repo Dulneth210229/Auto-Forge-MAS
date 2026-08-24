@@ -108,8 +108,8 @@ export default function QaReportView({ artifact }) {
 
   return (
     <div className="flex flex-col gap-5">
-      <div className={`rounded-lg border px-4 py-3 flex items-center justify-between gap-3 ${bannerStyle}`}>
-        <div>
+      <div className={`rounded-lg border px-4 py-3 flex items-center justify-between flex-wrap gap-3 ${bannerStyle}`}>
+        <div className="min-w-0">
           <p className="text-sm font-bold">
             {hasFailures ? "Some tests are failing -- review before proceeding." : "All tests passed."}
           </p>
@@ -118,7 +118,7 @@ export default function QaReportView({ artifact }) {
             {report.tests_skipped} skipped
           </p>
         </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
+        <div className="flex items-center gap-2 flex-wrap">
           <button
             type="button"
             onClick={() => runQa.mutate({})}

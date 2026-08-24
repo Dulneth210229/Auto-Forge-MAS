@@ -124,8 +124,8 @@ export default function SecurityReportView({ artifact }) {
 
   return (
     <div className="flex flex-col gap-5">
-      <div className={`rounded-lg border px-4 py-3 flex items-center justify-between gap-3 ${GATE_BANNER_STYLE[report.gate_decision] || ""}`}>
-        <div>
+      <div className={`rounded-lg border px-4 py-3 flex items-center justify-between flex-wrap gap-3 ${GATE_BANNER_STYLE[report.gate_decision] || ""}`}>
+        <div className="min-w-0">
           <p className="text-sm font-bold">{GATE_BANNER_TEXT[report.gate_decision] || "Scan complete."}</p>
           <p className="text-xs opacity-80 mt-0.5">
             {report.findings_count} finding(s) -- {report.critical_count} critical, {report.moderate_count} moderate,{" "}
@@ -135,7 +135,7 @@ export default function SecurityReportView({ artifact }) {
             Scan type: {SCAN_TYPE_LABEL[report.scan_type] || "Standard scan"}
           </p>
         </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
+        <div className="flex items-center gap-2 flex-wrap">
           <button
             type="button"
             onClick={() => runSecurity.mutate({})}

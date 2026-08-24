@@ -32,7 +32,7 @@ export default function FeatureListPanel({ projectId }) {
   const deleteFeature = useDeleteFeature(projectId);
 
   return (
-    <div className="h-full flex flex-col bg-white dark:bg-gray-900 rounded-lg shadow-sm border border-gray-200 dark:border-gray-800">
+    <div className="h-full flex flex-col bg-white dark:bg-gray-900 rounded-lg shadow border border-gray-300 dark:border-gray-800">
       <div className="flex-shrink-0 p-3 border-b border-gray-100 dark:border-gray-800">
         <Link to="/" className="text-xs text-gray-400 dark:text-gray-500 hover:text-accent-600 dark:hover:text-accent-400 inline-flex items-center gap-1">
           &larr; Projects
@@ -59,16 +59,16 @@ export default function FeatureListPanel({ projectId }) {
           </div>
         </div>
         <p className="text-xs text-gray-400 dark:text-gray-500 truncate">{project?.target_stack}</p>
-        <div className="flex items-center gap-3 mt-2">
+        <div className="flex items-center gap-2 mt-2 flex-wrap">
           <button
             onClick={() => setShowKnowledge(true)}
-            className="text-xs font-semibold text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 inline-flex items-center gap-1"
+            className="text-xs font-semibold bg-white dark:bg-white/10 hover:bg-gray-50 dark:hover:bg-white/20 border border-gray-300 dark:border-gray-600 hover:border-accent-300 dark:hover:border-accent-500/40 text-gray-700 dark:text-gray-200 hover:text-accent-700 dark:hover:text-accent-300 transition-colors px-2.5 py-1 rounded-md inline-flex items-center gap-1"
           >
             Domain Knowledge
           </button>
           <button
             onClick={() => setShowDatabaseConnection(true)}
-            className="text-xs font-semibold text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 inline-flex items-center gap-1"
+            className="text-xs font-semibold bg-white dark:bg-white/10 hover:bg-gray-50 dark:hover:bg-white/20 border border-gray-300 dark:border-gray-600 hover:border-accent-300 dark:hover:border-accent-500/40 text-gray-700 dark:text-gray-200 hover:text-accent-700 dark:hover:text-accent-300 transition-colors px-2.5 py-1 rounded-md inline-flex items-center gap-1"
           >
             Database Connection
           </button>

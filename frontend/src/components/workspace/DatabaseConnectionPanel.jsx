@@ -42,7 +42,7 @@ export default function DatabaseConnectionPanel({ projectId }) {
       ) : (
         <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg p-4">
           {data?.configured ? (
-            <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center justify-between flex-wrap gap-3">
               <div className="min-w-0">
                 <p className="text-xs font-semibold text-green-700 dark:text-green-400 uppercase tracking-wide">
                   Configured

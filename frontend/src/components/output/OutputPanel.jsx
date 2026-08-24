@@ -27,24 +27,26 @@ const DISABLED_TABS = new Set(["files"]);
 export default function OutputPanel({ featureId }) {
   const { selectedAgent, activeOutputTab, setActiveOutputTab } = useWorkspaceSelection();
   const { data: artifacts, isLoading, error } = useFeatureArtifacts(featureId);
-  // Preview always shows the Coder Agent's live app preview regardless of which stage is
-  // actually selected -- misleading (and, per direct user request for Security -- extended here
-  // to QA for the same reason -- removed entirely rather than just disabled-with-tooltip like
-  // "Files") while looking at a stage with no runnable preview of its own at all.
-  const hasNoPreview = selectedAgent === "security" || selectedAgent === "qa";
-  const visibleTabs = hasNoPreview ? TABS.filter((tab) => tab.key !== "preview") : TABS;
+  // Only uiux (an instant, server-less HTML+Tailwind design preview) and coder (a real,
+  // runnable Next.js app preview) have anything to actually preview -- every other stage
+  // (requirement/domain/architecture/security/qa) used to fall through to the Coder Agent's own
+  // PreviewPanel regardless of which stage was selected, which was misleading (a Requirement
+  // Agent stage has no app to preview at all) -- removed entirely rather than disabled-with-
+  // tooltip like "Files", per direct user request.
+  const hasPreview = selectedAgent === "uiux" || selectedAgent === "coder";
+  const visibleTabs = hasPreview ? TABS : TABS.filter((tab) => tab.key !== "preview");
 
-  // If the user was already on "preview" and then switches to Security/QA (whose tab bar no
-  // longer has a button for it), fall back to "result" rather than leaving the panel stuck
-  // showing a tab with no way to navigate back to it via the bar itself.
+  // If the user was already on "preview" and then switches to a stage whose tab bar no longer
+  // has a button for it, fall back to "result" rather than leaving the panel stuck showing a tab
+  // with no way to navigate back to it via the bar itself.
   useEffect(() => {
-    if (hasNoPreview && activeOutputTab === "preview") {
+    if (!hasPreview && activeOutputTab === "preview") {
       setActiveOutputTab("result");
     }
-  }, [hasNoPreview, activeOutputTab, setActiveOutputTab]);
+  }, [hasPreview, activeOutputTab, setActiveOutputTab]);
 
   return (
-    <div className="h-full flex flex-col bg-white dark:bg-gray-900 rounded-lg shadow-sm border border-gray-200 dark:border-gray-800">
+    <div className="h-full flex flex-col bg-white dark:bg-gray-900 rounded-lg shadow border border-gray-300 dark:border-gray-800">
       <div className="flex items-center border-b border-gray-100 dark:border-gray-800 flex-shrink-0 px-2">
         {visibleTabs.map((tab) => {
           const disabled = DISABLED_TABS.has(tab.key);

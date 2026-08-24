@@ -39,8 +39,8 @@ function ComponentRow({ component }) {
           : "border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900"
       }`}
     >
-      <div className="flex items-center justify-between gap-2">
-        <p className="text-sm font-bold text-gray-900 dark:text-gray-100">{component.name}</p>
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <p className="text-sm font-bold text-gray-900 dark:text-gray-100 min-w-0">{component.name}</p>
         <span
           className={`text-[10px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wide flex-shrink-0 ${
             reused ? "bg-accent-600 text-white" : "bg-gray-200 dark:bg-white/10 text-gray-600 dark:text-gray-300"
@@ -83,8 +83,8 @@ function PageCard({ page }) {
   return (
     <div className="mb-5 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
       <div className="bg-gray-50 dark:bg-white/5 px-4 py-3 border-b border-gray-200 dark:border-gray-700">
-        <div className="flex items-center justify-between gap-2">
-          <h3 className="text-sm font-bold text-gray-900 dark:text-gray-100">{page.name}</h3>
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <h3 className="text-sm font-bold text-gray-900 dark:text-gray-100 min-w-0">{page.name}</h3>
           {page.route && (
             <code className="text-xs text-accent-700 dark:text-accent-300 bg-accent-50 dark:bg-accent-500/15 px-2 py-0.5 rounded flex-shrink-0">{page.route}</code>
           )}
