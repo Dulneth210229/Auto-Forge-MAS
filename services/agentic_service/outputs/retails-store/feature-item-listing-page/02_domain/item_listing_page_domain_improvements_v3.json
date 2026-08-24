@@ -1,7 +1,0 @@
-{
-  "summary": "No domain enrichment was applied to this SRS.",
-  "knowledge_sources_used": [],
-  "additions": [],
-  "modifications": [],
-  "no_changes_note": "The proposed enrichment could not be applied: additions[0] has invalid target_section 'constraints'. Must be one of: ['functional_requirements', 'non_functional_requirements', 'acceptance_criteria', 'validation_rules', 'user_stories', 'data_requirements']."
-}
