@@ -382,8 +382,9 @@ class TestRunAiModelScanStream:
     """SecurityAgent.run_ai_model_scan_stream -- the live-progress sibling of run_ai_model_scan.
     deep_scan.run_ai_model_deep_scan_stream itself is mocked here (its own unit tests live in
     test_security_deep_scan.py); this covers the agent-level orchestration: a deterministic-layer
-    phase event fires first, progress/phase events from the deep-scan layer are forwarded, a
-    saving phase fires before the report is actually saved, and the final done event carries real
+    phase event fires first, batch_started/batch_finished/phase events from the deep-scan layer
+    are forwarded, a saving phase fires before the report is actually saved, and the final done
+    event carries real
     artifact_ids -- the exact same report a human would see from the non-streaming run_ai_model_scan."""
 
     @pytest.fixture
@@ -407,8 +408,10 @@ class TestRunAiModelScanStream:
 
         async def fake_deep_scan_stream(repo_path):
             yield {"type": "phase", "phase": "ai_scan", "label": "Starting AI model scan across 2 batch(es)..."}
-            yield {"type": "progress", "current": 1, "total": 2, "label": "Scanned batch 1 of 2..."}
-            yield {"type": "progress", "current": 2, "total": 2, "label": "Scanned batch 2 of 2..."}
+            yield {"type": "batch_started", "batch_index": 1, "total": 2, "files": ["app/api/auth/login/route.ts"]}
+            yield {"type": "batch_finished", "batch_index": 1, "total": 2, "completed_count": 1, "label": "Scanned batch 1 of 2..."}
+            yield {"type": "batch_started", "batch_index": 2, "total": 2, "files": ["app/api/auth/signup/route.ts"]}
+            yield {"type": "batch_finished", "batch_index": 2, "total": 2, "completed_count": 2, "label": "Scanned batch 2 of 2..."}
             yield {
                 "type": "deep_scan_result",
                 "status": "AI model deep scan ran over 2 batch(es)... (2 succeeded, 0 failed): 1 finding(s).",
@@ -432,7 +435,10 @@ class TestRunAiModelScanStream:
             events = [event async for event in agent.run_ai_model_scan_stream(feature_id=feature_id)]
 
         types_in_order = [e["type"] for e in events]
-        assert types_in_order == ["phase", "phase", "progress", "progress", "phase", "done"]
+        assert types_in_order == [
+            "phase", "phase", "batch_started", "batch_finished",
+            "batch_started", "batch_finished", "phase", "done",
+        ]
         assert events[0] == {
             "type": "phase", "phase": "deterministic",
             "label": "Running pattern, secret, and dependency scans...",

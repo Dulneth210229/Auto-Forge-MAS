@@ -5,6 +5,11 @@ import { DISPLAY_TIERS, groupFindingsByTier } from "./severityTiers";
 // message", grouped critical-first -- deliberately carries a real `file:line` token per line so
 // the Coder Agent's existing _find_well_specified_target_files (_REVISION_FILE_TOKEN_RE,
 // coder_agent/agent.py:96) can target the right files with zero Coder-side changes.
+//
+// Each finding also carries its own root_cause/recommendation sub-lines when present (the
+// backend's SecurityFinding schema populates both on every scan layer) -- this is what makes the
+// plan the Coder Agent receives "coder-friendly" rather than just a bare list of complaints: it
+// tells the model WHY the code is vulnerable and WHAT to change, not just where.
 export function buildSecurityRevisionComment(report) {
   const groups = groupFindingsByTier(report?.findings || []);
 
@@ -17,6 +22,12 @@ export function buildSecurityRevisionComment(report) {
     for (const finding of findings) {
       const loc = finding.line ? `${finding.file}:${finding.line}` : finding.file;
       lines.push(`[${tier.toUpperCase()}] ${loc} -- ${finding.message} (${finding.cwe})`);
+      if (finding.root_cause) {
+        lines.push(`  Root cause: ${finding.root_cause}`);
+      }
+      if (finding.recommendation) {
+        lines.push(`  Suggested fix: ${finding.recommendation}`);
+      }
     }
   }
 

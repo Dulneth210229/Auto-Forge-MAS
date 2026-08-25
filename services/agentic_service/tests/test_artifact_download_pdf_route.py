@@ -1,9 +1,9 @@
 """
 Unit tests for GET /artifacts/{id}/download-pdf -- a real, PDF-rendering
-sibling of /download scoped to the three document-shaped artifact types
-(srs, enhanced_srs, architecture_plan). Real TestClient + a real Playwright
-render (no mocking of pdf_service), matching this project's own established
-"verify the real thing" convention for this kind of route.
+sibling of /download scoped to the four document-shaped artifact types
+(srs, enhanced_srs, architecture_plan, security_report). Real TestClient + a
+real Playwright render (no mocking of pdf_service), matching this project's
+own established "verify the real thing" convention for this kind of route.
 """
 
 import json
@@ -22,6 +22,11 @@ client = TestClient(app)
 MINIMAL_SRS = {"feature_name": "Login", "functional_requirements": [{"id": "FR-001", "description": "Log in"}]}
 MINIMAL_ENHANCED_SRS = {"feature_name": "Login", "functional_requirements": []}
 MINIMAL_ARCHITECTURE_PLAN = {"document_control": {"feature_name": "Login"}}
+MINIMAL_SECURITY_REPORT = {
+    "feature_name": "Login", "project_name": "P", "scan_type": "standard",
+    "gate_decision": "pass", "findings_count": 0, "critical_count": 0,
+    "moderate_count": 0, "warning_count": 0, "findings": [],
+}
 
 
 def _seed_artifact(tmp_path, project_id, feature_id, artifact_type, content, *, version=1):
@@ -87,6 +92,18 @@ def test_download_pdf_returns_a_real_pdf_for_architecture_plan(feature):
     artifact_id = _seed_artifact(
         feature["tmp_path"], feature["project_id"], feature["feature_id"],
         ArtifactType.ARCHITECTURE_PLAN.value, MINIMAL_ARCHITECTURE_PLAN,
+    )
+
+    response = client.get(f"/api/v1/artifacts/{artifact_id}/download-pdf")
+
+    assert response.status_code == 200
+    assert response.content.startswith(b"%PDF-")
+
+
+def test_download_pdf_returns_a_real_pdf_for_security_report(feature):
+    artifact_id = _seed_artifact(
+        feature["tmp_path"], feature["project_id"], feature["feature_id"],
+        ArtifactType.SECURITY_REPORT.value, MINIMAL_SECURITY_REPORT,
     )
 
     response = client.get(f"/api/v1/artifacts/{artifact_id}/download-pdf")

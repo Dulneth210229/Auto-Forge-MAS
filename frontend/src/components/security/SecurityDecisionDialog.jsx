@@ -17,7 +17,7 @@ import { buildSecurityRevisionComment } from "../../lib/securityReportToRevision
 // loop-tracking state exists anywhere -- each re-scan is a new report version, which is PENDING
 // again, which needs approval again, which reopens this same dialog again. That per-version
 // approval requirement (not any code in this component) IS the loop.
-export default function SecurityDecisionDialog({ artifactId, featureId, onClose }) {
+export default function SecurityDecisionDialog({ artifactId, featureId, onClose, onFixStart, onFixSettled }) {
   const { data, isLoading, error } = useArtifactContent(artifactId);
   const report = data?.content_json;
   const { handleReviseStream, reviseStream } = useCoderAgentFlowContext();
@@ -26,6 +26,13 @@ export default function SecurityDecisionDialog({ artifactId, featureId, onClose 
 
   async function handleSendToCoder() {
     setIsSending(true);
+    // Fire before the (multi-minute) await, not after -- onFixStart switches the chat/Result
+    // panel to Coder Agent (so its live, themed progress view is actually visible) and closing
+    // the dialog immediately stops it from covering that view for the whole duration. The
+    // component stays mounted after onClose (only its own `open` prop toggles), so continuing
+    // this async function afterward is safe.
+    onFixStart?.();
+    onClose();
     try {
       await handleReviseStream({
         revision_comment: buildSecurityRevisionComment(report),
@@ -35,9 +42,9 @@ export default function SecurityDecisionDialog({ artifactId, featureId, onClose 
       // version whenever it finishes -- matches the existing "fire the mutation, don't block
       // the UI on it" pattern already used elsewhere in this flow.
       runSecurity.mutate({ human_comment: "Re-scan after the Coder Agent's security-driven revision." });
-      onClose();
     } finally {
       setIsSending(false);
+      onFixSettled?.();
     }
   }
 

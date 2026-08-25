@@ -14,7 +14,7 @@ import { looksLikeMongoUri } from "../../lib/mongoUri";
 import ArtifactContentView from "../artifacts/ArtifactContentView";
 import ArchitectureDiagramsGallery from "../pipeline/ArchitectureDiagramsGallery";
 import UiuxPagePreviewsPanel from "../pipeline/UiuxPagePreviewsPanel";
-import { LiveGenerationView } from "../pipeline/RequirementConversationParts";
+import { LiveGenerationView, useRotatingLabel } from "../pipeline/RequirementConversationParts";
 import GovernancePanel from "../pipeline/GovernancePanel";
 import ApprovalPanel from "../pipeline/ApprovalPanel";
 import ArtifactList from "../pipeline/ArtifactList";
@@ -188,6 +188,17 @@ const NO_ARTIFACT_VERSION_LABEL_BY_STAGE = {
   security: "Scanning the latest generated code",
   qa: "Testing the latest generated code",
 };
+
+// Shown in place of the generic "Planning the implementation..."/"Applying your requested
+// change..." labels (and the generic phase tail) while a security-driven Coder Agent revision is
+// in flight (direct user request: a themed spinner instead of a bare "Thinking"). Cycled by
+// useRotatingLabel so it's visibly rotating, not stuck on one phrase.
+const SECURITY_FIX_PHRASES = [
+  "Patching vulnerabilities...",
+  "Hardening the code...",
+  "Re-checking security controls...",
+  "Applying the suggested fix...",
+];
 
 // Requirement/Domain/Architecture's gating artifact is always the JSON half of a JSON+Markdown
 // version pair (dedupeArtifactVersions keeps the JSON row as "the" displayed version for these
@@ -523,11 +534,33 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
   const securityReportQuery = useArtifactContent(selectedSecurityArtifact?.artifact_id ?? null);
   const securityReport = securityReportQuery.data?.content_json;
   const securityHasFindings = (securityReport?.findings || []).length > 0;
+  // For SecurityReportView's "Compared to vN" section -- the version immediately before whatever
+  // is selected, by version number (never "operative"/approved, just the prior one), so switching
+  // the dropdown to any historical version still shows a meaningful comparison against what came
+  // right before it. null when there's no prior version (the very first scan ever).
+  const previousSecurityArtifact = selectedSecurityArtifact
+    ? versions.find((v) => v.version === selectedSecurityArtifact.version - 1) ?? null
+    : null;
+
+  // Independent of selectedSecurityArtifact (whatever the version DROPDOWN happens to have
+  // selected) -- the QA gate below must key off the truly latest scan by version number, not an
+  // older approved-but-stale one a human could park the dropdown on. `versions` is already sorted
+  // descending (listGatingArtifactVersions), so versions[0] is that latest version.
+  const latestSecurityArtifact = stage === "security" ? versions[0] || null : null;
+  const latestSecurityReportQuery = useArtifactContent(latestSecurityArtifact?.artifact_id ?? null);
+  const latestSecurityGateDecision = latestSecurityReportQuery.data?.content_json?.gate_decision;
+  const securityGateBlocksQa = latestSecurityGateDecision === "fail";
 
   const { runQa } = useQaAgentFlowContext();
   const [fixVulnerabilitiesArtifactId, setFixVulnerabilitiesArtifactId] = useState(null);
   const [isSendingFix, setIsSendingFix] = useState(false);
   const [isContinuingToQa, setIsContinuingToQa] = useState(false);
+  // Distinguishes "the Coder Agent is revising because of a security fix" from any other,
+  // unrelated in-flight Coder revision -- so the themed spinner below never mislabels a normal
+  // Coder-chat revision, and only fires for the two real trigger surfaces (this button and
+  // SecurityDecisionDialog's own "Send to Coder Agent to Fix").
+  const [isSecurityFixInFlight, setIsSecurityFixInFlight] = useState(false);
+  const securityFixLabel = useRotatingLabel(isSecurityFixInFlight ? SECURITY_FIX_PHRASES : null);
 
   // Reuses the exact same two calls SecurityDecisionDialog.handleSendToCoder already makes --
   // small enough to duplicate directly here rather than extracting a shared cross-component
@@ -535,15 +568,24 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
   // superseded by a new scan either way.
   async function handleConfirmedFixVulnerabilities() {
     setIsSendingFix(true);
+    setIsSecurityFixInFlight(true);
+    // Switch BEFORE awaiting the (multi-minute) revision, not after -- otherwise the human sees
+    // nothing but a disabled button for the whole duration, since the Coder Agent's own live view
+    // only renders while this stage is selected (a real, confirmed gap, not just cosmetic). Closing
+    // the dialog here too, before the await, mirrors SecurityDecisionDialog's own already-fixed
+    // ordering -- a real, reported bug: this one stayed open showing "Sending..." for the entire
+    // revision because it used to only close in the try block, after the await resolved.
+    selectAgent("coder");
+    setFixVulnerabilitiesArtifactId(null);
     try {
       await handleCoderReviseStream({
         revision_comment: buildSecurityRevisionComment(securityReport),
         revised_by: "security_agent_report",
       });
       runSecurity.mutate({ human_comment: "Re-scan after the Coder Agent's security-driven revision." });
-      setFixVulnerabilitiesArtifactId(null);
     } finally {
       setIsSendingFix(false);
+      setIsSecurityFixInFlight(false);
     }
   }
 
@@ -551,7 +593,7 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
   // opening SecurityDecisionDialog afterward, which this direct button is explicitly meant to
   // skip (per the user's own explicit choice: also approve, but don't reopen the popup).
   async function handleContinueToQa() {
-    if (!selectedSecurityArtifact) return;
+    if (!selectedSecurityArtifact || securityGateBlocksQa) return;
     setIsContinuingToQa(true);
     try {
       if (selectedSecurityArtifact.approval_status !== "approved") {
@@ -698,10 +740,12 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
         <LiveGenerationView
           displayText={declutterJsonForDisplay(coderStreamedText)}
           hasStarted={coderStreamStarted}
-          connectingLabel="Connecting to Coder Agent..."
-          generatingLabel={isCoderRevising ? "Applying your requested change..." : "Planning the implementation..."}
-          isFinalizing={Boolean(coderPhase)}
-          finalizingLabel={coderPhase?.label}
+          connectingLabel={isSecurityFixInFlight ? securityFixLabel : "Connecting to Coder Agent..."}
+          generatingLabel={
+            isSecurityFixInFlight ? securityFixLabel : isCoderRevising ? "Applying your requested change..." : "Planning the implementation..."
+          }
+          isFinalizing={isSecurityFixInFlight || Boolean(coderPhase)}
+          finalizingLabel={isSecurityFixInFlight ? securityFixLabel : coderPhase?.label}
           phaseStartedAt={coderPhaseStartedAt}
         />
       ) : isUiuxGenerating ? (
@@ -765,10 +809,10 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
                   <div className="flex items-center gap-3 flex-wrap">
                     {selectedSecurityArtifact && (
                       <a
-                        href={artifactDownloadUrl(selectedSecurityArtifact.artifact_id)}
+                        href={artifactDownloadPdfUrl(selectedSecurityArtifact.artifact_id)}
                         className="text-sm text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 font-semibold"
                       >
-                        Download report
+                        Download Security Report
                       </a>
                     )}
                     <button
@@ -783,8 +827,12 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
                     <button
                       type="button"
                       onClick={handleContinueToQa}
-                      disabled={!selectedSecurityArtifact || isContinuingToQa || srsApproval.isPending}
-                      title="Approve this report and move on to QA Agent"
+                      disabled={!selectedSecurityArtifact || isContinuingToQa || srsApproval.isPending || securityGateBlocksQa}
+                      title={
+                        securityGateBlocksQa
+                          ? "The latest security scan still has Critical findings -- fix them before continuing to QA Agent"
+                          : "Approve this report and move on to QA Agent"
+                      }
                       className="text-sm bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white font-semibold px-3 py-1.5 rounded-md"
                     >
                       {isContinuingToQa ? "Continuing..." : "Continue to QA Agent"}
@@ -793,7 +841,7 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
                 </div>
               )}
 
-              <SecurityReportView artifact={selectedSecurityArtifact} />
+              <SecurityReportView artifact={selectedSecurityArtifact} previousArtifact={previousSecurityArtifact} />
 
               {selectedSecurityArtifact &&
                 (selectedSecurityArtifact.approval_status === "pending" ? (
@@ -982,6 +1030,11 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
         artifactId={securityDecisionArtifactId}
         featureId={featureId}
         onClose={() => setSecurityDecisionArtifactId(null)}
+        onFixStart={() => {
+          setIsSecurityFixInFlight(true);
+          selectAgent("coder");
+        }}
+        onFixSettled={() => setIsSecurityFixInFlight(false)}
       />
 
       <ConfirmDialog

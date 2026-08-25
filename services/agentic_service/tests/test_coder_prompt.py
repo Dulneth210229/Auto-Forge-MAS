@@ -153,6 +153,16 @@ def test_batch_prompt_inherits_the_new_rules_via_shared_hard_rules():
     assert "Responsive by default, no exceptions" in BATCH_CODE_GENERATOR_SYSTEM_PROMPT
 
 
+def test_prompt_requires_security_remediation_handling_without_weakening_existing_controls():
+    # Format-triggered (not gated on revised_by, which coder_agent/agent.py never reads) so it
+    # reaches every coding path -- confirm it's present in both the agentic and batch prompts.
+    from app.agents.coder_agent.prompt import BATCH_CODE_GENERATOR_SYSTEM_PROMPT
+
+    for prompt in (CODER_AGENT_SYSTEM_PROMPT, BATCH_CODE_GENERATOR_SYSTEM_PROMPT):
+        assert "security remediation task from the Security Agent" in prompt
+        assert "Never weaken or remove an EXISTING security control" in prompt
+
+
 # --- build_implementation_spec_section / _for_single_file (thread the real SRS + Architecture
 # Plan implementation_plan into the actual coding step, not just planning) ---
 

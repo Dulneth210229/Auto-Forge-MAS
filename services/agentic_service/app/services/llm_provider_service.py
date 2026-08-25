@@ -33,15 +33,22 @@ from app.schemas.llm_schema import (
 
 from app.services.in_memory_store import store
 
-# Every agent that can have its own LLM override configured through the UI. Security/QA are
-# real, LLM-backed agents now (see CLAUDE.md items 73/75) but aren't wired into this override
-# list yet -- a separate, pre-existing gap, not something this list's own name implies.
+# Every agent that can have its own LLM override configured through the UI. security_agent/
+# qa_agent's own chat composer already renders a real, live ModelSelect control (the same shared
+# component every agent uses) -- before this list included them, picking a model there was a
+# silent dead end (PUT /settings/llm/agents/{name} raised ValueError -> 400, never surfaced to the
+# human). get_provider(agent_name=...) and _resolve_effective_settings are already agent-name-
+# agnostic, so listing an agent here is the ONLY thing needed to make its already-rendered picker
+# actually work end-to-end (chat, and for security_agent, the deep scan + LLM review layer too --
+# all three already resolve their model through this exact same call).
 OVERRIDABLE_AGENTS = [
     "requirement_agent",
     "domain_agent",
     "architecture_agent",
     "uiux_agent",
     "coder_agent",
+    "security_agent",
+    "qa_agent",
 ]
 
 

@@ -30,6 +30,27 @@ export function useElapsedLabel(startedAt) {
   return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
 }
 
+// Cycles through `phrases` every `intervalMs`, restarting from the first phrase whenever the
+// phrase list itself changes (so a caller can freely swap in a different theme without a stale
+// index lingering). Returns the first phrase immediately (no "waiting for the first tick" gap)
+// and null if the list is empty. Used by ResultTab.jsx's Coder Agent live view to show a real,
+// visibly-rotating security-fix-themed message instead of a single static label during a
+// security-driven revision -- deliberately new; no existing rotating-message mechanism exists
+// anywhere else in this codebase (every other phase label is one static string).
+export function useRotatingLabel(phrases, intervalMs = 2500) {
+  const [index, setIndex] = useState(0);
+
+  useEffect(() => {
+    setIndex(0);
+    if (!phrases || phrases.length < 2) return undefined;
+    const interval = setInterval(() => setIndex((n) => (n + 1) % phrases.length), intervalMs);
+    return () => clearInterval(interval);
+  }, [phrases, intervalMs]);
+
+  if (!phrases || phrases.length === 0) return null;
+  return phrases[index % phrases.length];
+}
+
 export function PencilIcon() {
   return (
     <svg viewBox="0 0 20 20" fill="currentColor" className="w-3 h-3">

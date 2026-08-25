@@ -183,9 +183,17 @@ class SecurityAgent:
 
         Events:
             {"type": "phase", "phase": "...", "label": "..."}
-            {"type": "progress", "current": i, "total": N, "label": "..."}
+            {"type": "batch_started", "batch_index": i, "total": N, "files": [rel, rel, ...]}
+            {"type": "batch_finished", "batch_index": i, "total": N, "completed_count": c, "label": "..."}
             {"type": "error", "message": "..."}
             {"type": "done", "artifact_ids": [...], "message": "...", "gate_decision": "...", "findings_count": N}
+
+        "batch_started"/"batch_finished" (deep_scan.py's own events, passed through verbatim by the
+        `else: yield event` below -- this method never inspects their shape) replace what used to
+        be a single "progress" event once deep_scan.py's batches started running CONCURRENTLY
+        (bounded by DEEP_SCAN_MAX_CONCURRENT_BATCHES) instead of one at a time -- see that module's
+        own docstring for why a single overloaded "current" field stopped being meaningful once
+        batches can finish out of submission order.
         """
         feature = store.features.get(feature_id)
         project = store.projects.get(feature["project_id"])

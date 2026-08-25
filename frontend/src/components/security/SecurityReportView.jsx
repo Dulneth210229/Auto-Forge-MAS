@@ -1,6 +1,7 @@
 import { useArtifactContent } from "../../hooks/useArtifacts";
 import { useSecurityAgentFlowContext } from "../workspace/SecurityAgentFlowContext";
 import { DISPLAY_TIERS, groupFindingsByTier, toDisplayTier } from "../../lib/severityTiers";
+import { classifySecurityFindings } from "../../lib/securityFindingsComparison";
 import SeverityBadge from "./SeverityBadge";
 import ScanProgressBar from "./ScanProgressBar";
 import LoadingSpinner from "../common/LoadingSpinner";
@@ -50,6 +51,85 @@ const SCAN_TYPE_LABEL = {
   standard: "Standard scan",
 };
 
+const COMPARISON_GROUP_STYLE = {
+  resolved: {
+    label: "Resolved",
+    box: "bg-green-50 dark:bg-green-500/10 border-green-200 dark:border-green-500/30",
+    heading: "text-green-700 dark:text-green-400",
+    swatch: "bg-green-500",
+    legend: "Fixed since the previous scan",
+  },
+  stillPresent: {
+    label: "Still Present",
+    box: "bg-red-50 dark:bg-red-500/10 border-red-200 dark:border-red-500/30",
+    heading: "text-red-700 dark:text-red-400",
+    swatch: "bg-red-500",
+    legend: "Unresolved from the previous scan",
+  },
+  introduced: {
+    label: "New",
+    box: "bg-orange-50 dark:bg-orange-500/10 border-orange-200 dark:border-orange-500/30",
+    heading: "text-orange-700 dark:text-orange-400",
+    swatch: "bg-orange-500",
+    legend: "Not present in the previous scan",
+  },
+  ambiguous: {
+    label: "Ambiguous -- could not confidently match",
+    box: "bg-gray-50 dark:bg-white/5 border-gray-200 dark:border-gray-700",
+    heading: "text-gray-600 dark:text-gray-400",
+    swatch: "bg-gray-400",
+    legend: "Could not be confidently matched between scans",
+  },
+};
+
+// Order matches the grid below (resolved, stillPresent, introduced, ambiguous) so the legend
+// reads left-to-right/top-to-bottom in the same order the color-coded boxes appear in.
+const COMPARISON_LEGEND_ORDER = ["resolved", "stillPresent", "introduced", "ambiguous"];
+
+function ComparisonLegend() {
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+      {COMPARISON_LEGEND_ORDER.map((groupKey) => {
+        const style = COMPARISON_GROUP_STYLE[groupKey];
+        return (
+          <div key={groupKey} className="flex items-center gap-1.5" title={style.legend}>
+            <span className={`inline-block w-2.5 h-2.5 rounded-full ${style.swatch}`} />
+            <span className="text-xs text-gray-500 dark:text-gray-400">{style.label}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ComparisonFindingLine({ finding }) {
+  const loc = finding.line ? `${finding.file}:${finding.line}` : finding.file;
+  return (
+    <p className="text-xs text-gray-700 dark:text-gray-300 py-1 border-b border-black/5 dark:border-white/5 last:border-0">
+      <span className="font-mono text-gray-400 dark:text-gray-500">{loc}</span> -- {finding.message}
+    </p>
+  );
+}
+
+// One group of the "Compared to vN" section -- a plain array of findings for resolved/introduced/
+// ambiguous, or an array of {previous, current} pairs for stillPresent (shows the CURRENT
+// finding's own up-to-date location/message, since that's what a human reviewing right now cares
+// about -- the previous half of the pair only matters for the matching logic itself).
+function ComparisonGroup({ groupKey, items }) {
+  if (!items || items.length === 0) return null;
+  const style = COMPARISON_GROUP_STYLE[groupKey];
+  return (
+    <div className={`rounded-lg border px-3 py-2 ${style.box}`}>
+      <h5 className={`text-xs font-bold uppercase tracking-wide mb-1 ${style.heading}`}>
+        {style.label} ({items.length})
+      </h5>
+      {items.map((item, index) => (
+        <ComparisonFindingLine key={index} finding={groupKey === "stillPresent" ? item.current : item} />
+      ))}
+    </div>
+  );
+}
+
 // Renders a Security Agent report (the JSON artifact security_agent/agent.py's run() saves),
 // grouped into Critical/Moderate/Warning per the severity taxonomy (severityTiers.js, mirroring
 // the backend's severity.py). Rendered from ResultTab.jsx's `stage === "security"` branch instead
@@ -62,14 +142,23 @@ const SCAN_TYPE_LABEL = {
 // approving. Letting this view trigger that same action directly would let a human bypass
 // approval entirely, defeating the point of requiring it. "Re-run Scan" stays here since it's an
 // independent, non-approval-gated action (just re-scanning, not accepting/escalating anything).
-export default function SecurityReportView({ artifact }) {
+export default function SecurityReportView({ artifact, previousArtifact }) {
   const { data, isLoading, error } = useArtifactContent(artifact?.artifact_id ?? null);
   const report = data?.content_json;
+  // Only fetched/rendered for an AI-model-deep-scan report (direct user decision) -- that's the
+  // layer with real run-to-run scan variance; the deterministic scanners are already fully
+  // reproducible, so a resolved/still-present/new comparison for them would rarely say anything
+  // interesting. Fires in parallel with the main report fetch (previousArtifact's id is already
+  // known from the versions list, not derived from `data` above), and safely no-ops (no fetch,
+  // `data` stays undefined) when there is no previous version yet -- same disabled-query
+  // convention already used elsewhere in this component.
+  const previousReportQuery = useArtifactContent(previousArtifact?.artifact_id ?? null);
+  const previousReport = previousReportQuery.data?.content_json;
   // Shared with ResultTab.jsx's Coder-Agent-approval auto-trigger (see SecurityAgentFlowContext's
   // own docstring) -- not a fresh useRunSecurityAgent(featureId) instance, so a scan started from
   // the approval popup shows its real progress here too, not just wherever it was started.
   const { runSecurity, securityDeepScanFlow } = useSecurityAgentFlowContext();
-  const { deepScanStream, handleDeepScanStream, stopDeepScanStream, progress, phaseLabel, scanError } = securityDeepScanFlow;
+  const { deepScanStream, handleDeepScanStream, stopDeepScanStream, progress, phaseLabel, scanError, inFlightBatches } = securityDeepScanFlow;
   const anyScanPending = runSecurity.isPending || deepScanStream.isPending;
 
   // No report exists yet (never scanned, or the feature has no generated code yet) -- Security
@@ -105,7 +194,7 @@ export default function SecurityReportView({ artifact }) {
           </button>
         </div>
         {deepScanStream.isPending && (
-          <ScanProgressBar progress={progress} phaseLabel={phaseLabel} onStop={stopDeepScanStream} />
+          <ScanProgressBar progress={progress} phaseLabel={phaseLabel} onStop={stopDeepScanStream} inFlightBatches={inFlightBatches} />
         )}
       </div>
     );
@@ -121,6 +210,11 @@ export default function SecurityReportView({ artifact }) {
 
   const groups = groupFindingsByTier(report.findings || []);
   const hasFindings = (report.findings || []).length > 0;
+
+  const showComparison = report.scan_type === "ai_model_deep_scan" && Boolean(previousArtifact) && Boolean(previousReport);
+  const comparison = showComparison
+    ? classifySecurityFindings(previousReport.findings || [], report.findings || [])
+    : null;
 
   return (
     <div className="flex flex-col gap-5">
@@ -193,6 +287,23 @@ export default function SecurityReportView({ artifact }) {
           <span className="font-semibold">LLM review layer:</span> {report.llm_review_status}
         </p>
       </div>
+
+      {comparison && (
+        <div className="flex flex-col gap-2 pt-4 border-t border-gray-100 dark:border-gray-800">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <h4 className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wide">
+              Compared to v{previousArtifact.version}
+            </h4>
+            <ComparisonLegend />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <ComparisonGroup groupKey="resolved" items={comparison.resolved} />
+            <ComparisonGroup groupKey="stillPresent" items={comparison.stillPresent} />
+            <ComparisonGroup groupKey="introduced" items={comparison.introduced} />
+            <ComparisonGroup groupKey="ambiguous" items={comparison.ambiguous} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

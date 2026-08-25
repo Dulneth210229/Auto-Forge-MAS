@@ -15,6 +15,7 @@ from fastapi import APIRouter, HTTPException, Response
 from app.agents.architecture_agent.pdf_builder import build_architecture_plan_html
 from app.agents.domain_agent.pdf_builder import build_enhanced_srs_html
 from app.agents.requirement_agent.pdf_builder import build_srs_html
+from app.agents.security_agent.pdf_builder import build_security_report_html
 from app.core.enums import ArtifactFormat, ArtifactType
 from app.schemas.artifact_schema import ArtifactResponse
 from app.services import pdf_service
@@ -28,12 +29,13 @@ _DOWNLOAD_MEDIA_TYPES = {
     ArtifactFormat.HTML: "text/html",
 }
 
-# The three document types this PDF-export route supports, each mapped to the
-# HTML template builder that mirrors its own frontend document viewer.
+# The document types this PDF-export route supports, each mapped to the HTML template builder
+# that mirrors its own frontend document viewer.
 _PDF_BUILDERS = {
     ArtifactType.SRS: build_srs_html,
     ArtifactType.ENHANCED_SRS: build_enhanced_srs_html,
     ArtifactType.ARCHITECTURE_PLAN: build_architecture_plan_html,
+    ArtifactType.SECURITY_REPORT: build_security_report_html,
 }
 
 router = APIRouter(tags=["Artifacts"])
@@ -195,7 +197,7 @@ def download_artifact_pdf(artifact_id: str):
             status_code=400,
             detail=(
                 f"PDF export is not available for artifact_type='{artifact.artifact_type}'. "
-                "Only srs, enhanced_srs, and architecture_plan support PDF export."
+                "Only srs, enhanced_srs, architecture_plan, and security_report support PDF export."
             ),
         )
 
