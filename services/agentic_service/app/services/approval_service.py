@@ -66,6 +66,20 @@ UIUX_SIBLING_ARTIFACT_TYPES = {
 }
 
 
+# Maps each of these 3 gating types to the artifact_type that signals the NEXT pipeline stage has
+# already produced output -- once that's true, revoking THIS approval is permanently refused.
+# Direct user request: unlike every other revoke, this one must become impossible once the
+# pipeline has moved on, even navigating back to this agent later. Deliberately narrow (only these
+# 3 transitions) -- Coder Agent's code_diff and UI/UX's Preview Screenshot revoke keep their
+# current, more permissive behavior unchanged (out of scope; they already carry their own
+# real-git-merge-undo consequences, a different kind of "consequential" than this).
+_NEXT_STAGE_GATING_TYPE = {
+    ArtifactType.SRS: ArtifactType.ENHANCED_SRS,
+    ArtifactType.ENHANCED_SRS: ArtifactType.ARCHITECTURE_PLAN,
+    ArtifactType.ARCHITECTURE_PLAN: ArtifactType.UI_PREVIEW_SCREENSHOT,
+}
+
+
 def _is_exclusive_versioned_type(artifact_type) -> bool:
     return any(
         artifact_type in (exclusive_type, exclusive_type.value)
@@ -79,6 +93,14 @@ def _is_architecture_plan_type(artifact_type) -> bool:
 
 def _is_uiux_screenshot_type(artifact_type) -> bool:
     return artifact_type in (ArtifactType.UI_PREVIEW_SCREENSHOT, ArtifactType.UI_PREVIEW_SCREENSHOT.value)
+
+
+def _next_stage_gating_type(artifact_type):
+    """Returns the next-stage gating ArtifactType for one of the 3 lockable types, else None."""
+    for gating_type, next_type in _NEXT_STAGE_GATING_TYPE.items():
+        if artifact_type in (gating_type, gating_type.value):
+            return next_type
+    return None
 
 
 class ApprovalService:
@@ -251,6 +273,18 @@ class ApprovalService:
 
         if artifact.get("approval_status") not in (ApprovalStatus.APPROVED, ApprovalStatus.APPROVED.value):
             raise ValueError("Only an approved artifact can have its approval revoked.")
+
+        # Direct user request: once the pipeline has moved on to the next stage, this approval is
+        # permanently locked -- checked here, before any mutation, so a refused revoke never
+        # partially reverts anything. Mirrored on the frontend (deriveStageStatus.js's
+        # hasNextStageStarted) so the button is normally never even shown; this is the real,
+        # authoritative enforcement, not just a hidden button.
+        next_type = _next_stage_gating_type(artifact.get("artifact_type"))
+        if next_type and any(
+            other.get("feature_id") == artifact["feature_id"] and other.get("artifact_type") in (next_type, next_type.value)
+            for other in store.artifacts.values()
+        ):
+            raise ValueError("Cannot revoke this approval -- the pipeline has already moved on to the next stage.")
 
         approved_at = datetime.utcnow()
         reverted_ids: list[str] = []

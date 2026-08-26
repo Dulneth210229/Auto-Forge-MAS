@@ -61,28 +61,17 @@ function FindingRow({ finding, skipped, onToggleSkip }) {
           </p>
         )}
       </div>
-      {/* Direct user request: a radio button (not a checkbox/pill) per vulnerability, letting a
-          human explicitly accept the risk on ANY finding regardless of severity -- matches the
-          only existing native-radio precedent in this codebase (pipeline/ArtifactRow.jsx's
-          "pin active version" control). Two-option radio doubles as the Open/Skipped status
-          display itself, not just the control that sets it. */}
-      <div className="shrink-0 flex flex-col items-end gap-1 pl-2">
+      {/* Direct user request: only "Skip" is a real control -- "Open" is just the default,
+          unskipped state, not something a human needs to click back to. A single checkbox (not a
+          lone radio) is the correct native element here: a radio, once checked, can't be
+          unchecked by clicking it again, so a lone "Skip" radio would let a human skip a finding
+          but never un-skip it. */}
+      <div className="shrink-0 pl-2">
         <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
           <input
-            type="radio"
-            name={`finding-status-${finding.id}`}
-            checked={!skipped}
-            onChange={() => onToggleSkip(finding.id, false)}
-            className="accent-accent-600 cursor-pointer"
-          />
-          Open
-        </label>
-        <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
-          <input
-            type="radio"
-            name={`finding-status-${finding.id}`}
+            type="checkbox"
             checked={Boolean(skipped)}
-            onChange={() => onToggleSkip(finding.id, true)}
+            onChange={(event) => onToggleSkip(finding.id, event.target.checked)}
             className="accent-accent-600 cursor-pointer"
           />
           Skip

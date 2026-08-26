@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { listGatingArtifactVersions } from "../../lib/deriveStageStatus";
+import { listGatingArtifactVersions, getOperativeGatingArtifact, hasNextStageStarted } from "../../lib/deriveStageStatus";
 import {
   ARTIFACT_TYPE_STAGE,
   STAGE_GATING_ARTIFACT,
   ARTIFACT_TYPE_LABELS,
   dedupeArtifactVersions,
 } from "../../lib/artifactTypeMeta";
-import { STAGE_LABELS } from "../../lib/pipelineStages";
+import { STAGE_LABELS, CONSOLIDATED_APPROVAL_STAGES } from "../../lib/pipelineStages";
 import { getEffectiveActiveArtifact } from "../../lib/activeArtifactSelection";
 import { artifactDownloadUrl, artifactDownloadPdfUrl, featureCodeDownloadUrl } from "../../api/client";
 import { declutterJsonForDisplay } from "../../lib/streamingJsonDisplay";
@@ -17,6 +17,7 @@ import UiuxPagePreviewsPanel from "../pipeline/UiuxPagePreviewsPanel";
 import { LiveGenerationView, useRotatingLabel } from "../pipeline/RequirementConversationParts";
 import GovernancePanel from "../pipeline/GovernancePanel";
 import ApprovalPanel from "../pipeline/ApprovalPanel";
+import GatingArtifactApprovalPanel from "../pipeline/GatingArtifactApprovalPanel";
 import ArtifactList from "../pipeline/ArtifactList";
 import UiuxVersionGroupList from "../pipeline/UiuxVersionGroupList";
 import ErrorBanner from "../common/ErrorBanner";
@@ -236,17 +237,29 @@ function keepLatestVersionOnly(artifacts, types) {
 export default function ResultTab({ featureId, stage, allArtifacts }) {
   const { viewArtifact, selectAgent } = useWorkspaceSelection();
   const versions = listGatingArtifactVersions(stage, allArtifacts);
-  const [selectedVersion, setSelectedVersion] = useState(versions[0]?.version ?? null);
+  // For CONSOLIDATED_APPROVAL_STAGES (requirement/domain/architecture -- direct user decision),
+  // the DEFAULT selection is "the newest version that still needs a decision" (approved wins,
+  // else highest pending/revision-requested, else highest overall -- getOperativeGatingArtifact's
+  // existing precedence, already used by GovernancePanel), not just the newest version NUMBER --
+  // e.g. [v1: pending, v2: rejected] defaults to v1, the one actually actionable. Every other
+  // stage keeps the original "always the newest number" default unchanged.
+  function defaultSelectedVersion() {
+    if (CONSOLIDATED_APPROVAL_STAGES.includes(stage)) {
+      return getOperativeGatingArtifact(stage, allArtifacts)?.version ?? versions[0]?.version ?? null;
+    }
+    return versions[0]?.version ?? null;
+  }
+  const [selectedVersion, setSelectedVersion] = useState(defaultSelectedVersion());
 
   // Switching stages (e.g. auto-switching to Domain Agent right after approving the SRS) must
-  // always jump to the NEW stage's latest version, unconditionally -- without this, a version
+  // always jump to the NEW stage's default version, unconditionally -- without this, a version
   // number that happens to exist for both stages (e.g. "v4" of both srs and enhanced_srs) would
   // pass the "does this version still exist" check below and silently keep showing the PREVIOUS
   // stage's document under the new stage's header, a real bug found live: the panel kept showing
   // an old SRS revision after switching to Domain Agent, simply because that version number
   // coincidentally also existed among Domain's own artifacts.
   useEffect(() => {
-    setSelectedVersion(versions[0]?.version ?? null);
+    setSelectedVersion(defaultSelectedVersion());
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally NOT keyed on `versions`
     // here; that case (a new version arriving for the SAME stage) is handled by the effect below.
   }, [stage]);
@@ -261,14 +274,17 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
   // jumping when the latest version NUMBER has genuinely increased since the last render
   // (tracked via a ref, not `versions` itself, so an unrelated re-render -- e.g. an existing
   // version's own approval_status changing -- doesn't yank a human away from a version they're
-  // deliberately reviewing).
+  // deliberately reviewing). Deliberately jumps to the raw new version NUMBER here, never through
+  // defaultSelectedVersion's operative resolver -- a fresh revision created after an OLDER version
+  // was already approved must still surface immediately, not stay hidden behind the still-approved
+  // one just because the resolver prefers "approved" over "newest".
   const previousLatestVersionRef = useRef(versions[0]?.version ?? null);
   useEffect(() => {
     const latestVersion = versions[0]?.version ?? null;
     const previousLatestVersion = previousLatestVersionRef.current;
 
     if (versions.length > 0 && !versions.some((v) => v.version === selectedVersion)) {
-      setSelectedVersion(latestVersion);
+      setSelectedVersion(defaultSelectedVersion());
     } else if (
       latestVersion !== null &&
       previousLatestVersion !== null &&
@@ -409,6 +425,14 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
     ),
     LATEST_VERSION_ONLY_ARTIFACT_TYPES
   );
+
+  // Security/QA already replaced the stacked "All Artifacts" list + separate "Governance" panel
+  // with one compact version dropdown + inline approval control (see the security branch below) --
+  // CONSOLIDATED_APPROVAL_STAGES (requirement/domain/architecture, direct user request) now gets
+  // the exact same treatment via GatingArtifactApprovalPanel. uiux/coder keep the original,
+  // unchanged surfaces. One shared boolean, not two independently-maintained conditions, so the
+  // two render guards below can never drift out of sync with each other.
+  const showLegacyArtifactSurfaces = stage !== "security" && stage !== "qa" && !CONSOLIDATED_APPROVAL_STAGES.includes(stage);
 
   // Lets a human pin which APPROVED version feeds the next agent (e.g. which SRS version Domain
   // Agent reads) instead of always the latest approved one -- see ArtifactRow's radio button and
@@ -685,7 +709,7 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
         );
       })()}
 
-      {stage !== "security" && stage !== "qa" && (
+      {showLegacyArtifactSurfaces && (
       <div>
         <h3 className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wide mb-2">
           All Artifacts ({stage === "uiux" ? uiuxVersionCount : stageArtifacts.length})
@@ -901,10 +925,41 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
           {(() => {
             // Hoisted once and reused everywhere this section needs "the artifact behind the
             // currently-selected version" -- previously computed separately (identically) in two
-            // different inline IIFEs; also now backs the new Approve & Move to Security button.
+            // different inline IIFEs; also now backs the new Approve & Move to Security button AND
+            // (for CONSOLIDATED_APPROVAL_STAGES) GatingArtifactApprovalPanel below.
             const selectedVersionArtifact = versions.find((v) => v.version === selectedVersion) || versions[0];
             const pdfDocumentLabel = PDF_DOCUMENT_LABEL_BY_STAGE[stage];
+            // Domain Improvements attaches to whichever Enhanced SRS version is being viewed --
+            // same version number (both saved together, see domain_agent's _save_domain_artifacts),
+            // never its own listed/approvable row (see UNLISTED_ARTIFACT_TYPES above).
+            const domainImprovements =
+              stage === "domain"
+                ? allArtifacts.find(
+                    (a) => a.artifact_type === "domain_improvements" && a.version === selectedVersionArtifact.version
+                  )
+                : null;
+            // Same computation GovernancePanel.jsx/Security's own securityApproveLocked already
+            // use: some OTHER version of the same artifact_type is already approved.
+            const approveLocked =
+              CONSOLIDATED_APPROVAL_STAGES.includes(stage) &&
+              stageArtifacts.some(
+                (a) =>
+                  a.artifact_type === selectedVersionArtifact.artifact_type &&
+                  a.approval_status === "approved" &&
+                  a.artifact_id !== selectedVersionArtifact.artifact_id
+              );
+            // Direct user request: once approved AND the pipeline has moved on to the next agent,
+            // revoke becomes permanently unavailable -- hasNextStageStarted is the artifact-
+            // existence check also enforced server-side (approval_service.py's revoke_approval);
+            // nextStageInFlight is a frontend-only extra safeguard for the narrow window where the
+            // next stage is already generating but hasn't saved its first artifact yet.
+            const nextStageInFlight =
+              (stage === "requirement" && isDomainGenerating) ||
+              (stage === "domain" && isArchitectureGenerating) ||
+              (stage === "architecture" && isUiuxGenerating);
+            const canRevoke = !hasNextStageStarted(stage, allArtifacts) && !nextStageInFlight;
             return (
+          <>
           <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
             <VersionSelect versions={versions} selectedVersion={selectedVersion} onChange={setSelectedVersion} />
             <div className="flex items-center gap-3 flex-wrap">
@@ -937,43 +992,42 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
               )}
             </div>
           </div>
-            );
-          })()}
 
           {stage === "uiux" ? (
             <UiuxPagePreviewsPanel allArtifacts={allArtifacts} />
           ) : (
-            (() => {
-              const artifact = versions.find((v) => v.version === selectedVersion) || versions[0];
-              // Domain Improvements attaches to whichever Enhanced SRS version is being viewed --
-              // same version number (both saved together, see domain_agent's _save_domain_artifacts),
-              // never its own listed/approvable row (see UNLISTED_ARTIFACT_TYPES above).
-              const domainImprovements =
-                stage === "domain"
-                  ? allArtifacts.find(
-                      (a) => a.artifact_type === "domain_improvements" && a.version === artifact.version
-                    )
-                  : null;
-              return (
-                <div>
-                  <ArtifactContentView
-                    artifact={artifact}
-                    domainImprovementsArtifact={domainImprovements}
-                  />
-                  {stage === "architecture" && <ArchitectureDiagramsGallery allArtifacts={allArtifacts} />}
-                  {domainImprovements && (
-                    <div className="mt-5 pt-5 border-t border-gray-100 dark:border-gray-800">
-                      <ArtifactContentView artifact={domainImprovements} />
-                    </div>
-                  )}
+            <div>
+              <ArtifactContentView
+                artifact={selectedVersionArtifact}
+                domainImprovementsArtifact={domainImprovements}
+              />
+              {stage === "architecture" && <ArchitectureDiagramsGallery allArtifacts={allArtifacts} />}
+              {domainImprovements && (
+                <div className="mt-5 pt-5 border-t border-gray-100 dark:border-gray-800">
+                  <ArtifactContentView artifact={domainImprovements} />
                 </div>
-              );
-            })()
+              )}
+            </div>
           )}
+
+          {CONSOLIDATED_APPROVAL_STAGES.includes(stage) && (
+            <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-800">
+              <GatingArtifactApprovalPanel
+                featureId={featureId}
+                artifact={selectedVersionArtifact}
+                approveLocked={approveLocked}
+                canRevoke={canRevoke}
+                onApproveClick={onApproveClickForStage}
+              />
+            </div>
+          )}
+          </>
+            );
+          })()}
         </div>
       )}
 
-      {stage !== "security" && stage !== "qa" && (
+      {showLegacyArtifactSurfaces && (
       <div className="pt-4 border-t border-gray-100 dark:border-gray-800">
         <h3 className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wide mb-2">Governance</h3>
         <GovernancePanel

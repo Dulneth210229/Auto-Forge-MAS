@@ -7769,6 +7769,98 @@ milestone — that file is scratch, **this file is the durable one**.
       artifact of running them simultaneously, not a real hang or regression; a clean sequential
       rerun completed all 1100 tests with zero failures).
 
+91. **Security Agent: single Skip checkbox (removed the confusing Open radio); Requirement/Domain/
+    Architecture: consolidated version dropdown + permanently-locked approval, mirroring Security's
+    own already-shipped pattern.** Two direct user requests from a screenshot of the existing UI.
+    - **Part A**: `SecurityReportView.jsx`'s `FindingRow` had two radio buttons ("Open"/"Skip")
+      per finding -- confusing, and a real latent bug: a lone radio, once checked, can't be
+      unchecked by clicking it again, so if "Open" had been removed as a plain radio (instead of
+      the fix below) a human could skip a finding but never un-skip it. Replaced both radios with
+      **one checkbox**, the correct native element for a real binary toggle. The Open/Skipped color
+      legend and dimmed-row/"Skipped" badge are unchanged -- those describe the two states, which
+      still both exist; only the control changed.
+    - **Part B -- the bigger change.** Requirement/Domain/Architecture used to render THREE
+      redundant, independently-resolved surfaces for the same versions: a stacked "All Artifacts"
+      list (`ArtifactList`/`ArtifactRow.jsx`, full per-row Approve/Reject/Revoke/Delete controls --
+      the user's screenshot), a `VersionSelect` dropdown + document viewer (view-only, no approval
+      controls wired to it), and a separate "Governance" panel (`GovernancePanel.jsx`, approve/
+      reject/revoke for whichever version its own resolver picked as "operative," independent of
+      the dropdown). **Key finding, confirmed by the codebase's own comment**
+      (`ResultTab.jsx:790-793` at the time): Security Agent already solved exactly this problem for
+      itself -- "a compact version dropdown plus one inline approval control replaces both [the
+      All Artifacts list and Governance panel]." This item mirrors that already-shipped,
+      already-proven pattern for Requirement/Domain/Architecture rather than inventing new UI.
+    - New `CONSOLIDATED_APPROVAL_STAGES = ["requirement", "domain", "architecture"]`
+      (`pipelineStages.js`) replaces two independently-maintained `stage !== "security" && stage
+      !== "qa"` guards in `ResultTab.jsx` with one shared `showLegacyArtifactSurfaces` boolean --
+      `uiux`/`coder` explicitly keep their original, unchanged `ArtifactList`/`GovernancePanel` UI
+      (out of scope per the user's own wording).
+    - New `frontend/src/components/pipeline/GatingArtifactApprovalPanel.jsx`, rendered once per
+      stage for whichever version the (already-existing) `selectedVersion` dropdown currently
+      points at: pending -> the existing, unmodified `ApprovalPanel` + a Delete button (direct user
+      decision: don't silently drop the existing per-version Delete capability just because
+      Security's own compact panel never had one); approved/rejected -> a plain status line +
+      (approved only) a Revoke button, shown only when `canRevoke` is true.
+    - **Two direct user decisions from AskUserQuestion**: keep Delete in the new panel (done
+      above), and default the dropdown to "the newest version that still needs a decision" (e.g.
+      `[v1: pending, v2: rejected]` should default to v1, not v2) rather than just the newest
+      version number. Implemented narrowly to avoid a real regression a Plan-agent review caught:
+      only the "stage changed" / "current selection vanished" reset (`ResultTab.jsx`'s two
+      `selectedVersion` effects) now uses `getOperativeGatingArtifact`'s existing approved-wins/
+      highest-pending/highest-overall precedence (already used by `GovernancePanel`) for
+      `CONSOLIDATED_APPROVAL_STAGES` specifically -- the OTHER effect (a genuinely NEW version
+      arriving) deliberately still jumps to that new version's raw number regardless of the
+      resolver, otherwise a fresh revision created after an older version was already approved
+      would be silently hidden behind the still-approved one.
+    - **The genuinely new rule, not a UI rearrangement: once a stage's approval has been acted on
+      by the pipeline moving forward, revoking it becomes permanently impossible, even navigating
+      back later.** New `hasNextStageStarted(stage, artifacts)` (`deriveStageStatus.js`) --
+      existence-based: does any artifact of the NEXT stage's gating type exist for this feature.
+      `canRevoke` also folds in a small frontend-only extra safeguard (`nextStageInFlight`, reusing
+      `ResultTab.jsx`'s own already-computed `isDomainGenerating`/`isArchitectureGenerating`/
+      `isUiuxGenerating` booleans) for the narrow real race a Plan-agent review caught: the next
+      stage can be actively generating for minutes without having saved an artifact yet.
+    - **Enforced on the backend too, not just a hidden button** -- matches this codebase's existing
+      defense-in-depth style (`revoke_approval` already raised `ValueError` for "not approved").
+      New narrow `_NEXT_STAGE_GATING_TYPE` map in `approval_service.py` (SRS->Enhanced SRS,
+      Enhanced SRS->Architecture Plan, Architecture Plan->UI Preview Screenshot -- deliberately only
+      these 3 transitions; Coder/UI-UX revoke keep their current, more permissive behavior,
+      explicitly out of scope and already carrying their own real-git-merge-undo consequences). New
+      check added immediately after the existing "not approved" raise, before any mutation happens
+      (confirmed via Plan-agent review: no interaction with the later cascade/coder-diff-undo
+      logic) -- raises `ValueError("Cannot revoke this approval -- the pipeline has already moved
+      on to the next stage.")`, mapped to HTTP 400 by the existing route with no route change
+      needed.
+    - **Explicitly not changed**: `set_active_artifact_selection`/the version-pin radio --
+      `EXCLUSIVE_VERSIONED_ARTIFACT_TYPES` already guarantees only one SRS/Enhanced SRS/Architecture
+      Plan version is ever approved at a time, so the pin was already inert for these 3 types
+      (nothing to choose among) before this change. `ArtifactRow.jsx`/`GovernancePanel.jsx`
+      themselves are untouched (still serve `uiux`/`coder` unchanged) -- a small amount of
+      duplication (the revoke-button/confirm-dialog shape) between those and the new panel is an
+      accepted, scoped tradeoff against touching files used by out-of-scope stages.
+    - New tests in `test_approval_revoke.py`: one per locked transition (SRS->Enhanced SRS,
+      Enhanced SRS->Architecture Plan, Architecture Plan->UI/UX), one confirming revoke still works
+      when the next stage hasn't started, and one confirming UI/UX's own revoke is unaffected even
+      when Coder has already started (proving the new lock is genuinely scoped to only 3
+      transitions). Full backend suite: **1086 passed** (14 failures + 5 errors, all in
+      `test_coder_tools.py`/`test_coder_verify.py`/`test_render_checker.py`, confirmed via direct
+      `docker version` to be a pre-existing local-environment gap -- Docker Desktop's daemon
+      unreachable on this machine at verification time -- entirely unrelated to this change; none
+      of the failing tests touch any file this item modified). `npm run build` clean.
+    - **Real, live verification against the real "Item Listing (CRUD)" feature** (isolated backend
+      + isolated `vite preview`, same shared MongoDB Atlas cluster) -- a genuinely messy real case:
+      SRS v16-v19 pending with v20 approved, Enhanced SRS/Architecture Plan/UI Preview Screenshot/
+      Coder/Security/QA all already produced for this same feature. Confirmed live: "All Artifacts"
+      and "Governance" headings are gone from Requirement/Domain/Architecture; the dropdown lists
+      all 4 SRS versions; selecting pending v16 surfaces its own Approve (correctly disabled,
+      `approveLocked`)/Reject/Delete controls; v20's approved status line has **no** Revoke button
+      at all (Domain has already started); a direct `POST /artifacts/{v20_id}/approval/revoke` call
+      returns the real 400 with the exact expected message. Confirmed the identical pattern for
+      Domain and Architecture. Confirmed live against the real Finodil feature's Security Agent:
+      9 findings each show exactly one Skip checkbox (0 radio inputs on the page), the legend's
+      literal "Open" text appears exactly once (the legend, not per-row), and toggling a checkbox
+      genuinely flips its persisted state on a fresh query after each click.
+
 ## Where to look
 
 - Full build spec (read this first, in order, before any new milestone): `instructions .md`
