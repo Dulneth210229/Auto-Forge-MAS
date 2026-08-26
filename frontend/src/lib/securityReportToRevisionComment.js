@@ -10,8 +10,14 @@ import { DISPLAY_TIERS, groupFindingsByTier } from "./severityTiers";
 // backend's SecurityFinding schema populates both on every scan layer) -- this is what makes the
 // plan the Coder Agent receives "coder-friendly" rather than just a bare list of complaints: it
 // tells the model WHY the code is vulnerable and WHAT to change, not just where.
-export function buildSecurityRevisionComment(report) {
-  const groups = groupFindingsByTier(report?.findings || []);
+//
+// skippedFindingIds (a human's explicit "accept the risk" choices for THIS report version, see
+// securityGate.js) are filtered out before grouping -- a skipped finding must never be sent to
+// the Coder Agent to "fix," since the whole point of skipping it was to proceed without fixing it.
+export function buildSecurityRevisionComment(report, skippedFindingIds = []) {
+  const skipped = new Set(skippedFindingIds || []);
+  const findings = (report?.findings || []).filter((finding) => !skipped.has(finding.id));
+  const groups = groupFindingsByTier(findings);
 
   const lines = ["Fix the following security findings reported by the Security Agent:", ""];
 

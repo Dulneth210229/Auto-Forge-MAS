@@ -17,7 +17,7 @@ from app.agents.domain_agent.pdf_builder import build_enhanced_srs_html
 from app.agents.requirement_agent.pdf_builder import build_srs_html
 from app.agents.security_agent.pdf_builder import build_security_report_html
 from app.core.enums import ArtifactFormat, ArtifactType
-from app.schemas.artifact_schema import ArtifactResponse
+from app.schemas.artifact_schema import ArtifactResponse, SkippedFindingUpdateRequest
 from app.services import pdf_service
 from app.services.artifact_service import artifact_service
 from app.services.in_memory_store import store
@@ -60,6 +60,24 @@ def get_artifact(artifact_id: str):
     Return artifact metadata by artifact ID.
     """
     artifact = artifact_service.get_artifact(artifact_id)
+
+    if not artifact:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    return artifact
+
+
+@router.put("/artifacts/{artifact_id}/skipped-findings", response_model=ArtifactResponse)
+def update_skipped_finding(artifact_id: str, request: SkippedFindingUpdateRequest):
+    """
+    Mark (or unmark) one security finding as skipped -- a human choosing to accept the risk and
+    proceed without fixing it. Does not touch the artifact's content_json (see
+    artifact_service.set_finding_skipped's own docstring); only its side-channel
+    skipped_finding_ids metadata field.
+    """
+    artifact = artifact_service.set_finding_skipped(
+        artifact_id=artifact_id, finding_id=request.finding_id, skipped=request.skipped
+    )
 
     if not artifact:
         raise HTTPException(status_code=404, detail="Artifact not found")

@@ -7680,6 +7680,95 @@ milestone — that file is scratch, **this file is the durable one**.
       `Content-Disposition: attachment` response inline for visual screenshot verification), and
       confirmed every expected section and field present.
 
+90. **Security Agent: mark vulnerabilities as Skipped, real "Proceed Anyway," and Fixed/Open/
+    Skipped status.** Direct user request: the "Continue to QA Agent" button was permanently
+    disabled while the latest scan had any Critical finding, with no way to proceed except getting
+    the Coder Agent to fix every one. Planned via 2 parallel Explore agents plus a Plan-agent
+    validation pass that caught 4 real issues before implementation: a concurrent-write race, a
+    dead-data `stage_event` call, missing prop-plumbing, and a gate banner that would contradict
+    per-row skip status. Two direct user decisions: rename "Resolved" to "Fixed," and fix a real,
+    previously-dormant bug (below).
+    - **The QA gate was already 100% frontend-only** (`gate_decision` computed in `severity.py`
+      but, by that module's own docstring, "never consulted to block pipeline advancement" on the
+      backend) -- duplicated independently in `ResultTab.jsx` and
+      `WorkspaceSelectionContext.jsx`. This entire feature is therefore frontend/light-backend;
+      no QA Agent or graph-orchestrator change was needed.
+    - **`finding.id` is stable within one artifact version but not across re-scans** (item 88's own
+      documented evidence) -- skip decisions are scoped to one artifact version and never carried
+      forward to a new scan automatically, sidestepping that instability entirely: a fresh scan
+      always starts with an empty skip set, forcing re-review.
+    - **Backend**: `ArtifactResponse` gains `skipped_finding_ids: list[str] = []` (additive/default-
+      safe -- the only construction site builds it via `ArtifactResponse(**artifact, ...)`, so old
+      records simply get `[]`). New `ArtifactService.set_finding_skipped(artifact_id, finding_id,
+      skipped)` uses an **atomic** `$addToSet`/`$pull` (`store.artifacts.collection.update_one`),
+      not a read-modify-write on the whole record like `approval_status` uses -- a real race the
+      Plan-agent flagged, since this field gets toggled rapidly across many findings on one report,
+      unlike a single approval click. New route `PUT /artifacts/{artifact_id}/skipped-findings` in
+      `app/api/routes/artifacts.py`. Deliberately does NOT touch `content_json` on disk (see next
+      point) and deliberately does NOT emit a `stage_event` (the Plan-agent found
+      `SecurityAgentChat.jsx` is the one stage `ChatPanel.jsx` never passes a `timeline` prop to,
+      so a stage-event call here would be silent dead data, invisible in the UI).
+    - **Why skip state lives on the artifact record, never in `content_json`**: confirmed
+      `useArtifactContent`'s `staleTime: Infinity` (`frontend/src/hooks/useArtifacts.js`) treats
+      content as immutable once fetched -- mutating the JSON file in place would leave any
+      already-open tab showing stale data forever. `skipped_finding_ids` instead rides on
+      `ArtifactResponse`/the feature's artifact list (both always-fresh queries), cross-referenced
+      client-side against the separately-cached `content_json.findings`.
+    - **New shared `frontend/src/lib/securityGate.js`**'s `computeSecurityGateBlocksQa(findings,
+      skippedFindingIds)` replaces the two independently-duplicated `gate_decision === "fail"`
+      checks in `ResultTab.jsx` and `WorkspaceSelectionContext.jsx` -- true only if some Critical
+      finding's id is NOT in the skip set. Both components already held the full `ArtifactResponse`
+      list object needed for `skipped_finding_ids`, so this required zero new fetches, just
+      pulling `findings` and `skipped_finding_ids` from two already-fetched objects instead of one.
+    - **`SecurityReportView.jsx`'s `FindingRow`** gained a native 2-option radio group ("Open" /
+      "Skip") per finding, `accent-*`-styled matching `pipeline/ArtifactRow.jsx`'s own existing
+      radio (the only native-radio precedent in this codebase, and the closest match to the user's
+      own literal "radio button" wording) -- doubling as both the control and the visible
+      Open/Skipped status. A skipped row dims (opacity-50) with a small "Skipped" badge. The gate
+      banner is now skip-aware: a 4th `"skipped"` state (distinct from pass/review/fail) renders
+      once every Critical finding is skipped ("All Critical vulnerabilities have been skipped --
+      safe to continue to QA Agent," blue, not green -- an honest accepted-risk state, not a false
+      "clean scan"), and the summary line appends `-- N skipped`. A small Open/Skipped color legend
+      sits above the findings list, pointing to the "Compared to vN" section below for Fixed
+      findings.
+    - **`buildSecurityRevisionComment(report, skippedFindingIds)`** now filters skipped findings
+      out before building the Coder Agent's fix request -- confirmed live: a real "Fix
+      Vulnerabilities" click's captured `revision_comment` correctly omitted the skipped Critical
+      finding's `[CRITICAL]` line entirely while every other finding still rendered normally.
+      Confirmed safe against item 88's coverage-checker (text-driven off the exact string handed to
+      it -- an omitted finding's `file:line` simply never appears, so it can never be flagged
+      "missing").
+    - **Real, previously-dormant bug fixed (direct user decision)**: `SecurityDecisionDialog.jsx`'s
+      "Proceed Anyway" button (shown after approving a report) previously did nothing but close the
+      dialog -- it never actually unblocked `securityGateBlocksQa`, which was computed completely
+      independently. Now it bulk-marks every currently-open finding in that report as Skipped
+      (parallel `mutateAsync` calls -- safe since the backend's `$addToSet` is atomic and
+      idempotent per id) before closing, making its own long-implied promise ("proceed despite
+      remaining issues") actually true. Live-verified end to end on an isolated seeded fixture
+      feature (to avoid disturbing the real Finodil feature's own already-approved history):
+      Continue to QA Agent was disabled, Approve -> dialog opened, "Proceed Anyway" clicked ->
+      finding shown Skipped, banner switched to the new blue accepted-risk state, button enabled --
+      zero page errors.
+    - **"Resolved" renamed to "Fixed"** (direct user decision) in `COMPARISON_GROUP_STYLE` -- label
+      only, the underlying `resolved` bucket key and `classifySecurityFindings` matching logic are
+      untouched.
+    - New `test_security_finding_skip.py` (8 tests, service logic, atomic toggle/no-duplicate/
+      no-op-unskip/multi-finding-independence) and `test_skipped_findings_route.py` (4 tests, route
+      wiring incl. 404), mirroring `test_artifact_active_selection.py`/`test_approval_revoke_route.py`'s
+      own service-vs-route test split convention.
+    - **Real, live verification against the real Finodil feature** (isolated backend `:8091` +
+      isolated `vite preview` `:5198`, same shared MongoDB Atlas cluster): confirmed via a real
+      concurrent-write test (two simultaneous `PUT` calls on different finding ids both persisted,
+      proving the atomic update, not a lost-update race); confirmed live in the browser that
+      "Continue to QA Agent" was disabled before, and genuinely enabled immediately (no reload)
+      after clicking "Skip" on the one real Critical finding, with the banner/summary/badge all
+      updating live; confirmed the real captured `revision_comment` correctly excluded the skipped
+      finding. `npm run build` clean. Full backend suite: **1100 passed**, 0 failures (a first,
+      concurrent run of this suite alongside the isolated verification instances starved it down to
+      53% complete after nearly an hour before being killed -- an environmental resource-contention
+      artifact of running them simultaneously, not a real hang or regression; a clean sequential
+      rerun completed all 1100 tests with zero failures).
+
 ## Where to look
 
 - Full build spec (read this first, in order, before any new milestone): `instructions .md`

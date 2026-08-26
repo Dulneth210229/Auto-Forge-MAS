@@ -5,6 +5,7 @@ import { useGraphStatus } from "../../hooks/usePipeline";
 import { useFeatureArtifacts, useArtifactContent } from "../../hooks/useArtifacts";
 import { deriveStageStatus, listGatingArtifactVersions } from "../../lib/deriveStageStatus";
 import { deriveCurrentStage } from "../../lib/deriveCurrentStage";
+import { computeSecurityGateBlocksQa } from "../../lib/securityGate";
 
 const WorkspaceSelectionContext = createContext(null);
 
@@ -75,7 +76,13 @@ export function WorkspaceSelectionProvider({ featureId, onSelectFeature, childre
   const securityVersions = listGatingArtifactVersions("security", artifacts || []);
   const latestSecurityArtifactId = securityVersions[0]?.artifact_id ?? null;
   const { data: latestSecurityReportData } = useArtifactContent(latestSecurityArtifactId);
-  const securityGateBlocksQa = latestSecurityReportData?.content_json?.gate_decision === "fail";
+  // Skip-aware (direct user request): a Critical finding a human has explicitly marked Skipped no
+  // longer blocks -- see securityGate.js's own docstring. securityVersions[0] already carries
+  // skipped_finding_ids as artifact-record metadata (no new fetch needed).
+  const securityGateBlocksQa = computeSecurityGateBlocksQa(
+    latestSecurityReportData?.content_json?.findings,
+    securityVersions[0]?.skipped_finding_ids
+  );
 
   // Direct user request: opening a project (or switching to a different feature) should land on
   // whichever agent that feature was LAST worked on, not always reset to Requirement -- reuses

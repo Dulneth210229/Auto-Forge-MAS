@@ -323,6 +323,34 @@ class ArtifactService:
 
         return self._hydrate_artifact_response(artifact)
 
+    def set_finding_skipped(self, artifact_id: str, finding_id: str, skipped: bool) -> ArtifactResponse | None:
+        """
+        Mark (or unmark) one security finding as skipped on a security_report artifact -- a human
+        choosing to accept the risk and proceed without fixing it. Stored as a side-channel field
+        on the artifact RECORD (skipped_finding_ids), mirroring approval_status's own in-place-
+        mutation precedent -- never written into content_json, since useArtifactContent's
+        staleTime:Infinity on the frontend treats an artifact's JSON content as immutable once
+        created; mutating the file in place would leave any already-open tab showing stale data.
+
+        Uses an atomic Mongo $addToSet/$pull instead of a read-modify-write on the whole record
+        (the pattern submit_approval uses for approval_status) deliberately -- this field gets
+        toggled repeatedly, in quick succession, across many findings on one report, and a
+        read-modify-write driven by possibly-stale local state risks silently losing an earlier
+        click's update when a later click's write overwrites the whole array.
+        """
+        if not store.artifacts.get(artifact_id):
+            return None
+
+        op = (
+            {"$addToSet": {"skipped_finding_ids": finding_id}}
+            if skipped
+            else {"$pull": {"skipped_finding_ids": finding_id}}
+        )
+        store.artifacts.collection.update_one({"artifact_id": artifact_id}, op)
+
+        artifact = store.artifacts.get(artifact_id)
+        return self._hydrate_artifact_response(artifact)
+
     @staticmethod
     def _artifact_matches(artifact: dict, feature_id: str, artifact_type: str, artifact_format: str | None) -> bool:
         if artifact.get("feature_id") != feature_id:

@@ -1,7 +1,9 @@
 import { useArtifactContent } from "../../hooks/useArtifacts";
 import { useSecurityAgentFlowContext } from "../workspace/SecurityAgentFlowContext";
+import { useSetFindingSkippedMutation } from "../../hooks/useSkippedFindingsMutation";
 import { DISPLAY_TIERS, groupFindingsByTier, toDisplayTier } from "../../lib/severityTiers";
 import { classifySecurityFindings } from "../../lib/securityFindingsComparison";
+import { computeSecurityGateBlocksQa } from "../../lib/securityGate";
 import SeverityBadge from "./SeverityBadge";
 import ScanProgressBar from "./ScanProgressBar";
 import LoadingSpinner from "../common/LoadingSpinner";
@@ -11,23 +13,40 @@ const GATE_BANNER_STYLE = {
   fail: "bg-red-50 dark:bg-red-500/10 border-red-200 dark:border-red-500/30 text-red-800 dark:text-red-300",
   review: "bg-orange-50 dark:bg-orange-500/10 border-orange-200 dark:border-orange-500/30 text-orange-800 dark:text-orange-300",
   pass: "bg-green-50 dark:bg-green-500/10 border-green-200 dark:border-green-500/30 text-green-800 dark:text-green-300",
+  // A distinct 4th state (not one of the backend's own gate_decision values) -- every Critical
+  // finding has been explicitly skipped, so the gate no longer blocks, but this is a deliberate
+  // accepted-risk state, not a clean "pass," so it gets its own honest wording/color rather than
+  // silently reusing "pass".
+  skipped: "bg-blue-50 dark:bg-blue-500/10 border-blue-200 dark:border-blue-500/30 text-blue-800 dark:text-blue-300",
 };
 
 const GATE_BANNER_TEXT = {
   fail: "Critical vulnerabilities found -- review before proceeding.",
   review: "Moderate-severity findings to review.",
   pass: "No Critical or Moderate findings.",
+  skipped: "All Critical vulnerabilities have been skipped -- safe to continue to QA Agent.",
 };
 
 const TIER_HEADING = { critical: "Critical", moderate: "Moderate", warning: "Warning" };
 
-function FindingRow({ finding }) {
+function FindingRow({ finding, skipped, onToggleSkip }) {
   const loc = finding.line ? `${finding.file}:${finding.line}` : finding.file;
   return (
-    <div className="flex items-start gap-3 py-2 border-b border-gray-100 dark:border-gray-800 last:border-0">
+    <div
+      className={`flex items-start gap-3 py-2 border-b border-gray-100 dark:border-gray-800 last:border-0 ${
+        skipped ? "opacity-50" : ""
+      }`}
+    >
       <SeverityBadge tier={toDisplayTier(finding.severity)} />
       <div className="min-w-0 flex-1">
-        <p className="text-sm text-gray-800 dark:text-gray-200">{finding.message}</p>
+        <div className="flex items-center gap-2">
+          <p className="text-sm text-gray-800 dark:text-gray-200">{finding.message}</p>
+          {skipped && (
+            <span className="shrink-0 text-[10px] font-bold uppercase tracking-wide text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-white/10 rounded-full px-2 py-0.5">
+              Skipped
+            </span>
+          )}
+        </div>
         <p className="text-xs text-gray-400 dark:text-gray-500 font-mono mt-0.5">
           {finding.rule_id} -- {loc} -- {finding.cwe}
         </p>
@@ -42,6 +61,33 @@ function FindingRow({ finding }) {
           </p>
         )}
       </div>
+      {/* Direct user request: a radio button (not a checkbox/pill) per vulnerability, letting a
+          human explicitly accept the risk on ANY finding regardless of severity -- matches the
+          only existing native-radio precedent in this codebase (pipeline/ArtifactRow.jsx's
+          "pin active version" control). Two-option radio doubles as the Open/Skipped status
+          display itself, not just the control that sets it. */}
+      <div className="shrink-0 flex flex-col items-end gap-1 pl-2">
+        <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
+          <input
+            type="radio"
+            name={`finding-status-${finding.id}`}
+            checked={!skipped}
+            onChange={() => onToggleSkip(finding.id, false)}
+            className="accent-accent-600 cursor-pointer"
+          />
+          Open
+        </label>
+        <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
+          <input
+            type="radio"
+            name={`finding-status-${finding.id}`}
+            checked={Boolean(skipped)}
+            onChange={() => onToggleSkip(finding.id, true)}
+            className="accent-accent-600 cursor-pointer"
+          />
+          Skip
+        </label>
+      </div>
     </div>
   );
 }
@@ -53,7 +99,7 @@ const SCAN_TYPE_LABEL = {
 
 const COMPARISON_GROUP_STYLE = {
   resolved: {
-    label: "Resolved",
+    label: "Fixed",
     box: "bg-green-50 dark:bg-green-500/10 border-green-200 dark:border-green-500/30",
     heading: "text-green-700 dark:text-green-400",
     swatch: "bg-green-500",
@@ -160,6 +206,11 @@ export default function SecurityReportView({ artifact, previousArtifact }) {
   const { runSecurity, securityDeepScanFlow } = useSecurityAgentFlowContext();
   const { deepScanStream, handleDeepScanStream, stopDeepScanStream, progress, phaseLabel, scanError, inFlightBatches } = securityDeepScanFlow;
   const anyScanPending = runSecurity.isPending || deepScanStream.isPending;
+  const setFindingSkipped = useSetFindingSkippedMutation(artifact?.feature_id);
+  function handleToggleSkip(findingId, skip) {
+    if (!artifact) return;
+    setFindingSkipped.mutate({ artifactId: artifact.artifact_id, finding_id: findingId, skipped: skip });
+  }
 
   // No report exists yet (never scanned, or the feature has no generated code yet) -- Security
   // Agent has no revise() flow (a re-run IS the whole operation), so this empty-state action is
@@ -208,8 +259,16 @@ export default function SecurityReportView({ artifact, previousArtifact }) {
     return <ErrorBanner error={error} fallback="Failed to load the security report." />;
   }
 
-  const groups = groupFindingsByTier(report.findings || []);
-  const hasFindings = (report.findings || []).length > 0;
+  const findings = report.findings || [];
+  const skippedFindingIds = artifact.skipped_finding_ids || [];
+  const groups = groupFindingsByTier(findings);
+  const hasFindings = findings.length > 0;
+  const skippedSet = new Set(skippedFindingIds);
+  const skippedCount = findings.filter((finding) => skippedSet.has(finding.id)).length;
+  // Skip-aware (direct user request): drives both the banner below and the disabled state of
+  // ResultTab.jsx's "Continue to QA Agent" button (same shared helper, same answer).
+  const criticalStillBlocks = computeSecurityGateBlocksQa(findings, skippedFindingIds);
+  const effectiveGateKey = report.gate_decision === "fail" && !criticalStillBlocks ? "skipped" : report.gate_decision;
 
   const showComparison = report.scan_type === "ai_model_deep_scan" && Boolean(previousArtifact) && Boolean(previousReport);
   const comparison = showComparison
@@ -218,12 +277,13 @@ export default function SecurityReportView({ artifact, previousArtifact }) {
 
   return (
     <div className="flex flex-col gap-5">
-      <div className={`rounded-lg border px-4 py-3 flex items-center justify-between flex-wrap gap-3 ${GATE_BANNER_STYLE[report.gate_decision] || ""}`}>
+      <div className={`rounded-lg border px-4 py-3 flex items-center justify-between flex-wrap gap-3 ${GATE_BANNER_STYLE[effectiveGateKey] || ""}`}>
         <div className="min-w-0">
-          <p className="text-sm font-bold">{GATE_BANNER_TEXT[report.gate_decision] || "Scan complete."}</p>
+          <p className="text-sm font-bold">{GATE_BANNER_TEXT[effectiveGateKey] || "Scan complete."}</p>
           <p className="text-xs opacity-80 mt-0.5">
             {report.findings_count} finding(s) -- {report.critical_count} critical, {report.moderate_count} moderate,{" "}
             {report.warning_count} warning
+            {skippedCount > 0 && ` -- ${skippedCount} skipped`}
           </p>
           <p className="text-xs opacity-70 mt-0.5">
             Scan type: {SCAN_TYPE_LABEL[report.scan_type] || "Standard scan"}
@@ -261,20 +321,42 @@ export default function SecurityReportView({ artifact, previousArtifact }) {
       {!hasFindings ? (
         <p className="text-sm text-gray-400 dark:text-gray-500 italic">No findings from any scan layer.</p>
       ) : (
-        DISPLAY_TIERS.map((tier) =>
-          groups[tier].length === 0 ? null : (
-            <div key={tier}>
-              <h4 className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wide mb-2">
-                {TIER_HEADING[tier]} ({groups[tier].length})
-              </h4>
-              <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg px-3">
-                {groups[tier].map((finding) => (
-                  <FindingRow key={finding.id} finding={finding} />
-                ))}
-              </div>
+        <>
+          {/* Direct user request #4: clearly distinguish Fixed/Open/Skipped. Open/Skipped are
+              this report's own current findings (below); Fixed findings (present in the previous
+              scan, gone from this one) appear in "Compared to vN" further down when available. */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
+            <div className="flex items-center gap-1.5">
+              <span className="inline-block w-2.5 h-2.5 rounded-full bg-gray-600 dark:bg-gray-300" />
+              Open
             </div>
-          )
-        )
+            <div className="flex items-center gap-1.5">
+              <span className="inline-block w-2.5 h-2.5 rounded-full bg-gray-300 dark:bg-gray-600" />
+              Skipped -- accepted risk, excluded from Fix Vulnerabilities
+            </div>
+            {showComparison && <span>Fixed findings appear in "Compared to vN" below.</span>}
+          </div>
+          <ErrorBanner error={setFindingSkipped.error} fallback="Failed to update the finding's skip status." />
+          {DISPLAY_TIERS.map((tier) =>
+            groups[tier].length === 0 ? null : (
+              <div key={tier}>
+                <h4 className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wide mb-2">
+                  {TIER_HEADING[tier]} ({groups[tier].length})
+                </h4>
+                <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg px-3">
+                  {groups[tier].map((finding) => (
+                    <FindingRow
+                      key={finding.id}
+                      finding={finding}
+                      skipped={skippedSet.has(finding.id)}
+                      onToggleSkip={handleToggleSkip}
+                    />
+                  ))}
+                </div>
+              </div>
+            )
+          )}
+        </>
       )}
 
       <div className="pt-4 border-t border-gray-100 dark:border-gray-800 text-xs text-gray-500 dark:text-gray-400 space-y-1">

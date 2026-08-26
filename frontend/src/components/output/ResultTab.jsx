@@ -38,6 +38,7 @@ import { useFeature, useSetActiveArtifactSelection } from "../../hooks/useFeatur
 import { useApprovalMutation } from "../../hooks/useApprovalMutation";
 import { useArtifactContent } from "../../hooks/useArtifacts";
 import { buildSecurityRevisionComment } from "../../lib/securityReportToRevisionComment";
+import { computeSecurityGateBlocksQa } from "../../lib/securityGate";
 
 // Both Requirement->Domain and Domain->Architecture support pinning a specific approved version
 // (direct user request for the latter, mirroring the former) -- extend this map (mirrors
@@ -548,8 +549,13 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
   // descending (listGatingArtifactVersions), so versions[0] is that latest version.
   const latestSecurityArtifact = stage === "security" ? versions[0] || null : null;
   const latestSecurityReportQuery = useArtifactContent(latestSecurityArtifact?.artifact_id ?? null);
-  const latestSecurityGateDecision = latestSecurityReportQuery.data?.content_json?.gate_decision;
-  const securityGateBlocksQa = latestSecurityGateDecision === "fail";
+  // Skip-aware (direct user request): a Critical finding a human has explicitly marked Skipped no
+  // longer blocks -- see securityGate.js's own docstring. latestSecurityArtifact already carries
+  // skipped_finding_ids as artifact-record metadata (no new fetch needed).
+  const securityGateBlocksQa = computeSecurityGateBlocksQa(
+    latestSecurityReportQuery.data?.content_json?.findings,
+    latestSecurityArtifact?.skipped_finding_ids
+  );
 
   const { runQa } = useQaAgentFlowContext();
   const [fixVulnerabilitiesArtifactId, setFixVulnerabilitiesArtifactId] = useState(null);
@@ -579,7 +585,7 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
     setFixVulnerabilitiesArtifactId(null);
     try {
       await handleCoderReviseStream({
-        revision_comment: buildSecurityRevisionComment(securityReport),
+        revision_comment: buildSecurityRevisionComment(securityReport, selectedSecurityArtifact?.skipped_finding_ids),
         revised_by: "security_agent_report",
       });
       runSecurity.mutate({ human_comment: "Re-scan after the Coder Agent's security-driven revision." });
@@ -830,7 +836,7 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
                       disabled={!selectedSecurityArtifact || isContinuingToQa || srsApproval.isPending || securityGateBlocksQa}
                       title={
                         securityGateBlocksQa
-                          ? "The latest security scan still has Critical findings -- fix them before continuing to QA Agent"
+                          ? "The latest security scan still has Critical findings -- fix or mark them Skipped before continuing to QA Agent"
                           : "Approve this report and move on to QA Agent"
                       }
                       className="text-sm bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white font-semibold px-3 py-1.5 rounded-md"
@@ -1029,6 +1035,9 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
       <SecurityDecisionDialog
         artifactId={securityDecisionArtifactId}
         featureId={featureId}
+        skippedFindingIds={
+          versions.find((v) => v.artifact_id === securityDecisionArtifactId)?.skipped_finding_ids ?? []
+        }
         onClose={() => setSecurityDecisionArtifactId(null)}
         onFixStart={() => {
           setIsSecurityFixInFlight(true);
