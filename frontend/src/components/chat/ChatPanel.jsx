@@ -276,7 +276,7 @@ export default function ChatPanel({ featureId }) {
   const canCompose = hasOutput ? Boolean(reviseMutation) : Boolean(runMutation);
 
   return (
-    <div className="h-full flex flex-col bg-white dark:bg-gray-900 rounded-lg shadow-sm border border-gray-200 dark:border-gray-800 p-4">
+    <div className="h-full flex flex-col bg-white dark:bg-gray-900 rounded-lg shadow border border-gray-300 dark:border-gray-800 p-4">
       <ChatHeader feature={feature} runningStage={runningStage} />
 
       <ErrorBanner error={artifactsError} fallback="Failed to load artifacts." />

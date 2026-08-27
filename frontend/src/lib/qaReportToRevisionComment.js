@@ -12,6 +12,16 @@ export function buildQaRevisionComment(report) {
     const loc = tc.target_function ? `${tc.target_file}::${tc.target_function}` : tc.target_file;
     const failure = tc.failure_message ? tc.failure_message.split("\n")[0] : "no failure detail captured";
     lines.push(`[${tc.category}] ${loc} -- "${tc.name}" -- ${failure}`);
+    // Direct user request: a synthesized root cause + recommendation (when the analysis pass
+    // covered this failure) makes for a much better-informed fix request than the raw failure
+    // line alone -- same "why + what to change" convention securityReportToRevisionComment.js
+    // already uses for Security findings.
+    if (tc.root_cause) {
+      lines.push(`  Root cause: ${tc.root_cause}`);
+    }
+    if (tc.recommendation) {
+      lines.push(`  Suggested fix: ${tc.recommendation}`);
+    }
   }
 
   return lines.join("\n");

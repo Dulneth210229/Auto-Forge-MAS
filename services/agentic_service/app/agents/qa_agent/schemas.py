@@ -51,6 +51,28 @@ class QaTestCaseResult(BaseModel):
     status: str = "skipped"  # "passed" | "failed" | "skipped"
     duration_ms: int | None = None
     failure_message: str | None = None
+    # LLM-synthesized explanation of a failure (see agent.py's _analyze_failures) -- distinct from
+    # failure_message (Jest's own raw assertion/stack-trace text): root_cause explains WHY it
+    # actually failed, recommendation says what to change. Both stay None (never block the report)
+    # if the analysis call is unreachable/fails, or for a passed/skipped test.
+    root_cause: str | None = None
+    recommendation: str | None = None
+
+
+class QaRootCauseEntry(BaseModel):
+    """One entry in the batched root-cause analysis call's response (see agent.py's
+    _analyze_failures / prompt.py's QA_ROOT_CAUSE_PROMPT) -- matched back to its QaTestCaseResult
+    by (test_file, name), the same pairing convention already used to match execution results to
+    planned test cases."""
+
+    test_file: str = ""
+    name: str = ""
+    root_cause: str = ""
+    recommendation: str = ""
+
+
+class QaRootCauseAnalysisResult(BaseModel):
+    root_causes: list[QaRootCauseEntry] = Field(default_factory=list)
 
 
 class QAAgentOutput(BaseModel):

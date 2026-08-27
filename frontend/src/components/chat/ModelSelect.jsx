@@ -69,12 +69,24 @@ export default function ModelSelect({ agentStage }) {
   }
 
   return (
-    <PillDropdown
-      value={currentValue}
-      options={options}
-      onChange={handleChange}
-      disabled={ollamaLoading || anthropicLoading || updateOverride.isPending}
-      title={`Sets ${agentName}'s provider/model from now on (not just this one message)`}
-    />
+    <div className="relative">
+      <PillDropdown
+        value={currentValue}
+        options={options}
+        onChange={handleChange}
+        disabled={ollamaLoading || anthropicLoading || updateOverride.isPending}
+        title={`Sets ${agentName}'s provider/model from now on (not just this one message)`}
+      />
+      {/* Real, confirmed bug fixed here: a rejected override (e.g. an agent not yet in
+          OVERRIDABLE_AGENTS) used to fail completely silently -- the pill's own selection would
+          flicker back with no explanation anywhere. Absolutely positioned (not the full-width
+          ErrorBanner block) so a transient error doesn't push this composer's compact
+          Agent/Model row layout around. */}
+      {updateOverride.error && (
+        <p className="absolute top-full left-0 mt-1 w-48 text-[11px] leading-snug text-red-600 dark:text-red-400 bg-white dark:bg-gray-900 border border-red-200 dark:border-red-500/30 rounded-md px-2 py-1 shadow-sm z-10">
+          {updateOverride.error?.response?.data?.detail || updateOverride.error?.message || "Failed to change the model."}
+        </p>
+      )}
+    </div>
   );
 }

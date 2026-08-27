@@ -9,8 +9,10 @@ parsed the same "extract_json_object, validate, fall back gracefully on anything
 this codebase already established for Security Agent's LLM review layer (see
 security_agent/prompt.py for the sibling convention).
 
-Every prompt fixes the SAME response shape so agent.py's parsing code needs exactly one code
-path regardless of which generation pass produced the response:
+Every prompt fixes the SAME two-part response shape so generator.py's parsing code needs exactly
+one code path regardless of which generation pass produced the response -- a small JSON object
+carrying ONLY the test_cases metadata (short strings, nothing that needs multi-line escaping),
+followed by the literal TEST_CODE_MARKER, followed by the real test file content:
 
 {
   "test_cases": [
@@ -22,23 +24,36 @@ path regardless of which generation pass produced the response:
       "inputs": "a short, concrete description of the input(s) this test uses",
       "expected_behavior": "what should happen -- the assertion this test makes"
     }
-  ],
-  "test_code": "the COMPLETE, real Jest test file content -- every test_cases entry above must
-                 have a matching real test(...)/it(...) block in here, using the SAME name"
+  ]
 }
+---TEST_CODE---
+```typescript
+the COMPLETE, real Jest test file content -- every test_cases entry above must have a matching
+real test(...)/it(...) block in here, using the SAME name
+```
+
+This deliberately keeps real test code OUT of the JSON object entirely (mirrors
+uiux_agent/component_generator.py's own already-proven HTML_CODE_MARKER idiom for the identical
+problem) -- a real, documented reliability gap on weaker/local models: asking a model to emit a
+large multi-line code string as a properly-escaped JSON string value is fragile no matter how
+detailed the escaping instructions are, since a single unescaped quote/newline/backslash anywhere
+in the code throws the whole response away. Splitting on a literal marker instead needs no
+escaping at all.
 """
 
-_JEST_CONVENTIONS = """
+TEST_CODE_MARKER = "---TEST_CODE---"
+
+_JEST_CONVENTIONS = f"""
 Testing conventions (violating these produces a file that cannot actually run):
-- Real Jest syntax only: `test("name", () => {...})` or `it("name", () => {...})`, `expect(...)`.
+- Real Jest syntax only: `test("name", () => {{...}})` or `it("name", () => {{...}})`, `expect(...)`.
 - Import the module under test using a real, correct relative import path from the test file's
   own location under generated_tests/ -- never invent a path that doesn't exist in what you were
   given. Use the "@/" path alias (e.g. `import Item from "@/models/Item"`) when the source file
   itself is normally imported that way elsewhere in the project -- it resolves correctly for
   these generated tests too.
 - Every "name" in test_cases must appear verbatim as the string literal in a real test(...)/
-  it(...) call in test_code -- this is how execution results get matched back to your planned
-  test cases afterward.
+  it(...) call in the test code -- this is how execution results get matched back to your
+  planned test cases afterward.
 - async/await for anything that returns a Promise (Mongoose calls, Route Handler functions).
 - Mock external calls you cannot actually run in this sandbox (a real MongoDB connection, a real
   network request) using `jest.mock(...)` or a local fake -- never write a test that requires
@@ -46,19 +61,13 @@ Testing conventions (violating these produces a file that cannot actually run):
   be mocked meaningfully, do not include that test case at all rather than writing one that will
   always fail for reasons unrelated to the code's own correctness.
 - Do not modify application code -- only produce test code.
-- Return ONLY the JSON object described above, no prose before or after it.
 
-Critical JSON-formatting rule for "test_code": it is a single JSON STRING value, not a raw code
-block. Every real newline in your test code must be written as the two characters `\\n` inside
-that string, and every double-quote character inside your code must be written as `\\"` -- a
-literal (unescaped) newline or `"` inside the string makes the whole response unparseable and
-throws your entire test file away. Write it exactly the way a JSON string literal must look, the
-same as `"line one\\nline two"` -- never a triple-quoted or backtick-fenced code block placed
-directly as the value. Only use VALID JSON escape sequences -- `\\"`, `\\\\`, `\\n`, `\\t`, `\\r`
--- nothing else is legal inside a JSON string. Never write `\\'` (JSON has no such escape; a
-plain apostrophe needs no escaping at all). If your test code itself needs a literal backslash
-(e.g. a regex like `\\d` or `\\s`), you must double it to `\\\\d`/`\\\\s` so the JSON string
-decodes back to a single backslash.
+Critical output-format rule: return EXACTLY two parts, nothing else. Part 1 is a plain JSON
+object with ONLY a "test_cases" key (no "test_code" key, no code of any kind inside this JSON --
+just the short metadata strings described above). Part 2 starts with the literal line
+`{TEST_CODE_MARKER}` followed by the real, complete test file content (a ```typescript fenced
+block is fine, or plain code -- both are accepted). Nothing goes after the code. No prose before
+the JSON, no prose between the JSON and the marker, no prose after the code.
 """
 
 QA_UNIT_TEST_PROMPT = f"""
@@ -107,6 +116,37 @@ it covers.
 # sends this one to an LLM -- it is applied locally when generation fails/is unreachable).
 QA_DETERMINISTIC_FALLBACK_CATEGORY = "unit"
 
+# A real project with many failures could otherwise push the batched root-cause prompt past a
+# model's context window -- same truncate-with-a-visible-label precedent already established by
+# coder_agent/prompt.py's MAX_IMPLEMENTATION_SPEC_CHARS/diff_builder.MAX_DIFF_TEXT_CHARS.
+MAX_ROOT_CAUSE_SOURCE_CHARS = 8_000
+
+QA_ROOT_CAUSE_PROMPT = """
+You are the QA Agent's failure analyst in a Human-in-the-Loop Multi-Agent SDLC Automation System.
+
+You are given a list of real Jest test failures from this feature's own generated test suite --
+each with the real target file/function it tests, Jest's own real failure message, and (where
+available) the real source of the file under test. For EVERY failure given, explain the real root
+cause (why the code under test actually behaves this way, grounded in the real source you were
+given -- never guess at code you were not shown) and a concrete recommendation for what to change
+to fix it.
+
+Return ONLY this JSON object, no prose before or after it:
+
+{
+  "root_causes": [
+    {
+      "test_file": "the exact test_file value you were given for this failure",
+      "name": "the exact test name you were given for this failure",
+      "root_cause": "a concise, concrete explanation of why this test actually failed",
+      "recommendation": "a concrete, actionable suggestion for what to change"
+    }
+  ]
+}
+
+Include exactly one entry per failure you were given, matched by the exact test_file/name pair.
+"""
+
 # The chat layer's own system prompt (see agent.py's chat_stream) -- deliberately Q&A-only, no
 # code-editing side effects. Fixing a real failure is a separate, explicit action (the frontend's
 # "Send Failing Tests to Coder Agent" button, which reuses the Coder Agent's own real revise()
@@ -122,9 +162,18 @@ conversation with a human who wants to understand it better.
 Rules:
 - Answer only from the real report context you were given -- never invent a test case, file, or
   failure that isn't actually in it.
-- When asked about a failure, explain what the failure message actually indicates and suggest a
-  concrete fix in your reply -- but you do not modify any code yourself; you only discuss.
-- If the human asks something the report doesn't cover, say so plainly rather than guessing.
+- When asked about a failure, explain what the failure message (and root cause, if given) actually
+  indicates and suggest a concrete fix in your reply -- but you do not modify any code yourself;
+  you only discuss.
+- Your scope is this feature's own tests, test cases, coverage, failures, results, and other real
+  QA-related information from the report you were given. Two different situations both need an
+  honest answer, and you must not conflate them:
+  - A QA-relevant question the report simply doesn't cover (e.g. a test category or file that
+    wasn't generated) -- say so plainly, rather than guessing or inventing an answer.
+  - A request that is NOT about this feature's tests/results at all (e.g. general coding help
+    unrelated to these tests, writing unrelated content, or asking you to act on something outside
+    testing) -- state clearly and directly that this is outside the QA Agent's scope, and that you
+    can only help with the generated tests and their results. Never attempt the request anyway.
 - Keep answers concise and concrete -- reference the real file/function/test name you're
   discussing.
 """

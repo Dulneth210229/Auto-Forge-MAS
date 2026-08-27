@@ -453,16 +453,56 @@ def test_resume_feature_branch_checks_out_existing_branch_without_resetting(proj
     store.database["features"].delete_one({"feature_id": feature_id})
 
 
-def test_resume_feature_branch_raises_when_no_prior_branch_exists(project_id):
+def test_resume_feature_branch_falls_back_to_a_fresh_branch_from_main_when_none_exists(project_id):
+    # Real, confirmed bug: this used to raise unconditionally, but the feature branch being
+    # missing is routinely completely normal -- most commonly because it was already approved,
+    # merged into main, and cleanly deleted by merge_feature_branch's own established post-merge
+    # cleanup (see the two tests below for that exact real scenario). A revision only ever reaches
+    # resume_feature_branch after CoderAgent.revise() has already confirmed a real prior CODE_PLAN
+    # artifact exists, so there is genuinely no "never coded at all" case this method needs to
+    # guard against -- falling back to a fresh branch from main's current tip is always safe.
     feature_id = generate_id("feature")
     store.features[feature_id] = {
         "project_id": project_id,
         "feature_id": feature_id,
-        "feature_name": "Never Started Feature",
+        "feature_name": "Never Branched Feature",
     }
     workspace_service.ensure_project_repo(project_id)
 
-    with pytest.raises(ValueError, match="No existing feature branch"):
-        workspace_service.resume_feature_branch(project_id, feature_id)
+    branch_name = workspace_service.resume_feature_branch(project_id, feature_id)
+
+    repo = workspace_service.ensure_project_repo(project_id)
+    assert branch_name == f"feature/{workspace_service._feature_slug(feature_id)}"
+    assert repo.active_branch.name == branch_name
+    assert repo.head.commit.hexsha == repo.heads["main"].commit.hexsha
+
+    store.database["features"].delete_one({"feature_id": feature_id})
+
+
+def test_resume_feature_branch_recovers_the_real_merged_code_after_the_branch_was_deleted(project_id):
+    # The exact real scenario found live: approve + merge a feature (which deletes its own
+    # branch, by design -- see merge_feature_branch), then request a revision. Confirms the
+    # fallback branch's working tree actually has the real, merged feature content -- not an
+    # empty/bare scaffold -- since main's tree already includes it after a real --no-ff merge.
+    feature_id = generate_id("feature")
+    store.features[feature_id] = {
+        "project_id": project_id,
+        "feature_id": feature_id,
+        "feature_name": "Merged Then Revised Feature",
+    }
+
+    workspace_service.start_feature_branch(project_id, feature_id)
+    repo_path = workspace_service.get_repo_path(project_id)
+    (repo_path / "lib" / "real_feature_marker.ts").write_text("// real merged content", encoding="utf-8")
+    workspace_service.commit_changes(project_id, feature_id, "real feature work")
+    workspace_service.merge_feature_branch(project_id, feature_id)
+
+    repo = workspace_service.ensure_project_repo(project_id)
+    assert f"feature/{workspace_service._feature_slug(feature_id)}" not in [h.name for h in repo.heads]
+
+    branch_name = workspace_service.resume_feature_branch(project_id, feature_id)
+
+    assert repo.active_branch.name == branch_name
+    assert (repo_path / "lib" / "real_feature_marker.ts").exists()
 
     store.database["features"].delete_one({"feature_id": feature_id})

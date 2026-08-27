@@ -2,9 +2,10 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState } from 
 import { useSearchParams } from "react-router-dom";
 import { SELECTABLE_AGENT_STAGES } from "../../lib/pipelineStages";
 import { useGraphStatus } from "../../hooks/usePipeline";
-import { useFeatureArtifacts } from "../../hooks/useArtifacts";
-import { deriveStageStatus } from "../../lib/deriveStageStatus";
+import { useFeatureArtifacts, useArtifactContent } from "../../hooks/useArtifacts";
+import { deriveStageStatus, listGatingArtifactVersions } from "../../lib/deriveStageStatus";
 import { deriveCurrentStage } from "../../lib/deriveCurrentStage";
+import { computeSecurityGateBlocksQa } from "../../lib/securityGate";
 
 const WorkspaceSelectionContext = createContext(null);
 
@@ -62,6 +63,26 @@ export function WorkspaceSelectionProvider({ featureId, onSelectFeature, childre
   // anything (the naive `|| "requirement"` fallback would incorrectly re-lock everything down).
   const currentStage =
     deriveCurrentStage(graphStatus, stageStatuses) ?? SELECTABLE_AGENT_STAGES[SELECTABLE_AGENT_STAGES.length - 1];
+
+  // Security is a soft/auto-approved gate (its report is "approved"-equivalent the moment it
+  // exists, regardless of findings), so currentStage above already treats QA as reachable the
+  // instant ANY security report exists -- with no awareness of content. This is a genuine,
+  // separate exception layered on top, not folded into deriveStageStatus/deriveCurrentStage
+  // (which are shared with FeatureListItem.jsx and stay purely approval-status-based): direct
+  // user request that QA must not be reachable while the LATEST security scan still has Critical
+  // findings. Keyed on the latest version by number specifically (listGatingArtifactVersions
+  // sorts descending) -- NOT "approved"/"operative" -- so an old, approved-but-stale clean
+  // version can never mask a newer, still-pending Critical-bearing one.
+  const securityVersions = listGatingArtifactVersions("security", artifacts || []);
+  const latestSecurityArtifactId = securityVersions[0]?.artifact_id ?? null;
+  const { data: latestSecurityReportData } = useArtifactContent(latestSecurityArtifactId);
+  // Skip-aware (direct user request): a Critical finding a human has explicitly marked Skipped no
+  // longer blocks -- see securityGate.js's own docstring. securityVersions[0] already carries
+  // skipped_finding_ids as artifact-record metadata (no new fetch needed).
+  const securityGateBlocksQa = computeSecurityGateBlocksQa(
+    latestSecurityReportData?.content_json?.findings,
+    securityVersions[0]?.skipped_finding_ids
+  );
 
   // Direct user request: opening a project (or switching to a different feature) should land on
   // whichever agent that feature was LAST worked on, not always reset to Requirement -- reuses
@@ -153,12 +174,22 @@ export function WorkspaceSelectionProvider({ featureId, onSelectFeature, childre
       isPreviewExpanded,
       togglePreviewExpanded: () => setIsPreviewExpanded((v) => !v),
       currentStage,
+      securityGateBlocksQa,
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- setAgentQueryParam/onSelectFeature
     // are recreated every render (setSearchParams identity, prop from parent); including them
     // would invalidate this memo every render and defeats its purpose. featureId/selectedAgent/etc
     // are the only values that actually need to trigger a new value object.
-    [featureId, selectedAgent, selectedModel, activeOutputTab, viewingArtifact, isPreviewExpanded, currentStage]
+    [
+      featureId,
+      selectedAgent,
+      selectedModel,
+      activeOutputTab,
+      viewingArtifact,
+      isPreviewExpanded,
+      currentStage,
+      securityGateBlocksQa,
+    ]
   );
 
   return <WorkspaceSelectionContext.Provider value={value}>{children}</WorkspaceSelectionContext.Provider>;

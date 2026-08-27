@@ -12,8 +12,14 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Response
 
-from app.core.enums import ArtifactFormat
-from app.schemas.artifact_schema import ArtifactResponse
+from app.agents.architecture_agent.pdf_builder import build_architecture_plan_html
+from app.agents.domain_agent.pdf_builder import build_enhanced_srs_html
+from app.agents.requirement_agent.pdf_builder import build_srs_html
+from app.agents.security_agent.pdf_builder import build_security_report_html
+from app.agents.qa_agent.pdf_builder import build_qa_report_html
+from app.core.enums import ArtifactFormat, ArtifactType
+from app.schemas.artifact_schema import ArtifactResponse, SkippedFindingUpdateRequest
+from app.services import pdf_service
 from app.services.artifact_service import artifact_service
 from app.services.in_memory_store import store
 
@@ -22,6 +28,16 @@ _DOWNLOAD_MEDIA_TYPES = {
     ArtifactFormat.JSON: "application/json",
     ArtifactFormat.MARKDOWN: "text/markdown",
     ArtifactFormat.HTML: "text/html",
+}
+
+# The document types this PDF-export route supports, each mapped to the HTML template builder
+# that mirrors its own frontend document viewer.
+_PDF_BUILDERS = {
+    ArtifactType.SRS: build_srs_html,
+    ArtifactType.ENHANCED_SRS: build_enhanced_srs_html,
+    ArtifactType.ARCHITECTURE_PLAN: build_architecture_plan_html,
+    ArtifactType.SECURITY_REPORT: build_security_report_html,
+    ArtifactType.QA_REPORT: build_qa_report_html,
 }
 
 router = APIRouter(tags=["Artifacts"])
@@ -46,6 +62,24 @@ def get_artifact(artifact_id: str):
     Return artifact metadata by artifact ID.
     """
     artifact = artifact_service.get_artifact(artifact_id)
+
+    if not artifact:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    return artifact
+
+
+@router.put("/artifacts/{artifact_id}/skipped-findings", response_model=ArtifactResponse)
+def update_skipped_finding(artifact_id: str, request: SkippedFindingUpdateRequest):
+    """
+    Mark (or unmark) one security finding as skipped -- a human choosing to accept the risk and
+    proceed without fixing it. Does not touch the artifact's content_json (see
+    artifact_service.set_finding_skipped's own docstring); only its side-channel
+    skipped_finding_ids metadata field.
+    """
+    artifact = artifact_service.set_finding_skipped(
+        artifact_id=artifact_id, finding_id=request.finding_id, skipped=request.skipped
+    )
 
     if not artifact:
         raise HTTPException(status_code=404, detail="Artifact not found")
@@ -162,3 +196,78 @@ def download_artifact(artifact_id: str):
         media_type=media_type,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.get("/artifacts/{artifact_id}/download-pdf")
+def download_artifact_pdf(artifact_id: str):
+    """
+    Download an artifact as a real, formatted PDF instead of its raw JSON file --
+    a sibling of /download, scoped to the document-shaped artifact types
+    registered in _PDF_BUILDERS (SRS, Enhanced SRS, Architecture Plan, Security
+    Report, QA Report) that each have a dedicated pdf_builder HTML template.
+    Every other artifact type's /download behavior is unchanged.
+    """
+    artifact = artifact_service.get_artifact(artifact_id)
+
+    if not artifact:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    builder = _PDF_BUILDERS.get(artifact.artifact_type)
+    if builder is None:
+        supported = ", ".join(sorted(t.value for t in _PDF_BUILDERS))
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"PDF export is not available for artifact_type='{artifact.artifact_type}'. "
+                f"Only {supported} support PDF export."
+            ),
+        )
+
+    try:
+        raw_text = artifact_service.read_artifact_content(artifact_id)
+    except (FileNotFoundError, OSError):
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"This artifact's file could not be found on disk (path: {artifact.file_path}). "
+                "It may have been deleted, moved, or never synced to this environment."
+            ),
+        )
+
+    try:
+        content_json = json.loads(raw_text)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="This artifact's content is not valid JSON.")
+
+    if artifact.artifact_type == ArtifactType.ENHANCED_SRS:
+        domain_improvements_json = _find_domain_improvements_json(artifact.feature_id, artifact.version)
+        html = builder(content_json, domain_improvements_json)
+    else:
+        html = builder(content_json)
+
+    pdf_bytes = pdf_service.render_html_to_pdf(html)
+
+    document_name = f"{artifact.artifact_type.value}_v{artifact.version}.pdf"
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{document_name}"'},
+    )
+
+
+def _find_domain_improvements_json(feature_id: str, version: int) -> dict | None:
+    """
+    Load the Domain Improvements artifact saved alongside an Enhanced SRS at the
+    same version (the same sibling lookup the frontend already does), so the
+    Enhanced SRS PDF can render a "Domain Improvements" section -- returns None
+    if no such sibling exists or its content can't be read/parsed.
+    """
+    siblings = artifact_service.list_feature_artifacts(feature_id)
+    for sibling in siblings:
+        if sibling.artifact_type == ArtifactType.DOMAIN_IMPROVEMENTS and sibling.version == version:
+            try:
+                return json.loads(artifact_service.read_artifact_content(sibling.artifact_id))
+            except (FileNotFoundError, OSError, ValueError):
+                return None
+    return None

@@ -1418,21 +1418,44 @@ class WorkspaceService:
         revision runs (CoderAgent.revise) that must build on top of prior
         work, not discard it. Unlike start_feature_branch (always deletes
         and recreates from main), this only ever checks out what's already
-        there.
+        there, with one fallback (see below).
 
-        Raises ValueError if no branch exists yet -- a revision is only
-        meaningful after a real prior CoderAgent run, matching the same
-        precondition Requirement/Architecture Agent's revise() methods
-        already enforce (there must be a prior artifact to revise).
+        Real, confirmed bug: a revision only ever reaches this method after
+        CoderAgent.revise() has already confirmed a real prior CODE_PLAN
+        artifact exists for this feature (there is genuinely something to
+        revise) -- but the feature's own branch is routinely gone by the
+        time a LATER revision is requested, most commonly because it was
+        already approved, merged into main via merge_feature_branch (a real
+        `--no-ff` merge), and cleanly deleted as that method's own
+        established post-merge cleanup. That's normal git hygiene, not
+        evidence the feature was never coded -- the code is still fully
+        present, merged into main. The old behavior (raise unconditionally)
+        treated this completely ordinary case identically to "this feature
+        was never coded at all," permanently blocking any further revision
+        (e.g. a security-driven fix) on every feature that had ever been
+        successfully merged -- confirmed live against a real feature whose
+        own merge report showed `Verification: PASSED` and whose code was
+        genuinely sitting on main the whole time.
+
+        Fixed: when the feature's own branch is missing, fall back to
+        branching fresh from main's CURRENT tip instead of raising --
+        main already has this feature's real, merged code in the case
+        above (a `--no-ff` merge keeps the feature branch's own tip
+        reachable as an ancestor, so main's tree already matches what the
+        feature branch had), so this recreates the same real working-tree
+        content resuming the original branch would have, not a fresh
+        regeneration. Genuinely never-coded features can't reach this
+        method at all (revise()'s own precondition catches that first), so
+        there is no case where falling back here silently starts from an
+        empty/wrong base.
         """
         repo = self.ensure_project_repo(project_id)
         branch_name = self._feature_branch_name(feature_id)
 
         if branch_name not in [head.name for head in repo.heads]:
-            raise ValueError(
-                f"No existing feature branch found for feature_id={feature_id} -- "
-                "run the Coder Agent before requesting a revision."
-            )
+            repo.git.checkout(MAIN_BRANCH)
+            repo.git.checkout("-b", branch_name)
+            return branch_name
 
         repo.git.checkout(branch_name)
 

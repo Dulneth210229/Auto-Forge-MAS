@@ -18,7 +18,7 @@ export default function ResizableWorkspace({ left, middle, right }) {
       onLayoutChanged={onLayoutChanged}
       className="h-full"
     >
-      <Panel id="left" minSize="15" defaultSize="20" className="h-full">
+      <Panel id="left" minSize="15" defaultSize="20" maxSize="35" className="h-full">
         {left}
       </Panel>
       <ResizeHandle />

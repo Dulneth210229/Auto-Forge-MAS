@@ -1,4 +1,4 @@
-import { MANUAL_RUN_STAGES, STUCK_TIMEOUT_MS } from "./pipelineStages";
+import { MANUAL_RUN_STAGES, STAGE_SEQUENCE, STUCK_TIMEOUT_MS } from "./pipelineStages";
 import { STAGE_GATING_ARTIFACT } from "./artifactTypeMeta";
 
 // Best-effort, client-side reconstruction of "what stage is this feature at" -- the backend
@@ -116,4 +116,18 @@ export function listGatingArtifactVersions(stage, artifacts) {
   return artifacts
     .filter((a) => a.artifact_type === gating.type && a.artifact_format === gating.format)
     .sort((a, b) => b.version - a.version);
+}
+
+// True once the NEXT stage in the pipeline has produced any output at all (any artifact of its
+// own gating type exists for this feature) -- direct user request: once an approval on this stage
+// has been "acted on" by the pipeline moving forward, it should become permanently unrevokable,
+// even navigating back later. Existence-based (not "has fully completed"), matching the backend's
+// own equivalent check in approval_service.py -- both are intentionally a coarse, cheap signal,
+// not a perfect one (see GatingArtifactApprovalPanel's own extra in-flight-generation safeguard on
+// the frontend for the narrow gap between "next stage started generating" and "next stage saved
+// its first artifact").
+export function hasNextStageStarted(stage, artifacts) {
+  const nextStage = STAGE_SEQUENCE[STAGE_SEQUENCE.indexOf(stage) + 1];
+  const nextGating = nextStage ? STAGE_GATING_ARTIFACT[nextStage] : null;
+  return nextGating ? artifacts.some((a) => a.artifact_type === nextGating.type) : false;
 }

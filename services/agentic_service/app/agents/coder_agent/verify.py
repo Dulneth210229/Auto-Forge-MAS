@@ -101,6 +101,7 @@ from app.agents.coder_agent.ui_expectations_checker import scan_ui_expectations_
 from app.agents.coder_agent.render_checker import RenderCheckError, check_runtime_render
 from app.agents.coder_agent.route_checker import check_route_coverage, scan_for_placeholder_stubs
 from app.agents.coder_agent.schema_form_checker import check_required_field_form_coverage
+from app.agents.coder_agent.security_finding_coverage_checker import check_security_finding_file_coverage
 from app.services.sandbox_service import sandbox_service
 from app.services.workspace_service import workspace_service
 
@@ -279,6 +280,10 @@ class CoderVerifier:
         steps.append(self._build_db_fallback_quality_step(workspace_root, touched_paths))
         steps.append(self._build_relevance_scan_step(workspace_root, touched_paths, original_request))
         steps.append(self._build_ui_expectations_coverage_step(workspace_root, touched_paths, ui_expectations))
+
+        security_coverage_step = check_security_finding_file_coverage(original_request, touched_paths)
+        if security_coverage_step is not None:
+            steps.append(security_coverage_step)
 
         return {"passed": passed, "steps": steps}
 

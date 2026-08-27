@@ -134,7 +134,7 @@ export default function ArchitecturePlanDocumentViewer({ data }) {
       </div>
 
       {data.human_approval_note && (
-        <div className="bg-yellow-50 dark:bg-yellow-500/10 border border-yellow-200 dark:border-yellow-500/30 rounded-lg p-3 mb-5 text-sm text-yellow-900 dark:text-yellow-200">
+        <div className="bg-yellow-50 dark:bg-yellow-500/10 border border-yellow-200 dark:border-yellow-500/30 rounded-lg p-3 mb-5 text-sm text-yellow-900 dark:text-yellow-200 whitespace-pre-line">
           <p className="text-xs font-bold uppercase tracking-wide mb-1">Note for reviewer</p>
           {data.human_approval_note}
         </div>

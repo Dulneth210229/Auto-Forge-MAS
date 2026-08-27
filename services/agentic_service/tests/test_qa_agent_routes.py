@@ -167,3 +167,56 @@ def test_chat_stream_surfaces_error_event_on_unexpected_exception(feature_id):
     parsed = [json.loads(line) for line in lines]
     assert parsed[-1]["type"] == "error"
     assert "QA chat failed" in parsed[-1]["message"]
+
+
+def test_edit_chat_turn_stream_returns_404_for_unknown_feature():
+    response = client.post(
+        "/api/v1/features/feature_does_not_exist/agents/qa/chat/turns/1/edit/stream",
+        json={"message": "edited"},
+    )
+    assert response.status_code == 404
+
+
+def test_edit_chat_turn_stream_yields_ndjson_events_and_passes_turn_index(feature_id):
+    events = [{"type": "token", "text": "edited answer"}, {"type": "done", "message": "edited answer"}]
+    captured = {}
+
+    def _fake_edit_chat_turn_stream(**kwargs):
+        captured.update(kwargs)
+
+        async def _gen():
+            for event in events:
+                yield event
+        return _gen()
+
+    with patch("app.api.routes.agents.qa_agent.edit_chat_turn_stream", new=_fake_edit_chat_turn_stream):
+        response = client.post(
+            f"/api/v1/features/{feature_id}/agents/qa/chat/turns/2/edit/stream",
+            json={"message": "edited question"},
+        )
+
+    assert response.status_code == 200
+    lines = [line for line in response.text.strip().split("\n") if line]
+    parsed = [json.loads(line) for line in lines]
+    assert parsed == events
+    assert captured["turn_index"] == 2
+    assert captured["new_message"] == "edited question"
+    assert captured["feature_id"] == feature_id
+
+
+def test_edit_chat_turn_stream_surfaces_error_event_on_unexpected_exception(feature_id):
+    async def _raising_gen(**kwargs):
+        raise RuntimeError("boom")
+        yield  # pragma: no cover -- makes this a generator
+
+    with patch("app.api.routes.agents.qa_agent.edit_chat_turn_stream", new=_raising_gen):
+        response = client.post(
+            f"/api/v1/features/{feature_id}/agents/qa/chat/turns/1/edit/stream",
+            json={"message": "edited"},
+        )
+
+    assert response.status_code == 200
+    lines = [line for line in response.text.strip().split("\n") if line]
+    parsed = [json.loads(line) for line in lines]
+    assert parsed[-1]["type"] == "error"
+    assert "Failed to edit QA chat turn" in parsed[-1]["message"]

@@ -171,7 +171,7 @@ export default function UiuxAgentChat({
   const elapsedLabel = useElapsedLabel(activePhaseStartedAt);
 
   return (
-    <div className="h-full flex flex-col bg-white dark:bg-gray-900 rounded-lg shadow-sm border border-gray-200 dark:border-gray-800 p-4">
+    <div className="h-full flex flex-col bg-white dark:bg-gray-900 rounded-lg shadow border border-gray-300 dark:border-gray-800 p-4">
       <ChatHeader feature={feature} runningStage={runningStage} />
 
       <div className="flex-1 min-h-0 overflow-y-auto py-3 flex flex-col gap-3">

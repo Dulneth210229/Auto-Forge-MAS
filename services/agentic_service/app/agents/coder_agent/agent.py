@@ -49,6 +49,11 @@ from app.agents.coder_agent.diff_builder import (
 from app.agents.coder_agent.env_uri import extract_mongodb_uri, is_uri_only, strip_uri_from_comment
 from app.agents.coder_agent.plan_validator import CodePlanValidationError, code_plan_validator
 from app.agents.coder_agent.planner import CodePlanGenerationError, code_planner
+from app.agents.coder_agent.revision_file_tokens import (
+    REVISION_FILE_TOKEN_RE,
+    extract_file_tokens,
+    resolve_tokens_against_known_paths,
+)
 from app.agents.coder_agent.prompt import (
     CODE_PLAN_JSON_REPAIR_PROMPT,
     CODE_PLANNER_SYSTEM_PROMPT,
@@ -94,12 +99,11 @@ MAX_CODING_ATTEMPTS = 3
 # realistically-sized plan can usually finish in one attempt.
 CODING_LOOP_RECURSION_LIMIT = 100
 
-# Used by _find_well_specified_target_files -- deliberately requires a real extension so a bare
-# word (e.g. "footer") never counts as a file reference, only something the human actually typed
-# as a file-shaped token (e.g. "components/Footer.tsx" or "Footer.tsx").
-_REVISION_FILE_TOKEN_RE = re.compile(
-    r"[\w][\w\-./]*\.(?:tsx|ts|jsx|js|css|json|mjs)\b", re.IGNORECASE
-)
+# Relocated to revision_file_tokens.py (security_finding_coverage_checker.py, imported by
+# verify.py, needs the exact same regex/resolution logic -- putting it there instead of here
+# avoids a circular import, since agent.py already imports from verify.py). Re-exported under its
+# original name so any existing caller importing it from this module keeps working unchanged.
+_REVISION_FILE_TOKEN_RE = REVISION_FILE_TOKEN_RE
 
 # Used by _meaningful_stems (Tier 1a/1b's keyword extraction) -- generic English filler words
 # PLUS domain-generic words that would match almost every generated Next.js file (page,
@@ -1433,9 +1437,7 @@ class CoderAgent:
         if not revision_comment or not known_files:
             return set()
 
-        tokens = {
-            match.group(0) for match in _REVISION_FILE_TOKEN_RE.finditer(revision_comment)
-        }
+        tokens = extract_file_tokens(revision_comment)
         if not tokens:
             return set()
 
@@ -1447,28 +1449,7 @@ class CoderAgent:
         if not known_paths:
             return set()
 
-        matched: set[str] = set()
-        for token in tokens:
-            token_lower = token.lower()
-
-            exact = {path for path in known_paths if path.lower() == token_lower}
-            if exact:
-                matched |= exact
-                continue
-
-            if "/" in token:
-                # A qualified-but-not-exact path was given -- don't guess further for this token.
-                continue
-
-            basename_matches = {
-                path for path in known_paths if path.rsplit("/", 1)[-1].lower() == token_lower
-            }
-            if len(basename_matches) == 1:
-                matched |= basename_matches
-            # 0 or 2+ basename matches: no match, or genuinely ambiguous -- fall through to
-            # exploration rather than guess.
-
-        return matched
+        return resolve_tokens_against_known_paths(tokens, known_paths)
 
     def _find_keyword_matched_known_files(
         self, revision_comment: str | None, known_files: list[dict[str, Any]]

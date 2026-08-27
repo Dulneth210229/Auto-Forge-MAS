@@ -1,9 +1,12 @@
 """
 Unit tests for generator.py -- the "ask nicely -> decide deterministically" LLM generation ladder
-(_invoke_llm's malformed/well-formed/unreachable-provider handling) and the deterministic unit
-fallback template (_deterministic_unit_fallback), which must still produce real, correct Jest
-test code when no LLM is reachable at all. No real LLM/network calls -- llm_provider_service is
-mocked at its import site inside generator._invoke_llm.
+(_invoke_llm's malformed/well-formed/unreachable-provider handling), the marker-based two-part
+response parser (_parse_generation_response -- JSON test_cases metadata, then the literal
+TEST_CODE_MARKER, then the real test code; see prompt.py's own docstring for why this replaced
+embedding test_code as an escaped JSON string), and the deterministic unit fallback template
+(_deterministic_unit_fallback), which must still produce real, correct Jest test code when no LLM
+is reachable at all. No real LLM/network calls -- llm_provider_service is mocked at its import
+site inside generator._invoke_llm.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -11,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.agents.qa_agent import generator
+from app.agents.qa_agent.prompt import TEST_CODE_MARKER
 from app.agents.qa_agent.schemas import QaLLMGenerationResult
 
 
@@ -18,6 +22,11 @@ def _mock_provider(raw_output: str):
     provider = MagicMock()
     provider.invoke_agent = AsyncMock(return_value=raw_output)
     return provider
+
+
+def _two_part_response(test_cases_json: str, code: str, *, fence: bool = False) -> str:
+    code_block = f"```typescript\n{code}\n```" if fence else code
+    return f"{test_cases_json}\n{TEST_CODE_MARKER}\n{code_block}"
 
 
 @pytest.mark.asyncio
@@ -30,8 +39,18 @@ async def test_invoke_llm_returns_none_on_malformed_json():
 
 
 @pytest.mark.asyncio
+async def test_invoke_llm_returns_none_when_marker_is_missing():
+    raw = '{"test_cases": [{"name": "a test"}]}'
+    provider = _mock_provider(raw)
+    with patch("app.services.llm_provider_service.llm_provider_service.get_provider", return_value=provider):
+        result = await generator._invoke_llm("system", "user")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
 async def test_invoke_llm_returns_none_when_test_code_is_empty():
-    raw = '{"test_cases": [{"name": "a test"}], "test_code": ""}'
+    raw = _two_part_response('{"test_cases": [{"name": "a test"}]}', "")
     provider = _mock_provider(raw)
     with patch("app.services.llm_provider_service.llm_provider_service.get_provider", return_value=provider):
         result = await generator._invoke_llm("system", "user")
@@ -41,7 +60,7 @@ async def test_invoke_llm_returns_none_when_test_code_is_empty():
 
 @pytest.mark.asyncio
 async def test_invoke_llm_returns_none_when_test_cases_is_empty():
-    raw = '{"test_cases": [], "test_code": "test(\\"x\\", () => {});"}'
+    raw = _two_part_response('{"test_cases": []}', 'test("x", () => {});')
     provider = _mock_provider(raw)
     with patch("app.services.llm_provider_service.llm_provider_service.get_provider", return_value=provider):
         result = await generator._invoke_llm("system", "user")
@@ -61,10 +80,10 @@ async def test_invoke_llm_returns_none_when_provider_unreachable():
 
 @pytest.mark.asyncio
 async def test_invoke_llm_returns_parsed_result_on_well_formed_response():
-    raw = (
+    raw = _two_part_response(
         '{"test_cases": [{"name": "getItem returns an item", "category": "unit", '
-        '"target_file": "lib/api/item.ts", "target_function": "getItem"}], '
-        '"test_code": "test(\\"getItem returns an item\\", () => {});"}'
+        '"target_file": "lib/api/item.ts", "target_function": "getItem"}]}',
+        'test("getItem returns an item", () => {});',
     )
     provider = _mock_provider(raw)
     with patch("app.services.llm_provider_service.llm_provider_service.get_provider", return_value=provider):
@@ -76,11 +95,10 @@ async def test_invoke_llm_returns_parsed_result_on_well_formed_response():
 
 
 @pytest.mark.asyncio
-async def test_invoke_llm_extracts_json_from_markdown_fenced_response():
-    raw = (
-        "Here is the test:\n```json\n"
-        '{"test_cases": [{"name": "a test"}], "test_code": "test(\\"a test\\", () => {});"}'
-        "\n```"
+async def test_invoke_llm_extracts_json_from_markdown_fenced_metadata():
+    raw = _two_part_response(
+        '```json\n{"test_cases": [{"name": "a test"}]}\n```',
+        'test("a test", () => {});',
     )
     provider = _mock_provider(raw)
     with patch("app.services.llm_provider_service.llm_provider_service.get_provider", return_value=provider):
@@ -88,6 +106,41 @@ async def test_invoke_llm_extracts_json_from_markdown_fenced_response():
 
     assert result is not None
     assert result.test_cases[0].name == "a test"
+
+
+@pytest.mark.asyncio
+async def test_invoke_llm_strips_a_fenced_code_block_around_the_test_code():
+    raw = _two_part_response(
+        '{"test_cases": [{"name": "a test"}]}', 'test("a test", () => {});', fence=True,
+    )
+    provider = _mock_provider(raw)
+    with patch("app.services.llm_provider_service.llm_provider_service.get_provider", return_value=provider):
+        result = await generator._invoke_llm("system", "user")
+
+    assert result is not None
+    assert result.test_code == 'test("a test", () => {});'
+    assert "```" not in result.test_code
+
+
+@pytest.mark.asyncio
+async def test_invoke_llm_handles_real_multiline_code_with_quotes_and_backslashes_with_no_escaping():
+    # The exact class of input that broke the old embed-test_code-as-a-JSON-string approach --
+    # real, unescaped newlines/quotes/backslashes in the code, which the marker-split approach
+    # never needs to escape at all.
+    real_code = (
+        'import Item from "@/models/Item";\n\n'
+        'test("regex matches digits", () => {\n'
+        '  const pattern = /\\d+/;\n'
+        '  expect(pattern.test("abc123")).toBe(true);\n'
+        '});\n'
+    )
+    raw = _two_part_response('{"test_cases": [{"name": "regex matches digits"}]}', real_code)
+    provider = _mock_provider(raw)
+    with patch("app.services.llm_provider_service.llm_provider_service.get_provider", return_value=provider):
+        result = await generator._invoke_llm("system", "user")
+
+    assert result is not None
+    assert result.test_code == real_code.strip()
 
 
 def test_deterministic_unit_fallback_handles_array_literal_export():

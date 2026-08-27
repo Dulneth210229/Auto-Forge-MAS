@@ -6,7 +6,7 @@ const TABS = ["Result", "Files", "Preview"];
 // decorative -- there is no featureId to fetch anything for yet.
 export default function EmptyOutputPanel() {
   return (
-    <div className="h-full flex flex-col bg-white dark:bg-gray-900 rounded-lg shadow-sm border border-gray-200 dark:border-gray-800">
+    <div className="h-full flex flex-col bg-white dark:bg-gray-900 rounded-lg shadow border border-gray-300 dark:border-gray-800">
       <div className="flex items-center border-b border-gray-100 dark:border-gray-800 flex-shrink-0 px-2">
         {TABS.map((tab) => (
           <span

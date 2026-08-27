@@ -38,22 +38,10 @@ class ArchitectureUseCaseModeler:
         "route handler", "app router",
     ]
 
-    OPTIONAL_WORDS = [
-        "optional", "alternative", "recover", "recovery", "forgot", "reset",
-        "retry", "re enter", "re-enter", "cancel", "skip", "if", "when",
-        "unless", "direct", "redirect", "link", "initiate",
-    ]
-
     ERROR_WORDS = [
         "invalid", "error", "failed", "failure", "fail", "prevent", "denied",
         "unauthorized", "forbidden", "not found", "incorrect", "exception",
         "timeout", "unavailable",
-    ]
-
-    INTERNAL_ACTION_VERBS = [
-        "validate", "verify", "check", "calculate", "generate", "create", "save",
-        "store", "retrieve", "process", "submit", "confirm", "apply", "update",
-        "delete", "return",
     ]
 
     def build(
@@ -398,10 +386,24 @@ class ArchitectureUseCaseModeler:
         srs_json: dict[str, Any],
     ) -> list[dict[str, Any]]:
         """
-        Build included use cases from mandatory behaviours and validation
-        rules (fallback path only). Names come from
+        Build included use cases from mandatory behaviours the specification
+        itself named (fallback path only). Names come from
         _build_fallback_supporting_use_case -- a user-story goal match, or
         one gentle truncation -- no multi-pass regex verb/topic extraction.
+
+        Deliberately does NOT mechanically mint one included use case per raw
+        validation_rules/functional_requirements SRS item anymore -- a real,
+        confirmed bug (a genuine "Login and Signup" run produced 6 <<include>>
+        relationships to garbled fragments like "Email Must Be In Valid" and
+        "System Validates Input Both Fields," none of which are real,
+        separate, user-observable use cases; a validation rule like "Email
+        must be in a valid format" is a business rule, never a UML use case
+        under any real modeling convention). _build_main_use_cases already
+        seeds the main use case's own related_requirements with every FR/AC/
+        VR id via _all_requirement_ids specifically so traceability coverage
+        holds with zero use cases here -- this loop existed only to make the
+        fallback diagram look "richer," at the direct cost of the user's own
+        "keep it simple, accurate, and grounded" requirement.
         """
 
         result: list[dict[str, Any]] = []
@@ -415,50 +417,6 @@ class ArchitectureUseCaseModeler:
             if name:
                 result.append(self._new_use_case(name, description, "included", related))
 
-        for rule in self._as_list(srs_json.get("validation_rules")):
-            rule_text = self._extract_description(rule) or self._extract_name(rule)
-            rule_id = self._extract_id(rule)
-            if not rule_text:
-                continue
-
-            name = self._build_fallback_supporting_use_case(rule, srs_json)
-            if name:
-                result.append(
-                    self._new_use_case(
-                        name=name,
-                        description=rule_text,
-                        category="included",
-                        related=[rule_id] if rule_id else [],
-                    )
-                )
-
-        for requirement in self._as_list(srs_json.get("functional_requirements")):
-            description = self._extract_description(requirement) or self._extract_name(requirement)
-            req_id = self._extract_id(requirement)
-            if not description:
-                continue
-
-            lowered = self._normalize_words(description)
-
-            # Optional/error/recovery behaviours are handled as extensions.
-            if self._has_any(lowered, self.OPTIONAL_WORDS) or self._has_any(lowered, self.ERROR_WORDS):
-                continue
-
-            # Only internal mandatory system actions become includes.
-            if not self._has_any(lowered, self.INTERNAL_ACTION_VERBS):
-                continue
-
-            name = self._build_fallback_supporting_use_case(requirement, srs_json)
-            if name:
-                result.append(
-                    self._new_use_case(
-                        name=name,
-                        description=description,
-                        category="included",
-                        related=[req_id] if req_id else [],
-                    )
-                )
-
         return result
 
     def _build_extension_use_cases(
@@ -468,9 +426,20 @@ class ArchitectureUseCaseModeler:
     ) -> list[dict[str, Any]]:
         """
         Build extension use cases from optional, alternative, recovery, and
-        error flows (fallback path only). Names come from
-        _build_fallback_supporting_use_case -- a user-story goal match, or
-        one gentle truncation -- no multi-pass regex verb/topic extraction.
+        error flows the specification itself named (fallback path only).
+        Names come from _build_fallback_supporting_use_case -- a user-story
+        goal match, or one gentle truncation -- no multi-pass regex verb/
+        topic extraction.
+
+        Deliberately does NOT mechanically mint one extension use case per
+        raw functional_requirement/acceptance_criterion SRS item anymore --
+        see _build_included_use_cases' own docstring for the real, confirmed
+        bug this mirrors (garbled fragments like "Invalid Login Credentials
+        Wrong Email" turned into spurious <<extend>> relationships off a
+        keyword match, not a real distinct behaviour). _build_main_use_cases
+        already seeds the main use case's own related_requirements with
+        every FR/AC/VR id via _all_requirement_ids, so traceability coverage
+        holds with zero extension use cases here.
         """
 
         result: list[dict[str, Any]] = []
@@ -487,48 +456,6 @@ class ArchitectureUseCaseModeler:
             name = self._extract_name(item) or self._build_fallback_supporting_use_case(item, srs_json)
             if name:
                 result.append(self._new_use_case(name, description, "extension", related))
-
-        for requirement in self._as_list(srs_json.get("functional_requirements")):
-            description = self._extract_description(requirement) or self._extract_name(requirement)
-            req_id = self._extract_id(requirement)
-            if not description:
-                continue
-
-            lowered = self._normalize_words(description)
-            if not (self._has_any(lowered, self.OPTIONAL_WORDS) or self._has_any(lowered, self.ERROR_WORDS)):
-                continue
-
-            name = self._build_fallback_supporting_use_case(requirement, srs_json)
-            if name:
-                result.append(
-                    self._new_use_case(
-                        name=name,
-                        description=description,
-                        category="extension",
-                        related=[req_id] if req_id else [],
-                    )
-                )
-
-        for criterion in self._as_list(srs_json.get("acceptance_criteria")):
-            description = self._extract_description(criterion) or self._extract_name(criterion)
-            ac_id = self._extract_id(criterion)
-            if not description:
-                continue
-
-            lowered = self._normalize_words(description)
-            if not (self._has_any(lowered, self.OPTIONAL_WORDS) or self._has_any(lowered, self.ERROR_WORDS)):
-                continue
-
-            name = self._build_fallback_supporting_use_case(criterion, srs_json)
-            if name:
-                result.append(
-                    self._new_use_case(
-                        name=name,
-                        description=description,
-                        category="extension",
-                        related=[ac_id] if ac_id else [],
-                    )
-                )
 
         return result
 

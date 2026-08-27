@@ -51,6 +51,7 @@ from langgraph.errors import GraphRecursionError
 
 from app.agents.architecture_agent.markdown_builder import ArchitecturePlanMarkdownBuilder
 from app.agents.architecture_agent.revision_patcher import apply_architecture_revision_operations
+from app.agents.architecture_agent.reviewer_note_builder import build_human_approval_note
 from app.agents.architecture_agent.prompt import (
     ARCHITECTURE_AGENT_AGENTIC_SYSTEM_PROMPT,
     ARCHITECTURE_AGENT_SYSTEM_PROMPT,
@@ -545,10 +546,10 @@ class ArchitectureAgent:
                 feature_id,
                 validation_error,
             )
-            parsed["architecture_plan_json"]["human_approval_note"] = (
-                f"{parsed['architecture_plan_json'].get('human_approval_note', '')} "
-                f"AUTOMATIC VALIDATION FAILED -- review carefully before approving: {validation_error}"
-            ).strip()
+            parsed["architecture_plan_json"]["human_approval_note"] = build_human_approval_note(
+                parsed["architecture_plan_json"].get("human_approval_note", ""),
+                validation_error,
+            )
 
         output = self._build_output_from_parsed(parsed, raw_output=raw_output)
 
@@ -746,11 +747,11 @@ class ArchitectureAgent:
                         agent_input.feature.get("feature_id"),
                         third_error,
                     )
-                    parsed["architecture_plan_json"]["human_approval_note"] = (
-                        f"{parsed['architecture_plan_json'].get('human_approval_note', '')} "
-                        f"AUTOMATIC VALIDATION FAILED even on the deterministic SRS-derived "
-                        f"fallback -- review carefully before approving: {third_error}"
-                    ).strip()
+                    parsed["architecture_plan_json"]["human_approval_note"] = build_human_approval_note(
+                        parsed["architecture_plan_json"].get("human_approval_note", ""),
+                        third_error,
+                        context="even on the deterministic SRS-derived fallback",
+                    )
 
                 raw_output = json.dumps(parsed, indent=2, default=str)
 
@@ -2018,11 +2019,11 @@ class ArchitectureAgent:
                 feature_id,
                 validation_error,
             )
-            parsed["architecture_plan_json"]["human_approval_note"] = (
-                f"{parsed['architecture_plan_json'].get('human_approval_note', '')} "
-                f"AUTOMATIC VALIDATION FAILED on the revised diagrams -- review carefully "
-                f"before approving: {validation_error}"
-            ).strip()
+            parsed["architecture_plan_json"]["human_approval_note"] = build_human_approval_note(
+                parsed["architecture_plan_json"].get("human_approval_note", ""),
+                validation_error,
+                context="on the revised diagrams",
+            )
 
         architecture_plan_markdown = self.markdown_builder.build(revised_architecture_plan_json)
         usecase_puml = self.usecase_builder.build(parsed["usecase_json"])
@@ -2234,11 +2235,11 @@ class ArchitectureAgent:
                 feature.get("feature_id"),
                 validation_error,
             )
-            parsed["architecture_plan_json"]["human_approval_note"] = (
-                f"{parsed['architecture_plan_json'].get('human_approval_note', '')} "
-                f"AUTOMATIC VALIDATION FAILED on the revised diagrams -- review carefully "
-                f"before approving: {validation_error}"
-            ).strip()
+            parsed["architecture_plan_json"]["human_approval_note"] = build_human_approval_note(
+                parsed["architecture_plan_json"].get("human_approval_note", ""),
+                validation_error,
+                context="on the revised diagrams",
+            )
 
         architecture_plan_markdown = self.markdown_builder.build(revised_architecture_plan_json)
         usecase_puml = self.usecase_builder.build(parsed["usecase_json"])
@@ -2836,9 +2837,16 @@ class ArchitectureAgent:
                 ),
                 "integration_points": design_views.get("logical_view", {}).get("integration_points", []),
             },
+            # processing_validation deliberately mirrors input_validation's own source
+            # (data_view.data_validation_rules), NOT error_handling_view.validation_errors --
+            # the deterministic fallback has no reliable signal to split "checked at the API
+            # boundary" from "checked during processing," and pointing at error_handling_view
+            # made the Validation Plan and Error Handling Plan render as literal duplicates (a
+            # real, reported bug) since error_handling_view describes response BEHAVIOR, a
+            # conceptually different section that must stay independent.
             "validation_plan": {
                 "input_validation": design_views.get("data_view", {}).get("data_validation_rules", []),
-                "processing_validation": design_views.get("error_handling_view", {}).get("validation_errors", []),
+                "processing_validation": design_views.get("data_view", {}).get("data_validation_rules", []),
             },
             "coder_implementation_tasks": self._build_coder_implementation_tasks(
                 feature_name=feature_name,
@@ -3704,11 +3712,21 @@ class ArchitectureAgent:
         Build error handling view generically.
         """
 
+        # condition/handling deliberately do NOT restate the rule's own description (that's what
+        # data_view.data_validation_rules/validation_plan already state) -- this view exists to
+        # describe the system's RESPONSE when a rule is violated, not the rule itself. A prior
+        # version duplicated the rule text here and hardcoded one identical "handling" sentence
+        # for every row, making the Validation Plan and Error Handling Plan render as near-
+        # duplicates (a real, reported bug).
         validation_errors = [
             {
                 "source_id": item.get("id", ""),
-                "condition": item.get("description", str(item)),
-                "handling": "Return a clear validation message and prevent invalid processing."
+                "condition": f"Violation of {item.get('id') or 'a validation rule'}",
+                "handling": (
+                    f"Reject the request with an HTTP 400 response referencing "
+                    f"{item.get('id') or 'this rule'}, show the user a message identifying the "
+                    f"invalid field(s), and do not process or persist the request."
+                ),
             }
             for item in validation_rules
         ]

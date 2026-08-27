@@ -92,6 +92,14 @@ Architecture Plan rules:
 - Every Functional Requirement must be covered in traceability_matrix and implementation tasks.
 - Every Acceptance Criterion must be covered in behavior_view, error_handling_view, interface_view, or implementation tasks.
 - Every Validation Rule must be covered in data_view, interface_view, error_handling_view, validation_plan, or implementation tasks.
+- validation_plan and data_view.data_validation_rules state WHAT must be true -- the rule itself
+  (e.g. "Email must be in a valid format"). error_handling_view.validation_errors states HOW the
+  system responds when that rule is violated -- a real HTTP status code and the concrete
+  user-facing behavior (e.g. "Return HTTP 400 with a field-level error message identifying the
+  invalid field; reject the request without persisting it"), referencing the rule by its id.
+  NEVER restate the rule's own condition text as the "condition" or copy the same wording used in
+  validation_plan/data_view -- an error_handling_view.validation_errors entry that just repeats
+  the rule is wrong; it must describe the system's response behavior instead.
 - Every Non-Functional Requirement must be covered in quality_attributes_view or quality_plan.
 - Every API expectation must appear in design_views.interface_view.api_endpoints.
 - Every input requirement must appear in design_views.interface_view.request_models.
@@ -106,6 +114,10 @@ Use Case Specification Rules:
 - Create usecase_specification_json only; backend will render it into the final UML use case
   diagram exactly as you specify it -- you are doing the real use-case modeling work here, not
   just categorizing raw requirement text. Think like a UML analyst, not a requirements summarizer.
+- Functional Requirements are the PRIMARY source for actors and use cases -- derive the actor list
+  and the set of use cases FIRST from functional_requirements. Acceptance Criteria and Validation
+  Rules refine and validate those use cases' behavior for traceability; they do not on their own
+  justify a new actor, use case, or relationship.
 - actors: list real external user roles or real external systems only. Each actor entry is
   {"name", "type": "primary | secondary", "stereotype": "human | system", "generalizes": ""}.
   Set stereotype "system" for a real non-human/external system actor (a third-party payment
@@ -146,6 +158,12 @@ Use Case Specification Rules:
   parent use case's own flow, not as a separate entry.
 - type "extension": optional, alternative, recovery, or error behaviours (what exception_flows
   used to hold) -- also action-oriented, also not fragmented.
+- Most simple, single-flow features need ZERO included or extension use cases -- do not invent
+  one merely to reach 100% coverage of every VR/AC. A stray validation rule or acceptance
+  criterion can be covered by adding its id to an EXISTING use case's related_requirements list;
+  that alone satisfies completeness and does not require a new use case or a new
+  <<include>>/<<extend>> relationship. Only add an included/extension use case for a real,
+  distinct, user-observable behavior that doesn't already belong inside another use case's flow.
 - related_requirements: every entry MUST list the real SRS requirement ids (FR-xxx/AC-xxx/VR-xxx)
   it covers -- this is how completeness and duplicate-detection both work, so it must be accurate,
   not guessed or left empty.
@@ -602,6 +620,9 @@ Important Architecture Plan instructions:
 - Use data requirements from the SRS in design_views.data_view.
 - Use acceptance criteria in design_views.behavior_view and design_views.error_handling_view.
 - Use validation rules in design_views.data_view, design_views.interface_view, validation_plan, and design_views.error_handling_view.
+- design_views.data_view/validation_plan state the rule itself; design_views.error_handling_view.validation_errors
+  states the system's response behavior (status code, user-facing message, no persistence) when
+  that rule is violated -- referenced by the rule's id, never repeating the rule's own wording.
 - Use non-functional requirements in design_views.quality_attributes_view.
 - Use risks in design_views.security_authorization_view and risks.
 - Use constraints in architecture_approach and constraints.
@@ -1016,6 +1037,11 @@ Your tools:
   once, when confident. This is your only way to finish.
 
 Use Case Specification Rules:
+- Functional Requirements are the PRIMARY source for actors and use cases --
+  derive the actor list and the set of use cases FIRST from
+  read_functional_requirements. Acceptance criteria and validation rules
+  refine and validate those use cases' behavior for traceability; they do
+  not on their own justify a new actor, use case, or relationship.
 - actors: real external user roles or real external systems only -- never
   Database/API/Controller/MongoDB/React/Node/JWT Library/Server/Backend/
   Frontend/UI Page/Form. Each actor needs a stereotype ("human" for a real
@@ -1034,6 +1060,12 @@ Use Case Specification Rules:
   observable steps -- never decompose one action into parallel micro-steps
   that always happen together.
 - type "extension": optional, alternative, recovery, or error behaviours.
+- Most simple, single-flow features need ZERO included or extension use
+  cases -- do not invent one merely to reach 100% coverage of every VR/AC. A
+  stray validation rule or acceptance criterion can be covered by adding its
+  id to an EXISTING use case's related_requirements list; that alone
+  satisfies completeness and does not require a new use case or a new
+  <<include>>/<<extend>> relationship.
 - participating_actors: for EVERY use case, list the real actor name(s) that
   genuinely appear in THAT use case's own logic -- not the feature's whole
   actor list by default. A use case only an Admin ever triggers lists only
@@ -1270,6 +1302,11 @@ context below. Ground it in this feature's REAL, specific requirements and
 follow real UML use case diagram conventions -- never a generic template.
 
 Rules:
+- Functional Requirements are the PRIMARY source for actors and use cases --
+  derive the actor list and the set of use cases FIRST from the SRS
+  functional requirements below. Acceptance criteria and validation rules
+  refine and validate those use cases' behavior for traceability; they do
+  not on their own justify a new actor, use case, or relationship.
 - actors: real external user roles/systems only. Each needs a stereotype
   ("human" or "system" -- "system" only for a real non-human/external
   system) and an optional "generalizes" (a parent actor's name, only for a
@@ -1284,7 +1321,12 @@ Rules:
 - related_requirements: real SRS FR/AC/VR ids -- every FR, AC, and VR must
   be covered by at least one use case.
 - Do not decompose one action into parallel "included" micro-steps that
-  always happen together.
+  always happen together. Most simple, single-flow features need ZERO
+  included or extension use cases -- do not invent one merely to reach 100%
+  coverage of every VR/AC. A stray validation rule or acceptance criterion
+  can be covered by adding its id to an EXISTING use case's
+  related_requirements list; that alone satisfies completeness and does not
+  require a new use case or a new <<include>>/<<extend>> relationship.
 - Return only valid JSON, no markdown fences, no explanation outside JSON.
 
 Return exactly this object:

@@ -200,6 +200,16 @@ plausible-looking feature into a broken one that a human has to catch by hand):
   `read_ui_component_design`/`read_ui_page_design` before stopping. This is
   checked deterministically after you respond -- writing frontend code without
   ever reading the approved design is treated as an incomplete attempt.
+- If the revision comment above contains lines shaped like "[CRITICAL]"/
+  "[MODERATE]"/"[WARNING] file:line -- message" (optionally followed by
+  "Root cause: ..." / "Suggested fix: ..." lines), this is a security remediation task from the Security Agent.
+  Apply each fix precisely at its named file/line, following the suggested
+  fix's intent -- do not just delete or comment out the flagged code. Never weaken or remove an EXISTING security control
+  elsewhere in the codebase (an auth check, input validation, rate limiting,
+  a security header, etc.) just to make a finding disappear, and do not
+  restructure unrelated code while you're in the file. Your objective is
+  still to ship working, complete features -- a security fix must not break
+  the feature it's fixing.
 
 Tool usage:
 - Start with `list_dir` and `read_project_manifest` to see what already exists in

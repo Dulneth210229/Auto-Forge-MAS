@@ -82,8 +82,8 @@ export default function ArtifactRow({
           : "bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800"
       }`}
     >
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2 min-w-0">
           {canSelectActive && (
             <input
               type="radio"
@@ -108,7 +108,7 @@ export default function ArtifactRow({
             </span>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           {!isNonApprovableType && <StatusBadge status={artifact.approval_status} />}
           <button onClick={() => onView(artifact)} className="text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 text-sm font-semibold">
             View

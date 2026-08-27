@@ -54,3 +54,16 @@ class ArtifactResponse(BaseModel):
     # Lets the frontend chat surface real, model-generated text instead of a generic
     # "Produced X (vN)" placeholder. None for artifact types that don't set one.
     summary: str | None = None
+    # Finding ids (security_report only) a human has chosen to accept the risk on rather than fix
+    # -- a side-channel field on the artifact RECORD, deliberately never written into content_json
+    # itself (see artifact_service.set_finding_skipped's own docstring for why: content_json is
+    # treated as immutable once created, per useArtifactContent's staleTime:Infinity assumption on
+    # the frontend). Scoped to this one artifact version only -- a new scan/version always starts
+    # with an empty list, since finding.id is not stable across re-scans.
+    skipped_finding_ids: list[str] = []
+
+
+class SkippedFindingUpdateRequest(BaseModel):
+    """Request body for PUT /artifacts/{artifact_id}/skipped-findings."""
+    finding_id: str
+    skipped: bool
