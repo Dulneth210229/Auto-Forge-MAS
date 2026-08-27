@@ -411,7 +411,17 @@ class SecurityAgent:
         return document.get("turns", []) if document else []
 
     def _append_chat_turns(self, feature_id: str, new_turns: list[dict]) -> None:
+        """Assigns a real, stable `turn_index` (1-based) to every turn in `new_turns` -- the same
+        value to BOTH the user turn and its assistant reply in a pair, so a later edit can address
+        "this exchange" by one number. Direct user request: let a human edit a past message --
+        needs a stable identifier, since array position alone shifts once edits start
+        truncating/replacing history (mirrors requirement_agent's own turn_index precedent, though
+        Requirement assigns it per-reply rather than per-pair since its conversation model
+        differs)."""
         existing = self._get_chat_history(feature_id)
+        next_index = max((turn.get("turn_index", 0) for turn in existing), default=0) + 1
+        for turn in new_turns:
+            turn["turn_index"] = next_index
         store.security_conversations[feature_id] = {"feature_id": feature_id, "turns": existing + new_turns}
 
     async def chat_stream(self, feature_id: str, message: str) -> AsyncGenerator[dict[str, Any], None]:
@@ -429,6 +439,34 @@ class SecurityAgent:
         Mirrors qa_agent.agent.QAAgent.chat_stream exactly -- same NDJSON event shape
         ({"type": "token"|"done"|"error", ...}), same never-block-on-a-missing-report behavior.
         """
+        async for event in self._chat_stream_core(feature_id, message):
+            yield event
+
+    async def edit_chat_turn_stream(
+        self, feature_id: str, turn_index: int, new_message: str
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """
+        Direct user request: edit a past message and regenerate the conversation from that point
+        forward, mirroring requirement_agent.edit_turn_reply_stream's own rewind semantics --
+        discards the edited turn (and its reply) and everything after it, then continues as a
+        fresh chat_stream call from the truncated history. Simpler than Requirement's version:
+        Security chat has no gap-analysis/assumptions state to rebuild, just a transcript.
+        """
+        history = self._get_chat_history(feature_id)
+        if not any(turn.get("turn_index") == turn_index for turn in history):
+            yield {"type": "error", "message": f"No turn {turn_index} found to edit."}
+            return
+
+        kept = [turn for turn in history if turn.get("turn_index", 0) < turn_index]
+        store.security_conversations[feature_id] = {"feature_id": feature_id, "turns": kept}
+
+        async for event in self._chat_stream_core(feature_id, new_message):
+            yield event
+
+    async def _chat_stream_core(self, feature_id: str, message: str) -> AsyncGenerator[dict[str, Any], None]:
+        """Shared by chat_stream/edit_chat_turn_stream -- always re-reads history fresh via
+        _get_chat_history, so a caller that already truncated it (edit_chat_turn_stream) sees the
+        truncated transcript with no other code path needed."""
         from app.services.llm_provider_service import llm_provider_service
 
         report = self._load_latest_security_report(feature_id)
@@ -463,7 +501,6 @@ class SecurityAgent:
             {"role": "user", "content": message, "created_at": now},
             {"role": "assistant", "content": full_reply, "created_at": now},
         ])
-
         yield {"type": "done", "message": full_reply}
 
 

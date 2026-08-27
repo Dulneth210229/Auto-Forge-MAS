@@ -7861,6 +7861,218 @@ milestone — that file is scratch, **this file is the durable one**.
       literal "Open" text appears exactly once (the legend, not per-row), and toggling a checkbox
       genuinely flips its persisted state on a fresh query after each click.
 
+92. **QA Agent enhancement: PDF report, live scan progress, root-cause analysis for failures, a
+    real fix for a documented test-generation reliability gap, and sharper chat scope.** Six
+    direct user requests, explicitly modeled on Security Agent's own already-shipped enhancements
+    (items 89/90). Investigated via 2 parallel Explore agents plus a Plan-agent validation pass
+    that corrected 2 real design choices before implementation: Architecture Agent's own
+    `run`/`run_stream` split (not Security's deep-scan split) is the closer template for QA's
+    shape, and the test-code-reliability fix should reuse the already-proven
+    `---HTML_CODE---`-marker idiom from `uiux_agent/component_generator.py` instead of a
+    new fenced-code-regex approach.
+    - **Key finding, confirmed by direct reading before writing any code: QA Agent was already far
+      more mature than a typical "build this" request** -- test generation was already 3 real
+      LLM-backed passes (unit/integration/regression) reading real workspace files, tests were
+      already written to disk and actually executed via a real sandboxed Jest run, and the chat
+      was already real token streaming, grounded in the report, persisted, with an empty-state
+      trigger -- structurally near-identical to Security Agent's own chat (in fact the reverse: per
+      item 85, QA's chat was the template Security's was built to match). Model selection already
+      worked (`qa_agent` already in `OVERRIDABLE_AGENTS`). This work targeted only the real,
+      confirmed gaps.
+    - **Direct user decision (AskUserQuestion)**: keep the current test scope (business logic only
+      -- `lib`/`models` modules and API route handlers). Did NOT add React component/page testing
+      (would need a JSDOM Jest environment + React Testing Library, a separately-risky addition).
+      Components stay honestly reported as out-of-scope, unchanged.
+    - **Fixed the documented, only-partially-resolved item-75 reliability gap**: all 3 generation
+      prompts used to ask the LLM to embed `test_code` (a large multi-line real Jest file) AS an
+      escaped JSON string value -- fragile on weaker/local models no matter how detailed the
+      escaping instructions (`prompt.py`'s old `_JEST_CONVENTIONS` had an extensive one). Adopted
+      the exact idiom `uiux_agent/component_generator.py` already proved for this identical
+      problem: a new `TEST_CODE_MARKER = "---TEST_CODE---"` -- the JSON object now carries ONLY
+      `test_cases` metadata (short strings, trivially reliable), followed by the literal marker,
+      followed by the real code (never escaped). New `generator._parse_generation_response`
+      splits on the literal marker (never fence-hunting, so a fence the model puts inside the code
+      or wrapping the whole response can't be confused for the split point). 17 tests in
+      `test_qa_generator_fallback.py` (rewritten for the new format, plus new cases: missing
+      marker, a fenced code block around the test code, and real multi-line code with unescaped
+      quotes/backslashes/regex that would have broken the old approach).
+    - **Root-cause + recommendation for failed tests** (direct user request: "the root cause...").
+      One additional BATCHED LLM call (not one per failure) after execution --
+      `generator.analyze_failures`, given every failed test's target/failure message plus that
+      target's already-read real source (a lookup built from targets already discovered, no
+      re-reading from disk), char-capped at `MAX_ROOT_CAUSE_SOURCE_CHARS = 8_000` with a
+      truncation label (mirrors `coder_agent`'s own `MAX_IMPLEMENTATION_SPEC_CHARS` precedent).
+      Never blocks the report: stays `None` on any failure/timeout, same resilience convention as
+      every other QA/Security LLM call. New `QaAgent._apply_root_cause_analysis` merges results
+      into `merged_test_cases`; wired into the markdown report, the chat's report summary, the new
+      PDF, and `qaReportToRevisionComment.js`'s per-failure lines to the Coder Agent. 6 new tests
+      in `test_qa_root_cause_analysis.py`.
+    - **New `POST /qa/run/stream`**, mirroring Architecture Agent's own `run`/`run_stream` split.
+      Generation is SEQUENTIAL (unlike Security's read-only concurrent deep-scan batches -- each
+      pass writes a real file + shares one `ensure_jest_setup()`, a real correctness risk
+      concurrent writes would introduce that Security's pure-read scanning never had), so progress
+      is per-target as generation genuinely proceeds: `discovery` -> per-target
+      `generation_progress` (unit, then integration, then the one regression call) -> `execution`
+      (confirmed via Plan-agent review: `executor.run_tests()` is one blocking subprocess call
+      with no incremental output, so this is necessarily one label+spinner phase) -> `root_cause`
+      (only if there are real failures) -> `saving` -> `done`. Refactored `run()`'s own tail
+      (merge/root-cause/count/build-report/save-artifacts) into a shared `_finalize_report` used
+      by both `run()` and `run_stream()` -- `run()`'s own external behavior is unchanged, just less
+      duplicated. `stage_event_service.record(...)` is called directly in the new route too
+      (confirmed via Plan-agent review: every existing plain/streaming route pair in this codebase
+      duplicates this call, never shares it). 6 new tests in `test_qa_run_stream.py` (discovery
+      fires first, one generation_progress event per target with real index/total, execution phase
+      only when tests were generated, root_cause phase only when there are failures and in the
+      right order, a real done event, and a real error event when no workspace exists).
+    - **Frontend wiring -- the one place a Plan-agent review caught a real integration risk**:
+      `runQa` (the plain mutation) was shared by THREE independent consumers via
+      `QaAgentFlowContext.jsx` (`QaReportView`'s Run/Re-run buttons, `ResultTab.jsx`'s
+      Security-approval auto-continue-to-QA trigger, `QaAgentChat.jsx`'s empty-state trigger +
+      its `isAgentRunning` gate). Building the new stream hook standalone and wiring it into only
+      one would have silently split the UX. **All three now share the same new `useQaRunStream.js`
+      flow** (mirrors `useSecurityDeepScanFlow.js`'s exact shape, minus `inFlightBatches` since
+      generation is sequential, not concurrent batches), added into `QaAgentFlowContext.jsx`
+      alongside the existing `runQa` (kept only for completeness, no longer used by any UI trigger
+      point). `frontend/src/components/common/ScanProgressBar.jsx` (moved from
+      `components/security/`, confirmed by direct read to have zero Security-specific coupling) is
+      now reused unmodified by both Security's deep scan and QA's run stream.
+    - **QA Report PDF**: new `qa_agent/pdf_builder.py`, the same proven 3-agent pattern (shared
+      helpers from `requirement_agent/pdf_builder.py` + `_shared/pdf_style.py`). Summary meta-table
+      with REAL per-category pass/fail/skipped from `tests_by_category` (not re-derived), test
+      cases grouped by category with status/target/inputs/expected/failure/root
+      cause/recommendation, out-of-scope modules, a `raw_stderr` tail section (only if non-empty),
+      sign-off block. Registered in `app/api/routes/artifacts.py`'s `_PDF_BUILDERS` for
+      `ArtifactType.QA_REPORT` -- fixed that route's own stale docstring/error-message list in
+      passing (dynamically built from `_PDF_BUILDERS` now, so it can't go stale again).
+      `ResultTab.jsx`'s QA branch: `artifactDownloadUrl` -> `artifactDownloadPdfUrl`, "Download
+      report" -> "Download QA Report" (the exact swap Security's own branch already got in item
+      89). 11 new tests in `test_qa_pdf_builder.py`, 1 new route-level test in
+      `test_artifact_download_pdf_route.py` (also had to fix that file's own now-stale
+      "unsupported type" test, which had been using `QA_REPORT` as its unsupported example --
+      switched to `SETUP_INSTRUCTIONS`).
+    - **Sharper chat scope** (direct user request): `QA_CHAT_SYSTEM_PROMPT` already said "if the
+      report doesn't cover it, say so" but never explicitly distinguished that from a genuinely
+      off-topic request. Added an explicit second clause covering both cases separately --
+      confirmed live: asking about real test results gets a real, grounded, accurate answer citing
+      the actual test cases; asking an off-topic question ("write me a haiku about the ocean")
+      gets an explicit "I can't assist with that... My scope is limited to discussing the QA
+      report" refusal.
+    - **A real, now-visible pre-existing inconsistency found and fixed during live verification,
+      not introduced by this work**: `report.tests_passed/failed/skipped` (top-level) came
+      straight from Jest's own raw counters (`run_result`), while `tests_by_category`'s per-category
+      breakdown came from re-deriving status off `merged_test_cases` (which correctly falls an
+      unmatched test back to "skipped" locally). These two sources could disagree whenever Jest
+      never actually produced a result at all (confirmed live: a real run where the sandbox was
+      unavailable saved a report with a top banner reading "0 passed, 0 failed, 0 skipped" sitting
+      directly above a category heading correctly reading "1 skipped" for the exact same tests) --
+      invisible before this session's own new per-category pass/fail display made it visible for
+      the first time. Fixed by deriving the top-level counts from `tests_by_category`'s own totals
+      (single source of truth) instead of trusting `run_result` directly, in `_finalize_report`.
+    - Full backend suite: **1132 passed**, 0 failures (a prior run earlier in this session had 14
+      failures + 5 errors, all confirmed via direct `docker version` to be Docker Desktop being
+      unreachable on this machine at that time -- unrelated to any code change; Docker was
+      reachable again by the time this item's full suite ran clean). `npm run build` clean.
+    - **Real, live verification against the real Finodil feature** (isolated backend + isolated
+      `vite preview`, same shared MongoDB Atlas cluster): downloaded a real 70KB QA Report PDF and
+      confirmed every section via extracted text, including the new `raw_stderr` section
+      genuinely showing this environment's real "Sandbox unavailable: could not reach Docker
+      daemon" message (never surfaced anywhere before this item). Triggered a REAL streaming QA
+      run end-to-end (~13 minutes, real sequential LLM calls against a real local model) and
+      captured the exact real event sequence live: `discovery` at 3.6s, 6 real `generation_progress`
+      events in order (1/6 through 6/6, unit -> integration -> regression) each firing exactly when
+      that target's real LLM call actually resolved, `execution`, `saving`, then a real `done` event
+      with real artifact_ids. Confirmed the frontend renders the new "Download QA Report" link and
+      the real per-category pass/fail/skipped breakdown with zero page errors. Root-cause analysis
+      itself could not be exercised end-to-end live in this environment (Docker unavailable meant
+      zero real test failures occurred to analyze) -- covered instead by its own 6 passing unit
+      tests with a mocked LLM.
+
+93. **Chat improvements: per-agent history (verified), copy/edit messages, a theme-colored "Light
+    Horse" loader, QA streaming (verified).** Four direct user requests. Investigated via 2
+    parallel Explore agents plus a Plan-agent validation pass that corrected one real design
+    detail before implementation: Security/QA's new "edit a turn" feature needed a real, stored
+    `turn_index` field (mirroring Requirement Agent's own `edit_turn_reply` mechanism,
+    `requirement_agent/agent.py`) rather than raw array position, since position isn't stable once
+    edits start truncating history.
+    - **Two of the four requests were already fully satisfied, confirmed by direct reading before
+      writing any code, not assumed**: per-agent chat isolation/persistence (every agent renders a
+      distinct React component in `ChatPanel.jsx`, so switching agents fully unmounts/remounts;
+      Security/QA/Requirement each have a real Mongo-backed per-`feature_id` conversation store;
+      every relevant React Query key includes `featureId`) and QA Agent's chat streaming
+      (`qa_agent.py`'s `chat_stream` was already structurally identical to Security's own). Both
+      treated as verify-only, not rebuild -- confirmed live below, no code changed for either.
+    - **A framing correction caught mid-implementation, not asked to the user (a technical detail,
+      not a scope decision)**: the plan initially assumed Domain/Architecture/UI-UX/Coder were
+      "out of scope for Edit" because they lack chat turns to edit. `grep -rn "onEditSubmit"`
+      showed the shared generic `ChatBubble.jsx` (used by all 4 of those agents) already has a
+      fully working Edit affordance, wired in each of their own chat components -- a simpler
+      "resubmit the edited text as a fresh message" semantics (no rewind, since those agents have
+      no conversation state to rewind) distinct from Requirement's/Security's/QA's richer
+      `turn_index`-based true-rewind edit. So only Security and QA genuinely lacked Edit (and
+      Copy) before this item -- the other 4 already had both.
+    - Backend: `security_agent.py`/`qa_agent.py`'s `_append_chat_turns` now assigns a real
+      `turn_index` (max existing + 1) to every turn in a batch. New `edit_chat_turn_stream(feature_id,
+      turn_index, new_message)`: finds the turn by its stored `turn_index`, truncates history to
+      everything strictly before it, then re-runs the same `_chat_stream_core` prompt-building/
+      streaming logic `chat_stream` already had. New routes `POST /security/chat/turns/{turn_index}/
+      edit/stream` and `POST /qa/chat/turns/{turn_index}/edit/stream`, same NDJSON
+      token/done/error shape as their own existing `/chat/stream` routes. Frontend: `SecurityAgentChat.jsx`/
+      `QaAgentChat.jsx` now delegate user-turn rendering to the existing, fully generic `HumanBubble`
+      (`RequirementConversationParts.jsx`) instead of a parallel implementation -- it already had
+      both the hover-reveal Edit pencil and a `CopyButton`. `useSecurityChatFlow.js`/
+      `useQaChatFlow.js` gained a mirrored `editTurnStream` mutation alongside the existing `chatStream`
+      one; while an edit is in flight, the turn being edited and everything after it is hidden
+      client-side (`editTurnStream.variables?.turnIndex`) since it's about to be discarded
+      server-side.
+    - New `frontend/src/components/common/LightHorseLoader.jsx`, reproducing the user-supplied
+      real UIverse markup (`https://uiverse.io/RiccardoRapelli/light-horse-54` -- Cloudflare
+      blocked both `WebFetch` and a real headless-Chromium Playwright fetch of that page, so the
+      user pasted the real HTML/CSS directly rather than this being guessed/fabricated), with 3
+      adaptations: theme-aware gradient (`var(--color-accent-500/700)` instead of the original's
+      hardcoded blue/purple, same convention as the existing `.cube-loader`), a unique SVG filter
+      id per instance via `useId()` (the original hardcodes `id="gooey"`, which would collide if
+      two instances ever rendered at once), and scaled down for inline chat use. Wired into the
+      "waiting for the first token" gap in `RequirementConversationParts.jsx`'s `LiveGenerationView`/
+      `LiveReactionBubble` (shared by Requirement/Domain/Architecture/UI-UX/Coder) and into
+      `SecurityAgentChat.jsx`/`QaAgentChat.jsx` (previously an empty gap for both).
+    - **A real, 100%-reproducible rendering bug found live, fixed, and re-verified**: the loader
+      initially rendered as an empty box in the browser. Root cause (confirmed via
+      `getComputedStyle`): the scale-down `transform: scale(...)` was set as an inline style on
+      the SAME element (`.light-horse-loading-content`) whose own `light-horse-rotate` CSS
+      keyframes also animate `transform` -- a running CSS animation replaces an element's entire
+      computed `transform` for the properties it defines, silently discarding the inline scale
+      (confirmed: `getComputedStyle(...).transform` read back as the identity matrix, and the
+      un-scaled 180px liquid animation only rarely swept through the intended 40px clipped
+      viewport). Fixed by moving the scale onto a separate wrapper element around the rotating
+      content, leaving the rotation on its own element untouched. Re-verified via
+      `getComputedStyle`/`getBoundingClientRect` on the real rendered DOM: liquid blobs now
+      measure ~11px (50px × the 0.22 scale) inside a correctly-sized 40×40 loader, and confirmed
+      visually via a cropped screenshot.
+    - Full backend suite: **1143 passed** (a background full-suite run's single reported error was
+      confirmed transient/environmental on re-run in isolation -- a Docker/npm `tar` extraction
+      flake in an unrelated pre-existing test, `test_render_checker.py`, on a real `npm install`
+      over the Windows-Docker bind mount; the retest passed clean). `npm run build` clean.
+    - **Real, live verification, no mocks** (isolated backend :8090 / frontend :5199, same shared
+      MongoDB Atlas cluster, real local LLM calls against the real Finodil `feature_917b691e` and
+      `proj_34e07440`'s `feature_94701501`): confirmed no cross-agent chat bleed switching between
+      Security and QA on the same feature; confirmed a pre-existing QA turn from before this
+      feature existed (stored with no `turn_index`) correctly shows Copy but NOT Edit, while a
+      fresh turn shows both; confirmed Copy writes the exact real message to the clipboard;
+      confirmed Edit on Security chat truncates and regenerates correctly, with the new reply
+      genuinely persisted server-side (checked directly against the Mongo-backed history, not just
+      the DOM); confirmed the Light Horse loader's gradient tracks a live theme switch (`rose`
+      preset's real `--color-accent-500` of `#f43f5e` matched the loader's rendered gradient
+      exactly); captured the real raw NDJSON wire stream for a QA chat message directly (bypassing
+      the DOM) and confirmed 55 discrete `token` events arriving individually over ~10 seconds,
+      followed by one `done` event -- genuine token-by-token streaming, not a single blob. All
+      test chat turns added during verification were removed directly from the two real Mongo
+      documents afterward (`security_conversations`/`qa_conversations` for `feature_917b691e`),
+      restoring both to their real pre-verification state; the other feature's chat was
+      confirmed untouched (its own test message had errored before reaching persistence, since
+      this dev machine's `outputs/` folder is missing that feature's on-disk QA report file -- a
+      pre-existing environment gap, not a regression). Isolated backend/frontend processes stopped
+      afterward.
+
 ## Where to look
 
 - Full build spec (read this first, in order, before any new milestone): `instructions .md`

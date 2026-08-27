@@ -1,7 +1,7 @@
 {
   "project_name": "Approval Test",
   "feature_name": "Approval Test Feature",
-  "generated_at": "2026-08-26T09:58:55.790274+00:00",
+  "generated_at": "2026-08-26T19:39:31.660407+00:00",
   "scan_type": "standard",
   "gate_decision": "pass",
   "findings_count": 0,

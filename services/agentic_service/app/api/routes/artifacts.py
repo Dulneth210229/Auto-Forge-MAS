@@ -16,6 +16,7 @@ from app.agents.architecture_agent.pdf_builder import build_architecture_plan_ht
 from app.agents.domain_agent.pdf_builder import build_enhanced_srs_html
 from app.agents.requirement_agent.pdf_builder import build_srs_html
 from app.agents.security_agent.pdf_builder import build_security_report_html
+from app.agents.qa_agent.pdf_builder import build_qa_report_html
 from app.core.enums import ArtifactFormat, ArtifactType
 from app.schemas.artifact_schema import ArtifactResponse, SkippedFindingUpdateRequest
 from app.services import pdf_service
@@ -36,6 +37,7 @@ _PDF_BUILDERS = {
     ArtifactType.ENHANCED_SRS: build_enhanced_srs_html,
     ArtifactType.ARCHITECTURE_PLAN: build_architecture_plan_html,
     ArtifactType.SECURITY_REPORT: build_security_report_html,
+    ArtifactType.QA_REPORT: build_qa_report_html,
 }
 
 router = APIRouter(tags=["Artifacts"])
@@ -200,9 +202,10 @@ def download_artifact(artifact_id: str):
 def download_artifact_pdf(artifact_id: str):
     """
     Download an artifact as a real, formatted PDF instead of its raw JSON file --
-    a sibling of /download, scoped to the three document-shaped artifact types
-    (SRS, Enhanced SRS, Architecture Plan) that have a dedicated pdf_builder
-    HTML template. Every other artifact type's /download behavior is unchanged.
+    a sibling of /download, scoped to the document-shaped artifact types
+    registered in _PDF_BUILDERS (SRS, Enhanced SRS, Architecture Plan, Security
+    Report, QA Report) that each have a dedicated pdf_builder HTML template.
+    Every other artifact type's /download behavior is unchanged.
     """
     artifact = artifact_service.get_artifact(artifact_id)
 
@@ -211,11 +214,12 @@ def download_artifact_pdf(artifact_id: str):
 
     builder = _PDF_BUILDERS.get(artifact.artifact_type)
     if builder is None:
+        supported = ", ".join(sorted(t.value for t in _PDF_BUILDERS))
         raise HTTPException(
             status_code=400,
             detail=(
                 f"PDF export is not available for artifact_type='{artifact.artifact_type}'. "
-                "Only srs, enhanced_srs, architecture_plan, and security_report support PDF export."
+                f"Only {supported} support PDF export."
             ),
         )
 

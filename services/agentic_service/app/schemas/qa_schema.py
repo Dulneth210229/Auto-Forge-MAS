@@ -30,6 +30,11 @@ class QAChatTurn(BaseModel):
     role: str  # "user" | "assistant"
     content: str
     created_at: str
+    # Stable, 1-based identifier shared by a user turn and its assistant reply -- direct user
+    # request: lets the frontend address "edit this exchange" by a real id rather than array
+    # position (which shifts once edits start truncating history). None for a turn saved before
+    # this field existed (old conversations keep working, just can't be edited retroactively).
+    turn_index: int | None = None
 
 
 class QAChatHistoryResponse(BaseModel):

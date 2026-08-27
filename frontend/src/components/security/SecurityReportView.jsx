@@ -5,7 +5,7 @@ import { DISPLAY_TIERS, groupFindingsByTier, toDisplayTier } from "../../lib/sev
 import { classifySecurityFindings } from "../../lib/securityFindingsComparison";
 import { computeSecurityGateBlocksQa } from "../../lib/securityGate";
 import SeverityBadge from "./SeverityBadge";
-import ScanProgressBar from "./ScanProgressBar";
+import ScanProgressBar from "../common/ScanProgressBar";
 import LoadingSpinner from "../common/LoadingSpinner";
 import ErrorBanner from "../common/ErrorBanner";
 

@@ -4,19 +4,23 @@
 // UNION of everything currently in flight, not a capped trailing history.
 const MAX_VISIBLE_IN_FLIGHT_FILES = 10;
 
-// A real, live percentage progress bar for the AI-model deep scan -- direct user request. Kept
-// as a small, separate component (rather than folded into SecurityReportView.jsx's own header)
-// since it's rendered from both that component's empty-state and populated-state branches.
+// A real, live percentage progress bar -- originally built for Security Agent's AI-model deep
+// scan, now shared with QA Agent's own streamed test-generation run (see useQaRunStream.js) --
+// nothing in this component is Security- or QA-specific, it's a generic phase-label + percent +
+// optional in-flight-files bar. Kept as a small, separate component (rather than folded into a
+// report view) since it's rendered from both a stage's empty-state and populated-state branches.
 // Deliberately NOT the existing LiveGenerationView (isFinalizing mode, used elsewhere for a
-// non-streamable tail) -- that swaps the ENTIRE view away, which would hide the version dropdown
-// and the "Continue to QA Agent"/"Fix Vulnerabilities" buttons next to it; this renders inline,
-// alongside everything else, instead.
+// non-streamable tail) -- that swaps the ENTIRE view away, which would hide surrounding controls
+// (e.g. Security's version dropdown and action buttons); this renders inline, alongside
+// everything else, instead.
 //
-// `inFlightBatches` (direct user request: show which files are being analyzed right now) is an
-// object keyed by batch_index -> files[] (see useSecurityDeepScanFlow.js's own docstring for why
-// this shape, not a rolling log) -- rendered here as the flattened union of every batch currently
-// in flight, since with real concurrency several batches' files are genuinely "being analyzed"
-// at the same moment, not just one.
+// `inFlightBatches` (direct user request, Security Agent: show which files are being analyzed
+// right now) is an object keyed by batch_index -> files[] (see useSecurityDeepScanFlow.js's own
+// docstring for why this shape, not a rolling log) -- rendered here as the flattened union of
+// every batch currently in flight, since with real concurrency several batches' files are
+// genuinely "being analyzed" at the same moment, not just one. Optional -- QA Agent's own
+// sequential run stream doesn't pass this at all, relying on `phaseLabel` alone to name the
+// current target.
 export default function ScanProgressBar({ progress, phaseLabel, onStop, inFlightBatches }) {
   const percent = progress?.percent ?? 0;
   const inFlightFiles = Object.values(inFlightBatches || {}).flat();

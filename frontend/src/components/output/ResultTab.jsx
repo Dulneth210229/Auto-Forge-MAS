@@ -206,8 +206,10 @@ const SECURITY_FIX_PHRASES = [
 // version pair (dedupeArtifactVersions keeps the JSON row as "the" displayed version for these
 // three stages) -- so the plain "Download report" link always served raw JSON. These three
 // stages instead get a document-specific label and a real, formatted PDF (rendered server-side
-// from the same JSON via a dedicated pdf_builder template per agent, not a JSON dump). Every
-// other stage (uiux/coder/security/qa) keeps the original raw-file "Download report" link.
+// from the same JSON via a dedicated pdf_builder template per agent, not a JSON dump). Security
+// and QA have their own separate, earlier render branches (not this generic fallback) that each
+// hardcode their own PDF download link directly -- this map never applies to them. Every other
+// stage (uiux/coder) keeps the original raw-file "Download report" link.
 const PDF_DOCUMENT_LABEL_BY_STAGE = {
   requirement: "Download SRS",
   domain: "Download Enhanced SRS",
@@ -581,7 +583,7 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
     latestSecurityArtifact?.skipped_finding_ids
   );
 
-  const { runQa } = useQaAgentFlowContext();
+  const { qaRunFlow } = useQaAgentFlowContext();
   const [fixVulnerabilitiesArtifactId, setFixVulnerabilitiesArtifactId] = useState(null);
   const [isSendingFix, setIsSendingFix] = useState(false);
   const [isContinuingToQa, setIsContinuingToQa] = useState(false);
@@ -630,10 +632,11 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
         await srsApproval.mutateAsync({ artifactId: selectedSecurityArtifact.artifact_id, status: "approved" });
       }
       selectAgent("qa");
-      // Not awaited: QA's own pending state now lives in the shared QaAgentFlowContext, so
+      // Not awaited: QA's own pending state now lives in the shared QaAgentFlowContext's
+      // qaRunFlow (the streaming run, direct user request for live progress here too), so
       // QaReportView (once the chat switches over) shows real, live progress -- matching every
       // other "fire the next agent, don't block this button on it" transition in this file.
-      runQa.mutate({ human_comment: "Continuing from Security Agent." });
+      qaRunFlow.handleRunStream({ human_comment: "Continuing from Security Agent." });
     } finally {
       setIsContinuingToQa(false);
     }
@@ -905,10 +908,10 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
                   <VersionSelect versions={versions} selectedVersion={selectedVersion} onChange={setSelectedVersion} />
                   {selectedQaArtifact && (
                     <a
-                      href={artifactDownloadUrl(selectedQaArtifact.artifact_id)}
+                      href={artifactDownloadPdfUrl(selectedQaArtifact.artifact_id)}
                       className="text-sm text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 font-semibold"
                     >
-                      Download report
+                      Download QA Report
                     </a>
                   )}
                 </div>

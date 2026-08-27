@@ -1,9 +1,10 @@
 """
 Unit tests for GET /artifacts/{id}/download-pdf -- a real, PDF-rendering
-sibling of /download scoped to the four document-shaped artifact types
-(srs, enhanced_srs, architecture_plan, security_report). Real TestClient + a
-real Playwright render (no mocking of pdf_service), matching this project's
-own established "verify the real thing" convention for this kind of route.
+sibling of /download scoped to the document-shaped artifact types
+(srs, enhanced_srs, architecture_plan, security_report, qa_report). Real
+TestClient + a real Playwright render (no mocking of pdf_service), matching
+this project's own established "verify the real thing" convention for this
+kind of route.
 """
 
 import json
@@ -26,6 +27,11 @@ MINIMAL_SECURITY_REPORT = {
     "feature_name": "Login", "project_name": "P", "scan_type": "standard",
     "gate_decision": "pass", "findings_count": 0, "critical_count": 0,
     "moderate_count": 0, "warning_count": 0, "findings": [],
+}
+MINIMAL_QA_REPORT = {
+    "feature_name": "Login", "project_name": "P", "framework_used": "jest",
+    "tests_generated": 0, "tests_passed": 0, "tests_failed": 0, "tests_skipped": 0,
+    "tests_by_category": {}, "test_cases": [], "out_of_scope_modules": [], "raw_stderr": "",
 }
 
 
@@ -112,10 +118,22 @@ def test_download_pdf_returns_a_real_pdf_for_security_report(feature):
     assert response.content.startswith(b"%PDF-")
 
 
+def test_download_pdf_returns_a_real_pdf_for_qa_report(feature):
+    artifact_id = _seed_artifact(
+        feature["tmp_path"], feature["project_id"], feature["feature_id"],
+        ArtifactType.QA_REPORT.value, MINIMAL_QA_REPORT,
+    )
+
+    response = client.get(f"/api/v1/artifacts/{artifact_id}/download-pdf")
+
+    assert response.status_code == 200
+    assert response.content.startswith(b"%PDF-")
+
+
 def test_download_pdf_returns_400_for_an_unsupported_artifact_type(feature):
     artifact_id = _seed_artifact(
         feature["tmp_path"], feature["project_id"], feature["feature_id"],
-        ArtifactType.QA_REPORT.value, {"tests_generated": 0},
+        ArtifactType.SETUP_INSTRUCTIONS.value, {"instructions": "npm install"},
     )
 
     response = client.get(f"/api/v1/artifacts/{artifact_id}/download-pdf")

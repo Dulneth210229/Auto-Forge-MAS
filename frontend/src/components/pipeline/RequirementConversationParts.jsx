@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import LoadingSpinner from "../common/LoadingSpinner";
+import LightHorseLoader from "../common/LightHorseLoader";
 import CopyButton from "../common/CopyButton";
 
 // Ticks once a second while `startedAt` is set -- used by LiveGenerationView's finalizing phase
@@ -319,7 +320,12 @@ export function LiveGenerationView({
         </p>
       </div>
 
-      {!hasStarted && !isFinalizing && <LoadingSpinner variant="cube" label="Waiting for the model to start responding..." />}
+      {!hasStarted && !isFinalizing && (
+        <div className="flex items-center gap-3 text-gray-500 dark:text-gray-400 py-2">
+          <LightHorseLoader size={40} />
+          <span className="text-sm">Waiting for the model to start responding...</span>
+        </div>
+      )}
 
       {hasStarted && (
         <pre className="text-sm text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-md p-4 max-h-[65vh] overflow-y-auto whitespace-pre-wrap font-sans">
@@ -347,7 +353,10 @@ export function LiveReactionBubble({ reactionText, hasStarted, agentLabel = "Req
       <div className="max-w-[85%] bg-gray-100 dark:bg-white/10 text-gray-800 dark:text-gray-200 rounded-lg rounded-tl-sm px-3 py-2 text-sm flex flex-col gap-2">
         <p className="text-xs text-gray-500 dark:text-gray-400">{agentLabel}</p>
         {!hasStarted || !reactionText ? (
-          <LoadingSpinner variant="cube" size={20} label="Thinking..." />
+          <div className="flex items-center gap-2">
+            <LightHorseLoader size={28} />
+            <span className="text-sm text-gray-500 dark:text-gray-400">Thinking...</span>
+          </div>
         ) : (
           <p className="whitespace-pre-wrap">
             {reactionText}

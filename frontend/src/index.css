@@ -168,3 +168,109 @@ html.dark *::-webkit-scrollbar-thumb:hover {
     transform: rotate(45deg) rotateX(-385deg) rotateY(385deg);
   }
 }
+
+/* "Light Horse" gooey loader (https://uiverse.io/RiccardoRapelli/light-horse-54), used by
+   LightHorseLoader.jsx -- direct user request, shown only while a chat is waiting for an agent to
+   start responding. Reproduces the original markup/animation exactly except the color: the
+   original hardcodes a blue/purple gradient, replaced here with the app's own --color-accent-*
+   tokens (see @theme above) so it automatically matches the user's selected accent preset, same
+   convention as .cube-loader above. Class names prefixed light-horse- (the original's .loading-
+   content/.liquid/.svg names are too generic for this app's global stylesheet). */
+.light-horse-loading-content {
+  position: relative;
+  width: 180px;
+  height: 180px;
+  animation: light-horse-rotate 4s ease-in-out infinite;
+}
+
+@keyframes light-horse-rotate {
+  0% {
+    transform: rotate(360deg);
+  }
+  50% {
+    transform: rotate(360deg);
+  }
+  100% {
+    transform: rotate(0deg);
+  }
+}
+
+.light-horse-liquid {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: linear-gradient(90deg, var(--color-accent-500) 0%, var(--color-accent-700) 100%);
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  --ani-dur: 4s;
+}
+
+.light-horse-liquid:nth-child(1) {
+  top: 0;
+  animation: light-horse-animate1 var(--ani-dur) ease-in-out infinite;
+}
+
+.light-horse-liquid:nth-child(2) {
+  left: 0;
+  animation: light-horse-animate2 var(--ani-dur) ease-in-out infinite;
+}
+
+.light-horse-liquid:nth-child(3) {
+  left: 100%;
+  animation: light-horse-animate3 var(--ani-dur) ease-in-out infinite;
+}
+
+.light-horse-liquid:nth-child(4) {
+  top: 100%;
+  animation: light-horse-animate4 var(--ani-dur) ease-in-out infinite;
+}
+
+@keyframes light-horse-animate1 {
+  0% {
+    top: 0;
+  }
+  50% {
+    top: 100%;
+  }
+  100% {
+    top: 100%;
+  }
+}
+
+@keyframes light-horse-animate2 {
+  0% {
+    left: 0;
+  }
+  50% {
+    left: 100%;
+  }
+  100% {
+    left: 100%;
+  }
+}
+
+@keyframes light-horse-animate3 {
+  0% {
+    left: 100%;
+  }
+  50% {
+    left: 0;
+  }
+  100% {
+    left: 0;
+  }
+}
+
+@keyframes light-horse-animate4 {
+  0% {
+    top: 100%;
+  }
+  50% {
+    top: 0;
+  }
+  100% {
+    top: 0;
+  }
+}
