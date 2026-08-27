@@ -51,6 +51,7 @@ from app.core.enums import AgentName, ArtifactType, ArtifactFormat
 from app.schemas.agent_schema import AgentRunRequest, AgentRunResponse
 from app.services.artifact_service import artifact_service
 from app.schemas.requirement_schema import (
+    RequirementAgentFieldEditRequest,
     RequirementAgentRunRequest,
     RequirementAgentReviseRequest,
 )
@@ -82,7 +83,7 @@ from app.schemas.architecture_schema import (
     ArchitectureAgentRunRequest,
     ArchitectureAgentReviseRequest,
 )
-from app.schemas.uiux_schema import UIUXAgentRunRequest
+from app.schemas.uiux_schema import UIUXAgentReviseRequest, UIUXAgentRunRequest
 from app.schemas.coder_schema import CoderAgentRunRequest, CoderAgentReviseRequest
 from app.schemas.security_schema import SecurityAgentRunRequest
 from app.schemas.qa_schema import QAAgentRunRequest, QAChatHistoryResponse, QAChatMessageRequest, QAChatTurn
@@ -1543,7 +1544,7 @@ async def revise_coder_agent_stream(feature_id: str, request: CoderAgentReviseRe
 
 
 @router.post("/deployment/run", response_model=AgentRunResponse)
-def run_deployment_agent(feature_id: str, request: AgentRunRequest):
+async def run_deployment_agent(feature_id: str, request: AgentRunRequest):
     """
     Run the Security Agent -- scans the Coder Agent's generated workspace (pattern/secret/
     dependency layers plus an LLM review pass) and saves a versioned Critical/Moderate/Warning

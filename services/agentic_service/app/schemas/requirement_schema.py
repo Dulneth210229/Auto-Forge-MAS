@@ -14,6 +14,8 @@ This does not mean the Requirement Agent generates architecture.
 It only records the preferred architectural style as a requirement/design constraint.
 """
 
+from typing import Any
+
 from pydantic import BaseModel, Field, field_validator
 
 from app.core.enums import ArchitectureStyle
@@ -225,5 +227,13 @@ class RequirementAgentReviseRequest(BaseModel):
         default="human_user",
         example="human_user"
     )
+
+
+class RequirementAgentFieldEditRequest(BaseModel):
+    """Request for deterministic field-level edits to the latest SRS."""
+
+    operations: list[dict[str, Any]] = Field(default_factory=list)
+    edited_by: str = Field(default="human_user")
+    base_artifact_id: str | None = Field(default=None)
 
 
