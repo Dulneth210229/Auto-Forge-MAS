@@ -233,8 +233,8 @@
       "validation_errors": [
         {
           "source_id": "VR-001",
-          "condition": "Search query must not be empty.",
-          "handling": "Return a clear validation message and prevent invalid processing."
+          "condition": "Violation of VR-001",
+          "handling": "Reject the request with an HTTP 400 response referencing VR-001, show the user a message identifying the invalid field(s), and do not process or persist the request."
         }
       ],
       "business_errors": [],
@@ -334,9 +334,11 @@
     ],
     "processing_validation": [
       {
-        "source_id": "VR-001",
-        "condition": "Search query must not be empty.",
-        "handling": "Return a clear validation message and prevent invalid processing."
+        "rule_id": "VR-001",
+        "rule": "Search query must not be empty.",
+        "related_requirements": [
+          "VR-001"
+        ]
       }
     ]
   },
@@ -443,7 +445,7 @@
           "response": "TaskSearchSuccessResponse",
           "error_cases": [
             "400 when required request fields are missing or invalid",
-            "{'source_id': 'VR-001', 'condition': 'Search query must not be empty.', 'handling': 'Return a clear validation message and prevent invalid processing.'}",
+            "{'source_id': 'VR-001', 'condition': 'Violation of VR-001', 'handling': 'Reject the request with an HTTP 400 response referencing VR-001, show the user a message identifying the invalid field(s), and do not process or persist the request.'}",
             "500 when an unexpected server error occurs"
           ]
         }

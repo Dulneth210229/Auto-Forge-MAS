@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { TransformWrapper, TransformComponent, useControls } from "react-zoom-pan-pinch";
 
 // Small on-screen control cluster -- must render INSIDE <TransformWrapper> since useControls()
@@ -39,24 +40,61 @@ function ZoomControls() {
 // Generic zoom/pan wrapper -- takes a raw `src`, not an artifact id, so it has zero coupling to
 // artifact-fetching concerns and is reusable anywhere an image needs to be zoomable (e.g. the
 // UI/UX Agent's page-preview screenshots later), not just Architecture diagrams.
+//
+// A real, confirmed bug (users "stuck," unable to reach parts of a zoomed-in diagram): the
+// previous version's `contentStyle={{ width: "100%", height: "100%", ... }}` forced the
+// TransformComponent's measured content box to always equal the WRAPPER's box, regardless of the
+// real image's own aspect ratio -- so react-zoom-pan-pinch's pan-bounds math (based on
+// `contentComponent.offsetWidth/offsetHeight`) was computed against an invisible, oversized
+// padding rectangle instead of the actual rendered diagram, and `limitToBounds` hard-clamped at
+// that wrong boundary. Fixed by rendering the `<img>` at its own natural size (this library's own
+// documented usage pattern -- see its README example, a bare `<img>` with no sizing CSS) so the
+// content box the library measures always matches the real image, then fitting it to the visible
+// container ourselves via `centerView(fitScale)` once the image loads (natural size is very
+// likely larger than the lightbox on at least one axis, so a plain `centerOnInit` alone would
+// leave it looking "already zoomed in" on first render).
 export default function ZoomableImage({ src, alt, className }) {
+  const containerRef = useRef(null);
+  const transformRef = useRef(null);
+
+  function handleImageLoad(event) {
+    const container = containerRef.current;
+    const img = event.currentTarget;
+    if (!container || !img.naturalWidth || !img.naturalHeight) return;
+
+    const fitScale = Math.min(
+      container.clientWidth / img.naturalWidth,
+      container.clientHeight / img.naturalHeight,
+      1
+    );
+    transformRef.current?.centerView(fitScale, 0);
+  }
+
   return (
-    <div className={`relative w-full h-full bg-gray-50 dark:bg-gray-950 rounded overflow-hidden ${className || ""}`}>
+    <div
+      ref={containerRef}
+      className={`relative w-full h-full bg-gray-50 dark:bg-gray-950 rounded overflow-hidden ${className || ""}`}
+    >
       <TransformWrapper
+        ref={transformRef}
         initialScale={1}
-        minScale={0.5}
+        minScale={0.1}
         maxScale={6}
         wheel={{ step: 0.15 }}
         pinch={{ step: 5 }}
         doubleClick={{ mode: "toggle" }}
+        centerZoomedOut
         limitToBounds
       >
         <ZoomControls />
-        <TransformComponent
-          wrapperStyle={{ width: "100%", height: "100%" }}
-          contentStyle={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}
-        >
-          <img src={src} alt={alt || "Diagram"} className="max-w-full max-h-full object-contain" />
+        <TransformComponent wrapperStyle={{ width: "100%", height: "100%" }}>
+          <img
+            src={src}
+            alt={alt || "Diagram"}
+            draggable={false}
+            onLoad={handleImageLoad}
+            className="cursor-grab active:cursor-grabbing"
+          />
         </TransformComponent>
       </TransformWrapper>
     </div>

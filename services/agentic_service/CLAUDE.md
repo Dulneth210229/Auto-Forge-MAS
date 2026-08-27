@@ -8073,6 +8073,112 @@ milestone — that file is scratch, **this file is the durable one**.
       pre-existing environment gap, not a regression). Isolated backend/frontend processes stopped
       afterward.
 
+94. **Architecture Agent: plain-English reviewer note, Validation/Error-Handling Plan
+    deduplication, diagram zoom/pan fix, and Use Case Diagram FR-grounding (less
+    `<<include>>`/`<<extend>>` overuse).** Four direct user reports, backed by real screenshots
+    from the Finodil "Login and Signup" feature. Investigated via 2 parallel Explore agents plus
+    direct reads of every file/line involved before writing any code.
+    - **Reviewer note** (`agent.py`): the note was a fixed sentence with a raw Python exception
+      message concatenated onto it verbatim, ALL-CAPS-prefixed, at 4 call sites. All 4 of this
+      agent's validators (class/usecase/sequence/sds) raise via the identical
+      `raise XxxValidationError("; ".join(errors))` convention, confirmed across all four files --
+      new `reviewer_note_builder.build_human_approval_note()` splits on `"; "` and renders one
+      issue per line instead of one dense run-on paragraph, dropping the ALL-CAPS/"review
+      carefully" boilerplate. Scope confirmed with the user via AskUserQuestion before
+      implementation: restructure/declutter only, keep each issue's real specifics (class/field
+      names) verbatim -- not a jargon-simplification layer, which would need per-validator tuning
+      this session didn't scope. Frontend: `ArchitecturePlanDocumentViewer.jsx`'s note box gained
+      `whitespace-pre-line` (was a plain `<div>` with no whitespace handling -- a multi-line note
+      would have collapsed into one squashed line in the browser); confirmed via
+      `getComputedStyle` on the real rendered element that this is deployed correctly. No
+      markdown/PDF builder change needed -- both already interpolate the raw string, and
+      `pdf_builder.py`'s shared `_smart_text_block` (from `requirement_agent/pdf_builder.py`)
+      already auto-bullets 2+-line text, so the PDF export gets cleaner too, for free.
+    - **Validation Plan vs. Error Handling Plan duplication** (`prompt.py`, `agent.py`): confirmed
+      real and reproducible against the actual Finodil data -- `_build_data_view`'s `rule` and
+      `_build_error_handling_view`'s `condition` used the identical `item.get("description")` text,
+      and `handling` was one hardcoded literal identical for every row (exactly matching the
+      screenshot's repeated "Return a clear validation message and prevent invalid processing.").
+      Also found: `_convert_sds_to_architecture_plan` wired `validation_plan.processing_validation`
+      directly to `design_views.error_handling_view.validation_errors` -- the same list object
+      twice. Fixed the prompt (`prompt.py:94` and the revision-prompt's equivalent instruction) to
+      explicitly state Validation Plan states the rule, Error Handling Plan states the system's
+      response behavior (status code, user-facing message, no persistence) referencing the rule by
+      id, never restating its wording -- for the primary LLM-generation path. Fixed the
+      deterministic fallback's `_build_error_handling_view` to reference the rule id instead of
+      duplicating its description, with a templated, genuinely distinct "reject with HTTP 400 ...
+      do not process or persist" handling string; fixed the `processing_validation` mis-wiring to
+      mirror `input_validation`'s own source instead of pointing at the conceptually different
+      Error Handling view. Re-verified directly against the real Finodil SRS (calling
+      `_build_fallback_architecture_output` read-only, no Mongo writes, no LLM call) -- confirmed
+      the fix produces genuinely distinct Validation Plan/Error Handling Plan content for the
+      exact data that produced the original screenshot.
+    - **Diagram zoom/pan** (`ZoomableImage.jsx`, the only consumer being
+      `ArchitectureDiagramsGallery.jsx`'s lightbox): root-caused via the installed
+      `react-zoom-pan-pinch@4.0.4` bounds source (`getComponentsSizes`/`getBounds`) -- the previous
+      `contentStyle={{width:"100%",height:"100%",display:"flex",...}}` forced the library's
+      measured content box to always equal the wrapper's box regardless of the real diagram
+      image's own aspect ratio, so pan bounds were computed against an invisible, oversized
+      padding rectangle instead of the actual image, and `limitToBounds` hard-clamped there with
+      no elastic give. Fixed by letting the `<img>` render at its natural size (this library's own
+      documented usage pattern, confirmed via its README) and fitting it to the visible container
+      via `centerView(fitScale)` -- computed from `naturalWidth/Height` vs. the container's real
+      `clientWidth/Height` -- on the image's own `onLoad`, since natural size is often larger than
+      the lightbox on at least one axis. Added `cursor-grab`/`active:cursor-grabbing` (previously
+      zero pan affordance) and `draggable={false}` on the `<img>`. Re-verified live against the
+      real, currently-broken Finodil Use Case Diagram: dragging to each extreme now lands the
+      transform's `translate()` at the EXACT mathematically-expected boundary
+      (`wrapperSize - naturalSize * scale`) on both axes, confirmed to the pixel -- proof the
+      bounds now track the real image, not a stretched box.
+    - **Use Case Diagram overuse of `<<include>>`/`<<extend>>`**: investigation of the prompt
+      (`prompt.py`, all 3 tiers: combined, agentic, focused) found it already grounds use cases in
+      FR+AC+VR and already has anti-fragmentation guidance -- added an explicit "FR is the PRIMARY
+      source; AC/VR refine, they don't justify a new use case" framing plus an explicit release
+      valve ("cover a stray VR/AC via an EXISTING use case's related_requirements, don't invent
+      one") to all 3 prompt locations. **A materially bigger discovery made live-inspecting the
+      real Finodil `.puml` file**: the actual generated diagram (6 spurious `<<include>>` +
+      6 spurious `<<extend>>` relationships to garbled fragments like "Email Must Be In Valid" and
+      "Invalid Login Credentials Wrong Email") did NOT come from any of the 3 LLM-prompted tiers
+      at all -- `usecase_modeler.py`'s `build()` only calls the deterministic
+      `_build_main_use_cases`/`_build_included_use_cases`/`_build_extension_use_cases` fallback
+      when `specification["use_cases"]` is completely empty, i.e. every LLM tier (including the
+      repair loop) failed -- which is evidently what's actually happening in this dev environment.
+      That fallback mechanically minted one included use case per `validation_rules` item (an
+      unambiguous UML modeling error -- a validation rule like "Email must be in a valid format"
+      is a business rule, never a use case under any real convention) and one included/extension
+      use case per `functional_requirements`/`acceptance_criteria` item matching a crude keyword
+      list, with zero semantic judgment. Removed both mechanical loops entirely from
+      `_build_included_use_cases`/`_build_extension_use_cases` (keeping only the loops reading an
+      explicit, even if partial, LLM-provided `included_behaviours`/`extension_behaviours`/
+      `exception_flows` signal) -- safe with zero coverage loss, confirmed by this file's own
+      existing docstring on `_all_requirement_ids`: the main use case already seeds every FR/AC/VR
+      id into its own `related_requirements` *specifically* so traceability holds even with zero
+      included/extension use cases. Removed the now-fully-dead `OPTIONAL_WORDS`/
+      `INTERNAL_ACTION_VERBS` word lists (`ERROR_WORDS` stays -- still used elsewhere). Re-verified
+      directly against the real Finodil SRS (deterministic call, no LLM, no writes): the diagram
+      went from 13 use cases / 12 spurious relationships down to exactly 1 use case (the real
+      actors, correctly associated, zero `<<include>>`/`<<extend>>`) -- matching the user's own
+      "keep it simple, accurate, and grounded" request precisely. Two existing unit tests
+      (`test_fallback_supporting_use_case_uses_matching_user_story_goal`/
+      `..._falls_back_to_gentle_truncation`) updated to exercise the naming helper via an explicit
+      `included_behaviours` entry instead of the now-removed mechanical FR conversion; added
+      `test_fallback_does_not_mechanically_turn_validation_rules_into_use_cases` as a direct
+      regression test for the real bug.
+    - New `tests/test_architecture_reviewer_note_builder.py` (6 tests),
+      `tests/test_architecture_validation_error_handling_dedup.py` (4 tests). Full architecture-
+      tagged suite: **257 passed** (up from 256 before this item's own new test), 0 regressions.
+    - **Real, live verification, no mocks** (isolated backend :8090 / frontend :5199, same shared
+      MongoDB Atlas cluster, real Finodil `feature_917b691e`): confirmed the reviewer-note CSS fix
+      deployed correctly via `getComputedStyle` on the real rendered note box; confirmed the
+      Validation Plan/Error Handling Plan fix against the real SRS data that produced the original
+      screenshot (read-only, no writes); confirmed the zoom/pan fix by dragging the real, currently
+      -broken Use Case Diagram lightbox to its exact mathematical pan boundary on both axes;
+      confirmed the Use Case Diagram fix collapses the real 13-use-case/12-relationship garbled
+      diagram down to 1 clean use case for the same real data. No test project/feature/artifact was
+      created and no Mongo writes were made during this verification (all checks were either direct
+      read-only Python calls against the real SRS or real, but non-mutating, browser navigation) --
+      no cleanup needed. Isolated backend/frontend processes stopped afterward.
+
 ## Where to look
 
 - Full build spec (read this first, in order, before any new milestone): `instructions .md`

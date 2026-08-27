@@ -333,6 +333,16 @@ class TestFallbackPath:
         assert main[0]["name"] == "Login"
 
     def test_fallback_supporting_use_case_uses_matching_user_story_goal(self):
+        """
+        _build_fallback_supporting_use_case's naming logic is exercised via
+        an explicit included_behaviours entry (a real, even if partial, LLM
+        specification signal) -- NOT via mechanically converting every raw
+        functional_requirements item, which was a real, confirmed bug (see
+        _build_included_use_cases' own docstring: a genuine "Login and
+        Signup" run produced spurious <<include>> relationships to garbled
+        fragments like "Email Must Be In Valid" for validation rules that
+        are not use cases at all).
+        """
         modeler = ArchitectureUseCaseModeler()
         srs_json = {
             "feature_name": "Login",
@@ -343,8 +353,13 @@ class TestFallbackPath:
                 {"id": "FR-001", "description": "The system must validate the user credentials against stored records."},
             ],
         }
+        specification = {
+            "included_behaviours": [
+                {"description": "The system must validate the user credentials against stored records.", "related_requirements": ["FR-001"]},
+            ],
+        }
 
-        _, usecase_json = modeler.build(srs_json=srs_json, sds_json={"design_views": {}}, usecase_specification_json={})
+        _, usecase_json = modeler.build(srs_json=srs_json, sds_json={"design_views": {}}, usecase_specification_json=specification)
 
         included = [uc for uc in usecase_json["use_cases"] if uc["category"] == "included"]
         assert len(included) == 1
@@ -364,8 +379,13 @@ class TestFallbackPath:
                 {"id": "FR-001", "description": "The system must validate the user credentials against stored records."},
             ],
         }
+        specification = {
+            "included_behaviours": [
+                {"description": "The system must validate the user credentials against stored records.", "related_requirements": ["FR-001"]},
+            ],
+        }
 
-        _, usecase_json = modeler.build(srs_json=srs_json, sds_json={"design_views": {}}, usecase_specification_json={})
+        _, usecase_json = modeler.build(srs_json=srs_json, sds_json={"design_views": {}}, usecase_specification_json=specification)
 
         included = [uc for uc in usecase_json["use_cases"] if uc["category"] == "included"]
         assert len(included) == 1
@@ -412,3 +432,47 @@ class TestFallbackPath:
 
         for rel in _relationships_by_type(usecase_json, "association"):
             assert rel["to"] == main_id
+
+    def test_fallback_does_not_mechanically_turn_validation_rules_into_use_cases(self):
+        """
+        Regression test for a real, confirmed bug: a genuine "Login and
+        Signup" run (every LLM generation rung failed, falling through to
+        this deterministic last-resort path) produced 6 <<include>>
+        relationships to garbled fragments like "Email Must Be In Valid"
+        (from validation rule "Email must be in a valid format") and 6
+        <<extend>> relationships to fragments like "Invalid Login
+        Credentials Wrong Email" -- validation rules and raw requirement
+        sentences are not real, distinct, user-observable use cases under
+        any UML convention. With no explicit included_behaviours/
+        extension_behaviours/exception_flows in the specification, the
+        fallback must produce ONLY the main use case, with full FR/AC/VR
+        traceability folded into its own related_requirements instead.
+        """
+        modeler = ArchitectureUseCaseModeler()
+        srs_json = {
+            "feature_name": "Login and Signup",
+            "functional_requirements": [
+                {"id": "FR-001", "description": "User can enter email and password into the login form"},
+                {"id": "FR-003", "description": "System validates the input (both fields required, email format correct)"},
+            ],
+            "acceptance_criteria": [
+                {"id": "AC-004", "description": "Given invalid login credentials, when the user submits the login form, then they see a generic error"},
+            ],
+            "validation_rules": [
+                {"id": "VR-001", "description": "Email must be in a valid format."},
+                {"id": "VR-002", "description": "Password must meet minimum strength requirements."},
+            ],
+        }
+
+        _, usecase_json = modeler.build(srs_json=srs_json, sds_json={"design_views": {}}, usecase_specification_json={})
+
+        included = [uc for uc in usecase_json["use_cases"] if uc["category"] == "included"]
+        extension = [uc for uc in usecase_json["use_cases"] if uc["category"] == "extension"]
+        assert included == []
+        assert extension == []
+        assert _relationships_by_type(usecase_json, "include") == []
+        assert _relationships_by_type(usecase_json, "extend") == []
+
+        main = [uc for uc in usecase_json["use_cases"] if uc["category"] == "main"][0]
+        for req_id in ["FR-001", "FR-003", "AC-004", "VR-001", "VR-002"]:
+            assert req_id in main["related_requirements"]
