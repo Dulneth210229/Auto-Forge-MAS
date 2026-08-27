@@ -1,7 +1,7 @@
 {
   "project_name": "Deep Scan Test",
   "feature_name": "Deep Scan Test Feature",
-  "generated_at": "2026-08-22T18:23:37.992320+00:00",
+  "generated_at": "2026-08-27T06:37:58.754274+00:00",
   "scan_type": "ai_model_deep_scan",
   "gate_decision": "fail",
   "findings_count": 1,

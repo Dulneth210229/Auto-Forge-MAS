@@ -409,11 +409,28 @@ export async function securityChatStream(featureId, { message }, onEvent, signal
   return streamNdjsonPost(`${API_BASE_URL}${base(featureId)}/security/chat/stream`, { message }, onEvent, signal);
 }
 
-// QA Agent -- run has no streaming variant either (real LLM calls + a real sandboxed test run,
-// not a single continuous reply worth watching token-by-token), but chat DOES stream, live Q&A
-// about the latest report (see qa_schema.py's own docstring for the "run vs. chat" split).
+// Direct user request: edit a past chat message and regenerate from that point forward -- same
+// NDJSON shape as securityChatStream itself.
+export async function editSecurityChatTurnStream(featureId, turnIndex, { message }, onEvent, signal) {
+  return streamNdjsonPost(
+    `${API_BASE_URL}${base(featureId)}/security/chat/turns/${turnIndex}/edit/stream`, { message }, onEvent, signal
+  );
+}
+
+// QA Agent -- plain, blocking run (real LLM calls + a real sandboxed test run). Kept alongside
+// runQaStream below (mirrors every other agent's own plain-route-stays-alongside-streaming-route
+// precedent) though the frontend now exclusively uses the streaming variant to trigger a run --
+// see useQaRunStream.js's own docstring.
 export async function runQa(featureId, { human_comment } = {}, signal) {
   return postCancelable(`${base(featureId)}/qa/run`, { human_comment }, signal);
+}
+
+// Live-progress variant of runQa -- direct user request, mirrors runSecurityDeepScanStream's own
+// shape. Real per-target "generation_progress" NDJSON events plus phase events for
+// discovery/execution/root-cause-analysis/saving (see agent.py's run_stream), so a human watching
+// sees real, live progress instead of a bare blank wait for the whole run.
+export async function runQaStream(featureId, { human_comment } = {}, onEvent, signal) {
+  return streamNdjsonPost(`${API_BASE_URL}${base(featureId)}/qa/run/stream`, { human_comment }, onEvent, signal);
 }
 
 export async function getQaChatHistory(featureId) {
@@ -423,4 +440,12 @@ export async function getQaChatHistory(featureId) {
 
 export async function qaChatStream(featureId, { message }, onEvent, signal) {
   return streamNdjsonPost(`${API_BASE_URL}${base(featureId)}/qa/chat/stream`, { message }, onEvent, signal);
+}
+
+// Direct user request: edit a past chat message and regenerate from that point forward -- same
+// NDJSON shape as qaChatStream itself.
+export async function editQaChatTurnStream(featureId, turnIndex, { message }, onEvent, signal) {
+  return streamNdjsonPost(
+    `${API_BASE_URL}${base(featureId)}/qa/chat/turns/${turnIndex}/edit/stream`, { message }, onEvent, signal
+  );
 }

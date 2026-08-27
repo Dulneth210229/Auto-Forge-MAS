@@ -1583,6 +1583,107 @@ async def run_deployment_agent(feature_id: str, request: AgentRunRequest):
         )
 
 
+@router.post("/security/scan-with-model", response_model=AgentRunResponse)
+async def run_security_agent_deep_scan(feature_id: str, request: SecurityAgentRunRequest):
+    """
+    Run the Security Agent's AI-model deep-code-read scan -- a separate trigger from
+    /security/run: the same 3 deterministic layers, plus a genuinely new layer that shows the
+    configured model REAL generated source code directly (not just a findings summary) and asks
+    it to identify vulnerabilities, each with a concrete root cause and suggested fix. Saves a new
+    version of the same security_report artifact (scan_type: "ai_model_deep_scan"), so it flows
+    through the exact same approval/version-history/chat machinery as a standard scan.
+    """
+    _validate_feature(feature_id)
+    stage_event_service.record(feature_id, AgentName.SECURITY, "run", request.human_comment)
+
+    try:
+        output = await security_agent.run_ai_model_scan(feature_id=feature_id)
+
+        return AgentRunResponse(
+            feature_id=feature_id,
+            agent_name=AgentName.SECURITY,
+            status="completed",
+            message=output.message,
+            artifact_ids=output.artifact_ids,
+        )
+
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+    except Exception as error:
+        print("========== SECURITY AGENT (AI MODEL SCAN) ERROR ==========")
+        print(traceback.format_exc())
+        print("============================================================")
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Security Agent AI-model scan failed: {_readable_error(error)}"
+        )
+
+
+@router.post("/security/scan-with-model/stream")
+async def run_security_agent_deep_scan_stream(feature_id: str, request: SecurityAgentRunRequest):
+    """
+    Streaming variant of /security/scan-with-model -- real, live progress (a percentage a human can
+    watch, computed client-side from current/total) instead of one blocking response, plus a real
+    stop: aborting the client's fetch cancels this generator (FastAPI/Starlette's own behavior, see
+    architecture_agent's own run_stream for the same established pattern), so nothing is saved if a
+    human stops the scan partway through.
+
+    Events:
+        {"type": "phase", "phase": "...", "label": "..."}
+        {"type": "progress", "current": i, "total": N, "label": "..."}
+        {"type": "error", "message": "..."}
+        {"type": "done", "artifact_ids": [...], "message": "...", "gate_decision": "...", "findings_count": N}
+    """
+    _validate_feature(feature_id)
+    stage_event_service.record(feature_id, AgentName.SECURITY, "run", request.human_comment)
+
+    async def event_stream():
+        try:
+            async for event in security_agent.run_ai_model_scan_stream(feature_id=feature_id):
+                yield json.dumps(event) + "\n"
+        except ValueError as error:
+            yield json.dumps({"type": "error", "message": str(error)}) + "\n"
+        except Exception as error:
+            yield json.dumps(
+                {"type": "error", "message": f"Security Agent AI-model scan failed: {_readable_error(error)}"}
+            ) + "\n"
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
+
+
+@router.get("/security/chat", response_model=SecurityChatHistoryResponse)
+def get_security_chat_history(feature_id: str):
+    """Real, persisted chat history (store.security_conversations) -- reloading the page must not
+    lose the conversation. Mirrors get_qa_chat_history exactly. See
+    security_agent.agent.SecurityAgent.chat_stream for how turns are appended."""
+    _validate_feature(feature_id)
+    document = store.security_conversations.get(feature_id)
+    turns = document.get("turns", []) if document else []
+    return SecurityChatHistoryResponse(turns=[SecurityChatTurn(**turn) for turn in turns])
+
+
+@router.post("/security/chat/stream")
+async def security_chat_stream(feature_id: str, request: SecurityChatMessageRequest):
+    """
+    Real, token-by-token streaming Q&A about the feature's latest security report -- deliberately
+    pure discussion, no code-editing side effects (see security_agent/prompt.py's
+    SECURITY_CHAT_SYSTEM_PROMPT). Mirrors qa_chat_stream exactly: same NDJSON event shape as every
+    other streaming route in this file.
+    """
+    _validate_feature(feature_id)
+
+    async def event_stream():
+        try:
+            async for event in security_agent.chat_stream(feature_id=feature_id, message=request.message):
+                yield json.dumps(event) + "\n"
+        except Exception as error:
+            yield json.dumps({"type": "error", "message": f"Security chat failed: {_readable_error(error)}"}) + "\n"
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
+
+
     # ----------------------------------------------------
     # QA Agent
     # ----------------------------------------------------
@@ -1625,6 +1726,38 @@ async def run_qa_agent(feature_id: str, request: QAAgentRunRequest):
         )
 
 
+@router.post("/qa/run/stream")
+async def run_qa_agent_stream(feature_id: str, request: QAAgentRunRequest):
+    """
+    Streaming variant of /qa/run -- direct user request, mirrors Architecture Agent's own
+    run/run_stream split (the closer template than Security's deep-scan split, since this is one
+    operation gaining a streaming sibling, not a second distinct operation). Test generation is
+    sequential (one real LLM call per discovered target, writing real files + needing one shared
+    Jest setup before execution), unlike Security's read-only concurrent batches, so progress is
+    reported per-target as generation actually proceeds:
+        {"type": "phase", "phase": "discovery", "label": "..."}
+        {"type": "generation_progress", "category": "unit", "target": "...", "index": i, "total": N, "label": "..."}
+        {"type": "phase", "phase": "execution", "label": "..."}
+        {"type": "phase", "phase": "root_cause", "label": "..."}   (only if there are failures)
+        {"type": "phase", "phase": "saving", "label": "..."}
+        {"type": "done", "artifact_ids": [...], "message": "...", "tests_generated": N, "tests_passed": N, "tests_failed": N}
+        {"type": "error", "message": "..."}
+    """
+    _validate_feature(feature_id)
+    stage_event_service.record(feature_id, AgentName.QA, "run", request.human_comment)
+
+    async def event_stream():
+        try:
+            async for event in qa_agent.run_stream(feature_id=feature_id):
+                yield json.dumps(event) + "\n"
+        except ValueError as error:
+            yield json.dumps({"type": "error", "message": str(error)}) + "\n"
+        except Exception as error:
+            yield json.dumps({"type": "error", "message": f"QA Agent failed: {_readable_error(error)}"}) + "\n"
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
+
+
 @router.get("/qa/chat", response_model=QAChatHistoryResponse)
 def get_qa_chat_history(feature_id: str):
     """Real, persisted chat history (store.qa_conversations) -- reloading the page must not
@@ -1651,5 +1784,25 @@ async def qa_chat_stream(feature_id: str, request: QAChatMessageRequest):
                 yield json.dumps(event) + "\n"
         except Exception as error:
             yield json.dumps({"type": "error", "message": f"QA chat failed: {_readable_error(error)}"}) + "\n"
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
+
+
+@router.post("/qa/chat/turns/{turn_index}/edit/stream")
+async def edit_qa_chat_turn_stream(feature_id: str, turn_index: int, request: QAChatMessageRequest):
+    """
+    Direct user request: edit a past chat message and regenerate from that point forward --
+    mirrors edit_security_chat_turn_stream exactly, same NDJSON event shape as /qa/chat/stream.
+    """
+    _validate_feature(feature_id)
+
+    async def event_stream():
+        try:
+            async for event in qa_agent.edit_chat_turn_stream(
+                feature_id=feature_id, turn_index=turn_index, new_message=request.message
+            ):
+                yield json.dumps(event) + "\n"
+        except Exception as error:
+            yield json.dumps({"type": "error", "message": f"Failed to edit QA chat turn: {_readable_error(error)}"}) + "\n"
 
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")

@@ -7324,6 +7324,861 @@ milestone — that file is scratch, **this file is the durable one**.
       exact same message the user's own screenshot showed as unhelpful red boxes). Zero page
       errors.
 
+87. **Security ↔ Coder Agent remediation loop: coder-friendly fix plan, a themed live progress
+    view, and a real QA gate on Critical findings.** Direct user request to "implement the
+    pipeline between security agent and the coder agent." Investigation (direct reading + one
+    Plan-agent validation pass) confirmed most of this pipeline already existed and worked, built
+    in earlier sessions (items 73, 82 Ask 4, 83 Ask 4, 85): the "Fix Vulnerabilities"/"Send to
+    Coder Agent to Fix" triggers, `buildSecurityRevisionComment`, and the auto-rescan-after-fix
+    loop were all live. What was genuinely missing, confirmed against the real code:
+    - **No visible progress during a security-driven fix**: neither `ResultTab.jsx`'s
+      `handleConfirmedFixVulnerabilities` nor `SecurityDecisionDialog.jsx`'s `handleSendToCoder`
+      called `selectAgent("coder")` before `await`ing the full revision stream -- the UI just sat
+      on a disabled button/"Sending..." with zero live feedback for however long the revision
+      took. Fixed: both now call `selectAgent("coder")` **before** the `await` (and
+      `SecurityDecisionDialog` closes itself immediately too, before the await, so it stops
+      covering the live view) -- the component stays mounted after `onClose()`/`selectAgent()`,
+      confirmed safe to continue the async function afterward, mirroring this project's existing
+      fire-without-blocking convention for other auto-run transitions.
+    - **A themed, rotating "fixing security issues" spinner** (direct user ask, "some random
+      words instead of Thinking"): new `useRotatingLabel(phrases, intervalMs)` hook
+      (`RequirementConversationParts.jsx`, mirrors `useElapsedLabel`'s interval+cleanup shape) --
+      cycles through `SECURITY_FIX_PHRASES` ("Patching vulnerabilities...", "Hardening the
+      code...", "Re-checking security controls...", "Applying the suggested fix...") every 2.5s.
+      A new `isSecurityFixInFlight` flag (set only by the two real trigger surfaces, so an
+      unrelated Coder-chat revision is never mislabeled) overrides **both**
+      `generatingLabel`/`connectingLabel` AND `finalizingLabel` in `ResultTab.jsx`'s Coder
+      `LiveGenerationView` block, and forces `isFinalizing=true` immediately -- confirmed live
+      that overriding only `generatingLabel` would have been invisible in practice, since
+      `revise_stream` flips into `isFinalizing` mode (via a `"phase"` event) almost immediately
+      and `finalizingLabel={coderPhase?.label}` is what actually dominates screen time.
+    - **Coder-friendly fix plan**: `buildSecurityRevisionComment`
+      (`securityReportToRevisionComment.js`) now includes each finding's `root_cause`/
+      `recommendation` sub-lines (the backend's `SecurityFinding` schema already populates both
+      on every scan layer; none of it previously reached the Coder Agent) directly under the
+      existing `[TIER] file:line -- message (CWE)` line -- the `file:line` token's position is
+      unchanged so `_find_well_specified_target_files`'s existing regex targeting still works.
+      New rule in `CODER_AGENT_SYSTEM_PROMPT` (`coder_agent/prompt.py`, placed before the `Tool
+      usage:` split point so both the agentic and `BATCH_CODE_GENERATOR_SYSTEM_PROMPT` paths
+      inherit it for free, confirmed via a dedicated test): **format-triggered**, not gated on
+      `revised_by` (confirmed `revised_by` is read nowhere inside `coder_agent/agent.py` today,
+      only at the route layer for bookkeeping) -- recognizes `[CRITICAL]`/`[MODERATE]`/
+      `[WARNING] file:line -- message ... Root cause: ... Suggested fix: ...`-shaped content and
+      instructs the model to apply each fix precisely per the suggested fix's intent, never
+      weaken/remove an *existing* security control elsewhere just to make a finding disappear,
+      and not restructure unrelated code -- the "make adjustments... do not change the main
+      objectives" the user asked for, with near-zero false-positive risk on an unrelated revision.
+    - **QA gate on Critical findings** (direct, explicit ask -- a deliberate reversal of
+      `severity.py::gate_decision`'s own documented "informational only, never blocking" design
+      from item 73, noted here plainly): `ResultTab.jsx`'s "Continue to QA Agent" button and
+      `AgentSelect.jsx`'s picker option for `"qa"` are both now disabled whenever the feature's
+      **latest** `security_report` version (by version number -- `versions[0]`, never
+      "operative"/approved-wins/whatever the dropdown has selected) has `gate_decision ===
+      "fail"`. Deliberately keyed on the latest version specifically: `security_report` isn't in
+      `EXCLUSIVE_VERSIONED_ARTIFACT_TYPES`, so an old *approved*, clean report could otherwise
+      sit alongside a newer *pending* Critical-bearing one and `resolveGatingArtifact`'s
+      "approved always wins" precedence would mask it -- a real gap a Plan-agent review caught
+      before implementation. New `WorkspaceSelectionContext.jsx` computation
+      (`securityGateBlocksQa`, one extra `useArtifactContent` call scoped to the latest
+      security_report id, React-Query-deduped against whatever `ResultTab` already fetches) feeds
+      `AgentSelect.jsx`'s picker; `ResultTab.jsx` computes the same rule independently for its own
+      button (both stay purely additive to the existing, unchanged `deriveStageStatus`/
+      `deriveCurrentStage`, which stay approval-status-only, shared with `FeatureListItem.jsx`).
+      `security_report` deliberately NOT added to `EXCLUSIVE_VERSIONED_ARTIFACT_TYPES` -- it
+      wouldn't by itself fix the staleness gap (only a new *approval event* triggers exclusivity,
+      not a version's mere existence), so "latest by version number" is required regardless and
+      sufficient on its own; not touching `approval_service.py` kept this change's blast radius
+      minimal.
+    - Loop-until-clean needed no new code -- confirmed already satisfied by the existing "each
+      re-scan produces a new pending report version, which needs a decision again, which reopens
+      the same UI" mechanic (`SecurityDecisionDialog.jsx`'s own docstring).
+    - Tests: `tests/test_coder_prompt.py` (+1, asserting the new rule text is present in **both**
+      `CODER_AGENT_SYSTEM_PROMPT` and `BATCH_CODE_GENERATOR_SYSTEM_PROMPT` -- caught and fixed a
+      real line-wrap bug during this pass: the rule's key phrase was originally split across two
+      source lines, which JSX's own non-JS-escaped string handling faithfully reproduced as a
+      literal newline in the prompt text, breaking the substring assertion; reflowed to keep the
+      phrase on one line). Full suite: **990 passed** (up from 922). `npm run build` clean.
+    - **Real, live verification, not synthetic** -- against the real Finodil "Login and Signup"
+      feature (`proj_2ba24bc0`/`feature_917b691e`), via an isolated backend (:8090, same shared
+      Mongo Atlas cluster) + an isolated frontend served via `vite preview` against a build pinned
+      to that backend (`vite dev`'s dependency-scan step hit a real, pre-existing, unrelated
+      rolldown parser issue on `EnrichedPlainList.jsx`'s `content-['\2022']` CSS escape -- the
+      exact correct syntax item 78 already fixed -- treating it as a deprecated JS octal literal;
+      `npm run build` itself was unaffected, so `vite preview` on the built output sidestepped it
+      cleanly rather than "fixing" a working, already-correct line). Confirmed live: a real scan
+      showing 2 Critical/5 Moderate findings with real `root_cause`/`recommendation` text per
+      finding (screenshot); "Continue to QA Agent" genuinely `disabled=True` with the correct
+      tooltip, and the picker's "QA" option genuinely `disabled` too (`is_disabled()`, not just a
+      screenshot); clicking "Fix Vulnerabilities" → confirming the popup switched the chat to
+      "Coder" and showed the live view with "Patching vulnerabilities..." visibly rendered
+      **at t=1.5s** alongside the dialog's own "Sending..." state and a real Stop-generating
+      button (screenshot) -- direct proof A3 works. The real `POST .../coder/revise/stream`
+      payload was captured via Playwright's own request listener and confirmed to contain the
+      full enriched comment (every finding's Root cause/Suggested fix lines present, matching A1
+      exactly). **The real revision itself could not complete** -- confirmed via a direct,
+      unmocked replay of the same call (`requests`, no timeout) that it cleanly returned
+      `{"type": "error", "message": "No existing feature branch found for feature_id=... -- run
+      the Coder Agent before requesting a revision."}` -- this machine's local `workspaces/`
+      directory is entirely empty (`Glob("workspaces/*")` -- zero results), the exact same
+      environmental gap item 86 already documented and the user explicitly chose not to fix (the
+      real files exist only on `origin/tharuka_m`, never merged into this branch). Not a defect in
+      this item's own work: the error surfaced as a clean NDJSON `error` event (not a crash), and
+      `streamNdjsonPost`'s own documented "resolves normally even on a mid-stream error event"
+      behavior meant `handleConfirmedFixVulnerabilities`'s `await` still resolved normally,
+      `finally` still reset both flags correctly, and the auto re-scan still fired (producing a
+      real v7 security report, left in place as genuine evidence) -- the whole UI flow degraded
+      gracefully end-to-end even though the underlying revision had nothing to revise. **Given
+      no local git workspace exists for ANY feature on this machine right now** (confirmed, not
+      just for Finodil), a full "inspect a real diff referencing the specific findings" pass
+      genuinely could not be run this session -- honestly left as the one plan-verification step
+      not completed, rather than silently skipped or faked.
+      **CORRECTION (see item 88): this diagnosis was wrong.** The workspace was never actually
+      missing -- `resume_feature_branch` itself had a real bug (raised unconditionally whenever a
+      feature's branch didn't exist, which is completely normal after a successful merge deletes
+      it) that this item's own investigation misread as "no local git state at all." Fixed in
+      item 88, along with the real Coder Agent revision this correction unblocked.
+
+88. **A real, live-reported "No existing feature branch" bug in `resume_feature_branch` (a
+    genuine reversal of item 87's own wrong diagnosis), plus a dialog-close bug fix, a
+    Resolved/Still-Present/New security-finding comparison, and a deterministic named-file
+    coverage backstop.** Direct follow-up to item 87's fix-vulnerabilities loop, from the user
+    hitting the exact "No existing feature branch found" error live on their own app right after
+    that item shipped, plus two further reports (a confirmation dialog that never closes; the
+    Coder Agent's fix apparently not resolving vulnerabilities).
+    - **Real root cause of the branch error, found only by directly reconstructing the workspace
+      and reading the actual git history -- item 87's own "the local workspace is entirely
+      missing" diagnosis was WRONG.** Attempted to reconstruct the feature's code from a stored
+      diff artifact (matching the user's explicit "fix the EXISTING code, don't regenerate"
+      instruction) via `workspace_service.start_feature_branch` -- which unexpectedly reported
+      "already exists in working directory" for every file the reconstruction script tried to
+      create. Direct `git log --oneline --all` on the real repo revealed why: a full, real commit
+      history was already there the whole time -- `Merge feature/login-and-signup into main`,
+      `Revert`/`Reapply` cycles (item 83's own revoke-approval work), and even a
+      `Deliberate, authorized test vulnerabilities for Security Agent verification` commit
+      (matching the exact CWE-798/943/916/532/79 findings seen in the real security reports).
+      **The actual bug**: `resume_feature_branch` (`workspace_service.py`) raised `ValueError`
+      unconditionally whenever a feature's OWN branch didn't exist -- but a branch not existing is
+      completely normal and expected once a feature has been approved and merged
+      (`merge_feature_branch` deletes it by design, as its own docstring already states). Since
+      `revise()` only ever reaches `resume_feature_branch` after already confirming a real prior
+      `CODE_PLAN` artifact exists, there is no case where a feature can reach this method having
+      genuinely never been coded -- the old behavior treated the single most common post-approval
+      state (merged, branch gone) identically to "never coded at all," permanently blocking every
+      future revision (including a security-driven fix) on any feature that had ever been
+      successfully merged.
+    - **Fix**: `resume_feature_branch` now falls back to branching fresh from `main`'s current tip
+      when the feature's own branch is missing, instead of raising -- a real `--no-ff` merge keeps
+      the feature branch's own tip reachable as an ancestor, so `main`'s tree already has the exact
+      same content resuming the original branch would have; this is genuinely resuming the
+      *existing* project, never a fresh regeneration. New tests in `test_workspace_scaffold.py`:
+      `test_resume_feature_branch_falls_back_to_a_fresh_branch_from_main_when_none_exists` (the
+      never-branched case) and `test_resume_feature_branch_recovers_the_real_merged_code_after_the
+      _branch_was_deleted` (the real scenario -- start a branch, commit real work, merge it
+      [deleting the branch], then confirm a revision correctly recovers the real merged content,
+      not an empty scaffold). The old raise-focused test was replaced, not kept alongside the new
+      behavior it directly contradicts.
+    - **Dialog-close bug, a real gap in item 87's own fix**: item 87 fixed this exact
+      close-before-`await` ordering bug in `SecurityDecisionDialog.jsx`'s `handleSendToCoder`, but
+      missed the *other*, separate trigger for the same action --
+      `ResultTab.jsx`'s own `handleConfirmedFixVulnerabilities`, whose `ConfirmDialog` stayed open
+      showing "Sending..." for the entire multi-minute revision because
+      `setFixVulnerabilitiesArtifactId(null)` only fired after the `await` resolved. Fixed by
+      moving it to fire immediately alongside `selectAgent("coder")`, before the `await` -- the
+      identical ordering item 87 already established as correct. Confirmed safe: the trigger
+      button's own `disabled` state depends on `coderReviseStream.isPending`, not the dialog's own
+      open state, so closing early creates no double-submit risk.
+    - **The "still shows vulnerabilities after fixing" report -- investigated with real, live
+      data, not assumed.** Pulled two consecutive real `security_report` versions (v11 -> v12,
+      both `scan_type: ai_model_deep_scan`) directly from the running backend: identical 3
+      findings (same `rule_id`, `cwe`, `file`, near-identical `message`), just shifted line
+      numbers (16->14, 31->27, 52->42) -- genuinely unresolved, not reintroduced. Separately
+      pulled the real Coder Agent revision that actually ran (`code_plan` + the real
+      `revision_comment` from `stage_events`): it named exactly 2 files, and its diff correctly,
+      completely fixed exactly those 2 files' findings (removed a hardcoded MongoDB fallback URI
+      and a `dangerouslySetInnerHTML` XSS). **The Coder Agent fixed everything it was actually
+      asked to fix -- the 3 findings still showing were never part of that fix request.** They're
+      real, pre-existing issues the AI-model-deep-scan layer (LLM-based, not the deterministic
+      pattern/secret scanners) hadn't happened to flag in an earlier scan and then caught in a
+      later one, on unchanged code -- a scan-consistency issue, not a fixing failure. (Independent
+      supporting evidence found along the way: a later scan produced a spurious "SQL Injection"
+      finding on a MongoDB connection file at the same location as an unrelated, real CWE-798
+      finding -- MongoDB isn't SQL, confirming real noise in the AI-scan layer.) This reframed
+      "improve the Coder Agent's accuracy" away from a speculative, evidence-free prompt tweak and
+      toward genuine transparency plus one real deterministic backstop -- both below.
+    - **New Resolved / Still Present / New / Ambiguous comparison** (direct user decision: shown
+      only for `scan_type === "ai_model_deep_scan"` reports specifically -- the layer with real
+      run-to-run variance, not the fully-reproducible deterministic scanners). New
+      `frontend/src/lib/securityFindingsComparison.js`'s `classifySecurityFindings(previous,
+      current)`: match key is `(rule_id, file, cwe)`, deliberately never line number (confirmed
+      real: fixing one issue shifts every later line in the same file). Within a matched bucket,
+      disambiguates by word-overlap on `message` when messages differ (real signal for AI-found
+      findings, whose message is genuinely per-finding) -- but falls back to **positional pairing
+      by ascending line number** when every message in the bucket is byte-identical, a real,
+      confirmed collision case for the deterministic scanners specifically (e.g. every
+      `SEC-SECRET-GENERIC-KEY` finding shares one literal rule-message constant, giving text
+      similarity zero discriminative power). A bucket that still can't be confidently paired (a
+      genuine tie) goes into a new, explicit `ambiguous` group (direct user decision) rather than
+      being silently folded into "New" or "Still Present." `finding.id` is used only to mark
+      "already consumed" within one classification call -- documented explicitly as NOT a stable
+      cross-version identity (it bakes in the line number or a scan-local sequential index, so it
+      legitimately differs across versions for the identical underlying issue).
+      `SecurityReportView.jsx` gained a `previousArtifact` prop + its own second
+      `useArtifactContent` call (confirmed safe: distinct `artifact_id` per version means no cache
+      collision, fires in parallel not chained, and cleanly no-ops via the existing disabled-query
+      convention when there's no previous version yet) and a new "Compared to vN" section (green
+      Resolved / red Still Present / orange New / gray Ambiguous). `ResultTab.jsx` computes
+      `previousSecurityArtifact = versions.find(v => v.version === selected.version - 1) ?? null`
+      (`versions` already sorted descending) and threads it through.
+    - **New deterministic named-file coverage backstop for `verify()`** -- mirrors the existing
+      `_build_relevance_scan_step`/`_build_ui_expectations_coverage_step` info-only pattern
+      exactly (`verify()` already receives `original_request`, the human's revision_comment, no
+      new parameter needed). New leaf module `revision_file_tokens.py` relocates
+      `_REVISION_FILE_TOKEN_RE` out of `agent.py` (re-exported under its old name for backward
+      compatibility) so `security_finding_coverage_checker.py` (imported by `verify.py`) can reuse
+      the exact same extraction/resolution logic without a circular import (`agent.py` already
+      imports from `verify.py`). New `resolve_tokens_against_known_paths` factors out
+      `_find_well_specified_target_files`'s own exact-match-then-unique-basename-fallback logic so
+      both callers share it -- necessary, not cosmetic: the token regex has no backslash in its
+      character class, so a real revision comment's Windows-style token (`lib\mongodb.ts`) only
+      ever yields the bare basename `mongodb.ts`, while `touched_paths` are always forward-slash
+      paths (`lib/mongodb.ts`) -- confirmed via a real revision comment that mixed both separators
+      in the same message. New `security_finding_coverage_checker.check_security_finding_file_
+      coverage(revision_comment, touched_paths)`: format-triggered (checks for
+      `[CRITICAL]`/`[MODERATE]`/`[WARNING]` markers, mirroring `coder_agent/prompt.py`'s own
+      security-rule addition from item 87) rather than gated on `revised_by` -- returns `None`
+      (no step at all) for a non-security revision. Wired into `verify.py` as a new info-only step,
+      never gating `passed`. Tests: `test_revision_file_tokens.py` (10, covering both real
+      separator styles + the ambiguous/unresolved cases), `test_security_finding_coverage_checker.py`
+      (6, using the ACTUAL real revision_comment string captured from the live feature's own event
+      log -- 7 findings across 4 real files mixing both separators -- confirming both the real
+      partial-coverage case (the real v5 attempt only touched 2 of 4 named files) and a
+      fully-covering case report correctly).
+    - Full backend suite: **1007 passed** (up from 990), zero regressions, including the existing
+      `test_coder_agent_well_specified_files.py` suite re-run unchanged after the
+      `_find_well_specified_target_files` refactor to confirm byte-identical behavior. `npm run
+      build` clean throughout.
+    - **Real, live verification against the real Finodil feature, not synthetic** -- via an
+      isolated frontend build pointed at the live main backend (`vite build` +
+      `vite preview`, read-only for inspection, the same "isolated instance, same shared Mongo"
+      precedent used throughout this file): confirmed live that clicking "Fix Vulnerabilities"
+      now correctly closes the confirmation dialog within under a second (was visible right after
+      clicking, confirmed gone ~0.8s after confirming) while the Coder Agent's live view with the
+      "Patching vulnerabilities..." rotating label takes over -- screenshot-confirmed. Confirmed
+      the real branch-resume fix directly: replaying the exact real `coder/revise/stream` request
+      that previously failed with "No existing feature branch found" now gets past workspace
+      preparation into real planning with no error at all (`phase: planning, label: "Exploring
+      the codebase and planning your revision..."` -- an exploration-path label rather than the
+      fast-path one, since the specific finding tested named a scaffold file the feature's own
+      code plan never touched, not a bug). Confirmed the comparison UI against the real,
+      already-diagnosed v11/v12 pair: selecting v12 correctly renders "COMPARED TO V11" with all 3
+      real findings grouped under "STILL PRESENT (3)", not "New" -- screenshot-confirmed, exactly
+      matching the real line-shift case this feature was built to handle. A test revision
+      triggered purely to verify the dialog-close timing was deliberately left uncompleted
+      (browser closed immediately after confirming the dialog closed, cancelling the in-flight
+      stream per this project's own well-documented client-disconnect-cancels-the-stream
+      behavior) -- confirmed via the artifacts endpoint that no stray Coder Agent version was
+      created by it. This real Finodil state (branch now exists on `main`'s tip, ready for a real
+      revision; real v11/v12/etc. security report history) is left in place as genuine
+      verification evidence, matching this project's own established convention.
+
+89. **Security Agent enhancement: real per-agent model selection, concurrent AI deep scan with
+    real-time per-file progress, and a downloadable Security Report PDF.** Three direct user
+    requests, planned together via 3 parallel Explore agents (deep-scan/model-selection backend,
+    the PDF-generation pattern, the existing scan-progress streaming mechanism) plus a Plan-agent
+    validation pass that caught two real mistakes before any code was written -- a frontend
+    routing dead-end (Part C) and a concurrency/state-shape bug (Part B), both described below.
+    - **Part A -- model selection was a genuinely one-line-away fix.** The `ModelSelect`
+      chat-composer control the user asked for already rendered live in Security Agent's chat (the
+      same shared component every agent uses) -- but picking a model was a silent dead end because
+      `security_agent` (and `qa_agent`, same gap, fixed in the same pass per direct user decision)
+      was excluded from `llm_provider_service.py`'s `OVERRIDABLE_AGENTS` list. Every real call site
+      (`deep_scan._get_provider()`, the LLM review layer, chat) already resolved its model through
+      the exact mechanism this unlocked, with no caching to invalidate. Also fixed a real, latent
+      bug affecting every agent, not just Security: a rejected model override was silently
+      swallowed. `ModelSelect.jsx` now renders `updateOverride.error` in a small absolute-positioned
+      tooltip instead of no-op'ing.
+    - **Part B -- the AI deep scan already scanned every file (no cap/sampling); the real gap was
+      sequential execution (10-30+ round-trips for a real project) and zero per-file visibility.**
+      `deep_scan.py` rewritten: `_batch_files` now sorts files by relative path before greedy-
+      packing into batches (files from the same directory now reliably cluster together, giving the
+      model more real cross-file context for the same char budget). New
+      `DEEP_SCAN_MAX_CONCURRENT_BATCHES = 3` (direct user decision) and a new shared
+      `_run_batches_concurrently(provider, batches)` async generator -- `asyncio.Semaphore(3)`-
+      bounded, tasks created via `asyncio.create_task`, results pulled off a shared `asyncio.Queue`
+      as each batch actually finishes. Confirmed via grep this is genuinely new territory for this
+      codebase (zero prior `asyncio.Semaphore`/`gather`/`as_completed` usage anywhere) -- called out
+      plainly rather than presented as matching an established pattern. Both the non-streaming
+      `run_ai_model_deep_scan` and the streaming `run_ai_model_deep_scan_stream` now call this ONE
+      shared implementation instead of duplicating the loop. **Explicit `try/finally` cancellation**
+      ensures stopping the scan (the existing "Stop Scan" button, which relies on Starlette
+      cancelling the generator on client disconnect) actually cancels every still-in-flight task --
+      a real gap the old sequential version never had to handle, since only one call was ever in
+      flight at a time; verified with a real test (`test_stopping_the_stream_early_cancels_still_
+      in_flight_batches`) using a slow fake provider (`asyncio.sleep(5)`) and a wall-clock assertion
+      that `gen.aclose()` returns in under 4s. **New event shape** replacing the old single
+      overloaded `progress` event (a Plan-agent-caught bug: its `current` field conflated
+      "completion count" with "which batch," which only worked because completion order ==
+      submission order in the old sequential loop -- an equivalence real concurrency breaks):
+      `{"type": "batch_started", "batch_index", "total", "files": [...]}` and
+      `{"type": "batch_finished", "batch_index", "total", "completed_count", "label"}`.
+      `security_agent/agent.py`'s pass-through loop needed no code change (confirmed it never
+      inspects event shape), only a docstring update. Frontend
+      (`useSecurityDeepScanFlow.js`): new `inFlightBatches` state, an **object keyed by
+      `batch_index`** (a Plan-agent-caught state-shape correction -- not a rolling capped array like
+      Coder Agent's `tool_activity`, since entries need to be *removed* on completion, which an
+      append-and-truncate log can't do); `batch_started` inserts `{[batch_index]: files}`,
+      `batch_finished` deletes that key. `ScanProgressBar.jsx` renders the union of all in-flight
+      batches' files (`Object.values(inFlightBatches).flat()`) as an "Analyzing: ..." line capped at
+      `MAX_VISIBLE_IN_FLIGHT_FILES = 10` with a "+K more" overflow indicator.
+    - **Part C -- Security Report PDF, a mechanical reuse of the proven 3-agent PDF pattern.** New
+      `security_agent/pdf_builder.py`: imports the 6 generic helpers already proven reusable by
+      `architecture_agent/pdf_builder.py` (`_esc`, `_meta_table`, `_section`, `_text_block`, from
+      `requirement_agent/pdf_builder.py`) plus `html_document_shell`/`signature_block_html` from
+      `_shared/pdf_style.py`. Findings grouped by severity tier via `severity.py`'s own
+      `to_display_tier`/`DISPLAY_TIERS` directly, not a hand-rolled parallel mapping (a Plan-agent-
+      caught risk: the saved report only carries each finding's raw producer-vocabulary `severity`
+      string, never a precomputed tier). Each finding renders file:line, severity badge, message,
+      rule/CWE, root cause, and recommendation with defensive fallbacks for real, confirmed-nullable
+      fields (`root_cause`/`recommendation` are `None` for pre-existing findings -> "Not specified.";
+      `line` is confirmed always `None` for every dependency-scan finding -> "(N/A)"). A dependency-
+      scan section renders `dependency_scan.dependency_summary` as a meta-table (it's a dict of
+      counts from `npm audit`'s own output, not a list of records). `artifacts.py` registers
+      `ArtifactType.SECURITY_REPORT: build_security_report_html` in `_PDF_BUILDERS` (plain one-arg
+      builder call -- Security Report has no sibling artifact, unlike Enhanced SRS). **Frontend fix,
+      corrected from the first draft**: `ResultTab.jsx`'s `PDF_DOCUMENT_LABEL_BY_STAGE` map looked
+      like the right place to wire this in, but the Plan-agent confirmed by direct code reading that
+      the Security stage has its own separate, earlier render branch that never consults that map at
+      all -- adding an entry there would have been a no-op. The real fix was entirely local: that
+      block's own hardcoded `<a href={artifactDownloadUrl(...)}>Download report</a>` became
+      `artifactDownloadPdfUrl(...)`, relabeled "Download Security Report."
+    - **Real bug found and fixed during live PDF verification**: `_finding_card` originally used the
+      `&mdash;` HTML entity between "Rule: ..." and "CWE: ...", which `pypdf`'s text extraction
+      mangled into `�`. Fixed by replacing with the plain ASCII `"--"` already used everywhere else
+      in this codebase's PDF builders and prose.
+    - Rewrote `test_security_deep_scan.py` (17 tests) with a `_keyed_provider(responses: dict)`
+      helper that keys fake LLM responses off actual batch CONTENT rather than call order -- the old
+      tests asserted exact `progress` event ordering (`[(1,3),(2,3),(3,3)]`) and consumed
+      `AsyncMock.side_effect` in call order, both fundamentally incompatible with real concurrent
+      execution where completion order is non-deterministic. New:
+      `test_files_are_sorted_by_relative_path_before_batching`,
+      `test_more_batches_than_the_concurrency_limit_all_still_get_scanned`,
+      `test_stopping_the_stream_early_cancels_still_in_flight_batches`. New
+      `test_security_pdf_builder.py` (10 tests, real severity-tier grouping, defensive-rendering,
+      HTML-escaping, complete-document assertions). New `test_artifact_download_pdf_route.py` case
+      (`test_download_pdf_returns_a_real_pdf_for_security_report`, a real Playwright-rendered PDF,
+      no mocking). Full backend suite: **1021 passed**, zero regressions. `npm run build` clean.
+    - **Real, live verification**, via an isolated backend (`:8090`) + isolated `vite preview`
+      frontend (`:5199`) against the same shared MongoDB Atlas cluster, on the real Finodil "Login
+      and Signup" feature: (1) picked a model via the chat composer's `ModelSelect`, confirmed the
+      real `PUT /settings/llm/agents/security_agent` round-trip persisted it; (2) triggered "Scan
+      with AI Model" and captured the real NDJSON stream directly -- all 3 `batch_started` events
+      fired at the identical timestamp (5.07s, proving real parallel dispatch, not accidental
+      serialization), and `batch_finished` events completed in a demonstrably non-submission order
+      (1, then 3, then 2), direct empirical proof of genuine concurrent execution rather than just
+      correct-looking code; (3) downloaded a real Security Report PDF (67785 bytes, 3 pages),
+      extracted its text via `pypdf` (Playwright's headless Chromium wouldn't render a
+      `Content-Disposition: attachment` response inline for visual screenshot verification), and
+      confirmed every expected section and field present.
+
+90. **Security Agent: mark vulnerabilities as Skipped, real "Proceed Anyway," and Fixed/Open/
+    Skipped status.** Direct user request: the "Continue to QA Agent" button was permanently
+    disabled while the latest scan had any Critical finding, with no way to proceed except getting
+    the Coder Agent to fix every one. Planned via 2 parallel Explore agents plus a Plan-agent
+    validation pass that caught 4 real issues before implementation: a concurrent-write race, a
+    dead-data `stage_event` call, missing prop-plumbing, and a gate banner that would contradict
+    per-row skip status. Two direct user decisions: rename "Resolved" to "Fixed," and fix a real,
+    previously-dormant bug (below).
+    - **The QA gate was already 100% frontend-only** (`gate_decision` computed in `severity.py`
+      but, by that module's own docstring, "never consulted to block pipeline advancement" on the
+      backend) -- duplicated independently in `ResultTab.jsx` and
+      `WorkspaceSelectionContext.jsx`. This entire feature is therefore frontend/light-backend;
+      no QA Agent or graph-orchestrator change was needed.
+    - **`finding.id` is stable within one artifact version but not across re-scans** (item 88's own
+      documented evidence) -- skip decisions are scoped to one artifact version and never carried
+      forward to a new scan automatically, sidestepping that instability entirely: a fresh scan
+      always starts with an empty skip set, forcing re-review.
+    - **Backend**: `ArtifactResponse` gains `skipped_finding_ids: list[str] = []` (additive/default-
+      safe -- the only construction site builds it via `ArtifactResponse(**artifact, ...)`, so old
+      records simply get `[]`). New `ArtifactService.set_finding_skipped(artifact_id, finding_id,
+      skipped)` uses an **atomic** `$addToSet`/`$pull` (`store.artifacts.collection.update_one`),
+      not a read-modify-write on the whole record like `approval_status` uses -- a real race the
+      Plan-agent flagged, since this field gets toggled rapidly across many findings on one report,
+      unlike a single approval click. New route `PUT /artifacts/{artifact_id}/skipped-findings` in
+      `app/api/routes/artifacts.py`. Deliberately does NOT touch `content_json` on disk (see next
+      point) and deliberately does NOT emit a `stage_event` (the Plan-agent found
+      `SecurityAgentChat.jsx` is the one stage `ChatPanel.jsx` never passes a `timeline` prop to,
+      so a stage-event call here would be silent dead data, invisible in the UI).
+    - **Why skip state lives on the artifact record, never in `content_json`**: confirmed
+      `useArtifactContent`'s `staleTime: Infinity` (`frontend/src/hooks/useArtifacts.js`) treats
+      content as immutable once fetched -- mutating the JSON file in place would leave any
+      already-open tab showing stale data forever. `skipped_finding_ids` instead rides on
+      `ArtifactResponse`/the feature's artifact list (both always-fresh queries), cross-referenced
+      client-side against the separately-cached `content_json.findings`.
+    - **New shared `frontend/src/lib/securityGate.js`**'s `computeSecurityGateBlocksQa(findings,
+      skippedFindingIds)` replaces the two independently-duplicated `gate_decision === "fail"`
+      checks in `ResultTab.jsx` and `WorkspaceSelectionContext.jsx` -- true only if some Critical
+      finding's id is NOT in the skip set. Both components already held the full `ArtifactResponse`
+      list object needed for `skipped_finding_ids`, so this required zero new fetches, just
+      pulling `findings` and `skipped_finding_ids` from two already-fetched objects instead of one.
+    - **`SecurityReportView.jsx`'s `FindingRow`** gained a native 2-option radio group ("Open" /
+      "Skip") per finding, `accent-*`-styled matching `pipeline/ArtifactRow.jsx`'s own existing
+      radio (the only native-radio precedent in this codebase, and the closest match to the user's
+      own literal "radio button" wording) -- doubling as both the control and the visible
+      Open/Skipped status. A skipped row dims (opacity-50) with a small "Skipped" badge. The gate
+      banner is now skip-aware: a 4th `"skipped"` state (distinct from pass/review/fail) renders
+      once every Critical finding is skipped ("All Critical vulnerabilities have been skipped --
+      safe to continue to QA Agent," blue, not green -- an honest accepted-risk state, not a false
+      "clean scan"), and the summary line appends `-- N skipped`. A small Open/Skipped color legend
+      sits above the findings list, pointing to the "Compared to vN" section below for Fixed
+      findings.
+    - **`buildSecurityRevisionComment(report, skippedFindingIds)`** now filters skipped findings
+      out before building the Coder Agent's fix request -- confirmed live: a real "Fix
+      Vulnerabilities" click's captured `revision_comment` correctly omitted the skipped Critical
+      finding's `[CRITICAL]` line entirely while every other finding still rendered normally.
+      Confirmed safe against item 88's coverage-checker (text-driven off the exact string handed to
+      it -- an omitted finding's `file:line` simply never appears, so it can never be flagged
+      "missing").
+    - **Real, previously-dormant bug fixed (direct user decision)**: `SecurityDecisionDialog.jsx`'s
+      "Proceed Anyway" button (shown after approving a report) previously did nothing but close the
+      dialog -- it never actually unblocked `securityGateBlocksQa`, which was computed completely
+      independently. Now it bulk-marks every currently-open finding in that report as Skipped
+      (parallel `mutateAsync` calls -- safe since the backend's `$addToSet` is atomic and
+      idempotent per id) before closing, making its own long-implied promise ("proceed despite
+      remaining issues") actually true. Live-verified end to end on an isolated seeded fixture
+      feature (to avoid disturbing the real Finodil feature's own already-approved history):
+      Continue to QA Agent was disabled, Approve -> dialog opened, "Proceed Anyway" clicked ->
+      finding shown Skipped, banner switched to the new blue accepted-risk state, button enabled --
+      zero page errors.
+    - **"Resolved" renamed to "Fixed"** (direct user decision) in `COMPARISON_GROUP_STYLE` -- label
+      only, the underlying `resolved` bucket key and `classifySecurityFindings` matching logic are
+      untouched.
+    - New `test_security_finding_skip.py` (8 tests, service logic, atomic toggle/no-duplicate/
+      no-op-unskip/multi-finding-independence) and `test_skipped_findings_route.py` (4 tests, route
+      wiring incl. 404), mirroring `test_artifact_active_selection.py`/`test_approval_revoke_route.py`'s
+      own service-vs-route test split convention.
+    - **Real, live verification against the real Finodil feature** (isolated backend `:8091` +
+      isolated `vite preview` `:5198`, same shared MongoDB Atlas cluster): confirmed via a real
+      concurrent-write test (two simultaneous `PUT` calls on different finding ids both persisted,
+      proving the atomic update, not a lost-update race); confirmed live in the browser that
+      "Continue to QA Agent" was disabled before, and genuinely enabled immediately (no reload)
+      after clicking "Skip" on the one real Critical finding, with the banner/summary/badge all
+      updating live; confirmed the real captured `revision_comment` correctly excluded the skipped
+      finding. `npm run build` clean. Full backend suite: **1100 passed**, 0 failures (a first,
+      concurrent run of this suite alongside the isolated verification instances starved it down to
+      53% complete after nearly an hour before being killed -- an environmental resource-contention
+      artifact of running them simultaneously, not a real hang or regression; a clean sequential
+      rerun completed all 1100 tests with zero failures).
+
+91. **Security Agent: single Skip checkbox (removed the confusing Open radio); Requirement/Domain/
+    Architecture: consolidated version dropdown + permanently-locked approval, mirroring Security's
+    own already-shipped pattern.** Two direct user requests from a screenshot of the existing UI.
+    - **Part A**: `SecurityReportView.jsx`'s `FindingRow` had two radio buttons ("Open"/"Skip")
+      per finding -- confusing, and a real latent bug: a lone radio, once checked, can't be
+      unchecked by clicking it again, so if "Open" had been removed as a plain radio (instead of
+      the fix below) a human could skip a finding but never un-skip it. Replaced both radios with
+      **one checkbox**, the correct native element for a real binary toggle. The Open/Skipped color
+      legend and dimmed-row/"Skipped" badge are unchanged -- those describe the two states, which
+      still both exist; only the control changed.
+    - **Part B -- the bigger change.** Requirement/Domain/Architecture used to render THREE
+      redundant, independently-resolved surfaces for the same versions: a stacked "All Artifacts"
+      list (`ArtifactList`/`ArtifactRow.jsx`, full per-row Approve/Reject/Revoke/Delete controls --
+      the user's screenshot), a `VersionSelect` dropdown + document viewer (view-only, no approval
+      controls wired to it), and a separate "Governance" panel (`GovernancePanel.jsx`, approve/
+      reject/revoke for whichever version its own resolver picked as "operative," independent of
+      the dropdown). **Key finding, confirmed by the codebase's own comment**
+      (`ResultTab.jsx:790-793` at the time): Security Agent already solved exactly this problem for
+      itself -- "a compact version dropdown plus one inline approval control replaces both [the
+      All Artifacts list and Governance panel]." This item mirrors that already-shipped,
+      already-proven pattern for Requirement/Domain/Architecture rather than inventing new UI.
+    - New `CONSOLIDATED_APPROVAL_STAGES = ["requirement", "domain", "architecture"]`
+      (`pipelineStages.js`) replaces two independently-maintained `stage !== "security" && stage
+      !== "qa"` guards in `ResultTab.jsx` with one shared `showLegacyArtifactSurfaces` boolean --
+      `uiux`/`coder` explicitly keep their original, unchanged `ArtifactList`/`GovernancePanel` UI
+      (out of scope per the user's own wording).
+    - New `frontend/src/components/pipeline/GatingArtifactApprovalPanel.jsx`, rendered once per
+      stage for whichever version the (already-existing) `selectedVersion` dropdown currently
+      points at: pending -> the existing, unmodified `ApprovalPanel` + a Delete button (direct user
+      decision: don't silently drop the existing per-version Delete capability just because
+      Security's own compact panel never had one); approved/rejected -> a plain status line +
+      (approved only) a Revoke button, shown only when `canRevoke` is true.
+    - **Two direct user decisions from AskUserQuestion**: keep Delete in the new panel (done
+      above), and default the dropdown to "the newest version that still needs a decision" (e.g.
+      `[v1: pending, v2: rejected]` should default to v1, not v2) rather than just the newest
+      version number. Implemented narrowly to avoid a real regression a Plan-agent review caught:
+      only the "stage changed" / "current selection vanished" reset (`ResultTab.jsx`'s two
+      `selectedVersion` effects) now uses `getOperativeGatingArtifact`'s existing approved-wins/
+      highest-pending/highest-overall precedence (already used by `GovernancePanel`) for
+      `CONSOLIDATED_APPROVAL_STAGES` specifically -- the OTHER effect (a genuinely NEW version
+      arriving) deliberately still jumps to that new version's raw number regardless of the
+      resolver, otherwise a fresh revision created after an older version was already approved
+      would be silently hidden behind the still-approved one.
+    - **The genuinely new rule, not a UI rearrangement: once a stage's approval has been acted on
+      by the pipeline moving forward, revoking it becomes permanently impossible, even navigating
+      back later.** New `hasNextStageStarted(stage, artifacts)` (`deriveStageStatus.js`) --
+      existence-based: does any artifact of the NEXT stage's gating type exist for this feature.
+      `canRevoke` also folds in a small frontend-only extra safeguard (`nextStageInFlight`, reusing
+      `ResultTab.jsx`'s own already-computed `isDomainGenerating`/`isArchitectureGenerating`/
+      `isUiuxGenerating` booleans) for the narrow real race a Plan-agent review caught: the next
+      stage can be actively generating for minutes without having saved an artifact yet.
+    - **Enforced on the backend too, not just a hidden button** -- matches this codebase's existing
+      defense-in-depth style (`revoke_approval` already raised `ValueError` for "not approved").
+      New narrow `_NEXT_STAGE_GATING_TYPE` map in `approval_service.py` (SRS->Enhanced SRS,
+      Enhanced SRS->Architecture Plan, Architecture Plan->UI Preview Screenshot -- deliberately only
+      these 3 transitions; Coder/UI-UX revoke keep their current, more permissive behavior,
+      explicitly out of scope and already carrying their own real-git-merge-undo consequences). New
+      check added immediately after the existing "not approved" raise, before any mutation happens
+      (confirmed via Plan-agent review: no interaction with the later cascade/coder-diff-undo
+      logic) -- raises `ValueError("Cannot revoke this approval -- the pipeline has already moved
+      on to the next stage.")`, mapped to HTTP 400 by the existing route with no route change
+      needed.
+    - **Explicitly not changed**: `set_active_artifact_selection`/the version-pin radio --
+      `EXCLUSIVE_VERSIONED_ARTIFACT_TYPES` already guarantees only one SRS/Enhanced SRS/Architecture
+      Plan version is ever approved at a time, so the pin was already inert for these 3 types
+      (nothing to choose among) before this change. `ArtifactRow.jsx`/`GovernancePanel.jsx`
+      themselves are untouched (still serve `uiux`/`coder` unchanged) -- a small amount of
+      duplication (the revoke-button/confirm-dialog shape) between those and the new panel is an
+      accepted, scoped tradeoff against touching files used by out-of-scope stages.
+    - New tests in `test_approval_revoke.py`: one per locked transition (SRS->Enhanced SRS,
+      Enhanced SRS->Architecture Plan, Architecture Plan->UI/UX), one confirming revoke still works
+      when the next stage hasn't started, and one confirming UI/UX's own revoke is unaffected even
+      when Coder has already started (proving the new lock is genuinely scoped to only 3
+      transitions). Full backend suite: **1086 passed** (14 failures + 5 errors, all in
+      `test_coder_tools.py`/`test_coder_verify.py`/`test_render_checker.py`, confirmed via direct
+      `docker version` to be a pre-existing local-environment gap -- Docker Desktop's daemon
+      unreachable on this machine at verification time -- entirely unrelated to this change; none
+      of the failing tests touch any file this item modified). `npm run build` clean.
+    - **Real, live verification against the real "Item Listing (CRUD)" feature** (isolated backend
+      + isolated `vite preview`, same shared MongoDB Atlas cluster) -- a genuinely messy real case:
+      SRS v16-v19 pending with v20 approved, Enhanced SRS/Architecture Plan/UI Preview Screenshot/
+      Coder/Security/QA all already produced for this same feature. Confirmed live: "All Artifacts"
+      and "Governance" headings are gone from Requirement/Domain/Architecture; the dropdown lists
+      all 4 SRS versions; selecting pending v16 surfaces its own Approve (correctly disabled,
+      `approveLocked`)/Reject/Delete controls; v20's approved status line has **no** Revoke button
+      at all (Domain has already started); a direct `POST /artifacts/{v20_id}/approval/revoke` call
+      returns the real 400 with the exact expected message. Confirmed the identical pattern for
+      Domain and Architecture. Confirmed live against the real Finodil feature's Security Agent:
+      9 findings each show exactly one Skip checkbox (0 radio inputs on the page), the legend's
+      literal "Open" text appears exactly once (the legend, not per-row), and toggling a checkbox
+      genuinely flips its persisted state on a fresh query after each click.
+
+92. **QA Agent enhancement: PDF report, live scan progress, root-cause analysis for failures, a
+    real fix for a documented test-generation reliability gap, and sharper chat scope.** Six
+    direct user requests, explicitly modeled on Security Agent's own already-shipped enhancements
+    (items 89/90). Investigated via 2 parallel Explore agents plus a Plan-agent validation pass
+    that corrected 2 real design choices before implementation: Architecture Agent's own
+    `run`/`run_stream` split (not Security's deep-scan split) is the closer template for QA's
+    shape, and the test-code-reliability fix should reuse the already-proven
+    `---HTML_CODE---`-marker idiom from `uiux_agent/component_generator.py` instead of a
+    new fenced-code-regex approach.
+    - **Key finding, confirmed by direct reading before writing any code: QA Agent was already far
+      more mature than a typical "build this" request** -- test generation was already 3 real
+      LLM-backed passes (unit/integration/regression) reading real workspace files, tests were
+      already written to disk and actually executed via a real sandboxed Jest run, and the chat
+      was already real token streaming, grounded in the report, persisted, with an empty-state
+      trigger -- structurally near-identical to Security Agent's own chat (in fact the reverse: per
+      item 85, QA's chat was the template Security's was built to match). Model selection already
+      worked (`qa_agent` already in `OVERRIDABLE_AGENTS`). This work targeted only the real,
+      confirmed gaps.
+    - **Direct user decision (AskUserQuestion)**: keep the current test scope (business logic only
+      -- `lib`/`models` modules and API route handlers). Did NOT add React component/page testing
+      (would need a JSDOM Jest environment + React Testing Library, a separately-risky addition).
+      Components stay honestly reported as out-of-scope, unchanged.
+    - **Fixed the documented, only-partially-resolved item-75 reliability gap**: all 3 generation
+      prompts used to ask the LLM to embed `test_code` (a large multi-line real Jest file) AS an
+      escaped JSON string value -- fragile on weaker/local models no matter how detailed the
+      escaping instructions (`prompt.py`'s old `_JEST_CONVENTIONS` had an extensive one). Adopted
+      the exact idiom `uiux_agent/component_generator.py` already proved for this identical
+      problem: a new `TEST_CODE_MARKER = "---TEST_CODE---"` -- the JSON object now carries ONLY
+      `test_cases` metadata (short strings, trivially reliable), followed by the literal marker,
+      followed by the real code (never escaped). New `generator._parse_generation_response`
+      splits on the literal marker (never fence-hunting, so a fence the model puts inside the code
+      or wrapping the whole response can't be confused for the split point). 17 tests in
+      `test_qa_generator_fallback.py` (rewritten for the new format, plus new cases: missing
+      marker, a fenced code block around the test code, and real multi-line code with unescaped
+      quotes/backslashes/regex that would have broken the old approach).
+    - **Root-cause + recommendation for failed tests** (direct user request: "the root cause...").
+      One additional BATCHED LLM call (not one per failure) after execution --
+      `generator.analyze_failures`, given every failed test's target/failure message plus that
+      target's already-read real source (a lookup built from targets already discovered, no
+      re-reading from disk), char-capped at `MAX_ROOT_CAUSE_SOURCE_CHARS = 8_000` with a
+      truncation label (mirrors `coder_agent`'s own `MAX_IMPLEMENTATION_SPEC_CHARS` precedent).
+      Never blocks the report: stays `None` on any failure/timeout, same resilience convention as
+      every other QA/Security LLM call. New `QaAgent._apply_root_cause_analysis` merges results
+      into `merged_test_cases`; wired into the markdown report, the chat's report summary, the new
+      PDF, and `qaReportToRevisionComment.js`'s per-failure lines to the Coder Agent. 6 new tests
+      in `test_qa_root_cause_analysis.py`.
+    - **New `POST /qa/run/stream`**, mirroring Architecture Agent's own `run`/`run_stream` split.
+      Generation is SEQUENTIAL (unlike Security's read-only concurrent deep-scan batches -- each
+      pass writes a real file + shares one `ensure_jest_setup()`, a real correctness risk
+      concurrent writes would introduce that Security's pure-read scanning never had), so progress
+      is per-target as generation genuinely proceeds: `discovery` -> per-target
+      `generation_progress` (unit, then integration, then the one regression call) -> `execution`
+      (confirmed via Plan-agent review: `executor.run_tests()` is one blocking subprocess call
+      with no incremental output, so this is necessarily one label+spinner phase) -> `root_cause`
+      (only if there are real failures) -> `saving` -> `done`. Refactored `run()`'s own tail
+      (merge/root-cause/count/build-report/save-artifacts) into a shared `_finalize_report` used
+      by both `run()` and `run_stream()` -- `run()`'s own external behavior is unchanged, just less
+      duplicated. `stage_event_service.record(...)` is called directly in the new route too
+      (confirmed via Plan-agent review: every existing plain/streaming route pair in this codebase
+      duplicates this call, never shares it). 6 new tests in `test_qa_run_stream.py` (discovery
+      fires first, one generation_progress event per target with real index/total, execution phase
+      only when tests were generated, root_cause phase only when there are failures and in the
+      right order, a real done event, and a real error event when no workspace exists).
+    - **Frontend wiring -- the one place a Plan-agent review caught a real integration risk**:
+      `runQa` (the plain mutation) was shared by THREE independent consumers via
+      `QaAgentFlowContext.jsx` (`QaReportView`'s Run/Re-run buttons, `ResultTab.jsx`'s
+      Security-approval auto-continue-to-QA trigger, `QaAgentChat.jsx`'s empty-state trigger +
+      its `isAgentRunning` gate). Building the new stream hook standalone and wiring it into only
+      one would have silently split the UX. **All three now share the same new `useQaRunStream.js`
+      flow** (mirrors `useSecurityDeepScanFlow.js`'s exact shape, minus `inFlightBatches` since
+      generation is sequential, not concurrent batches), added into `QaAgentFlowContext.jsx`
+      alongside the existing `runQa` (kept only for completeness, no longer used by any UI trigger
+      point). `frontend/src/components/common/ScanProgressBar.jsx` (moved from
+      `components/security/`, confirmed by direct read to have zero Security-specific coupling) is
+      now reused unmodified by both Security's deep scan and QA's run stream.
+    - **QA Report PDF**: new `qa_agent/pdf_builder.py`, the same proven 3-agent pattern (shared
+      helpers from `requirement_agent/pdf_builder.py` + `_shared/pdf_style.py`). Summary meta-table
+      with REAL per-category pass/fail/skipped from `tests_by_category` (not re-derived), test
+      cases grouped by category with status/target/inputs/expected/failure/root
+      cause/recommendation, out-of-scope modules, a `raw_stderr` tail section (only if non-empty),
+      sign-off block. Registered in `app/api/routes/artifacts.py`'s `_PDF_BUILDERS` for
+      `ArtifactType.QA_REPORT` -- fixed that route's own stale docstring/error-message list in
+      passing (dynamically built from `_PDF_BUILDERS` now, so it can't go stale again).
+      `ResultTab.jsx`'s QA branch: `artifactDownloadUrl` -> `artifactDownloadPdfUrl`, "Download
+      report" -> "Download QA Report" (the exact swap Security's own branch already got in item
+      89). 11 new tests in `test_qa_pdf_builder.py`, 1 new route-level test in
+      `test_artifact_download_pdf_route.py` (also had to fix that file's own now-stale
+      "unsupported type" test, which had been using `QA_REPORT` as its unsupported example --
+      switched to `SETUP_INSTRUCTIONS`).
+    - **Sharper chat scope** (direct user request): `QA_CHAT_SYSTEM_PROMPT` already said "if the
+      report doesn't cover it, say so" but never explicitly distinguished that from a genuinely
+      off-topic request. Added an explicit second clause covering both cases separately --
+      confirmed live: asking about real test results gets a real, grounded, accurate answer citing
+      the actual test cases; asking an off-topic question ("write me a haiku about the ocean")
+      gets an explicit "I can't assist with that... My scope is limited to discussing the QA
+      report" refusal.
+    - **A real, now-visible pre-existing inconsistency found and fixed during live verification,
+      not introduced by this work**: `report.tests_passed/failed/skipped` (top-level) came
+      straight from Jest's own raw counters (`run_result`), while `tests_by_category`'s per-category
+      breakdown came from re-deriving status off `merged_test_cases` (which correctly falls an
+      unmatched test back to "skipped" locally). These two sources could disagree whenever Jest
+      never actually produced a result at all (confirmed live: a real run where the sandbox was
+      unavailable saved a report with a top banner reading "0 passed, 0 failed, 0 skipped" sitting
+      directly above a category heading correctly reading "1 skipped" for the exact same tests) --
+      invisible before this session's own new per-category pass/fail display made it visible for
+      the first time. Fixed by deriving the top-level counts from `tests_by_category`'s own totals
+      (single source of truth) instead of trusting `run_result` directly, in `_finalize_report`.
+    - Full backend suite: **1132 passed**, 0 failures (a prior run earlier in this session had 14
+      failures + 5 errors, all confirmed via direct `docker version` to be Docker Desktop being
+      unreachable on this machine at that time -- unrelated to any code change; Docker was
+      reachable again by the time this item's full suite ran clean). `npm run build` clean.
+    - **Real, live verification against the real Finodil feature** (isolated backend + isolated
+      `vite preview`, same shared MongoDB Atlas cluster): downloaded a real 70KB QA Report PDF and
+      confirmed every section via extracted text, including the new `raw_stderr` section
+      genuinely showing this environment's real "Sandbox unavailable: could not reach Docker
+      daemon" message (never surfaced anywhere before this item). Triggered a REAL streaming QA
+      run end-to-end (~13 minutes, real sequential LLM calls against a real local model) and
+      captured the exact real event sequence live: `discovery` at 3.6s, 6 real `generation_progress`
+      events in order (1/6 through 6/6, unit -> integration -> regression) each firing exactly when
+      that target's real LLM call actually resolved, `execution`, `saving`, then a real `done` event
+      with real artifact_ids. Confirmed the frontend renders the new "Download QA Report" link and
+      the real per-category pass/fail/skipped breakdown with zero page errors. Root-cause analysis
+      itself could not be exercised end-to-end live in this environment (Docker unavailable meant
+      zero real test failures occurred to analyze) -- covered instead by its own 6 passing unit
+      tests with a mocked LLM.
+
+93. **Chat improvements: per-agent history (verified), copy/edit messages, a theme-colored "Light
+    Horse" loader, QA streaming (verified).** Four direct user requests. Investigated via 2
+    parallel Explore agents plus a Plan-agent validation pass that corrected one real design
+    detail before implementation: Security/QA's new "edit a turn" feature needed a real, stored
+    `turn_index` field (mirroring Requirement Agent's own `edit_turn_reply` mechanism,
+    `requirement_agent/agent.py`) rather than raw array position, since position isn't stable once
+    edits start truncating history.
+    - **Two of the four requests were already fully satisfied, confirmed by direct reading before
+      writing any code, not assumed**: per-agent chat isolation/persistence (every agent renders a
+      distinct React component in `ChatPanel.jsx`, so switching agents fully unmounts/remounts;
+      Security/QA/Requirement each have a real Mongo-backed per-`feature_id` conversation store;
+      every relevant React Query key includes `featureId`) and QA Agent's chat streaming
+      (`qa_agent.py`'s `chat_stream` was already structurally identical to Security's own). Both
+      treated as verify-only, not rebuild -- confirmed live below, no code changed for either.
+    - **A framing correction caught mid-implementation, not asked to the user (a technical detail,
+      not a scope decision)**: the plan initially assumed Domain/Architecture/UI-UX/Coder were
+      "out of scope for Edit" because they lack chat turns to edit. `grep -rn "onEditSubmit"`
+      showed the shared generic `ChatBubble.jsx` (used by all 4 of those agents) already has a
+      fully working Edit affordance, wired in each of their own chat components -- a simpler
+      "resubmit the edited text as a fresh message" semantics (no rewind, since those agents have
+      no conversation state to rewind) distinct from Requirement's/Security's/QA's richer
+      `turn_index`-based true-rewind edit. So only Security and QA genuinely lacked Edit (and
+      Copy) before this item -- the other 4 already had both.
+    - Backend: `security_agent.py`/`qa_agent.py`'s `_append_chat_turns` now assigns a real
+      `turn_index` (max existing + 1) to every turn in a batch. New `edit_chat_turn_stream(feature_id,
+      turn_index, new_message)`: finds the turn by its stored `turn_index`, truncates history to
+      everything strictly before it, then re-runs the same `_chat_stream_core` prompt-building/
+      streaming logic `chat_stream` already had. New routes `POST /security/chat/turns/{turn_index}/
+      edit/stream` and `POST /qa/chat/turns/{turn_index}/edit/stream`, same NDJSON
+      token/done/error shape as their own existing `/chat/stream` routes. Frontend: `SecurityAgentChat.jsx`/
+      `QaAgentChat.jsx` now delegate user-turn rendering to the existing, fully generic `HumanBubble`
+      (`RequirementConversationParts.jsx`) instead of a parallel implementation -- it already had
+      both the hover-reveal Edit pencil and a `CopyButton`. `useSecurityChatFlow.js`/
+      `useQaChatFlow.js` gained a mirrored `editTurnStream` mutation alongside the existing `chatStream`
+      one; while an edit is in flight, the turn being edited and everything after it is hidden
+      client-side (`editTurnStream.variables?.turnIndex`) since it's about to be discarded
+      server-side.
+    - New `frontend/src/components/common/LightHorseLoader.jsx`, reproducing the user-supplied
+      real UIverse markup (`https://uiverse.io/RiccardoRapelli/light-horse-54` -- Cloudflare
+      blocked both `WebFetch` and a real headless-Chromium Playwright fetch of that page, so the
+      user pasted the real HTML/CSS directly rather than this being guessed/fabricated), with 3
+      adaptations: theme-aware gradient (`var(--color-accent-500/700)` instead of the original's
+      hardcoded blue/purple, same convention as the existing `.cube-loader`), a unique SVG filter
+      id per instance via `useId()` (the original hardcodes `id="gooey"`, which would collide if
+      two instances ever rendered at once), and scaled down for inline chat use. Wired into the
+      "waiting for the first token" gap in `RequirementConversationParts.jsx`'s `LiveGenerationView`/
+      `LiveReactionBubble` (shared by Requirement/Domain/Architecture/UI-UX/Coder) and into
+      `SecurityAgentChat.jsx`/`QaAgentChat.jsx` (previously an empty gap for both).
+    - **A real, 100%-reproducible rendering bug found live, fixed, and re-verified**: the loader
+      initially rendered as an empty box in the browser. Root cause (confirmed via
+      `getComputedStyle`): the scale-down `transform: scale(...)` was set as an inline style on
+      the SAME element (`.light-horse-loading-content`) whose own `light-horse-rotate` CSS
+      keyframes also animate `transform` -- a running CSS animation replaces an element's entire
+      computed `transform` for the properties it defines, silently discarding the inline scale
+      (confirmed: `getComputedStyle(...).transform` read back as the identity matrix, and the
+      un-scaled 180px liquid animation only rarely swept through the intended 40px clipped
+      viewport). Fixed by moving the scale onto a separate wrapper element around the rotating
+      content, leaving the rotation on its own element untouched. Re-verified via
+      `getComputedStyle`/`getBoundingClientRect` on the real rendered DOM: liquid blobs now
+      measure ~11px (50px × the 0.22 scale) inside a correctly-sized 40×40 loader, and confirmed
+      visually via a cropped screenshot.
+    - Full backend suite: **1143 passed** (a background full-suite run's single reported error was
+      confirmed transient/environmental on re-run in isolation -- a Docker/npm `tar` extraction
+      flake in an unrelated pre-existing test, `test_render_checker.py`, on a real `npm install`
+      over the Windows-Docker bind mount; the retest passed clean). `npm run build` clean.
+    - **Real, live verification, no mocks** (isolated backend :8090 / frontend :5199, same shared
+      MongoDB Atlas cluster, real local LLM calls against the real Finodil `feature_917b691e` and
+      `proj_34e07440`'s `feature_94701501`): confirmed no cross-agent chat bleed switching between
+      Security and QA on the same feature; confirmed a pre-existing QA turn from before this
+      feature existed (stored with no `turn_index`) correctly shows Copy but NOT Edit, while a
+      fresh turn shows both; confirmed Copy writes the exact real message to the clipboard;
+      confirmed Edit on Security chat truncates and regenerates correctly, with the new reply
+      genuinely persisted server-side (checked directly against the Mongo-backed history, not just
+      the DOM); confirmed the Light Horse loader's gradient tracks a live theme switch (`rose`
+      preset's real `--color-accent-500` of `#f43f5e` matched the loader's rendered gradient
+      exactly); captured the real raw NDJSON wire stream for a QA chat message directly (bypassing
+      the DOM) and confirmed 55 discrete `token` events arriving individually over ~10 seconds,
+      followed by one `done` event -- genuine token-by-token streaming, not a single blob. All
+      test chat turns added during verification were removed directly from the two real Mongo
+      documents afterward (`security_conversations`/`qa_conversations` for `feature_917b691e`),
+      restoring both to their real pre-verification state; the other feature's chat was
+      confirmed untouched (its own test message had errored before reaching persistence, since
+      this dev machine's `outputs/` folder is missing that feature's on-disk QA report file -- a
+      pre-existing environment gap, not a regression). Isolated backend/frontend processes stopped
+      afterward.
+
+94. **Architecture Agent: plain-English reviewer note, Validation/Error-Handling Plan
+    deduplication, diagram zoom/pan fix, and Use Case Diagram FR-grounding (less
+    `<<include>>`/`<<extend>>` overuse).** Four direct user reports, backed by real screenshots
+    from the Finodil "Login and Signup" feature. Investigated via 2 parallel Explore agents plus
+    direct reads of every file/line involved before writing any code.
+    - **Reviewer note** (`agent.py`): the note was a fixed sentence with a raw Python exception
+      message concatenated onto it verbatim, ALL-CAPS-prefixed, at 4 call sites. All 4 of this
+      agent's validators (class/usecase/sequence/sds) raise via the identical
+      `raise XxxValidationError("; ".join(errors))` convention, confirmed across all four files --
+      new `reviewer_note_builder.build_human_approval_note()` splits on `"; "` and renders one
+      issue per line instead of one dense run-on paragraph, dropping the ALL-CAPS/"review
+      carefully" boilerplate. Scope confirmed with the user via AskUserQuestion before
+      implementation: restructure/declutter only, keep each issue's real specifics (class/field
+      names) verbatim -- not a jargon-simplification layer, which would need per-validator tuning
+      this session didn't scope. Frontend: `ArchitecturePlanDocumentViewer.jsx`'s note box gained
+      `whitespace-pre-line` (was a plain `<div>` with no whitespace handling -- a multi-line note
+      would have collapsed into one squashed line in the browser); confirmed via
+      `getComputedStyle` on the real rendered element that this is deployed correctly. No
+      markdown/PDF builder change needed -- both already interpolate the raw string, and
+      `pdf_builder.py`'s shared `_smart_text_block` (from `requirement_agent/pdf_builder.py`)
+      already auto-bullets 2+-line text, so the PDF export gets cleaner too, for free.
+    - **Validation Plan vs. Error Handling Plan duplication** (`prompt.py`, `agent.py`): confirmed
+      real and reproducible against the actual Finodil data -- `_build_data_view`'s `rule` and
+      `_build_error_handling_view`'s `condition` used the identical `item.get("description")` text,
+      and `handling` was one hardcoded literal identical for every row (exactly matching the
+      screenshot's repeated "Return a clear validation message and prevent invalid processing.").
+      Also found: `_convert_sds_to_architecture_plan` wired `validation_plan.processing_validation`
+      directly to `design_views.error_handling_view.validation_errors` -- the same list object
+      twice. Fixed the prompt (`prompt.py:94` and the revision-prompt's equivalent instruction) to
+      explicitly state Validation Plan states the rule, Error Handling Plan states the system's
+      response behavior (status code, user-facing message, no persistence) referencing the rule by
+      id, never restating its wording -- for the primary LLM-generation path. Fixed the
+      deterministic fallback's `_build_error_handling_view` to reference the rule id instead of
+      duplicating its description, with a templated, genuinely distinct "reject with HTTP 400 ...
+      do not process or persist" handling string; fixed the `processing_validation` mis-wiring to
+      mirror `input_validation`'s own source instead of pointing at the conceptually different
+      Error Handling view. Re-verified directly against the real Finodil SRS (calling
+      `_build_fallback_architecture_output` read-only, no Mongo writes, no LLM call) -- confirmed
+      the fix produces genuinely distinct Validation Plan/Error Handling Plan content for the
+      exact data that produced the original screenshot.
+    - **Diagram zoom/pan** (`ZoomableImage.jsx`, the only consumer being
+      `ArchitectureDiagramsGallery.jsx`'s lightbox): root-caused via the installed
+      `react-zoom-pan-pinch@4.0.4` bounds source (`getComponentsSizes`/`getBounds`) -- the previous
+      `contentStyle={{width:"100%",height:"100%",display:"flex",...}}` forced the library's
+      measured content box to always equal the wrapper's box regardless of the real diagram
+      image's own aspect ratio, so pan bounds were computed against an invisible, oversized
+      padding rectangle instead of the actual image, and `limitToBounds` hard-clamped there with
+      no elastic give. Fixed by letting the `<img>` render at its natural size (this library's own
+      documented usage pattern, confirmed via its README) and fitting it to the visible container
+      via `centerView(fitScale)` -- computed from `naturalWidth/Height` vs. the container's real
+      `clientWidth/Height` -- on the image's own `onLoad`, since natural size is often larger than
+      the lightbox on at least one axis. Added `cursor-grab`/`active:cursor-grabbing` (previously
+      zero pan affordance) and `draggable={false}` on the `<img>`. Re-verified live against the
+      real, currently-broken Finodil Use Case Diagram: dragging to each extreme now lands the
+      transform's `translate()` at the EXACT mathematically-expected boundary
+      (`wrapperSize - naturalSize * scale`) on both axes, confirmed to the pixel -- proof the
+      bounds now track the real image, not a stretched box.
+    - **Use Case Diagram overuse of `<<include>>`/`<<extend>>`**: investigation of the prompt
+      (`prompt.py`, all 3 tiers: combined, agentic, focused) found it already grounds use cases in
+      FR+AC+VR and already has anti-fragmentation guidance -- added an explicit "FR is the PRIMARY
+      source; AC/VR refine, they don't justify a new use case" framing plus an explicit release
+      valve ("cover a stray VR/AC via an EXISTING use case's related_requirements, don't invent
+      one") to all 3 prompt locations. **A materially bigger discovery made live-inspecting the
+      real Finodil `.puml` file**: the actual generated diagram (6 spurious `<<include>>` +
+      6 spurious `<<extend>>` relationships to garbled fragments like "Email Must Be In Valid" and
+      "Invalid Login Credentials Wrong Email") did NOT come from any of the 3 LLM-prompted tiers
+      at all -- `usecase_modeler.py`'s `build()` only calls the deterministic
+      `_build_main_use_cases`/`_build_included_use_cases`/`_build_extension_use_cases` fallback
+      when `specification["use_cases"]` is completely empty, i.e. every LLM tier (including the
+      repair loop) failed -- which is evidently what's actually happening in this dev environment.
+      That fallback mechanically minted one included use case per `validation_rules` item (an
+      unambiguous UML modeling error -- a validation rule like "Email must be in a valid format"
+      is a business rule, never a use case under any real convention) and one included/extension
+      use case per `functional_requirements`/`acceptance_criteria` item matching a crude keyword
+      list, with zero semantic judgment. Removed both mechanical loops entirely from
+      `_build_included_use_cases`/`_build_extension_use_cases` (keeping only the loops reading an
+      explicit, even if partial, LLM-provided `included_behaviours`/`extension_behaviours`/
+      `exception_flows` signal) -- safe with zero coverage loss, confirmed by this file's own
+      existing docstring on `_all_requirement_ids`: the main use case already seeds every FR/AC/VR
+      id into its own `related_requirements` *specifically* so traceability holds even with zero
+      included/extension use cases. Removed the now-fully-dead `OPTIONAL_WORDS`/
+      `INTERNAL_ACTION_VERBS` word lists (`ERROR_WORDS` stays -- still used elsewhere). Re-verified
+      directly against the real Finodil SRS (deterministic call, no LLM, no writes): the diagram
+      went from 13 use cases / 12 spurious relationships down to exactly 1 use case (the real
+      actors, correctly associated, zero `<<include>>`/`<<extend>>`) -- matching the user's own
+      "keep it simple, accurate, and grounded" request precisely. Two existing unit tests
+      (`test_fallback_supporting_use_case_uses_matching_user_story_goal`/
+      `..._falls_back_to_gentle_truncation`) updated to exercise the naming helper via an explicit
+      `included_behaviours` entry instead of the now-removed mechanical FR conversion; added
+      `test_fallback_does_not_mechanically_turn_validation_rules_into_use_cases` as a direct
+      regression test for the real bug.
+    - New `tests/test_architecture_reviewer_note_builder.py` (6 tests),
+      `tests/test_architecture_validation_error_handling_dedup.py` (4 tests). Full architecture-
+      tagged suite: **257 passed** (up from 256 before this item's own new test), 0 regressions.
+    - **Real, live verification, no mocks** (isolated backend :8090 / frontend :5199, same shared
+      MongoDB Atlas cluster, real Finodil `feature_917b691e`): confirmed the reviewer-note CSS fix
+      deployed correctly via `getComputedStyle` on the real rendered note box; confirmed the
+      Validation Plan/Error Handling Plan fix against the real SRS data that produced the original
+      screenshot (read-only, no writes); confirmed the zoom/pan fix by dragging the real, currently
+      -broken Use Case Diagram lightbox to its exact mathematical pan boundary on both axes;
+      confirmed the Use Case Diagram fix collapses the real 13-use-case/12-relationship garbled
+      diagram down to 1 clean use case for the same real data. No test project/feature/artifact was
+      created and no Mongo writes were made during this verification (all checks were either direct
+      read-only Python calls against the real SRS or real, but non-mutating, browser navigation) --
+      no cleanup needed. Isolated backend/frontend processes stopped afterward.
+
 ## Where to look
 
 - Full build spec (read this first, in order, before any new milestone): `instructions .md`

@@ -1,8 +1,11 @@
 // The 3D rotating-cube loader from https://uiverse.io/AqFox/young-dragon-29 (see index.css's
-// .cube-loader for the actual animation/geometry) -- reserved for the output section specifically
-// (variant="cube"), per direct user feedback that it shouldn't appear everywhere. Every other
-// loading state in the app (chat activity, page loads, feature/artifact lists, settings, etc.)
-// keeps the original plain spin icon, the default when `variant` is omitted.
+// .cube-loader for the actual animation/geometry) -- variant="cube" is used for a real, in-flight
+// generation's "isFinalizing" tail (multi-step background work continuing after a token stream's
+// own text has already finished, e.g. Architecture Agent's diagram rendering) and the "loading
+// already-saved history" states in every chat, but NOT for "waiting for the agent to start
+// responding" -- that specific gap uses LightHorseLoader.jsx instead (direct user request, chat
+// windows only). Every other loading state in the app (page loads, feature/artifact lists,
+// settings, etc.) keeps the original plain spin icon, the default when `variant` is omitted.
 function PlainSpinner() {
   return (
     <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24" fill="none">

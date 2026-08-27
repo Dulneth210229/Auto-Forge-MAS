@@ -1,22 +1,23 @@
 import { useEffect, useRef, useState } from "react";
-import { listGatingArtifactVersions } from "../../lib/deriveStageStatus";
+import { listGatingArtifactVersions, getOperativeGatingArtifact, hasNextStageStarted } from "../../lib/deriveStageStatus";
 import {
   ARTIFACT_TYPE_STAGE,
   STAGE_GATING_ARTIFACT,
   ARTIFACT_TYPE_LABELS,
   dedupeArtifactVersions,
 } from "../../lib/artifactTypeMeta";
-import { STAGE_LABELS } from "../../lib/pipelineStages";
+import { STAGE_LABELS, CONSOLIDATED_APPROVAL_STAGES } from "../../lib/pipelineStages";
 import { getEffectiveActiveArtifact } from "../../lib/activeArtifactSelection";
-import { artifactDownloadUrl, featureCodeDownloadUrl } from "../../api/client";
+import { artifactDownloadUrl, artifactDownloadPdfUrl, featureCodeDownloadUrl } from "../../api/client";
 import { declutterJsonForDisplay } from "../../lib/streamingJsonDisplay";
 import { looksLikeMongoUri } from "../../lib/mongoUri";
 import ArtifactContentView from "../artifacts/ArtifactContentView";
 import ArchitectureDiagramsGallery from "../pipeline/ArchitectureDiagramsGallery";
 import UiuxPagePreviewsPanel from "../pipeline/UiuxPagePreviewsPanel";
-import { LiveGenerationView } from "../pipeline/RequirementConversationParts";
+import { LiveGenerationView, useRotatingLabel } from "../pipeline/RequirementConversationParts";
 import GovernancePanel from "../pipeline/GovernancePanel";
 import ApprovalPanel from "../pipeline/ApprovalPanel";
+import GatingArtifactApprovalPanel from "../pipeline/GatingArtifactApprovalPanel";
 import ArtifactList from "../pipeline/ArtifactList";
 import UiuxVersionGroupList from "../pipeline/UiuxVersionGroupList";
 import ErrorBanner from "../common/ErrorBanner";
@@ -38,6 +39,7 @@ import { useFeature, useSetActiveArtifactSelection } from "../../hooks/useFeatur
 import { useApprovalMutation } from "../../hooks/useApprovalMutation";
 import { useArtifactContent } from "../../hooks/useArtifacts";
 import { buildSecurityRevisionComment } from "../../lib/securityReportToRevisionComment";
+import { computeSecurityGateBlocksQa } from "../../lib/securityGate";
 
 // Both Requirement->Domain and Domain->Architecture support pinning a specific approved version
 // (direct user request for the latter, mirroring the former) -- extend this map (mirrors
@@ -189,6 +191,31 @@ const NO_ARTIFACT_VERSION_LABEL_BY_STAGE = {
   qa: "Testing the latest generated code",
 };
 
+// Shown in place of the generic "Planning the implementation..."/"Applying your requested
+// change..." labels (and the generic phase tail) while a security-driven Coder Agent revision is
+// in flight (direct user request: a themed spinner instead of a bare "Thinking"). Cycled by
+// useRotatingLabel so it's visibly rotating, not stuck on one phrase.
+const SECURITY_FIX_PHRASES = [
+  "Patching vulnerabilities...",
+  "Hardening the code...",
+  "Re-checking security controls...",
+  "Applying the suggested fix...",
+];
+
+// Requirement/Domain/Architecture's gating artifact is always the JSON half of a JSON+Markdown
+// version pair (dedupeArtifactVersions keeps the JSON row as "the" displayed version for these
+// three stages) -- so the plain "Download report" link always served raw JSON. These three
+// stages instead get a document-specific label and a real, formatted PDF (rendered server-side
+// from the same JSON via a dedicated pdf_builder template per agent, not a JSON dump). Security
+// and QA have their own separate, earlier render branches (not this generic fallback) that each
+// hardcode their own PDF download link directly -- this map never applies to them. Every other
+// stage (uiux/coder) keeps the original raw-file "Download report" link.
+const PDF_DOCUMENT_LABEL_BY_STAGE = {
+  requirement: "Download SRS",
+  domain: "Download Enhanced SRS",
+  architecture: "Download Architecture Plan",
+};
+
 function keepLatestVersionOnly(artifacts, types) {
   const latestVersionByType = {};
   for (const artifact of artifacts) {
@@ -212,17 +239,29 @@ function keepLatestVersionOnly(artifacts, types) {
 export default function ResultTab({ featureId, stage, allArtifacts }) {
   const { viewArtifact, selectAgent } = useWorkspaceSelection();
   const versions = listGatingArtifactVersions(stage, allArtifacts);
-  const [selectedVersion, setSelectedVersion] = useState(versions[0]?.version ?? null);
+  // For CONSOLIDATED_APPROVAL_STAGES (requirement/domain/architecture -- direct user decision),
+  // the DEFAULT selection is "the newest version that still needs a decision" (approved wins,
+  // else highest pending/revision-requested, else highest overall -- getOperativeGatingArtifact's
+  // existing precedence, already used by GovernancePanel), not just the newest version NUMBER --
+  // e.g. [v1: pending, v2: rejected] defaults to v1, the one actually actionable. Every other
+  // stage keeps the original "always the newest number" default unchanged.
+  function defaultSelectedVersion() {
+    if (CONSOLIDATED_APPROVAL_STAGES.includes(stage)) {
+      return getOperativeGatingArtifact(stage, allArtifacts)?.version ?? versions[0]?.version ?? null;
+    }
+    return versions[0]?.version ?? null;
+  }
+  const [selectedVersion, setSelectedVersion] = useState(defaultSelectedVersion());
 
   // Switching stages (e.g. auto-switching to Domain Agent right after approving the SRS) must
-  // always jump to the NEW stage's latest version, unconditionally -- without this, a version
+  // always jump to the NEW stage's default version, unconditionally -- without this, a version
   // number that happens to exist for both stages (e.g. "v4" of both srs and enhanced_srs) would
   // pass the "does this version still exist" check below and silently keep showing the PREVIOUS
   // stage's document under the new stage's header, a real bug found live: the panel kept showing
   // an old SRS revision after switching to Domain Agent, simply because that version number
   // coincidentally also existed among Domain's own artifacts.
   useEffect(() => {
-    setSelectedVersion(versions[0]?.version ?? null);
+    setSelectedVersion(defaultSelectedVersion());
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally NOT keyed on `versions`
     // here; that case (a new version arriving for the SAME stage) is handled by the effect below.
   }, [stage]);
@@ -237,14 +276,17 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
   // jumping when the latest version NUMBER has genuinely increased since the last render
   // (tracked via a ref, not `versions` itself, so an unrelated re-render -- e.g. an existing
   // version's own approval_status changing -- doesn't yank a human away from a version they're
-  // deliberately reviewing).
+  // deliberately reviewing). Deliberately jumps to the raw new version NUMBER here, never through
+  // defaultSelectedVersion's operative resolver -- a fresh revision created after an OLDER version
+  // was already approved must still surface immediately, not stay hidden behind the still-approved
+  // one just because the resolver prefers "approved" over "newest".
   const previousLatestVersionRef = useRef(versions[0]?.version ?? null);
   useEffect(() => {
     const latestVersion = versions[0]?.version ?? null;
     const previousLatestVersion = previousLatestVersionRef.current;
 
     if (versions.length > 0 && !versions.some((v) => v.version === selectedVersion)) {
-      setSelectedVersion(latestVersion);
+      setSelectedVersion(defaultSelectedVersion());
     } else if (
       latestVersion !== null &&
       previousLatestVersion !== null &&
@@ -386,6 +428,14 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
     LATEST_VERSION_ONLY_ARTIFACT_TYPES
   );
 
+  // Security/QA already replaced the stacked "All Artifacts" list + separate "Governance" panel
+  // with one compact version dropdown + inline approval control (see the security branch below) --
+  // CONSOLIDATED_APPROVAL_STAGES (requirement/domain/architecture, direct user request) now gets
+  // the exact same treatment via GatingArtifactApprovalPanel. uiux/coder keep the original,
+  // unchanged surfaces. One shared boolean, not two independently-maintained conditions, so the
+  // two render guards below can never drift out of sync with each other.
+  const showLegacyArtifactSurfaces = stage !== "security" && stage !== "qa" && !CONSOLIDATED_APPROVAL_STAGES.includes(stage);
+
   // Lets a human pin which APPROVED version feeds the next agent (e.g. which SRS version Domain
   // Agent reads) instead of always the latest approved one -- see ArtifactRow's radio button and
   // OutputPanel's "Using SRS vN for Domain Agent" indicator, which reads the same effective value.
@@ -511,11 +561,38 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
   const securityReportQuery = useArtifactContent(selectedSecurityArtifact?.artifact_id ?? null);
   const securityReport = securityReportQuery.data?.content_json;
   const securityHasFindings = (securityReport?.findings || []).length > 0;
+  // For SecurityReportView's "Compared to vN" section -- the version immediately before whatever
+  // is selected, by version number (never "operative"/approved, just the prior one), so switching
+  // the dropdown to any historical version still shows a meaningful comparison against what came
+  // right before it. null when there's no prior version (the very first scan ever).
+  const previousSecurityArtifact = selectedSecurityArtifact
+    ? versions.find((v) => v.version === selectedSecurityArtifact.version - 1) ?? null
+    : null;
 
-  const { runQa } = useQaAgentFlowContext();
+  // Independent of selectedSecurityArtifact (whatever the version DROPDOWN happens to have
+  // selected) -- the QA gate below must key off the truly latest scan by version number, not an
+  // older approved-but-stale one a human could park the dropdown on. `versions` is already sorted
+  // descending (listGatingArtifactVersions), so versions[0] is that latest version.
+  const latestSecurityArtifact = stage === "security" ? versions[0] || null : null;
+  const latestSecurityReportQuery = useArtifactContent(latestSecurityArtifact?.artifact_id ?? null);
+  // Skip-aware (direct user request): a Critical finding a human has explicitly marked Skipped no
+  // longer blocks -- see securityGate.js's own docstring. latestSecurityArtifact already carries
+  // skipped_finding_ids as artifact-record metadata (no new fetch needed).
+  const securityGateBlocksQa = computeSecurityGateBlocksQa(
+    latestSecurityReportQuery.data?.content_json?.findings,
+    latestSecurityArtifact?.skipped_finding_ids
+  );
+
+  const { qaRunFlow } = useQaAgentFlowContext();
   const [fixVulnerabilitiesArtifactId, setFixVulnerabilitiesArtifactId] = useState(null);
   const [isSendingFix, setIsSendingFix] = useState(false);
   const [isContinuingToQa, setIsContinuingToQa] = useState(false);
+  // Distinguishes "the Coder Agent is revising because of a security fix" from any other,
+  // unrelated in-flight Coder revision -- so the themed spinner below never mislabels a normal
+  // Coder-chat revision, and only fires for the two real trigger surfaces (this button and
+  // SecurityDecisionDialog's own "Send to Coder Agent to Fix").
+  const [isSecurityFixInFlight, setIsSecurityFixInFlight] = useState(false);
+  const securityFixLabel = useRotatingLabel(isSecurityFixInFlight ? SECURITY_FIX_PHRASES : null);
 
   // Reuses the exact same two calls SecurityDecisionDialog.handleSendToCoder already makes --
   // small enough to duplicate directly here rather than extracting a shared cross-component
@@ -523,15 +600,24 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
   // superseded by a new scan either way.
   async function handleConfirmedFixVulnerabilities() {
     setIsSendingFix(true);
+    setIsSecurityFixInFlight(true);
+    // Switch BEFORE awaiting the (multi-minute) revision, not after -- otherwise the human sees
+    // nothing but a disabled button for the whole duration, since the Coder Agent's own live view
+    // only renders while this stage is selected (a real, confirmed gap, not just cosmetic). Closing
+    // the dialog here too, before the await, mirrors SecurityDecisionDialog's own already-fixed
+    // ordering -- a real, reported bug: this one stayed open showing "Sending..." for the entire
+    // revision because it used to only close in the try block, after the await resolved.
+    selectAgent("coder");
+    setFixVulnerabilitiesArtifactId(null);
     try {
       await handleCoderReviseStream({
-        revision_comment: buildSecurityRevisionComment(securityReport),
+        revision_comment: buildSecurityRevisionComment(securityReport, selectedSecurityArtifact?.skipped_finding_ids),
         revised_by: "security_agent_report",
       });
       runSecurity.mutate({ human_comment: "Re-scan after the Coder Agent's security-driven revision." });
-      setFixVulnerabilitiesArtifactId(null);
     } finally {
       setIsSendingFix(false);
+      setIsSecurityFixInFlight(false);
     }
   }
 
@@ -539,17 +625,18 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
   // opening SecurityDecisionDialog afterward, which this direct button is explicitly meant to
   // skip (per the user's own explicit choice: also approve, but don't reopen the popup).
   async function handleContinueToQa() {
-    if (!selectedSecurityArtifact) return;
+    if (!selectedSecurityArtifact || securityGateBlocksQa) return;
     setIsContinuingToQa(true);
     try {
       if (selectedSecurityArtifact.approval_status !== "approved") {
         await srsApproval.mutateAsync({ artifactId: selectedSecurityArtifact.artifact_id, status: "approved" });
       }
       selectAgent("qa");
-      // Not awaited: QA's own pending state now lives in the shared QaAgentFlowContext, so
+      // Not awaited: QA's own pending state now lives in the shared QaAgentFlowContext's
+      // qaRunFlow (the streaming run, direct user request for live progress here too), so
       // QaReportView (once the chat switches over) shows real, live progress -- matching every
       // other "fire the next agent, don't block this button on it" transition in this file.
-      runQa.mutate({ human_comment: "Continuing from Security Agent." });
+      qaRunFlow.handleRunStream({ human_comment: "Continuing from Security Agent." });
     } finally {
       setIsContinuingToQa(false);
     }
@@ -625,7 +712,7 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
         );
       })()}
 
-      {stage !== "security" && stage !== "qa" && (
+      {showLegacyArtifactSurfaces && (
       <div>
         <h3 className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wide mb-2">
           All Artifacts ({stage === "uiux" ? uiuxVersionCount : stageArtifacts.length})
@@ -686,10 +773,12 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
         <LiveGenerationView
           displayText={declutterJsonForDisplay(coderStreamedText)}
           hasStarted={coderStreamStarted}
-          connectingLabel="Connecting to Coder Agent..."
-          generatingLabel={isCoderRevising ? "Applying your requested change..." : "Planning the implementation..."}
-          isFinalizing={Boolean(coderPhase)}
-          finalizingLabel={coderPhase?.label}
+          connectingLabel={isSecurityFixInFlight ? securityFixLabel : "Connecting to Coder Agent..."}
+          generatingLabel={
+            isSecurityFixInFlight ? securityFixLabel : isCoderRevising ? "Applying your requested change..." : "Planning the implementation..."
+          }
+          isFinalizing={isSecurityFixInFlight || Boolean(coderPhase)}
+          finalizingLabel={isSecurityFixInFlight ? securityFixLabel : coderPhase?.label}
           phaseStartedAt={coderPhaseStartedAt}
         />
       ) : isUiuxGenerating ? (
@@ -750,13 +839,13 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
               {versions.length > 0 && (
                 <div className="flex items-center justify-between flex-wrap gap-2">
                   <VersionSelect versions={versions} selectedVersion={selectedVersion} onChange={setSelectedVersion} />
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-3 flex-wrap">
                     {selectedSecurityArtifact && (
                       <a
-                        href={artifactDownloadUrl(selectedSecurityArtifact.artifact_id)}
+                        href={artifactDownloadPdfUrl(selectedSecurityArtifact.artifact_id)}
                         className="text-sm text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 font-semibold"
                       >
-                        Download report
+                        Download Security Report
                       </a>
                     )}
                     <button
@@ -771,8 +860,12 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
                     <button
                       type="button"
                       onClick={handleContinueToQa}
-                      disabled={!selectedSecurityArtifact || isContinuingToQa || srsApproval.isPending}
-                      title="Approve this report and move on to QA Agent"
+                      disabled={!selectedSecurityArtifact || isContinuingToQa || srsApproval.isPending || securityGateBlocksQa}
+                      title={
+                        securityGateBlocksQa
+                          ? "The latest security scan still has Critical findings -- fix or mark them Skipped before continuing to QA Agent"
+                          : "Approve this report and move on to QA Agent"
+                      }
                       className="text-sm bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white font-semibold px-3 py-1.5 rounded-md"
                     >
                       {isContinuingToQa ? "Continuing..." : "Continue to QA Agent"}
@@ -781,7 +874,7 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
                 </div>
               )}
 
-              <SecurityReportView artifact={selectedSecurityArtifact} />
+              <SecurityReportView artifact={selectedSecurityArtifact} previousArtifact={previousSecurityArtifact} />
 
               {selectedSecurityArtifact &&
                 (selectedSecurityArtifact.approval_status === "pending" ? (
@@ -811,14 +904,14 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
           return (
             <div className="flex flex-col gap-4">
               {versions.length > 0 && (
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between flex-wrap gap-2">
                   <VersionSelect versions={versions} selectedVersion={selectedVersion} onChange={setSelectedVersion} />
                   {selectedQaArtifact && (
                     <a
-                      href={artifactDownloadUrl(selectedQaArtifact.artifact_id)}
+                      href={artifactDownloadPdfUrl(selectedQaArtifact.artifact_id)}
                       className="text-sm text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 font-semibold"
                     >
-                      Download report
+                      Download QA Report
                     </a>
                   )}
                 </div>
@@ -835,17 +928,53 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
           {(() => {
             // Hoisted once and reused everywhere this section needs "the artifact behind the
             // currently-selected version" -- previously computed separately (identically) in two
-            // different inline IIFEs; also now backs the new Approve & Move to Security button.
+            // different inline IIFEs; also now backs the new Approve & Move to Security button AND
+            // (for CONSOLIDATED_APPROVAL_STAGES) GatingArtifactApprovalPanel below.
             const selectedVersionArtifact = versions.find((v) => v.version === selectedVersion) || versions[0];
+            const pdfDocumentLabel = PDF_DOCUMENT_LABEL_BY_STAGE[stage];
+            // Domain Improvements attaches to whichever Enhanced SRS version is being viewed --
+            // same version number (both saved together, see domain_agent's _save_domain_artifacts),
+            // never its own listed/approvable row (see UNLISTED_ARTIFACT_TYPES above).
+            const domainImprovements =
+              stage === "domain"
+                ? allArtifacts.find(
+                    (a) => a.artifact_type === "domain_improvements" && a.version === selectedVersionArtifact.version
+                  )
+                : null;
+            // Same computation GovernancePanel.jsx/Security's own securityApproveLocked already
+            // use: some OTHER version of the same artifact_type is already approved.
+            const approveLocked =
+              CONSOLIDATED_APPROVAL_STAGES.includes(stage) &&
+              stageArtifacts.some(
+                (a) =>
+                  a.artifact_type === selectedVersionArtifact.artifact_type &&
+                  a.approval_status === "approved" &&
+                  a.artifact_id !== selectedVersionArtifact.artifact_id
+              );
+            // Direct user request: once approved AND the pipeline has moved on to the next agent,
+            // revoke becomes permanently unavailable -- hasNextStageStarted is the artifact-
+            // existence check also enforced server-side (approval_service.py's revoke_approval);
+            // nextStageInFlight is a frontend-only extra safeguard for the narrow window where the
+            // next stage is already generating but hasn't saved its first artifact yet.
+            const nextStageInFlight =
+              (stage === "requirement" && isDomainGenerating) ||
+              (stage === "domain" && isArchitectureGenerating) ||
+              (stage === "architecture" && isUiuxGenerating);
+            const canRevoke = !hasNextStageStarted(stage, allArtifacts) && !nextStageInFlight;
             return (
-          <div className="flex items-center justify-between mb-3">
+          <>
+          <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
             <VersionSelect versions={versions} selectedVersion={selectedVersion} onChange={setSelectedVersion} />
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap">
               <a
-                href={artifactDownloadUrl(selectedVersionArtifact.artifact_id)}
+                href={
+                  pdfDocumentLabel
+                    ? artifactDownloadPdfUrl(selectedVersionArtifact.artifact_id)
+                    : artifactDownloadUrl(selectedVersionArtifact.artifact_id)
+                }
                 className="text-sm text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 font-semibold"
               >
-                Download report
+                {pdfDocumentLabel || "Download report"}
               </a>
               {stage === "coder" && selectedVersionArtifact.approval_status === "pending" && (
                 <button
@@ -866,43 +995,42 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
               )}
             </div>
           </div>
-            );
-          })()}
 
           {stage === "uiux" ? (
             <UiuxPagePreviewsPanel allArtifacts={allArtifacts} />
           ) : (
-            (() => {
-              const artifact = versions.find((v) => v.version === selectedVersion) || versions[0];
-              // Domain Improvements attaches to whichever Enhanced SRS version is being viewed --
-              // same version number (both saved together, see domain_agent's _save_domain_artifacts),
-              // never its own listed/approvable row (see UNLISTED_ARTIFACT_TYPES above).
-              const domainImprovements =
-                stage === "domain"
-                  ? allArtifacts.find(
-                      (a) => a.artifact_type === "domain_improvements" && a.version === artifact.version
-                    )
-                  : null;
-              return (
-                <div>
-                  <ArtifactContentView
-                    artifact={artifact}
-                    domainImprovementsArtifact={domainImprovements}
-                  />
-                  {stage === "architecture" && <ArchitectureDiagramsGallery allArtifacts={allArtifacts} />}
-                  {domainImprovements && (
-                    <div className="mt-5 pt-5 border-t border-gray-100 dark:border-gray-800">
-                      <ArtifactContentView artifact={domainImprovements} />
-                    </div>
-                  )}
+            <div>
+              <ArtifactContentView
+                artifact={selectedVersionArtifact}
+                domainImprovementsArtifact={domainImprovements}
+              />
+              {stage === "architecture" && <ArchitectureDiagramsGallery allArtifacts={allArtifacts} />}
+              {domainImprovements && (
+                <div className="mt-5 pt-5 border-t border-gray-100 dark:border-gray-800">
+                  <ArtifactContentView artifact={domainImprovements} />
                 </div>
-              );
-            })()
+              )}
+            </div>
           )}
+
+          {CONSOLIDATED_APPROVAL_STAGES.includes(stage) && (
+            <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-800">
+              <GatingArtifactApprovalPanel
+                featureId={featureId}
+                artifact={selectedVersionArtifact}
+                approveLocked={approveLocked}
+                canRevoke={canRevoke}
+                onApproveClick={onApproveClickForStage}
+              />
+            </div>
+          )}
+          </>
+            );
+          })()}
         </div>
       )}
 
-      {stage !== "security" && stage !== "qa" && (
+      {showLegacyArtifactSurfaces && (
       <div className="pt-4 border-t border-gray-100 dark:border-gray-800">
         <h3 className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wide mb-2">Governance</h3>
         <GovernancePanel
@@ -964,7 +1092,15 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
       <SecurityDecisionDialog
         artifactId={securityDecisionArtifactId}
         featureId={featureId}
+        skippedFindingIds={
+          versions.find((v) => v.artifact_id === securityDecisionArtifactId)?.skipped_finding_ids ?? []
+        }
         onClose={() => setSecurityDecisionArtifactId(null)}
+        onFixStart={() => {
+          setIsSecurityFixInFlight(true);
+          selectAgent("coder");
+        }}
+        onFixSettled={() => setIsSecurityFixInFlight(false)}
       />
 
       <ConfirmDialog

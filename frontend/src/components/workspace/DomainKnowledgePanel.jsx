@@ -73,7 +73,7 @@ export default function DomainKnowledgePanel({ projectId }) {
           {documents.map((doc) => (
             <div
               key={doc.document_id}
-              className="flex items-center justify-between gap-3 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg p-3"
+              className="flex items-center justify-between flex-wrap gap-3 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg p-3"
             >
               <div className="min-w-0">
                 <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate" title={doc.original_filename}>

@@ -14,6 +14,10 @@ export function artifactDownloadUrl(artifactId) {
   return `${API_BASE_URL}/artifacts/${artifactId}/download`;
 }
 
+export function artifactDownloadPdfUrl(artifactId) {
+  return `${API_BASE_URL}/artifacts/${artifactId}/download-pdf`;
+}
+
 export function featureCodeDownloadUrl(featureId) {
   return `${API_BASE_URL}/features/${featureId}/code/download`;
 }

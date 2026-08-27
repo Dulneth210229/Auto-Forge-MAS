@@ -12,14 +12,21 @@ import PillDropdown from "./PillDropdown";
 // history is never blocked -- only forward-jumping past the frontier is. `isRunning` renders a
 // small pulsing dot so the currently-selected agent's live/processing state is visible right on
 // the pill itself.
+//
+// QA gets one additional, content-aware exception on top of the stage-order gate above: Security
+// is a soft/auto-approved gate, so the stage-order check alone would let a human reach QA the
+// moment ANY security report exists, regardless of findings. Direct user request: QA must stay
+// unreachable while the latest security scan still has Critical findings (see
+// WorkspaceSelectionContext's own securityGateBlocksQa for how that's computed).
 export default function AgentSelect({ value, onChange, isRunning }) {
-  const { currentStage } = useWorkspaceSelection();
+  const { currentStage, securityGateBlocksQa } = useWorkspaceSelection();
   const currentStageIndex = SELECTABLE_AGENT_STAGES.indexOf(currentStage);
 
   const options = SELECTABLE_AGENT_STAGES.map((stage, index) => ({
     value: stage,
     label: STAGE_LABELS[stage],
-    disabled: currentStageIndex !== -1 && index > currentStageIndex,
+    disabled:
+      (currentStageIndex !== -1 && index > currentStageIndex) || (stage === "qa" && securityGateBlocksQa),
   }));
 
   const leading = isRunning ? (

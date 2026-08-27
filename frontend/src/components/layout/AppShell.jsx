@@ -11,7 +11,7 @@ export default function AppShell() {
   const location = useLocation();
 
   return (
-    <div className="h-screen flex flex-col bg-gray-100 dark:bg-gray-950">
+    <div className="h-screen flex flex-col bg-gray-200 dark:bg-gray-950">
       <header className="bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 flex-shrink-0">
         <div className="w-full px-6 py-3 flex items-center justify-between">
           <Link to="/" className="text-lg font-bold text-gray-900 dark:text-gray-100">

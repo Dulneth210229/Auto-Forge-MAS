@@ -125,7 +125,7 @@ Integration design should follow the API expectations and dependencies listed in
   - request field `text` (string, required) Comment body
   - response: TaskCommentsSuccessResponse
   - error: 400 when required request fields are missing or invalid
-  - error: {'source_id': 'VR-001', 'condition': 'Comment text must not be empty.', 'handling': 'Return a clear validation message and prevent invalid processing.'}
+  - error: {'source_id': 'VR-001', 'condition': 'Violation of VR-001', 'handling': 'Reject the request with an HTTP 400 response referencing VR-001, show the user a message identifying the invalid field(s), and do not process or persist the request.'}
   - error: 500 when an unexpected server error occurs
 
 ### 7.3 Data Models
@@ -218,14 +218,14 @@ Integration design should follow the API expectations and dependencies listed in
 - rule_id: VR-001, rule: Comment text must not be empty., related_requirements: ['VR-001']
 
 **Processing Validation Rules:**
-- source_id: VR-001, condition: Comment text must not be empty., handling: Return a clear validation message and prevent invalid processing.
+- rule_id: VR-001, rule: Comment text must not be empty., related_requirements: ['VR-001']
 
 ---
 
 ## 11. Error Handling Plan
 
 **Validation Errors:**
-- source_id: VR-001, condition: Comment text must not be empty., handling: Return a clear validation message and prevent invalid processing.
+- source_id: VR-001, condition: Violation of VR-001, handling: Reject the request with an HTTP 400 response referencing VR-001, show the user a message identifying the invalid field(s), and do not process or persist the request.
 
 **Business Errors:**
 - Not specified.

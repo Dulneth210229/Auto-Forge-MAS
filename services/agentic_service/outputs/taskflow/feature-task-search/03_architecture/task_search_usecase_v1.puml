@@ -11,10 +11,8 @@ actor "Registered User" as ACT_001
 
 rectangle "Task Search Feature" {
   usecase "Task Search" as UC_001
-  usecase "Search Query Must Not Be" as UC_002
 }
 
 ACT_001 -- UC_001
-UC_001 .> UC_002 : <<include>>
 
 @enduml

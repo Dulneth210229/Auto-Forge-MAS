@@ -15,7 +15,7 @@ export default function EmptyChatPanel({ projectId }) {
   const { selectFeature } = useWorkspaceSelection();
 
   return (
-    <div className="h-full flex flex-col items-center justify-center gap-3 bg-white dark:bg-gray-900 rounded-lg shadow-sm border border-gray-200 dark:border-gray-800 p-6 text-center">
+    <div className="h-full flex flex-col items-center justify-center gap-3 bg-white dark:bg-gray-900 rounded-lg shadow border border-gray-300 dark:border-gray-800 p-6 text-center">
       <div className="w-12 h-12 rounded-full bg-accent-50 dark:bg-accent-500/10 flex items-center justify-center flex-shrink-0">
         <svg viewBox="0 0 24 24" fill="none" className="w-6 h-6 text-accent-500">
           <path

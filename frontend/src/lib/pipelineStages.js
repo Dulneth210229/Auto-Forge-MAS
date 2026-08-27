@@ -10,6 +10,13 @@ export const GATED_STAGES = ["requirement", "domain", "architecture", "uiux", "c
 
 export const AUTO_APPROVED_STAGES = ["security", "qa"];
 
+// Stages that use the consolidated "one version + dropdown" approval UI (GatingArtifactApprovalPanel
+// via ResultTab.jsx) instead of the generic stacked "All Artifacts" list + separate Governance
+// panel -- mirrors Security Agent's own already-shipped consolidated pattern. Direct user request.
+// uiux/coder deliberately excluded -- out of scope, keep their existing ArtifactList/GovernancePanel
+// UI unchanged.
+export const CONSOLIDATED_APPROVAL_STAGES = ["requirement", "domain", "architecture"];
+
 // Every real, selectable agent stage in pipeline order. Distinct from GATED_STAGES: this is
 // "which stages are real agents a human can chat with / see status for," not "which stages pause
 // for a human approval gate" -- uiux, security, and qa all belong here but not in GATED_STAGES.

@@ -197,3 +197,90 @@ def test_revoke_never_attempts_git_undo_for_a_non_coder_artifact(feature):
         approval_service.revoke_approval(artifact_id)
 
     mock_undo.assert_not_called()
+
+
+# Direct user request: once the pipeline has moved on to the next agent, revoking an approval on
+# Requirement/Domain/Architecture becomes permanently impossible, even navigating back later.
+# Deliberately narrow -- only these 3 transitions; Coder/UI-UX revoke keeps its existing, more
+# permissive behavior (covered by the git-undo tests above, which use types with no entry in
+# _NEXT_STAGE_GATING_TYPE and so are never subject to this new check at all).
+
+
+def test_revoke_srs_is_blocked_once_enhanced_srs_exists(feature):
+    srs_id = _seed_artifact(
+        feature["tmp_path"], feature["project_id"], feature["feature_id"],
+        artifact_type=ArtifactType.SRS.value, version=2, approval_status=ApprovalStatus.APPROVED.value,
+    )
+    _seed_artifact(
+        feature["tmp_path"], feature["project_id"], feature["feature_id"],
+        artifact_type=ArtifactType.ENHANCED_SRS.value, version=1, approval_status=ApprovalStatus.PENDING.value,
+        agent_name=AgentName.DOMAIN.value,
+    )
+
+    with pytest.raises(ValueError, match="already moved on"):
+        approval_service.revoke_approval(srs_id)
+
+    # Refused before any mutation -- the approval must still be intact.
+    assert store.artifacts.get(srs_id)["approval_status"] == ApprovalStatus.APPROVED.value
+
+
+def test_revoke_srs_still_allowed_when_domain_hasnt_started(feature):
+    srs_id = _seed_artifact(
+        feature["tmp_path"], feature["project_id"], feature["feature_id"],
+        artifact_type=ArtifactType.SRS.value, version=1, approval_status=ApprovalStatus.APPROVED.value,
+    )
+
+    approval_service.revoke_approval(srs_id)
+
+    assert store.artifacts.get(srs_id)["approval_status"] == ApprovalStatus.PENDING.value
+
+
+def test_revoke_enhanced_srs_is_blocked_once_architecture_plan_exists(feature):
+    enhanced_srs_id = _seed_artifact(
+        feature["tmp_path"], feature["project_id"], feature["feature_id"],
+        artifact_type=ArtifactType.ENHANCED_SRS.value, version=1, approval_status=ApprovalStatus.APPROVED.value,
+        agent_name=AgentName.DOMAIN.value,
+    )
+    _seed_artifact(
+        feature["tmp_path"], feature["project_id"], feature["feature_id"],
+        artifact_type=ArtifactType.ARCHITECTURE_PLAN.value, version=1, approval_status=ApprovalStatus.PENDING.value,
+        agent_name=AgentName.ARCHITECTURE.value,
+    )
+
+    with pytest.raises(ValueError, match="already moved on"):
+        approval_service.revoke_approval(enhanced_srs_id)
+
+
+def test_revoke_architecture_plan_is_blocked_once_uiux_screenshot_exists(feature):
+    plan_id = _seed_artifact(
+        feature["tmp_path"], feature["project_id"], feature["feature_id"],
+        artifact_type=ArtifactType.ARCHITECTURE_PLAN.value, version=1, approval_status=ApprovalStatus.APPROVED.value,
+        agent_name=AgentName.ARCHITECTURE.value,
+    )
+    _seed_artifact(
+        feature["tmp_path"], feature["project_id"], feature["feature_id"],
+        artifact_type=ArtifactType.UI_PREVIEW_SCREENSHOT.value, version=1, approval_status=ApprovalStatus.PENDING.value,
+        artifact_format=ArtifactFormat.PNG.value, agent_name=AgentName.UIUX.value,
+    )
+
+    with pytest.raises(ValueError, match="already moved on"):
+        approval_service.revoke_approval(plan_id)
+
+
+def test_revoke_uiux_screenshot_is_unaffected_even_if_coder_has_started(feature):
+    # UI_PREVIEW_SCREENSHOT has no entry in _NEXT_STAGE_GATING_TYPE -- this new lock is scoped to
+    # Requirement/Domain/Architecture only, per the user's own explicit wording.
+    screenshot_id = _seed_artifact(
+        feature["tmp_path"], feature["project_id"], feature["feature_id"],
+        artifact_type=ArtifactType.UI_PREVIEW_SCREENSHOT.value, version=1, approval_status=ApprovalStatus.APPROVED.value,
+        artifact_format=ArtifactFormat.PNG.value, agent_name=AgentName.UIUX.value,
+    )
+    _seed_artifact(
+        feature["tmp_path"], feature["project_id"], feature["feature_id"],
+        artifact_type=ArtifactType.CODE_DIFF.value, version=1, approval_status=ApprovalStatus.PENDING.value,
+        artifact_format=ArtifactFormat.MARKDOWN.value, agent_name=AgentName.CODER.value,
+    )
+
+    approval_service.revoke_approval(screenshot_id)
+
+    assert store.artifacts.get(screenshot_id)["approval_status"] == ApprovalStatus.PENDING.value
