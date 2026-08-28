@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { useProject } from "../../hooks/useProjects";
 import { useDeleteFeature, useFeatures } from "../../hooks/useFeatures";
 import { useWorkspaceSelection } from "./WorkspaceSelectionContext";
@@ -7,8 +7,6 @@ import FeatureListItem from "./FeatureListItem";
 import DomainKnowledgePanel from "./DomainKnowledgePanel";
 import DatabaseConnectionPanel from "./DatabaseConnectionPanel";
 import CreateFeatureForm from "../features/CreateFeatureForm";
-import EditProjectModal from "../projects/EditProjectModal";
-import DeleteProjectModal from "../projects/DeleteProjectModal";
 import Modal from "../common/Modal";
 import ConfirmDialog from "../common/ConfirmDialog";
 import LoadingSpinner from "../common/LoadingSpinner";
@@ -48,38 +46,15 @@ export default function FeatureListPanel({ projectId }) {
   const [showCreate, setShowCreate] = useState(false);
   const [showKnowledge, setShowKnowledge] = useState(false);
   const [showDatabaseConnection, setShowDatabaseConnection] = useState(false);
-  const [showEdit, setShowEdit] = useState(false);
-  const [showDelete, setShowDelete] = useState(false);
   const [deletingFeature, setDeletingFeature] = useState(null);
   const deleteFeature = useDeleteFeature(projectId);
 
   return (
     <div className="h-full flex flex-col bg-white dark:bg-gray-900 rounded-lg shadow border border-gray-300 dark:border-gray-800">
       <div className="flex-shrink-0 p-3 border-b border-gray-100 dark:border-gray-800">
-        <Link to="/" className="text-xs text-gray-400 dark:text-gray-500 hover:text-accent-600 dark:hover:text-accent-400 inline-flex items-center gap-1">
-          &larr; Projects
-        </Link>
-        <div className="flex items-start justify-between gap-2 mt-1">
-          <h2 className="text-sm font-bold text-gray-900 dark:text-gray-100 truncate" title={project?.project_name}>
-            {project?.project_name || "..."}
-          </h2>
-          <div className="flex items-center gap-2 flex-shrink-0">
-            <button
-              onClick={() => setShowEdit(true)}
-              title="Edit project"
-              className="text-xs text-gray-400 dark:text-gray-500 hover:text-accent-600 dark:hover:text-accent-400"
-            >
-              Edit
-            </button>
-            <button
-              onClick={() => setShowDelete(true)}
-              title="Delete project"
-              className="text-xs text-gray-400 dark:text-gray-500 hover:text-red-600 dark:hover:text-red-400"
-            >
-              Delete
-            </button>
-          </div>
-        </div>
+        <h2 className="text-sm font-bold text-gray-900 dark:text-gray-100 truncate" title={project?.project_name}>
+          {project?.project_name || "..."}
+        </h2>
         <p className="text-xs text-gray-400 dark:text-gray-500 truncate">{project?.target_stack}</p>
         <div className="flex items-center gap-2 mt-2">
           <button
@@ -156,14 +131,6 @@ export default function FeatureListPanel({ projectId }) {
       >
         <DatabaseConnectionPanel projectId={projectId} />
       </Modal>
-
-      <EditProjectModal project={project} open={showEdit} onClose={() => setShowEdit(false)} />
-      <DeleteProjectModal
-        project={project}
-        open={showDelete}
-        onClose={() => setShowDelete(false)}
-        onDeleted={() => navigate("/")}
-      />
 
       <ConfirmDialog
         open={Boolean(deletingFeature)}

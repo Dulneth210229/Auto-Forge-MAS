@@ -43,7 +43,7 @@ export default function FeatureListItem({ feature, isSelected, onSelect, onDelet
         "relative group w-full rounded-md transition-colors border",
         isSelected
           ? "bg-accent-50 dark:bg-accent-500/10 border-accent-200 dark:border-accent-500/30"
-          : "border-transparent hover:bg-gray-50 dark:hover:bg-white/5"
+          : "border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-white/5"
       )}
     >
       <button type="button" onClick={onSelect} className="w-full text-left px-3 py-2.5">
@@ -59,9 +59,13 @@ export default function FeatureListItem({ feature, isSelected, onSelect, onDelet
           </span>
         </div>
         <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5 pl-4 truncate">{feature.feature_description}</p>
-        <div className="pl-4 mt-1.5 flex items-center gap-1.5">
-          <span className="text-[11px] text-gray-400 dark:text-gray-500">{STAGE_LABELS[currentStage]}</span>
-          <StatusBadge status={currentStatus} />
+        <div className="pl-4 mt-1.5 flex items-center gap-1.5 min-w-0">
+          <span className="text-[11px] text-gray-400 dark:text-gray-500 truncate min-w-0">
+            {STAGE_LABELS[currentStage]}
+          </span>
+          <span className="flex-shrink-0">
+            <StatusBadge status={currentStatus} />
+          </span>
         </div>
       </button>
       {onDeleteClick && (

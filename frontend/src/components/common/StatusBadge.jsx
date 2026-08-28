@@ -38,6 +38,8 @@ export default function StatusBadge({ status, label: labelOverride }) {
   const label = labelOverride || LABELS[status] || status;
 
   return (
-    <span className={`inline-block px-2 py-1 text-xs font-semibold rounded-full ${style}`}>{label}</span>
+    <span className={`inline-block whitespace-nowrap px-2 py-1 text-xs font-semibold rounded-full ${style}`}>
+      {label}
+    </span>
   );
 }

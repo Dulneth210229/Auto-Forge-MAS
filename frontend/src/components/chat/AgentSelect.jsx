@@ -18,7 +18,7 @@ import PillDropdown from "./PillDropdown";
 // moment ANY security report exists, regardless of findings. Direct user request: QA must stay
 // unreachable while the latest security scan still has Critical findings (see
 // WorkspaceSelectionContext's own securityGateBlocksQa for how that's computed).
-export default function AgentSelect({ value, onChange, isRunning }) {
+export default function AgentSelect({ value, onChange, isRunning, fillWidth }) {
   const { currentStage, securityGateBlocksQa } = useWorkspaceSelection();
   const currentStageIndex = SELECTABLE_AGENT_STAGES.indexOf(currentStage);
 
@@ -44,6 +44,7 @@ export default function AgentSelect({ value, onChange, isRunning }) {
       title="Select which agent to talk to"
       leading={leading}
       scrollable={false}
+      fillWidth={fillWidth}
     />
   );
 }

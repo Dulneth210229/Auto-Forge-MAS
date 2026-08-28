@@ -133,17 +133,26 @@ export default function ChatComposerBox({
               </button>
             </>
           )}
-          <div className="flex flex-col gap-1 min-w-0">
+          {/* flex-auto (grow AND shrink, basis on the pill's own natural content width -- NOT
+              flex-1's forced equal-halves basis-0%) so these two pills size to their own content
+              at comfortable widths (e.g. "qwen2.5-coder:14b" shows in full whenever there's
+              genuinely room for it) but still actually shrink once the row runs out of space --
+              previously they only had an upper bound (PillDropdown's own max-w-[160px]), never
+              anything letting them shrink below their intrinsic content width, so at narrow
+              (laptop) column widths the row overflowed past the composer's own card border.
+              fillWidth (below) is what lets the pill itself actually shrink to match instead of
+              just this wrapper. */}
+          <div className="flex flex-col gap-1 min-w-0 flex-auto">
             <span className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wide px-1">
               Agent
             </span>
-            <AgentSelect value={selectedAgent} onChange={onSelectAgent} isRunning={isAgentRunning} />
+            <AgentSelect value={selectedAgent} onChange={onSelectAgent} isRunning={isAgentRunning} fillWidth />
           </div>
-          <div className="flex flex-col gap-1 min-w-0">
+          <div className="flex flex-col gap-1 min-w-0 flex-auto">
             <span className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wide px-1">
               Model
             </span>
-            <ModelSelect agentStage={selectedAgent} />
+            <ModelSelect agentStage={selectedAgent} fillWidth />
           </div>
         </div>
         <SendButton
