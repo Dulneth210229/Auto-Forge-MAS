@@ -49,7 +49,7 @@ export default function LlmSettingsPage() {
   }
 
   return (
-    <div className="h-full overflow-y-auto">
+    <div className="h-full overflow-y-auto pr-1.5">
       <PageHeader title="LLM Settings" subtitle="Configure the provider/model used by every AutoForge agent." />
 
       <ErrorBanner error={error} fallback="Failed to load LLM settings." />

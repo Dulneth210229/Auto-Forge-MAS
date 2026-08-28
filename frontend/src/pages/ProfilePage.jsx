@@ -60,10 +60,10 @@ export default function ProfilePage() {
   const isOAuthOnly = user?.auth_provider !== "password";
 
   return (
-    <div className="h-full overflow-y-auto">
+    <div className="h-full overflow-y-auto pr-1.5">
       <PageHeader title="Profile" subtitle="View and update your account details." />
 
-      <div className="max-w-lg flex flex-col gap-6">
+      <div className="max-w-4xl flex flex-col gap-6">
         <div className="flex items-center gap-4">
           <Avatar user={user} />
           <div>
@@ -72,7 +72,14 @@ export default function ProfilePage() {
           </div>
         </div>
 
-        <form onSubmit={handleProfileSubmit} className="bg-white dark:bg-gray-900 rounded-lg shadow border border-gray-300 dark:border-gray-800 p-5 flex flex-col gap-4">
+        {/* Two columns once there's room (Account Details left, Change Password right);
+            stacks back to one column on narrow/laptop widths -- same content, same forms,
+            only the layout changes. Grid's default `items: stretch` (no `items-start` override)
+            makes both cards match the taller one's height; each form's own `h-full` + the
+            button row's `mt-auto` is what lets the extra height land as bottom padding under
+            the button rather than the button floating in the middle of a stretched card. */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <form onSubmit={handleProfileSubmit} className="h-full bg-white dark:bg-gray-900 rounded-lg shadow border border-gray-300 dark:border-gray-800 p-5 flex flex-col gap-4">
           <h2 className="text-sm font-bold text-gray-900 dark:text-gray-100 uppercase tracking-wide">Account Details</h2>
 
           <ErrorBanner error={updateProfile.error} fallback="Failed to update profile." />
@@ -114,7 +121,7 @@ export default function ProfilePage() {
             />
           </div>
 
-          <div className="flex justify-end">
+          <div className="flex justify-end mt-auto">
             <button
               type="submit"
               disabled={updateProfile.isPending}
@@ -126,6 +133,7 @@ export default function ProfilePage() {
         </form>
 
         <PasswordSection isOAuthOnly={isOAuthOnly} />
+        </div>
       </div>
     </div>
   );
@@ -161,7 +169,7 @@ function PasswordSection({ isOAuthOnly }) {
 
   if (isOAuthOnly) {
     return (
-      <div className="bg-white dark:bg-gray-900 rounded-lg shadow border border-gray-300 dark:border-gray-800 p-5">
+      <div className="h-full bg-white dark:bg-gray-900 rounded-lg shadow border border-gray-300 dark:border-gray-800 p-5">
         <h2 className="text-sm font-bold text-gray-900 dark:text-gray-100 uppercase tracking-wide mb-2">Password</h2>
         <p className="text-sm text-gray-500 dark:text-gray-400">
           This account signs in via Google/GitHub and has no password to change.
@@ -171,7 +179,7 @@ function PasswordSection({ isOAuthOnly }) {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="bg-white dark:bg-gray-900 rounded-lg shadow border border-gray-300 dark:border-gray-800 p-5 flex flex-col gap-4">
+    <form onSubmit={handleSubmit} className="h-full bg-white dark:bg-gray-900 rounded-lg shadow border border-gray-300 dark:border-gray-800 p-5 flex flex-col gap-4">
       <h2 className="text-sm font-bold text-gray-900 dark:text-gray-100 uppercase tracking-wide">Change Password</h2>
 
       <ErrorBanner error={localError || updatePassword.error} fallback="Failed to update password." />
@@ -214,7 +222,7 @@ function PasswordSection({ isOAuthOnly }) {
         />
       </div>
 
-      <div className="flex justify-end">
+      <div className="flex justify-end mt-auto">
         <button
           type="submit"
           disabled={updatePassword.isPending}

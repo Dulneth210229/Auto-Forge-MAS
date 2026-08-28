@@ -6,6 +6,31 @@
    only the OS preference, and the choice can be persisted/restored on load. */
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* A real, confirmed bug: native form controls (a <select>'s own open dropdown list, date
+   pickers, scrollbars) are painted by the BROWSER, not by this app's CSS -- Tailwind's
+   `dark:bg-*`/`dark:text-*` utilities only ever style the closed <select> box itself, never the
+   popup list the OS/browser renders on open. The browser decides that popup's own light/dark
+   palette purely from the CSS `color-scheme` property, which was never set anywhere in this app
+   -- so every <select> (Provider/Model pickers in LLM Settings, both Global Default and every
+   per-agent override) opened its list in the browser's LIGHT default even while the rest of the
+   page was dark, showing white-on-white/illegible options. Scoped to `.dark` so light mode is
+   completely unaffected. */
+.dark {
+  color-scheme: dark;
+}
+
+/* Belt-and-suspenders on top of `color-scheme: dark` above -- confirmed via a real, direct
+   browser test that `color-scheme` alone does NOT reliably darken every browser/platform's
+   native <select> popup (Chromium's own classic combo-box popup kept rendering light even with
+   `color-scheme: dark` correctly computed on the element itself). Unlike most of a native
+   select's popup chrome, `background-color`/`color` on individual <option> elements IS real,
+   widely-supported CSS -- setting them directly here fixes the popup everywhere `color-scheme`
+   alone doesn't. */
+.dark select option {
+  background-color: var(--color-gray-800);
+  color: var(--color-gray-100);
+}
+
 /* Custom color tokens (used as bg-accent-600, text-accent-700, etc. throughout the app instead
    of a hardcoded Tailwind color like indigo) -- Tailwind v4's @theme values compile to real CSS
    custom properties, so overriding --color-accent-* at :root at runtime (see ThemeSwitcher)

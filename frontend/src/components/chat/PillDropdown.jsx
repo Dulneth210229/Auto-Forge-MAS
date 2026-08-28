@@ -61,7 +61,7 @@ export default function PillDropdown({
         disabled={disabled}
         title={title}
         onClick={() => setOpen((current) => !current)}
-        className={`inline-flex items-center gap-1.5 text-xs font-medium rounded-full bg-gray-100 dark:bg-white/10 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed pl-3 pr-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-accent-500 cursor-pointer ${triggerClassName}`}
+        className={`inline-flex items-center gap-1.5 text-xs font-medium rounded-full bg-white dark:bg-white/10 border border-gray-300 dark:border-transparent text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed pl-3 pr-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-accent-500 cursor-pointer ${triggerClassName}`}
       >
         {leading}
         <span className="truncate">{selected?.label ?? emptyLabel}</span>

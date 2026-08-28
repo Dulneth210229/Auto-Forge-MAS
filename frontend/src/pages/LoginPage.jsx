@@ -2,6 +2,8 @@ import { useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
 import ErrorBanner from "../components/common/ErrorBanner";
+import PasswordInput from "../components/common/PasswordInput";
+import PublicHeader from "../components/layout/PublicHeader";
 
 function GoogleIcon() {
   return (
@@ -47,9 +49,11 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="h-screen flex items-center justify-center bg-gray-200 dark:bg-gray-950 px-4">
+    <div className="h-screen flex flex-col bg-gray-200 dark:bg-gray-950">
+      <PublicHeader />
+      <div className="flex-1 flex items-center justify-center px-4">
       <div className="w-full max-w-sm bg-white dark:bg-gray-900 rounded-lg shadow p-6">
-        <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100 mb-1">AutoForge</h1>
+        <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100 mb-1">Welcome back</h1>
         <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">Sign in to your account</p>
 
         <ErrorBanner error={error} fallback="Sign-in failed." />
@@ -68,9 +72,8 @@ export default function LoginPage() {
 
           <div>
             <label className="block text-sm font-semibold mb-1 text-gray-900 dark:text-gray-200">Password</label>
-            <input
+            <PasswordInput
               required
-              type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
               className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 dark:bg-white/5 dark:text-gray-100 rounded-md focus:outline-none focus:border-accent-500"
@@ -117,6 +120,7 @@ export default function LoginPage() {
             Sign up
           </Link>
         </p>
+      </div>
       </div>
     </div>
   );

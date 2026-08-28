@@ -8,7 +8,12 @@ import {
 } from "../../lib/artifactTypeMeta";
 import { STAGE_LABELS, CONSOLIDATED_APPROVAL_STAGES } from "../../lib/pipelineStages";
 import { getEffectiveActiveArtifact } from "../../lib/activeArtifactSelection";
-import { artifactDownloadUrl, artifactDownloadPdfUrl, featureCodeDownloadUrl } from "../../api/client";
+import {
+  artifactDownloadUrl,
+  artifactDownloadPdfUrl,
+  featureCodeDownloadUrl,
+  featureCodeWithQaReportDownloadUrl,
+} from "../../api/client";
 import { declutterJsonForDisplay } from "../../lib/streamingJsonDisplay";
 import { looksLikeMongoUri } from "../../lib/mongoUri";
 import ArtifactContentView from "../artifacts/ArtifactContentView";
@@ -907,12 +912,20 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
                 <div className="flex items-center justify-between flex-wrap gap-2">
                   <VersionSelect versions={versions} selectedVersion={selectedVersion} onChange={setSelectedVersion} />
                   {selectedQaArtifact && (
-                    <a
-                      href={artifactDownloadPdfUrl(selectedQaArtifact.artifact_id)}
-                      className="text-sm text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 font-semibold"
-                    >
-                      Download QA Report
-                    </a>
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <a
+                        href={artifactDownloadPdfUrl(selectedQaArtifact.artifact_id)}
+                        className="text-sm text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 font-semibold"
+                      >
+                        Download QA Report
+                      </a>
+                      <a
+                        href={featureCodeWithQaReportDownloadUrl(featureId)}
+                        className="text-sm bg-accent-600 hover:bg-accent-700 text-white font-semibold px-3 py-1.5 rounded-md"
+                      >
+                        Download Project + QA Report (.zip)
+                      </a>
+                    </div>
                   )}
                 </div>
               )}

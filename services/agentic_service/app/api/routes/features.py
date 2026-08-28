@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import ValidationError
 
 from app.api.deps import get_current_user
-from app.core.enums import FeatureStatus, AgentName
+from app.core.enums import FeatureStatus, AgentName, ArtifactFormat, ArtifactType
 from app.schemas.approval_schema import ApprovalResponse
 from app.schemas.feature_schema import FeatureCreateRequest, FeatureResponse, SetActiveArtifactSelectionRequest
 from app.schemas.stage_event_schema import StageEventResponse
@@ -276,6 +276,46 @@ def download_feature_code(feature_id: str, current_user: dict = Depends(get_curr
         raise HTTPException(status_code=404, detail=str(error))
 
     filename = f"{slugify(feature['feature_name'])}.zip"
+    return Response(
+        content=content,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/features/{feature_id}/code-with-qa-report/download")
+def download_feature_code_with_qa_report(feature_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    Same real generated code as download_feature_code, bundled together with the feature's
+    latest QA report (JSON + Markdown, under a _QA_REPORT/ prefix so it never collides with real
+    generated app files) in one zip. Only if the feature belongs to the signed-in user.
+    """
+    feature = _get_owned_feature(feature_id, current_user)
+
+    extra_files: list[tuple[str, bytes]] = []
+    for artifact_format, arcname in (
+        (ArtifactFormat.JSON, "_QA_REPORT/qa_report.json"),
+        (ArtifactFormat.MARKDOWN, "_QA_REPORT/qa_report.md"),
+    ):
+        qa_artifact = artifact_service.get_selected_or_latest_approved_artifact(
+            feature_id, ArtifactType.QA_REPORT, artifact_format
+        )
+        if not qa_artifact:
+            continue
+        try:
+            with open(qa_artifact["file_path"], "rb") as file:
+                extra_files.append((arcname, file.read()))
+        except (FileNotFoundError, OSError):
+            continue
+
+    try:
+        content = workspace_service.export_feature_code_with_extra_files_zip(
+            feature["project_id"], feature_id, extra_files
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+
+    filename = f"{slugify(feature['feature_name'])}-with-qa-report.zip"
     return Response(
         content=content,
         media_type="application/zip",

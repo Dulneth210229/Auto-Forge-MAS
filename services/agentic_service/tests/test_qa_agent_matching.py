@@ -50,6 +50,36 @@ def test_merge_results_does_not_cross_match_same_name_different_file():
     assert merged[0]["status"] == "skipped"
 
 
+def test_merge_results_falls_back_to_positional_match_within_same_file_on_name_drift():
+    test_cases = [_tc("adds two numbers correctly", "math.unit.test.ts")]
+    results = [
+        {"name": "should add two numbers", "test_file": "math.unit.test.ts", "status": "passed",
+         "duration_ms": 3, "failure_message": None},
+    ]
+
+    merged = qa_agent._merge_results(test_cases, results)
+
+    assert merged[0]["status"] == "passed"
+    assert merged[0]["duration_ms"] == 3
+
+
+def test_merge_results_leaves_genuine_execution_gap_as_skipped():
+    test_cases = [
+        _tc("case one", "math.unit.test.ts"),
+        _tc("case two", "math.unit.test.ts"),
+    ]
+    results = [
+        {"name": "case one", "test_file": "math.unit.test.ts", "status": "passed",
+         "duration_ms": 2, "failure_message": None},
+    ]
+
+    merged = qa_agent._merge_results(test_cases, results)
+
+    assert merged[0]["status"] == "passed"
+    assert merged[1]["status"] == "skipped"
+    assert "did not produce a matching result" in merged[1]["failure_message"]
+
+
 def test_merge_results_preserves_planning_metadata_alongside_real_result():
     test_cases = [_tc(
         "getItem returns an item", "Item.unit.test.ts", category="unit",

@@ -1733,5 +1733,38 @@ class WorkspaceService:
 
         return self.export_zip(project_id, ref)
 
+    def export_feature_code_with_extra_files_zip(
+        self, project_id: str, feature_id: str, extra_files: list[tuple[str, bytes]]
+    ) -> bytes:
+        """
+        Same as export_feature_code_zip, but with extra (path, bytes) pairs appended into the
+        same archive after the real git-tree content -- used to bundle a feature's generated
+        code together with its QA report. Kept as a separate function (rather than adding an
+        optional parameter to export_feature_code_zip) so the Coder stage's existing plain
+        code-only download is completely unaffected.
+        """
+        repo = self.ensure_project_repo(project_id)
+        branch_name = self._feature_branch_name(feature_id)
+        ref = branch_name if branch_name in [head.name for head in repo.heads] else MAIN_BRANCH
+
+        try:
+            commit = repo.commit(ref)
+        except Exception as error:
+            raise ValueError(f"No such ref '{ref}' in this project's repo.") from error
+
+        buffer = io.BytesIO()
+
+        with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for item in commit.tree.traverse():
+                if item.type != "blob":
+                    continue
+
+                archive.writestr(item.path, item.data_stream.read())
+
+            for path, data in extra_files:
+                archive.writestr(path, data)
+
+        return buffer.getvalue()
+
 
 workspace_service = WorkspaceService()
