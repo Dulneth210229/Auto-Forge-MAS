@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useAuth } from "../../contexts/AuthContext";
 import { useRequirementConversationFlowContext } from "../workspace/RequirementConversationFlowContext";
 import { AgentTurnBubble, HumanBubble, LiveReactionBubble, QualityGateBanner } from "../pipeline/RequirementConversationParts";
 import RequirementRunForm from "../pipeline/RequirementRunForm";
@@ -52,6 +53,7 @@ export default function RequirementConversationChat({
   onViewArtifact,
   isLoadingTimeline,
 }) {
+  const { user } = useAuth();
   const {
     conversation,
     isLoading,
@@ -147,7 +149,7 @@ export default function RequirementConversationChat({
     if (!trimmed) return;
 
     setPendingRevisionReply(trimmed);
-    handleReviseStream({ revision_comment: trimmed, revised_by: "human_user" }).finally(() =>
+    handleReviseStream({ revision_comment: trimmed, revised_by: user?.name || user?.email || "human_user" }).finally(() =>
       setPendingRevisionReply(null)
     );
   }

@@ -7,6 +7,7 @@ import { GATED_STAGES, STAGE_LABELS } from "../../lib/pipelineStages";
 import { buildAgentTimeline } from "../../lib/buildAgentTimeline";
 import { SUGGESTION_CHIPS } from "../../lib/suggestionChips";
 import { useWorkspaceSelection } from "../workspace/WorkspaceSelectionContext";
+import { useAuth } from "../../contexts/AuthContext";
 import ChatBubble from "./ChatBubble";
 import ChatComposerBox from "./ChatComposerBox";
 import RequirementConversationChat from "./RequirementConversationChat";
@@ -53,6 +54,7 @@ function ChatHeader({ feature, runningStage }) {
 
 export default function ChatPanel({ featureId }) {
   const { selectedAgent, selectAgent, viewArtifact } = useWorkspaceSelection();
+  const { user } = useAuth();
   const { data: feature } = useFeature(featureId);
   const { data: graphStatus, isLoading: graphLoading } = useGraphStatus(featureId);
 
@@ -259,7 +261,7 @@ export default function ChatPanel({ featureId }) {
     if (!trimmed || !activeMutation) return;
 
     if (hasOutput) {
-      await activeMutation.mutateAsync({ revision_comment: trimmed, revised_by: "human_user" });
+      await activeMutation.mutateAsync({ revision_comment: trimmed, revised_by: user?.name || user?.email || "human_user" });
     } else {
       await activeMutation.mutateAsync({ human_comment: trimmed });
     }

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useAuth } from "../../contexts/AuthContext";
 import { useCoderAgentFlowContext } from "../workspace/CoderAgentFlowContext";
 import { listGatingArtifactVersions } from "../../lib/deriveStageStatus";
 import { SUGGESTION_CHIPS } from "../../lib/suggestionChips";
@@ -52,6 +53,7 @@ export default function CoderAgentChat({
   onViewArtifact,
   isLoadingTimeline,
 }) {
+  const { user } = useAuth();
   const {
     runStream,
     handleRunStream,
@@ -112,7 +114,7 @@ export default function CoderAgentChat({
     setPendingHumanReply(trimmed);
 
     const call = hasOutput
-      ? handleReviseStream({ revision_comment: trimmed, revised_by: "human_user" })
+      ? handleReviseStream({ revision_comment: trimmed, revised_by: user?.name || user?.email || "human_user" })
       : handleRunStream({ use_enhanced_srs_if_available: true, human_comment: trimmed });
 
     call.finally(() => setPendingHumanReply(null));

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useAuth } from "../../contexts/AuthContext";
 import { useDomainAgentFlowContext } from "../workspace/DomainAgentFlowContext";
 import { useKnowledgeDocuments } from "../../hooks/useKnowledgeDocuments";
 import { listGatingArtifactVersions } from "../../lib/deriveStageStatus";
@@ -63,6 +64,7 @@ export default function DomainAgentChat({
   onViewArtifact,
   isLoadingTimeline,
 }) {
+  const { user } = useAuth();
   const {
     runStream,
     handleRunStream,
@@ -131,7 +133,7 @@ export default function DomainAgentChat({
     const call = hasOutput
       ? handleReviseStream({
           revision_comment: trimmed,
-          revised_by: "human_user",
+          revised_by: user?.name || user?.email || "human_user",
           referenced_document_ids: documentIds,
         })
       : handleRunStream({ human_comment: trimmed, referenced_document_ids: documentIds });

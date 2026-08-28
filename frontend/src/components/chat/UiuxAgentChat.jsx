@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useAuth } from "../../contexts/AuthContext";
 import { useUiuxAgentFlowContext } from "../workspace/UiuxAgentFlowContext";
 import { listGatingArtifactVersions } from "../../lib/deriveStageStatus";
 import { SUGGESTION_CHIPS } from "../../lib/suggestionChips";
@@ -63,6 +64,7 @@ export default function UiuxAgentChat({
   onViewArtifact,
   isLoadingTimeline,
 }) {
+  const { user } = useAuth();
   const {
     runStream,
     handleRunStream,
@@ -137,7 +139,7 @@ export default function UiuxAgentChat({
     const call = hasOutput
       ? handleReviseStream({
           revision_comment: trimmed,
-          revised_by: "human_user",
+          revised_by: user?.name || user?.email || "human_user",
           target_page_ids: hasMultiplePages && targetPageIds.size > 0 ? [...targetPageIds] : null,
         })
       : handleRunStream({ use_enhanced_srs_if_available: true, human_comment: trimmed });

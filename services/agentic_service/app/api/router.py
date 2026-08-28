@@ -18,11 +18,15 @@ from app.api.routes import (
     knowledge,
     preview,
     database_connection,
+    auth,
+    profile,
 )
 
 api_router = APIRouter()
 
 api_router.include_router(health.router)
+api_router.include_router(auth.router)
+api_router.include_router(profile.router)
 api_router.include_router(projects.router)
 api_router.include_router(features.router)
 api_router.include_router(artifacts.router)

@@ -8179,6 +8179,100 @@ milestone — that file is scratch, **this file is the durable one**.
       read-only Python calls against the real SRS or real, but non-mutating, browser navigation) --
       no cleanup needed. Isolated backend/frontend processes stopped afterward.
 
+95. **Authentication, authorization, project ownership/migration, profile management, and a
+    full dashboard redesign (collapsible/resizable sidebar).** The largest single feature this
+    session -- the whole app was previously fully open/single-tenant (confirmed via direct
+    investigation before writing any code: zero `Depends()` anywhere, no JWT/session/cookie
+    handling, `CORS allow_origins=["*"]`, every project stamped with the literal hardcoded
+    string `"created_by": "human_user"`, no user-identity concept on either side at all).
+    - **Backend auth foundation**: new `app/schemas/user_schema.py`, `app/services/auth_service.py`
+      (bcrypt directly -- already installed, avoids passlib's bcrypt>=4.1 friction -- plus PyJWT,
+      newly added), `app/api/deps.py`'s `get_current_user` (the first `Depends()` use in this
+      codebase), `app/api/routes/auth.py` (register/login/me + Google/GitHub OAuth via the
+      already-installed `requests-oauthlib`/`oauthlib`, zero new OAuth dependency), and
+      `app/api/routes/profile.py`. New `store.users` Mongo collection
+      (`in_memory_store.py`, unique indexes on `user_id`/`email`), new `SECRET_KEY`/
+      `JWT_ALGORITHM`/`JWT_EXPIRE_MINUTES`/`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`/
+      `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET`/`OAUTH_REDIRECT_BASE_URL`/`BACKEND_BASE_URL` env
+      vars (`config.py`). OAuth `state` is a short-lived self-signed JWT (no server-side session
+      store exists) -- real CSRF protection with zero new infra. Decided with the user via
+      AskUserQuestion: JWT in `localStorage`, sent as `Authorization: Bearer` (not a cookie,
+      since the existing `allow_origins=["*"]` + `allow_credentials=True` combo would need a
+      real origin allowlist + CSRF protection to use cookies safely).
+    - **Project ownership across the full ~86-endpoint route surface**: `projects.py`/
+      `features.py` each got a small `_get_owned_project`/`_get_owned_feature` helper (404, not
+      403, for someone else's resource -- a user can't distinguish "doesn't exist" from "exists
+      but isn't mine" by probing IDs). `agents.py`'s single shared `_validate_feature` (already
+      called by all 40 agent routes before this work) is the highest-leverage choke point --
+      changing it once protects all 40. `artifacts.py`/`approvals.py`/`knowledge.py`/
+      `preview.py`/`database_connection.py` each got the same pattern at their own handful of
+      call sites. An ownerless (pre-migration legacy) project is deliberately still reachable by
+      any signed-in user, not silently locked out. `llm_settings.py` requires sign-in but isn't
+      ownership-scoped (a genuinely global/shared singleton config, not owned by any one user).
+    - **A real, easy-to-miss gap caught and fixed**: a plain `<img src>`/`<a href>` (artifact
+      preview/download/PDF/code-zip URLs) can't attach a custom `Authorization` header at all --
+      `get_current_user` accepts the token via `?token=` query param as a fallback specifically
+      for those, while every real fetch/axios call keeps using the header
+      (`frontend/src/api/client.js`'s `withToken()` helper appends it only for the URL-building
+      functions that feed `<img>`/`<a>`, never for `apiClient` calls).
+    - **Migration**: `scripts/migrate_existing_projects_to_user.py` -- creates/reuses
+      `dulneth.sa@gmail.com` via the exact same `auth_service.create_user` path real sign-up
+      uses, then one idempotent `update_many({"user_id": {"$exists": False}}, ...)` against the
+      live shared Atlas cluster (not just this machine's local disk -- the real database has more
+      projects than any one machine's checked-out `outputs/`). Run for real: associated 44
+      already-owned + 1 newly-associated = all 45 real projects in the shared database, verified
+      directly against the account afterward.
+    - **Frontend**: new `src/contexts/AuthContext.jsx` (the first genuinely app-global context in
+      this codebase -- every existing context, e.g. `WorkspaceSelectionContext`, is mounted
+      page-scoped; mirrors its create-context/memoized-provider/`useX()`-throws-outside shape,
+      but holds the signed-in user via React Query (`["me"]`) rather than a second `useState`, so
+      login/register/logout/OAuth-adopt all write into one single source of truth instead of two
+      copies that could drift). New `ProtectedRoute.jsx`, `OAuthCallbackHandler.jsx` (reads the
+      token from a URL *fragment*, never a query string, so it's never sent to or logged by any
+      server in the redirect chain; clears it from history immediately after adopting it),
+      `LoginPage.jsx`/`RegisterPage.jsx`/`ProfilePage.jsx`. Dashboard shell: `AppShell.jsx`
+      rebuilt on `react-resizable-panels` (already a dependency, previously used only by
+      `ResizableWorkspace.jsx`) for a genuinely collapsible + resizable `Sidebar.jsx` (hamburger
+      toggle, icon-rail collapse with tooltips, `usePanelRef()`/`isCollapsed()`/`collapse()`/
+      `expand()` -- all confirmed real exports in the installed version before use) -- one
+      mechanism for both collapse and resize instead of two, sizes persisted via
+      `useDefaultLayout`'s existing localStorage mechanism, same as the workspace panel already
+      does. Every hardcoded `"human_user"` call site (`CreateProjectForm.jsx`, `agents.js`'s
+      `confirmed_by` default, 6 chat components, `useRequirementConversationFlow.js`) now uses
+      `user?.name || user?.email || "human_user"` -- the literal string survives only as the
+      final fallback if `user` is somehow null.
+    - **Regression-risk mitigation for the ~1155 pre-existing tests, all written against a fully
+      open backend**: new `tests/conftest.py` patches `TestClient.__init__` globally (before any
+      test module imports, since pytest always imports `conftest.py` first) so every
+      `TestClient(app)` in the whole suite automatically carries a real, fixed test-fixture
+      user's `Authorization: Bearer` header by default -- zero changes needed to any of the
+      ~1155 existing test files individually. A test that needs to exercise real unauthenticated
+      behavior overrides it per-call (`headers={"Authorization": ""}`).
+    - New `tests/test_auth_routes.py` (10 tests: register/duplicate-email/mismatched-passwords,
+      login success/wrong-password/unknown-email-same-message-as-wrong-password [prevents account
+      enumeration], me/garbage-token/expired-token) and `tests/test_project_ownership.py` (7
+      tests: owner sees their own project, a different real user gets 404 on
+      get/list/delete, unauthenticated gets 401, an ownerless legacy project stays reachable by
+      any signed-in user, a feature inside someone else's project -- including through an agent
+      route -- is also invisible).
+    - Full backend suite: **1153 passed** directly, plus the same 19 Docker-dependent tests
+      (`test_coder_tools.py`/`test_coder_verify.py`/`test_render_checker.py`) that failed only
+      because Docker Desktop wasn't running at the time (the exact same environmental pattern
+      already documented multiple times elsewhere in this file) -- re-run in isolation with
+      Docker up: **67 passed**, 0 real failures anywhere. `npm run build` clean.
+    - **Real, live verification, no mocks** (isolated backend :8090 / frontend :5199): confirmed
+      visiting `/` while signed out redirects to `/login`; registered a brand-new real account
+      through the actual UI and confirmed it starts with zero projects and cannot see any other
+      account's data; signed in as the real, migrated `dulneth.sa@gmail.com` / `Ds#210229` and
+      confirmed all 45 real projects are visible; updated the profile name through the real form,
+      reloaded, and confirmed it persisted server-side (not just local state); collapsed and
+      re-expanded the sidebar and confirmed the main panel reflows with no horizontal overflow at
+      a 1024px laptop-width viewport; clicked "Continue with Google" with no `GOOGLE_CLIENT_ID`
+      configured and confirmed a clean, readable 503 error page instead of a crash. Google/GitHub
+      OAuth's real provider round-trip could not be verified end-to-end in this environment (needs
+      real client id/secret values, which this session cannot provision) -- flagged as a required
+      manual setup step, not something left silently unverified.
+
 ## Where to look
 
 - Full build spec (read this first, in order, before any new milestone): `instructions .md`

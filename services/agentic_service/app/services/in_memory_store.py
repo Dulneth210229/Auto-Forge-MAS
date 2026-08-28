@@ -564,6 +564,14 @@ class MongoStore:
             id_field="feature_id",
         )
 
+        # One document per registered account (email/password or OAuth). See
+        # app/services/auth_service.py for how this is created/read; app/api/deps.py for how a
+        # request resolves the current user from a JWT back to a document here.
+        self.users = MongoCollectionProxy(
+            collection=self.database["users"],
+            id_field="user_id",
+        )
+
         self._create_indexes()
 
     def _create_indexes(self) -> None:
@@ -652,6 +660,20 @@ class MongoStore:
 
         self.database["knowledge_documents"].create_index(
             [("project_id", ASCENDING)]
+        )
+
+        self.database["users"].create_index(
+            [("user_id", ASCENDING)],
+            unique=True,
+        )
+
+        self.database["users"].create_index(
+            [("email", ASCENDING)],
+            unique=True,
+        )
+
+        self.database["projects"].create_index(
+            [("user_id", ASCENDING)]
         )
 
     def reset(self) -> None:
