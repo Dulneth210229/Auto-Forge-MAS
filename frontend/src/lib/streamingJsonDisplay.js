@@ -59,6 +59,14 @@ export function declutterJsonForDisplay(rawText) {
   if (!rawText) return "";
 
   return rawText
+    // The LLM sometimes wraps its JSON output in a markdown code fence (```json ... ```) -- the
+    // backend's own remove_markdown_code_fences (app/utils/json_utils.py) strips this from the
+    // COMPLETE accumulated text after a stream ends, but the raw per-token SSE chunks forwarded
+    // live to this display never went through it, so a leading ```json line rode straight through
+    // as literal visible text. Mirrors the backend's exact regexes so both sides agree.
+    .replace(/^\s*```json\s*/i, "")
+    .replace(/^\s*```\s*/, "")
+    .replace(/\s*```\s*$/, "")
     .replace(/"([a-zA-Z_][a-zA-Z0-9_]*)"\s*:\s*/g, (_match, key) => `${humanizeKey(key)}: `)
     // Unescape JSON string-escape sequences BEFORE stripping quotes, or e.g. \" degrades to a
     // stray backslash instead of a real quote, and \n never becomes a real line break.
