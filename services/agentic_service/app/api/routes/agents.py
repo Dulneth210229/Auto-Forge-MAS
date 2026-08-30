@@ -18,7 +18,7 @@ At this foundation step, we only verify the API structure.
 import json
 import traceback
 
-from fastapi import APIRouter, Depends, HTTPException, Body, File, Form, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
 from app.api.deps import get_current_user
