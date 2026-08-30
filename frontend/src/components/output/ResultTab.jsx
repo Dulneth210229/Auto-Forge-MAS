@@ -356,11 +356,21 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
     revisionStreamStarted: architectureRevisionStreamStarted,
     revisionPhase: architectureRevisionPhase,
     revisionPhaseStartedAt: architectureRevisionPhaseStartedAt,
+    plainRunMutation: architecturePlainRunMutation,
   } = useArchitectureAgentFlowContext();
   const isArchitectureStage = stage === "architecture";
   const isArchitectureRevising = isArchitectureStage && architectureReviseStream.isPending;
-  const isArchitectureRunning = isArchitectureStage && architectureRunStream.isPending;
+  const isArchitectureRunning =
+    isArchitectureStage && (architectureRunStream.isPending || architecturePlainRunMutation.isPending);
   const isArchitectureGenerating = isArchitectureRevising || isArchitectureRunning;
+  // Guards every auto-triggered Architecture Agent run below (Enhanced-SRS approval and the
+  // "use raw SRS instead" skip) against firing a SECOND real request on top of one already in
+  // flight -- the exact double-fire that used to produce two artifact versions with identical
+  // content when a human had ArchitectureRunForm's "deep exploration mode" open (or had already
+  // submitted it) at the moment an auto-continue fired. See useArchitectureAgentFlow.js's own
+  // comment on plainRunMutation for the full story.
+  const architectureRunAlreadyInFlight =
+    architectureRunStream.isPending || architectureReviseStream.isPending || architecturePlainRunMutation.isPending;
   const architectureStreamedText = isArchitectureRevising ? architectureRevisionStreamedText : architectureRunStreamedText;
   const architectureStreamStarted = isArchitectureRevising ? architectureRevisionStreamStarted : architectureRunStreamStarted;
   const architecturePhase = isArchitectureRevising ? architectureRevisionPhase : architectureRunPhase;
@@ -529,7 +539,9 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
       // (exclusivity), so the pin-aware lookup on the backend resolves to exactly the version
       // just approved.
       if (approveContinuation.nextAgent === "architecture") {
-        handleRunArchitectureStream({ use_enhanced_srs_if_available: true, architecture_notes: null, human_comment: null });
+        if (!architectureRunAlreadyInFlight) {
+          handleRunArchitectureStream({ use_enhanced_srs_if_available: true, architecture_notes: null, human_comment: null });
+        }
       } else if (approveContinuation.nextAgent === "uiux") {
         handleRunUiuxStream({ use_enhanced_srs_if_available: true, human_comment: null });
       } else if (approveContinuation.nextAgent === "coder") {
@@ -571,8 +583,11 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
     setSkippingEnhancementArtifactId(null);
     selectAgent("architecture");
     // Not awaited -- same reasoning as handleConfirmedApprove's own autoRun calls: the run's state
-    // already lives in the always-mounted ArchitectureAgentFlowContext.
-    handleRunArchitectureStream({ use_enhanced_srs_if_available: false, architecture_notes: null, human_comment: null });
+    // already lives in the always-mounted ArchitectureAgentFlowContext. Guarded the same way too --
+    // see architectureRunAlreadyInFlight's own comment.
+    if (!architectureRunAlreadyInFlight) {
+      handleRunArchitectureStream({ use_enhanced_srs_if_available: false, architecture_notes: null, human_comment: null });
+    }
   }
 
   // Security's own approve handler -- no confirmation dialog first (unlike every other gated
