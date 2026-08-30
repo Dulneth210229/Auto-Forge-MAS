@@ -17,6 +17,10 @@ from pydantic import BaseModel, Field
 class ProjectCreateRequest(BaseModel):
     """
     Request body for creating a project.
+
+    user_id is NOT part of this request body -- it's stamped server-side from the
+    authenticated caller (see app/api/routes/projects.py's create_project), never trusted from
+    the client.
     """
     project_name: str = Field(..., example="E-commerce Platform")
     project_type: str = Field(..., example="E-commerce")
@@ -44,5 +48,6 @@ class ProjectResponse(BaseModel):
     project_type: str
     target_stack: str
     created_by: str
+    user_id: str | None = None
     created_at: datetime
     updated_at: datetime

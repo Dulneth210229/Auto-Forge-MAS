@@ -18,15 +18,10 @@ At this foundation step, we only verify the API structure.
 import json
 import traceback
 
-from fastapi import (
-    APIRouter,
-    HTTPException,
-    File,
-    Form,
-    UploadFile,
-)
+from fastapi import APIRouter, HTTPException, Body, File, Form, UploadFile
 from fastapi.responses import StreamingResponse
 
+from app.api.deps import get_current_user
 from app.core.enums import AgentName
 
 from app.schemas.agent_schema import (
@@ -104,9 +99,9 @@ router = APIRouter(prefix="/features/{feature_id}/agents", tags=["Agents"])
 # Helpers
 # ----------------------------------------------------------------------
 
-def _validate_feature(feature_id: str):
+def _validate_feature(feature_id: str, current_user: dict):
     """
-    Check whether the requested feature exists.
+    Helper function to check whether a feature exists.
     """
 
     feature = store.features.get(feature_id)
@@ -116,6 +111,12 @@ def _validate_feature(feature_id: str):
             status_code=404,
             detail="Feature not found",
         )
+
+    project = store.projects.get(feature["project_id"])
+    owner_id = project.get("user_id") if project else None
+
+    if not project or (owner_id is not None and owner_id != current_user["user_id"]):
+        raise HTTPException(status_code=404, detail="Feature not found")
 
     return feature
 
@@ -135,7 +136,7 @@ def _readable_error(error: Exception) -> str:
 @router.post("/requirement/run", response_model=AgentRunResponse)
 async def run_requirement_agent(
     feature_id: str,
-    request: RequirementAgentRunRequest,
+    request: RequirementAgentRunRequest
 ):
     """
     Run the Requirement Agent.
@@ -146,15 +147,8 @@ async def run_requirement_agent(
 
     Human approval is required after generation.
     """
-
     _validate_feature(feature_id)
-
-    stage_event_service.record(
-        feature_id,
-        AgentName.REQUIREMENT,
-        "run",
-        request.human_comment,
-    )
+    stage_event_service.record(feature_id, AgentName.REQUIREMENT, "run", request.human_comment)
 
     try:
         return await requirement_agent.run(
@@ -185,14 +179,13 @@ async def run_requirement_agent(
 )
 async def revise_requirement_agent(
     feature_id: str,
-    request: RequirementAgentReviseRequest,
+    request: RequirementAgentReviseRequest
 ):
     """
     Revise the latest Requirement Agent output.
     """
 
     _validate_feature(feature_id)
-
     stage_event_service.record(
         feature_id,
         AgentName.REQUIREMENT,
@@ -221,16 +214,17 @@ async def revise_requirement_agent(
 
 
 @router.post("/requirement/revise/stream")
-async def revise_requirement_agent_stream(
-    feature_id: str,
-    request: RequirementAgentReviseRequest,
-):
+async def revise_requirement_agent_stream(feature_id: str, request: RequirementAgentReviseRequest):
     """
-    Streaming Requirement Agent revision endpoint.
+    Streaming variant of /requirement/revise -- same newline-delimited JSON event shape as
+    /requirement/conversation/confirm/stream and /requirement/conversation/reply/stream, so the
+    frontend can show the agent's revision_summary reaction + the regenerated SRS "typing" live
+    as they're generated instead of a blocking wait followed by a sudden reveal:
+        {"type": "token", "text": "..."}
+        {"type": "error", "message": "..."}
+        {"type": "done", "artifact_ids": [...], "message": "..."}
     """
-
     _validate_feature(feature_id)
-
     stage_event_service.record(
         feature_id,
         AgentName.REQUIREMENT,
@@ -270,23 +264,16 @@ async def revise_requirement_agent_stream(
     )
 
 
-@router.post("/requirement/edit", response_model=AgentRunResponse)
-async def edit_requirement_agent_fields(feature_id: str, request: RequirementAgentFieldEditRequest):
+@router.post("/requirement/conversation/start", response_model=RequirementConversationState)
+async def start_requirement_conversation(feature_id: str):
     """
     Apply direct field-by-field edits to the latest SRS -- no LLM call, deterministic
     apply_revision_operations only. Backend counterpart to the field-by-field inline-edit UI
     (business_goal/a single functional requirement/etc.), as opposed to /requirement/revise's
     plain-English, LLM-mediated flow.
     """
-
     _validate_feature(feature_id)
-    stage_event_service.record(
-        feature_id,
-        AgentName.REQUIREMENT,
-        "edit",
-        f"Manual field edit ({len(request.operations)} operation(s))",
-        request.edited_by,
-    )
+    stage_event_service.record(feature_id, AgentName.REQUIREMENT, "clarify_start", None)
 
     try:
         return await requirement_agent.edit_fields(
@@ -345,26 +332,13 @@ async def start_requirement_conversation(
         raise HTTPException(status_code=500, detail=f"Failed to start requirement conversation: {_readable_error(error)}")
 
 
-@router.post(
-    "/requirement/conversation/reply",
-    response_model=RequirementConversationState,
-)
-async def reply_to_requirement_conversation(
-    feature_id: str,
-    request: RequirementConversationReplyRequest,
-):
+@router.post("/requirement/conversation/reply", response_model=RequirementConversationState)
+async def reply_to_requirement_conversation(feature_id: str, request: RequirementConversationReplyRequest):
     """
     Submit an answer to the current requirement clarification questions.
     """
-
     _validate_feature(feature_id)
-
-    stage_event_service.record(
-        feature_id,
-        AgentName.REQUIREMENT,
-        "clarify",
-        request.reply,
-    )
+    stage_event_service.record(feature_id, AgentName.REQUIREMENT, "clarify", request.reply)
 
     try:
         return await requirement_agent.reply_to_conversation(
@@ -382,25 +356,19 @@ async def reply_to_requirement_conversation(
         raise HTTPException(status_code=500, detail=f"Failed to continue requirement conversation: {_readable_error(error)}")
 
 
-@router.post(
-    "/requirement/conversation/reply/stream"
-)
-async def reply_to_requirement_conversation_stream(
-    feature_id: str,
-    request: RequirementConversationReplyRequest,
-):
+@router.post("/requirement/conversation/reply/stream")
+async def reply_to_requirement_conversation_stream(feature_id: str, request: RequirementConversationReplyRequest):
     """
-    Streaming requirement clarification endpoint.
+    Streaming variant of /requirement/conversation/reply -- same newline-delimited JSON event
+    shape as /requirement/conversation/confirm/stream, so the frontend can show the agent's
+    reaction+questions "typing" live as they're generated instead of a blocking wait followed by
+    a sudden reveal:
+        {"type": "token", "text": "..."}
+        {"type": "error", "message": "..."}
+        {"type": "done", "state": {...}}
     """
-
     _validate_feature(feature_id)
-
-    stage_event_service.record(
-        feature_id,
-        AgentName.REQUIREMENT,
-        "clarify",
-        request.reply,
-    )
+    stage_event_service.record(feature_id, AgentName.REQUIREMENT, "clarify", request.reply)
 
     async def event_stream():
         try:
@@ -440,14 +408,13 @@ async def reply_to_requirement_conversation_with_document(
     feature_id: str,
     file: UploadFile = File(...),
     reply: str | None = Form(None),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Submit requirement clarification together with
     an uploaded document.
     """
-
     _validate_feature(feature_id)
-
     file_bytes = await file.read()
 
     stage_event_service.record(
@@ -481,22 +448,13 @@ async def reply_to_requirement_conversation_with_document(
     response_model=RequirementConversationState,
 )
 async def edit_requirement_conversation_turn(
-    feature_id: str,
-    turn_index: int,
-    request: RequirementConversationReplyRequest,
+    feature_id: str, turn_index: int, request: RequirementConversationReplyRequest
 ):
     """
     Edit a previously submitted requirement conversation reply.
     """
-
     _validate_feature(feature_id)
-
-    stage_event_service.record(
-        feature_id,
-        AgentName.REQUIREMENT,
-        "clarify",
-        request.reply,
-    )
+    stage_event_service.record(feature_id, AgentName.REQUIREMENT, "clarify", request.reply)
 
     try:
         return await requirement_agent.edit_turn_reply(
@@ -519,15 +477,21 @@ async def edit_requirement_conversation_turn(
     "/requirement/conversation/turns/{turn_index}/edit/stream"
 )
 async def edit_requirement_conversation_turn_stream(
-    feature_id: str,
-    turn_index: int,
-    request: RequirementConversationReplyRequest,
+    feature_id: str, turn_index: int, request: RequirementConversationReplyRequest
 ):
     """
-    Streaming version of requirement conversation edit.
+    Streaming variant of /requirement/conversation/turns/{turn_index}/edit -- same
+    newline-delimited JSON event shape as /requirement/conversation/reply/stream, so an edited
+    message's regenerated reaction+questions "type" in live instead of sitting behind a plain
+    spinner for however long the real LLM call takes (a real reported gap: editing was the one
+    reply-shaped action in this conversation that didn't stream, making it look stalled/broken on
+    a slow model even though it was quietly still working):
+        {"type": "token", "text": "..."}
+        {"type": "error", "message": "..."}
+        {"type": "done", "state": {...}}
     """
-
     _validate_feature(feature_id)
+    stage_event_service.record(feature_id, AgentName.REQUIREMENT, "clarify", request.reply)
 
     async def event_stream():
         try:
@@ -546,33 +510,33 @@ async def edit_requirement_conversation_turn_stream(
 
 
 @router.get("/requirement/conversation", response_model=RequirementConversationState | None)
-async def get_requirement_conversation(feature_id: str):
+async def get_requirement_conversation(feature_id: str, current_user: dict = Depends(get_current_user)):
     """
     Fetch the current conversation state (for reloading the page or polling) -- null if no
     conversation has been started yet for this feature.
     """
-    _validate_feature(feature_id)
+    _validate_feature(feature_id, current_user)
     return requirement_agent.get_conversation(feature_id=feature_id)
 
 
 @router.post("/requirement/conversation/reset")
-async def reset_requirement_conversation(feature_id: str):
+async def reset_requirement_conversation(feature_id: str, current_user: dict = Depends(get_current_user)):
     """
     Discard the in-progress conversation for this feature and start over.
     """
-    _validate_feature(feature_id)
+    _validate_feature(feature_id, current_user)
     requirement_agent.reset_conversation(feature_id=feature_id)
     return {"feature_id": feature_id, "status": "reset"}
 
 
 @router.post("/requirement/conversation/confirm", response_model=AgentRunResponse)
-async def confirm_requirement_conversation(feature_id: str, request: RequirementConversationConfirmRequest):
+async def confirm_requirement_conversation(feature_id: str, request: RequirementConversationConfirmRequest, current_user: dict = Depends(get_current_user)):
     """
     Finalize the conversation into a real SRS -- generates and saves a normal ArtifactType.SRS
     version through the same path /requirement/run uses, so it requires human approval before
     Domain Agent can run, exactly like any other SRS.
     """
-    _validate_feature(feature_id)
+    _validate_feature(feature_id, current_user)
     stage_event_service.record(feature_id, AgentName.REQUIREMENT, "confirm", request.override_reason, request.confirmed_by)
 
     try:
@@ -584,7 +548,7 @@ async def confirm_requirement_conversation(feature_id: str, request: Requirement
 
 
 @router.post("/requirement/conversation/confirm/stream")
-async def confirm_requirement_conversation_stream(feature_id: str, request: RequirementConversationConfirmRequest):
+async def confirm_requirement_conversation_stream(feature_id: str, request: RequirementConversationConfirmRequest, current_user: dict = Depends(get_current_user)):
     """
     Streaming variant of confirm -- same validation/generation/save logic
     (RequirementAgent.confirm_conversation_stream), but the response body is newline-delimited
@@ -599,7 +563,7 @@ async def confirm_requirement_conversation_stream(feature_id: str, request: Requ
     fetch() ReadableStream reader on the frontend handles a streamed POST response body just as
     well for this one-directional, single-request use case.
     """
-    _validate_feature(feature_id)
+    _validate_feature(feature_id, current_user)
     stage_event_service.record(
         feature_id,
         AgentName.REQUIREMENT,
@@ -644,6 +608,7 @@ async def confirm_requirement_conversation_stream(feature_id: str, request: Requ
 )
 async def get_requirement_conversation(
     feature_id: str,
+    request: DomainAgentRunRequest
 ):
     """
     Retrieve the current requirement conversation state.
@@ -663,141 +628,8 @@ async def reset_requirement_conversation(
     """
     Reset the current requirement clarification conversation.
     """
-
     _validate_feature(feature_id)
-
-    requirement_agent.reset_conversation(
-        feature_id=feature_id,
-    )
-
-    return {
-        "feature_id": feature_id,
-        "status": "reset",
-    }
-
-
-@router.post(
-    "/requirement/conversation/confirm",
-    response_model=AgentRunResponse,
-)
-async def confirm_requirement_conversation(
-    feature_id: str,
-    request: RequirementConversationConfirmRequest,
-):
-    """
-    Finalize a requirement conversation into an SRS artifact.
-    """
-
-    _validate_feature(feature_id)
-
-    stage_event_service.record(
-        feature_id,
-        AgentName.REQUIREMENT,
-        "confirm",
-        request.override_reason,
-        request.confirmed_by,
-    )
-
-    try:
-        return await requirement_agent.confirm_conversation(
-            feature_id=feature_id,
-            request=request,
-        )
-
-    except ValueError as error:
-        raise HTTPException(
-            status_code=400,
-            detail=str(error),
-        )
-
-    except Exception as error:
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Failed to confirm requirement conversation: "
-                f"{_readable_error(error)}"
-            ),
-        )
-
-
-@router.post(
-    "/requirement/conversation/confirm/stream"
-)
-async def confirm_requirement_conversation_stream(
-    feature_id: str,
-    request: RequirementConversationConfirmRequest,
-):
-    """
-    Streaming requirement confirmation endpoint.
-    """
-
-    _validate_feature(feature_id)
-
-    stage_event_service.record(
-        feature_id,
-        AgentName.REQUIREMENT,
-        "confirm",
-        request.override_reason,
-        request.confirmed_by,
-    )
-
-    async def event_stream():
-        try:
-            async for event in requirement_agent.confirm_conversation_stream(
-                feature_id=feature_id,
-                request=request,
-            ):
-                yield json.dumps(event) + "\n"
-
-        except ValueError as error:
-            yield json.dumps(
-                {
-                    "type": "error",
-                    "message": str(error),
-                }
-            ) + "\n"
-
-        except Exception as error:
-            yield json.dumps(
-                {
-                    "type": "error",
-                    "message": (
-                        "Failed to confirm requirement conversation: "
-                        f"{_readable_error(error)}"
-                    ),
-                }
-            ) + "\n"
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="application/x-ndjson",
-    )
-
-
-# ======================================================================
-# DOMAIN AGENT
-# ======================================================================
-
-@router.post(
-    "/domain/run",
-    response_model=AgentRunResponse,
-)
-async def run_domain_agent(
-    feature_id: str,
-    request: DomainAgentRunRequest,
-):
-    """
-    Run the Domain Agent.
-    """
-
-    _validate_feature(feature_id)
-
-    stage_event_service.record(
-        feature_id,
-        AgentName.DOMAIN,
-        "run",
-        request.human_comment,
-    )
+    stage_event_service.record(feature_id, AgentName.DOMAIN, "run", request.human_comment)
 
     try:
         return await domain_agent.run(
@@ -823,22 +655,17 @@ async def run_domain_agent(
 
 
 @router.post("/domain/run/stream")
-async def run_domain_agent_stream(
-    feature_id: str,
-    request: DomainAgentRunRequest,
-):
+async def run_domain_agent_stream(feature_id: str, request: DomainAgentRunRequest):
     """
-    Streaming Domain Agent endpoint.
+    Streaming variant of /domain/run -- same newline-delimited JSON event shape as the
+    Requirement Agent's streaming endpoints, so the frontend can show the enrichment plan
+    "typing" live instead of a blocking wait followed by a sudden reveal:
+        {"type": "token", "text": "..."}
+        {"type": "error", "message": "..."}
+        {"type": "done", "artifact_ids": [...], "message": "..."}
     """
-
     _validate_feature(feature_id)
-
-    stage_event_service.record(
-        feature_id,
-        AgentName.DOMAIN,
-        "run",
-        request.human_comment,
-    )
+    stage_event_service.record(feature_id, AgentName.DOMAIN, "run", request.human_comment)
 
     async def event_stream():
         try:
@@ -871,14 +698,13 @@ async def run_domain_agent_stream(
 )
 async def revise_domain_agent(
     feature_id: str,
-    request: DomainAgentReviseRequest,
+    request: DomainAgentReviseRequest
 ):
     """
     Revise the latest Domain Agent output.
     """
 
     _validate_feature(feature_id)
-
     stage_event_service.record(
         feature_id,
         AgentName.DOMAIN,
@@ -908,7 +734,7 @@ async def revise_domain_agent(
 
 
 @router.post("/domain/revise/stream")
-async def revise_domain_agent_stream(feature_id: str, request: DomainAgentReviseRequest):
+async def revise_domain_agent_stream(feature_id: str, request: DomainAgentReviseRequest, current_user: dict = Depends(get_current_user)):
     """
     Streaming variant of /domain/revise -- same newline-delimited JSON event shape as
     /domain/run/stream.
@@ -916,7 +742,7 @@ async def revise_domain_agent_stream(feature_id: str, request: DomainAgentRevise
         {"type": "error", "message": "..."}
         {"type": "done", "artifact_ids": [...], "message": "..."}
     """
-    _validate_feature(feature_id)
+    _validate_feature(feature_id, current_user)
     stage_event_service.record(
         feature_id, AgentName.DOMAIN, "revise", request.revision_comment, request.revised_by
     )
@@ -936,8 +762,7 @@ async def revise_domain_agent_stream(feature_id: str, request: DomainAgentRevise
 @router.post("/architecture/run", response_model=AgentRunResponse)
 async def run_architecture_agent(
     feature_id: str,
-    request: ArchitectureAgentRunRequest
-):
+    request: ArchitectureAgentRunRequest, current_user: dict = Depends(get_current_user)):
     """
     Run Architecture Agent.
 
@@ -951,7 +776,7 @@ async def run_architecture_agent(
     It does not generate a separate API contract.
     """
 
-    _validate_feature(feature_id)
+    _validate_feature(feature_id, current_user)
     stage_event_service.record(feature_id, AgentName.ARCHITECTURE, "run", request.human_comment)
 
     try:
@@ -1085,14 +910,13 @@ async def run_architecture_agent(
 )
 async def revise_architecture_agent(
     feature_id: str,
-    request: ArchitectureAgentReviseRequest,
+    request: ArchitectureAgentReviseRequest
 ):
     """
     Revise the latest Architecture Agent output.
     """
 
     _validate_feature(feature_id)
-
     stage_event_service.record(
         feature_id,
         AgentName.ARCHITECTURE,
@@ -1121,15 +945,19 @@ async def revise_architecture_agent(
 
 
 @router.post("/architecture/run/stream")
-async def run_architecture_agent_stream(
-    feature_id: str,
-    request: ArchitectureAgentRunRequest,
-):
+async def run_architecture_agent_stream(feature_id: str, request: ArchitectureAgentRunRequest):
     """
-    Streaming Architecture Agent endpoint.
+    Streaming variant of /architecture/run -- same newline-delimited JSON event shape as Domain
+    Agent's streaming endpoints, plus a "phase" event during the non-streamable tail (use case
+    model, diagram generation, PlantUML rendering) so the frontend can show real progress instead
+    of a bare loader once the plan text itself has finished streaming:
+        {"type": "token", "text": "..."}
+        {"type": "phase", "phase": "...", "label": "..."}
+        {"type": "error", "message": "..."}
+        {"type": "done", "artifact_ids": [...], "message": "..."}
     """
-
     _validate_feature(feature_id)
+    stage_event_service.record(feature_id, AgentName.ARCHITECTURE, "run", request.human_comment)
 
     async def event_stream():
         try:
@@ -1144,7 +972,7 @@ async def run_architecture_agent_stream(
 
 
 @router.post("/architecture/revise/stream")
-async def revise_architecture_agent_stream(feature_id: str, request: ArchitectureAgentReviseRequest):
+async def revise_architecture_agent_stream(feature_id: str, request: ArchitectureAgentReviseRequest, current_user: dict = Depends(get_current_user)):
     """
     Streaming variant of /architecture/revise -- same newline-delimited JSON event shape as
     /architecture/run/stream.
@@ -1153,7 +981,7 @@ async def revise_architecture_agent_stream(feature_id: str, request: Architectur
         {"type": "error", "message": "..."}
         {"type": "done", "artifact_ids": [...], "message": "..."}
     """
-    _validate_feature(feature_id)
+    _validate_feature(feature_id, current_user)
     stage_event_service.record(
         feature_id,
         AgentName.ARCHITECTURE,
@@ -1174,28 +1002,14 @@ async def revise_architecture_agent_stream(feature_id: str, request: Architectur
                 {"type": "error", "message": f"Architecture Agent revision failed: {_readable_error(error)}"}
             ) + "\n"
 
-        except Exception as error:
-            yield json.dumps(
-                {
-                    "type": "error",
-                    "message": (
-                        f"Architecture Agent failed: "
-                        f"{_readable_error(error)}"
-                    ),
-                }
-            ) + "\n"
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="application/x-ndjson",
-    )
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
 
-@router.post("/architecture/revise/stream")
-async def revise_architecture_agent_stream(
-    feature_id: str,
-    request: ArchitectureAgentReviseRequest,
-):
+    # ----------------------------------------------------
+    # Ui/UX  Agent
+    # ----------------------------------------------------
+@router.post("/uiux/run", response_model=AgentRunResponse)
+async def run_uiux_agent(feature_id: str, request: UIUXAgentRunRequest):
     """
     Run the UI/UX Agent.
 
@@ -1208,13 +1022,7 @@ async def revise_architecture_agent_stream(
     individual component (see StageOutputPanel/GovernancePanel's separate component approval UI).
     """
     _validate_feature(feature_id)
-
-    stage_event_service.record(
-        feature_id,
-        AgentName.UIUX,
-        "run",
-        request.human_comment,
-    )
+    stage_event_service.record(feature_id, AgentName.UIUX, "run", request.human_comment)
 
     try:
         output = await uiux_agent.run(
@@ -1248,7 +1056,7 @@ async def revise_architecture_agent_stream(
 
 
 @router.post("/uiux/run/stream")
-async def run_uiux_agent_stream(feature_id: str, request: UIUXAgentRunRequest):
+async def run_uiux_agent_stream(feature_id: str, request: UIUXAgentRunRequest, current_user: dict = Depends(get_current_user)):
     """
     Streaming variant of /uiux/run -- same newline-delimited JSON event shape as Domain/
     Architecture Agent's streaming endpoints, so the frontend can show ui_metadata_json "typing"
@@ -1259,7 +1067,7 @@ async def run_uiux_agent_stream(feature_id: str, request: UIUXAgentRunRequest):
         {"type": "error", "message": "..."}
         {"type": "done", "artifact_ids": [...], "message": "..."}
     """
-    _validate_feature(feature_id)
+    _validate_feature(feature_id, current_user)
     stage_event_service.record(feature_id, AgentName.UIUX, "run", request.human_comment)
 
     async def event_stream():
@@ -1275,7 +1083,7 @@ async def run_uiux_agent_stream(feature_id: str, request: UIUXAgentRunRequest):
 
 
 @router.post("/uiux/revise", response_model=AgentRunResponse)
-async def revise_uiux_agent(feature_id: str, request: UIUXAgentReviseRequest):
+async def revise_uiux_agent(feature_id: str, request: UIUXAgentReviseRequest, current_user: dict = Depends(get_current_user)):
     """
     Revise the latest UI/UX Agent output via an explicit human-directed change.
 
@@ -1286,7 +1094,7 @@ async def revise_uiux_agent(feature_id: str, request: UIUXAgentReviseRequest):
       verbatim from the prior version
     - creates a new, already-approved version; previous versions are kept unchanged
     """
-    _validate_feature(feature_id)
+    _validate_feature(feature_id, current_user)
     stage_event_service.record(
         feature_id, AgentName.UIUX, "revise", request.revision_comment, request.revised_by
     )
@@ -1317,7 +1125,7 @@ async def revise_uiux_agent(feature_id: str, request: UIUXAgentReviseRequest):
 
 
 @router.post("/uiux/revise/stream")
-async def revise_uiux_agent_stream(feature_id: str, request: UIUXAgentReviseRequest):
+async def revise_uiux_agent_stream(feature_id: str, request: UIUXAgentReviseRequest, current_user: dict = Depends(get_current_user)):
     """
     Streaming variant of /uiux/revise -- same newline-delimited JSON event shape as
     /uiux/run/stream.
@@ -1326,7 +1134,7 @@ async def revise_uiux_agent_stream(feature_id: str, request: UIUXAgentReviseRequ
         {"type": "error", "message": "..."}
         {"type": "done", "artifact_ids": [...], "message": "..."}
     """
-    _validate_feature(feature_id)
+    _validate_feature(feature_id, current_user)
     stage_event_service.record(
         feature_id, AgentName.UIUX, "revise", request.revision_comment, request.revised_by
     )
@@ -1345,30 +1153,13 @@ async def revise_uiux_agent_stream(feature_id: str, request: UIUXAgentReviseRequ
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
 
-# ======================================================================
-# CODER AGENT
-# ======================================================================
-
-@router.post(
-    "/coder/run",
-    response_model=AgentRunResponse,
-)
-async def run_coder_agent(
-    feature_id: str,
-    request: CoderAgentRunRequest,
-):
+@router.post("/coder/run", response_model=AgentRunResponse)
+async def run_coder_agent(feature_id: str, request: CoderAgentRunRequest):
     """
     Run the Coder Agent.
     """
-
     _validate_feature(feature_id)
-
-    stage_event_service.record(
-        feature_id,
-        AgentName.CODER,
-        "run",
-        request.human_comment,
-    )
+    stage_event_service.record(feature_id, AgentName.CODER, "run", request.human_comment)
 
     try:
         output = await coder_agent.run(
@@ -1412,20 +1203,12 @@ async def run_coder_agent(
         )
 
 
-@router.post(
-    "/coder/revise",
-    response_model=AgentRunResponse,
-)
-async def revise_coder_agent(
-    feature_id: str,
-    request: CoderAgentReviseRequest,
-):
+@router.post("/coder/revise", response_model=AgentRunResponse)
+async def revise_coder_agent(feature_id: str, request: CoderAgentReviseRequest):
     """
     Revise the latest Coder Agent output.
     """
-
     _validate_feature(feature_id)
-
     stage_event_service.record(
         feature_id,
         AgentName.CODER,
@@ -1482,15 +1265,20 @@ async def revise_coder_agent(
 
 
 @router.post("/coder/run/stream")
-async def run_coder_agent_stream(
-    feature_id: str,
-    request: CoderAgentRunRequest,
-):
+async def run_coder_agent_stream(feature_id: str, request: CoderAgentRunRequest):
     """
-    Streaming Coder Agent endpoint.
+    Streaming variant of /coder/run -- same newline-delimited JSON event shape as
+    Domain/Architecture Agent's streaming endpoints, plus a "phase" event during the
+    non-streamable coding/verify tail (coding_loop.py's agentic loop has no token-level
+    streaming at all) so the frontend can show real progress instead of a bare loader once
+    the plan text itself has finished streaming:
+        {"type": "token", "text": "..."}
+        {"type": "phase", "phase": "...", "label": "..."}
+        {"type": "error", "message": "..."}
+        {"type": "done", "artifact_ids": [...], "verification_passed": bool, "status": "...", "message": "..."}
     """
-
     _validate_feature(feature_id)
+    stage_event_service.record(feature_id, AgentName.CODER, "run", request.human_comment)
 
     async def event_stream():
         try:
@@ -1505,12 +1293,12 @@ async def run_coder_agent_stream(
 
 
 @router.post("/coder/revise/stream")
-async def revise_coder_agent_stream(feature_id: str, request: CoderAgentReviseRequest):
+async def revise_coder_agent_stream(feature_id: str, request: CoderAgentReviseRequest, current_user: dict = Depends(get_current_user)):
     """
     Streaming variant of /coder/revise -- same newline-delimited JSON event shape as
     /coder/run/stream.
     """
-    _validate_feature(feature_id)
+    _validate_feature(feature_id, current_user)
     stage_event_service.record(
         feature_id,
         AgentName.CODER,
@@ -1531,25 +1319,14 @@ async def revise_coder_agent_stream(feature_id: str, request: CoderAgentReviseRe
                 {"type": "error", "message": f"Coder Agent revision failed: {_readable_error(error)}"}
             ) + "\n"
 
-        except Exception as error:
-            yield json.dumps(
-                {
-                    "type": "error",
-                    "message": (
-                        f"Coder Agent failed: "
-                        f"{_readable_error(error)}"
-                    ),
-                }
-            ) + "\n"
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="application/x-ndjson",
-    )
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
 
-@router.post("/deployment/run", response_model=AgentRunResponse)
-async def run_deployment_agent(feature_id: str, request: AgentRunRequest):
+    # ----------------------------------------------------
+    # Security Agent
+    # ----------------------------------------------------
+@router.post("/security/run", response_model=AgentRunResponse)
+async def run_security_agent(feature_id: str, request: SecurityAgentRunRequest):
     """
     Run the Security Agent -- scans the Coder Agent's generated workspace (pattern/secret/
     dependency layers plus an LLM review pass) and saves a versioned Critical/Moderate/Warning
@@ -1559,7 +1336,6 @@ async def run_deployment_agent(feature_id: str, request: AgentRunRequest):
     triggers a real Coder Agent revise() and then automatically re-runs this same route once that
     revision completes), never used to block pipeline advancement itself.
     """
-
     _validate_feature(feature_id)
     stage_event_service.record(feature_id, AgentName.SECURITY, "run", request.human_comment)
 
@@ -1589,7 +1365,7 @@ async def run_deployment_agent(feature_id: str, request: AgentRunRequest):
 
 
 @router.post("/security/scan-with-model", response_model=AgentRunResponse)
-async def run_security_agent_deep_scan(feature_id: str, request: SecurityAgentRunRequest):
+async def run_security_agent_deep_scan(feature_id: str, request: SecurityAgentRunRequest, current_user: dict = Depends(get_current_user)):
     """
     Run the Security Agent's AI-model deep-code-read scan -- a separate trigger from
     /security/run: the same 3 deterministic layers, plus a genuinely new layer that shows the
@@ -1598,7 +1374,7 @@ async def run_security_agent_deep_scan(feature_id: str, request: SecurityAgentRu
     version of the same security_report artifact (scan_type: "ai_model_deep_scan"), so it flows
     through the exact same approval/version-history/chat machinery as a standard scan.
     """
-    _validate_feature(feature_id)
+    _validate_feature(feature_id, current_user)
     stage_event_service.record(feature_id, AgentName.SECURITY, "run", request.human_comment)
 
     try:
@@ -1627,7 +1403,7 @@ async def run_security_agent_deep_scan(feature_id: str, request: SecurityAgentRu
 
 
 @router.post("/security/scan-with-model/stream")
-async def run_security_agent_deep_scan_stream(feature_id: str, request: SecurityAgentRunRequest):
+async def run_security_agent_deep_scan_stream(feature_id: str, request: SecurityAgentRunRequest, current_user: dict = Depends(get_current_user)):
     """
     Streaming variant of /security/scan-with-model -- real, live progress (a percentage a human can
     watch, computed client-side from current/total) instead of one blocking response, plus a real
@@ -1641,7 +1417,7 @@ async def run_security_agent_deep_scan_stream(feature_id: str, request: Security
         {"type": "error", "message": "..."}
         {"type": "done", "artifact_ids": [...], "message": "...", "gate_decision": "...", "findings_count": N}
     """
-    _validate_feature(feature_id)
+    _validate_feature(feature_id, current_user)
     stage_event_service.record(feature_id, AgentName.SECURITY, "run", request.human_comment)
 
     async def event_stream():
@@ -1659,25 +1435,25 @@ async def run_security_agent_deep_scan_stream(feature_id: str, request: Security
 
 
 @router.get("/security/chat", response_model=SecurityChatHistoryResponse)
-def get_security_chat_history(feature_id: str):
+def get_security_chat_history(feature_id: str, current_user: dict = Depends(get_current_user)):
     """Real, persisted chat history (store.security_conversations) -- reloading the page must not
     lose the conversation. Mirrors get_qa_chat_history exactly. See
     security_agent.agent.SecurityAgent.chat_stream for how turns are appended."""
-    _validate_feature(feature_id)
+    _validate_feature(feature_id, current_user)
     document = store.security_conversations.get(feature_id)
     turns = document.get("turns", []) if document else []
     return SecurityChatHistoryResponse(turns=[SecurityChatTurn(**turn) for turn in turns])
 
 
 @router.post("/security/chat/stream")
-async def security_chat_stream(feature_id: str, request: SecurityChatMessageRequest):
+async def security_chat_stream(feature_id: str, request: SecurityChatMessageRequest, current_user: dict = Depends(get_current_user)):
     """
     Real, token-by-token streaming Q&A about the feature's latest security report -- deliberately
     pure discussion, no code-editing side effects (see security_agent/prompt.py's
     SECURITY_CHAT_SYSTEM_PROMPT). Mirrors qa_chat_stream exactly: same NDJSON event shape as every
     other streaming route in this file.
     """
-    _validate_feature(feature_id)
+    _validate_feature(feature_id, current_user)
 
     async def event_stream():
         try:
@@ -1689,11 +1465,32 @@ async def security_chat_stream(feature_id: str, request: SecurityChatMessageRequ
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
 
+@router.post("/security/chat/turns/{turn_index}/edit/stream")
+async def edit_security_chat_turn_stream(feature_id: str, turn_index: int, request: SecurityChatMessageRequest):
+    """
+    Direct user request: edit a past chat message and regenerate from that point forward --
+    mirrors /requirement/conversation/turns/{turn_index}/edit/stream's shape, same NDJSON event
+    shape as /security/chat/stream itself ({"type": "token"|"done"|"error", ...}).
+    """
+    _validate_feature(feature_id)
+
+    async def event_stream():
+        try:
+            async for event in security_agent.edit_chat_turn_stream(
+                feature_id=feature_id, turn_index=turn_index, new_message=request.message
+            ):
+                yield json.dumps(event) + "\n"
+        except Exception as error:
+            yield json.dumps({"type": "error", "message": f"Failed to edit security chat turn: {_readable_error(error)}"}) + "\n"
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
+
+
     # ----------------------------------------------------
     # QA Agent
     # ----------------------------------------------------
 @router.post("/qa/run", response_model=AgentRunResponse)
-async def run_qa_agent(feature_id: str, request: QAAgentRunRequest):
+async def run_qa_agent(feature_id: str, request: QAAgentRunRequest, current_user: dict = Depends(get_current_user)):
     """
     Run the QA Agent -- writes real Unit/Integration/Regression tests for the Coder Agent's
     generated feature, executes them for real (Jest, sandboxed), and saves a versioned report
@@ -1703,7 +1500,7 @@ async def run_qa_agent(feature_id: str, request: QAAgentRunRequest):
     Failing Tests to Coder Agent" action, which triggers a real Coder Agent revise() and then
     automatically re-runs this same route once that revision completes.
     """
-    _validate_feature(feature_id)
+    _validate_feature(feature_id, current_user)
     stage_event_service.record(feature_id, AgentName.QA, "run", request.human_comment)
 
     try:
@@ -1732,7 +1529,7 @@ async def run_qa_agent(feature_id: str, request: QAAgentRunRequest):
 
 
 @router.post("/qa/run/stream")
-async def run_qa_agent_stream(feature_id: str, request: QAAgentRunRequest):
+async def run_qa_agent_stream(feature_id: str, request: QAAgentRunRequest, current_user: dict = Depends(get_current_user)):
     """
     Streaming variant of /qa/run -- direct user request, mirrors Architecture Agent's own
     run/run_stream split (the closer template than Security's deep-scan split, since this is one
@@ -1748,7 +1545,7 @@ async def run_qa_agent_stream(feature_id: str, request: QAAgentRunRequest):
         {"type": "done", "artifact_ids": [...], "message": "...", "tests_generated": N, "tests_passed": N, "tests_failed": N}
         {"type": "error", "message": "..."}
     """
-    _validate_feature(feature_id)
+    _validate_feature(feature_id, current_user)
     stage_event_service.record(feature_id, AgentName.QA, "run", request.human_comment)
 
     async def event_stream():
@@ -1764,24 +1561,24 @@ async def run_qa_agent_stream(feature_id: str, request: QAAgentRunRequest):
 
 
 @router.get("/qa/chat", response_model=QAChatHistoryResponse)
-def get_qa_chat_history(feature_id: str):
+def get_qa_chat_history(feature_id: str, current_user: dict = Depends(get_current_user)):
     """Real, persisted chat history (store.qa_conversations) -- reloading the page must not
     lose the conversation. See qa_agent.agent.QAAgent.chat_stream for how turns are appended."""
-    _validate_feature(feature_id)
+    _validate_feature(feature_id, current_user)
     document = store.qa_conversations.get(feature_id)
     turns = document.get("turns", []) if document else []
     return QAChatHistoryResponse(turns=[QAChatTurn(**turn) for turn in turns])
 
 
 @router.post("/qa/chat/stream")
-async def qa_chat_stream(feature_id: str, request: QAChatMessageRequest):
+async def qa_chat_stream(feature_id: str, request: QAChatMessageRequest, current_user: dict = Depends(get_current_user)):
     """
     Real, token-by-token streaming Q&A about the feature's latest QA report -- deliberately pure
     discussion, no code-editing side effects (see qa_agent/prompt.py's QA_CHAT_SYSTEM_PROMPT).
     Same NDJSON event shape as every other streaming route in this file: {"type":"token","text":
     ...} then {"type":"done","message":...}, or {"type":"error","message":...}.
     """
-    _validate_feature(feature_id)
+    _validate_feature(feature_id, current_user)
 
     async def event_stream():
         try:
@@ -1794,12 +1591,12 @@ async def qa_chat_stream(feature_id: str, request: QAChatMessageRequest):
 
 
 @router.post("/qa/chat/turns/{turn_index}/edit/stream")
-async def edit_qa_chat_turn_stream(feature_id: str, turn_index: int, request: QAChatMessageRequest):
+async def edit_qa_chat_turn_stream(feature_id: str, turn_index: int, request: QAChatMessageRequest, current_user: dict = Depends(get_current_user)):
     """
     Direct user request: edit a past chat message and regenerate from that point forward --
     mirrors edit_security_chat_turn_stream exactly, same NDJSON event shape as /qa/chat/stream.
     """
-    _validate_feature(feature_id)
+    _validate_feature(feature_id, current_user)
 
     async def event_stream():
         try:

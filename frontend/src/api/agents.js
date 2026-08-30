@@ -1,5 +1,6 @@
 import axios from "axios";
 import { apiClient, API_BASE_URL } from "./client";
+import { getToken } from "../lib/authToken";
 
 const base = (featureId) => `/features/${featureId}/agents`;
 
@@ -16,10 +17,14 @@ const base = (featureId) => `/features/${featureId}/agents`;
 // tokens too, not just from the frontend showing them.
 async function streamNdjsonPost(url, body, onEvent, signal) {
   let response;
+  const token = getToken();
   try {
     response = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
       body: JSON.stringify(body),
       signal,
     });

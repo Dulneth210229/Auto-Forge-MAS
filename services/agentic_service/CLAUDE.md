@@ -8179,6 +8179,187 @@ milestone — that file is scratch, **this file is the durable one**.
       read-only Python calls against the real SRS or real, but non-mutating, browser navigation) --
       no cleanup needed. Isolated backend/frontend processes stopped afterward.
 
+95. **Authentication, authorization, project ownership/migration, profile management, and a
+    full dashboard redesign (collapsible/resizable sidebar).** The largest single feature this
+    session -- the whole app was previously fully open/single-tenant (confirmed via direct
+    investigation before writing any code: zero `Depends()` anywhere, no JWT/session/cookie
+    handling, `CORS allow_origins=["*"]`, every project stamped with the literal hardcoded
+    string `"created_by": "human_user"`, no user-identity concept on either side at all).
+    - **Backend auth foundation**: new `app/schemas/user_schema.py`, `app/services/auth_service.py`
+      (bcrypt directly -- already installed, avoids passlib's bcrypt>=4.1 friction -- plus PyJWT,
+      newly added), `app/api/deps.py`'s `get_current_user` (the first `Depends()` use in this
+      codebase), `app/api/routes/auth.py` (register/login/me + Google/GitHub OAuth via the
+      already-installed `requests-oauthlib`/`oauthlib`, zero new OAuth dependency), and
+      `app/api/routes/profile.py`. New `store.users` Mongo collection
+      (`in_memory_store.py`, unique indexes on `user_id`/`email`), new `SECRET_KEY`/
+      `JWT_ALGORITHM`/`JWT_EXPIRE_MINUTES`/`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`/
+      `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET`/`OAUTH_REDIRECT_BASE_URL`/`BACKEND_BASE_URL` env
+      vars (`config.py`). OAuth `state` is a short-lived self-signed JWT (no server-side session
+      store exists) -- real CSRF protection with zero new infra. Decided with the user via
+      AskUserQuestion: JWT in `localStorage`, sent as `Authorization: Bearer` (not a cookie,
+      since the existing `allow_origins=["*"]` + `allow_credentials=True` combo would need a
+      real origin allowlist + CSRF protection to use cookies safely).
+    - **Project ownership across the full ~86-endpoint route surface**: `projects.py`/
+      `features.py` each got a small `_get_owned_project`/`_get_owned_feature` helper (404, not
+      403, for someone else's resource -- a user can't distinguish "doesn't exist" from "exists
+      but isn't mine" by probing IDs). `agents.py`'s single shared `_validate_feature` (already
+      called by all 40 agent routes before this work) is the highest-leverage choke point --
+      changing it once protects all 40. `artifacts.py`/`approvals.py`/`knowledge.py`/
+      `preview.py`/`database_connection.py` each got the same pattern at their own handful of
+      call sites. An ownerless (pre-migration legacy) project is deliberately still reachable by
+      any signed-in user, not silently locked out. `llm_settings.py` requires sign-in but isn't
+      ownership-scoped (a genuinely global/shared singleton config, not owned by any one user).
+    - **A real, easy-to-miss gap caught and fixed**: a plain `<img src>`/`<a href>` (artifact
+      preview/download/PDF/code-zip URLs) can't attach a custom `Authorization` header at all --
+      `get_current_user` accepts the token via `?token=` query param as a fallback specifically
+      for those, while every real fetch/axios call keeps using the header
+      (`frontend/src/api/client.js`'s `withToken()` helper appends it only for the URL-building
+      functions that feed `<img>`/`<a>`, never for `apiClient` calls).
+    - **Migration**: `scripts/migrate_existing_projects_to_user.py` -- creates/reuses
+      `dulneth.sa@gmail.com` via the exact same `auth_service.create_user` path real sign-up
+      uses, then one idempotent `update_many({"user_id": {"$exists": False}}, ...)` against the
+      live shared Atlas cluster (not just this machine's local disk -- the real database has more
+      projects than any one machine's checked-out `outputs/`). Run for real: associated 44
+      already-owned + 1 newly-associated = all 45 real projects in the shared database, verified
+      directly against the account afterward.
+    - **Frontend**: new `src/contexts/AuthContext.jsx` (the first genuinely app-global context in
+      this codebase -- every existing context, e.g. `WorkspaceSelectionContext`, is mounted
+      page-scoped; mirrors its create-context/memoized-provider/`useX()`-throws-outside shape,
+      but holds the signed-in user via React Query (`["me"]`) rather than a second `useState`, so
+      login/register/logout/OAuth-adopt all write into one single source of truth instead of two
+      copies that could drift). New `ProtectedRoute.jsx`, `OAuthCallbackHandler.jsx` (reads the
+      token from a URL *fragment*, never a query string, so it's never sent to or logged by any
+      server in the redirect chain; clears it from history immediately after adopting it),
+      `LoginPage.jsx`/`RegisterPage.jsx`/`ProfilePage.jsx`. Dashboard shell: `AppShell.jsx`
+      rebuilt on `react-resizable-panels` (already a dependency, previously used only by
+      `ResizableWorkspace.jsx`) for a genuinely collapsible + resizable `Sidebar.jsx` (hamburger
+      toggle, icon-rail collapse with tooltips, `usePanelRef()`/`isCollapsed()`/`collapse()`/
+      `expand()` -- all confirmed real exports in the installed version before use) -- one
+      mechanism for both collapse and resize instead of two, sizes persisted via
+      `useDefaultLayout`'s existing localStorage mechanism, same as the workspace panel already
+      does. Every hardcoded `"human_user"` call site (`CreateProjectForm.jsx`, `agents.js`'s
+      `confirmed_by` default, 6 chat components, `useRequirementConversationFlow.js`) now uses
+      `user?.name || user?.email || "human_user"` -- the literal string survives only as the
+      final fallback if `user` is somehow null.
+    - **Regression-risk mitigation for the ~1155 pre-existing tests, all written against a fully
+      open backend**: new `tests/conftest.py` patches `TestClient.__init__` globally (before any
+      test module imports, since pytest always imports `conftest.py` first) so every
+      `TestClient(app)` in the whole suite automatically carries a real, fixed test-fixture
+      user's `Authorization: Bearer` header by default -- zero changes needed to any of the
+      ~1155 existing test files individually. A test that needs to exercise real unauthenticated
+      behavior overrides it per-call (`headers={"Authorization": ""}`).
+    - New `tests/test_auth_routes.py` (10 tests: register/duplicate-email/mismatched-passwords,
+      login success/wrong-password/unknown-email-same-message-as-wrong-password [prevents account
+      enumeration], me/garbage-token/expired-token) and `tests/test_project_ownership.py` (7
+      tests: owner sees their own project, a different real user gets 404 on
+      get/list/delete, unauthenticated gets 401, an ownerless legacy project stays reachable by
+      any signed-in user, a feature inside someone else's project -- including through an agent
+      route -- is also invisible).
+    - Full backend suite: **1153 passed** directly, plus the same 19 Docker-dependent tests
+      (`test_coder_tools.py`/`test_coder_verify.py`/`test_render_checker.py`) that failed only
+      because Docker Desktop wasn't running at the time (the exact same environmental pattern
+      already documented multiple times elsewhere in this file) -- re-run in isolation with
+      Docker up: **67 passed**, 0 real failures anywhere. `npm run build` clean.
+    - **Real, live verification, no mocks** (isolated backend :8090 / frontend :5199): confirmed
+      visiting `/` while signed out redirects to `/login`; registered a brand-new real account
+      through the actual UI and confirmed it starts with zero projects and cannot see any other
+      account's data; signed in as the real, migrated `dulneth.sa@gmail.com` / `Ds#210229` and
+      confirmed all 45 real projects are visible; updated the profile name through the real form,
+      reloaded, and confirmed it persisted server-side (not just local state); collapsed and
+      re-expanded the sidebar and confirmed the main panel reflows with no horizontal overflow at
+      a 1024px laptop-width viewport; clicked "Continue with Google" with no `GOOGLE_CLIENT_ID`
+      configured and confirmed a clean, readable 503 error page instead of a crash. Google/GitHub
+      OAuth's real provider round-trip could not be verified end-to-end in this environment (needs
+      real client id/secret values, which this session cannot provision) -- flagged as a required
+      manual setup step, not something left silently unverified.
+
+96. **QA Agent: genuine pass/fail status instead of a "skipped" fallback triggered by LLM
+    title-wording drift, a combined feature-code + QA-report zip download, and a chat-composer
+    contrast regression fix.** Three direct user requests. Investigated via 2 parallel Explore
+    agents (QA Agent's real test generation/execution/status pipeline; existing zip-download
+    mechanisms) plus a direct read confirming the contrast regression's exact cause -- this
+    session's own prior UI-polish pass (item G, chat-input contrast) bumped
+    `ChatComposerBox.jsx`'s light-mode background from `bg-gray-50` to `bg-gray-100` to fix ITS
+    OWN contrast against the white panel, but `PillDropdown.jsx`'s Agent/Model pill trigger
+    (`AgentSelect`/`ModelSelect`) was already `bg-gray-100` with no border, making both elements
+    the identical color with zero visual boundary the moment that other fix landed.
+    - **Root cause, confirmed by direct investigation**: QA test generation and execution are
+      both genuinely real (`generator.py` real LLM calls; `executor.py` real sandboxed `npx jest
+      --json`) -- the "everything shows skipped" symptom is a matching/reliability gap in
+      `QAAgent._merge_results` (`agent.py`), not a "doesn't actually run tests" gap. The exact
+      `(test_file, name)` match discards a real Jest result whenever the LLM's actual `test(...)`
+      title string doesn't character-for-character match the `name` it separately declared in its
+      own metadata JSON -- two independent strings the same LLM call must keep in sync.
+    - **Fix, `_merge_results`**: a new two-tier match. Tier 1 (unchanged): exact `(test_file,
+      name)`. Tier 2 (new): for a planned case still unmatched, if its `test_file` has real Jest
+      results themselves unclaimed by any exact match, pair it positionally (encounter order)
+      with one of those leftovers -- `test_file` is deterministically assigned by
+      `_write_test_file` (never LLM-authored) and therefore reliable; only `name` drifts. Tier 3
+      (unchanged): a case still unmatched after both tiers (genuinely fewer real results than
+      planned -- e.g. the file crashed) keeps the honest "skipped" fallback with its explanatory
+      note. New tests in `tests/test_qa_agent_matching.py`: a same-file name-mismatch case now
+      matches positionally instead of falling to skipped; a genuine execution gap (2 planned, 1
+      real result) still correctly leaves the excess case skipped. All 4 pre-existing tests in
+      that file pass unmodified.
+    - **Combined zip download**: new `workspace_service.export_feature_code_with_extra_files_zip
+      (project_id, feature_id, extra_files: list[tuple[str, bytes]])` -- mirrors
+      `export_feature_code_zip`'s exact branch-resolution + git-tree-traversal logic, then
+      `archive.writestr(...)`s each extra `(path, bytes)` pair under a `_QA_REPORT/` prefix
+      (avoids any collision with real generated app files). Kept as a new, separate function so
+      the Coder stage's existing plain code-only download is unaffected. New route `GET
+      /features/{feature_id}/code-with-qa-report/download` (`features.py`, same
+      `_get_owned_feature` ownership pattern as `download_feature_code` right above it) resolves
+      the feature's latest approved QA_REPORT artifact via the existing
+      `artifact_service.get_selected_or_latest_approved_artifact` (both JSON and Markdown
+      formats), reads both already-saved files, and bundles them in. New
+      `featureCodeWithQaReportDownloadUrl(featureId)` in `client.js` (same `withToken` pattern as
+      the 5 existing download-URL builders); new "Download Project + QA Report (.zip)" button in
+      `ResultTab.jsx`'s `stage === "qa"` branch, alongside the existing "Download QA Report" PDF
+      link. New `tests/test_feature_code_with_qa_report_download.py` (4 -- real git-repo fixture
+      via `workspace_service` mirroring `test_workspace_undo_merge.py`'s convention: the zip
+      function contains both real code and the extra files; the route bundles a real seeded
+      QA_REPORT artifact pair; the route gracefully omits the `_QA_REPORT/` prefix entirely when
+      no QA report exists yet; an unknown feature_id 404s).
+    - **Chat contrast fix**: `PillDropdown.jsx`'s trigger button light-mode styling changed from
+      `bg-gray-100` (no border) to `bg-white border border-gray-300` -- visibly distinct from the
+      composer's `bg-gray-100` surface. Dark mode (`dark:bg-white/10`) was untouched, since only
+      light mode was reported broken.
+    - Full backend suite: **1111 passed** (excluding the 67 pre-existing Docker-dependent tests
+      in `test_coder_tools.py`/`test_coder_verify.py`/`test_render_checker.py`, unrelated to this
+      change). `npm run build` clean.
+    - **A real, separate, pre-existing environmental bug found and fixed along the way while
+      live-verifying against the real Finodil "Login and Signup" feature** (`feature_917b691e`):
+      `ensure_jest_setup`'s "only `npm install` the first time `jest` isn't already declared in
+      `package.json`" gate had left this real workspace's `node_modules` permanently missing
+      `jest`/`@babel/*` despite them being correctly declared (from an earlier real QA run this
+      session) -- every subsequent real QA run's `npx jest` call fell back to fetching a
+      mismatched fresh `jest@30.5.0` from the npm registry into `/root/.npm/_npx/...`, which then
+      failed to resolve `@babel/preset-env` from that isolated location, crashing the whole test
+      suite with **zero** real results (confirmed directly via a raw `npx jest` run inside the
+      real sandbox: `Cannot find module '@babel/preset-env'`, 0 results, empty stderr surfaced to
+      the report). This is exactly the class of case tier 3 of the `_merge_results` fix above is
+      *supposed* to handle honestly -- confirmed it did: the report correctly showed "skipped"
+      with the real explanatory note, never a false pass/fail. Not fixed at the root (out of this
+      item's own scope -- the gate itself would need a real "does node_modules actually have
+      these packages" check, not just a package.json presence check) but unblocked directly for
+      verification by running a real `npm install` in the sandbox, which is what let the
+      **actual, intended fix** get a genuine live demonstration.
+    - **Real, live verification, no mocks** (isolated backend :8090 / frontend :5199, same shared
+      MongoDB Atlas cluster, real Finodil `feature_917b691e`): downloaded the real combined zip
+      and confirmed it contains both real generated Next.js code (`app/api`, `lib/`, etc.) and
+      both `_QA_REPORT/qa_report.json`/`.md` files pulled from the feature's real latest QA
+      report. Confirmed via `getComputedStyle` (through a real Playwright screenshot) that the
+      "QA"/model pills now render `bg: rgb(255,255,255)` with a `border: rgb(212,212,212)`,
+      clearly distinct from the composer's `bg: rgb(245,245,245)`. Triggered a real QA run before
+      the `npm install` fix -- confirmed the report showed "0 passed, 0 failed, 1 skipped" with
+      the honest tier-3 note (Jest genuinely produced no results, the real environmental bug
+      above); after installing the real jest/babel deps in the sandbox, re-triggered the same
+      real QA run -- confirmed the report now reads **"All tests passed. 1 test(s) written -- 1
+      passed, 0 failed, 0 skipped"** with a green "Passed" badge, directly reproducing and fixing
+      the user's originally-reported symptom end-to-end. This real v5 (broken)/v6 (fixed) QA
+      report history is left in place on the real Finodil feature as genuine verification
+      evidence, matching this project's own established convention.
+
 ## Where to look
 
 - Full build spec (read this first, in order, before any new milestone): `instructions .md`

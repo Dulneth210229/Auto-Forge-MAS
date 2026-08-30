@@ -100,6 +100,31 @@ class Settings(BaseSettings):
     # Maximum size (bytes) accepted for a per-project domain knowledge document upload.
     DOMAIN_MAX_UPLOAD_BYTES: int = 20 * 1024 * 1024
 
+    # -----------------------------
+    # Authentication Settings
+    # -----------------------------
+
+    # Signs/verifies JWT access tokens. Must be overridden in .env for any real deployment --
+    # this placeholder is intentionally obvious so it's never mistaken for a real secret.
+    SECRET_KEY: str = "insecure-development-secret-change-me"
+    JWT_ALGORITHM: str = "HS256"
+    JWT_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
+
+    # OAuth (Google/GitHub) -- both None by default so the corresponding "Continue with X" flow
+    # can be cleanly disabled/hidden until real credentials are configured, rather than crashing.
+    GOOGLE_CLIENT_ID: str | None = None
+    GOOGLE_CLIENT_SECRET: str | None = None
+    GITHUB_CLIENT_ID: str | None = None
+    GITHUB_CLIENT_SECRET: str | None = None
+
+    # The frontend origin OAuth callbacks redirect back to after a successful provider login.
+    OAUTH_REDIRECT_BASE_URL: str = "http://localhost:5174"
+
+    # This backend's own externally-reachable base URL -- used to build the exact
+    # redirect_uri Google/GitHub send the user back to, which must match what's registered in
+    # each provider's OAuth app console byte-for-byte.
+    BACKEND_BASE_URL: str = "http://localhost:8000"
+
     model_config = SettingsConfigDict(
         env_file=str(ENV_FILE_PATH),
         env_file_encoding="utf-8"

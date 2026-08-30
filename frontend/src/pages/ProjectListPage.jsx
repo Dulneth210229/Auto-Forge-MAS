@@ -159,7 +159,7 @@ export default function ProjectListPage() {
   }, [projects, search, typeFilter, sortBy]);
 
   return (
-    <div className="h-full overflow-y-auto flex flex-col gap-6">
+    <div className="h-full overflow-y-auto pr-1.5 flex flex-col gap-6">
       {/* Overview section -- the "at a glance" dashboard summary. */}
       <section>
         <PageHeader

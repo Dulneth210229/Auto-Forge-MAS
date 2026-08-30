@@ -205,15 +205,45 @@ class QAAgent:
         return filename
 
     def _merge_results(self, test_cases: list[QaTestCase], results: list[dict]) -> list[dict]:
-        """Matches each planned QaTestCase to its real execution result by (test_file, name) --
-        the same pairing prompt.py's own testing-conventions section instructs the LLM to
-        preserve (every test_cases[].name must appear verbatim as the real test's title). A
-        planned case with no matching result (e.g. the file failed to even parse/load) is still
-        reported, marked "skipped" with an explicit note, rather than silently disappearing."""
+        """Matches each planned QaTestCase to its real execution result in two tiers.
+
+        Tier 1: exact (test_file, name) match -- the pairing prompt.py's own testing-conventions
+        section instructs the LLM to preserve (every test_cases[].name must appear verbatim as
+        the real test's title). Preferred whenever available.
+
+        Tier 2: for a planned case left unmatched after tier 1, if its test_file has real Jest
+        results that are themselves unclaimed by any exact match, pair it positionally (in
+        encounter order) with one of those leftover results. test_file is assigned
+        deterministically by _write_test_file (never LLM-authored) and is therefore reliable;
+        name is the only unreliable half of the match key, since it depends on the LLM writing
+        the identical string twice (once in its metadata JSON, once as the real Jest test title).
+        This compensates for minor title-wording drift without ever inventing a result that
+        doesn't exist.
+
+        A planned case still unmatched after both tiers (genuinely fewer real results than
+        planned in that file -- e.g. the file crashed partway through) is still reported, marked
+        "skipped" with an explicit note, rather than silently disappearing.
+        """
         results_by_key = {(r["test_file"], r["name"]): r for r in results}
+
+        claimed_result_ids: set[int] = set()
+        for tc in test_cases:
+            match = results_by_key.get((tc.test_file, tc.name))
+            if match is not None:
+                claimed_result_ids.add(id(match))
+
+        leftover_results_by_file: dict[str, list[dict]] = {}
+        for r in results:
+            if id(r) not in claimed_result_ids:
+                leftover_results_by_file.setdefault(r["test_file"], []).append(r)
+
         merged = []
         for tc in test_cases:
             match = results_by_key.get((tc.test_file, tc.name))
+            if match is None:
+                leftovers = leftover_results_by_file.get(tc.test_file)
+                if leftovers:
+                    match = leftovers.pop(0)
             merged.append({
                 "name": tc.name,
                 "category": tc.category,

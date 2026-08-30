@@ -19,13 +19,23 @@ import { useId } from "react";
 //    defines, silently discarding any inline `transform: scale(...)` set on the same element (a
 //    real bug caught live: the loader rendered as an empty box, since the un-scaled 180px content
 //    only rarely swept through the 56px clipped viewport). Confirmed fixed by live verification.
+// 4. No `overflow: hidden` on the outer box -- a second real, reported bug: each 50px "liquid"
+//    blob is deliberately centered ON the 180px content box's own edges (top/left: 0%/100%),
+//    so by design roughly HALF of every blob overshoots beyond that box at any given moment --
+//    that's what makes the shapes visually merge into one gooey blob via the SVG filter below,
+//    rather than reading as 4 separate circles. An outer wrapper sized exactly to the loader's
+//    own footprint with `overflow: hidden` clips off that entire intentional overshoot, which is
+//    exactly what a real, live measurement confirmed: up to ~46% of a blob's own diameter cut off
+//    at several points in every rotation. Left as `overflow: visible` (the default) -- the real
+//    overshoot at this component's actual sizes (max ~5px at size=40) stays well within the
+//    gap-2/gap-3 spacing every real call site already places next to it.
 export default function LightHorseLoader({ size = 56 }) {
   const rawId = useId();
   const filterId = `light-horse-gooey-${rawId.replace(/[^a-zA-Z0-9]/g, "")}`;
   const scale = size / 180;
 
   return (
-    <div style={{ width: size, height: size, position: "relative", overflow: "hidden" }}>
+    <div style={{ width: size, height: size, position: "relative" }}>
       <div style={{ width: 180, height: 180, transform: `scale(${scale})`, transformOrigin: "top left" }}>
         <div className="light-horse-loading-content" style={{ filter: `url(#${filterId})` }}>
           <div className="light-horse-liquid" />

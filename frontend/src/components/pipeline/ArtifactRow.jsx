@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useAuth } from "../../contexts/AuthContext";
 import StatusBadge from "../common/StatusBadge";
 import ErrorBanner from "../common/ErrorBanner";
 import ConfirmDialog from "../common/ConfirmDialog";
@@ -50,10 +51,14 @@ export default function ArtifactRow({
   const approval = useApprovalMutation(featureId);
   const deleteArtifact = useDeleteArtifact(featureId);
   const revokeApproval = useRevokeApprovalMutation(featureId);
+  const { user } = useAuth();
 
   async function submitRevision(event) {
     event.preventDefault();
-    await reviseMutation.mutateAsync({ revision_comment: revisionComment.trim(), revised_by: "human_user" });
+    await reviseMutation.mutateAsync({
+      revision_comment: revisionComment.trim(),
+      revised_by: user?.name || user?.email || "human_user",
+    });
     setShowRevise(false);
     setRevisionComment("");
   }

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useAuth } from "../../contexts/AuthContext";
 import { useArchitectureAgentFlowContext } from "../workspace/ArchitectureAgentFlowContext";
 import { listGatingArtifactVersions } from "../../lib/deriveStageStatus";
 import { SUGGESTION_CHIPS } from "../../lib/suggestionChips";
@@ -54,6 +55,7 @@ export default function ArchitectureAgentChat({
   onViewArtifact,
   isLoadingTimeline,
 }) {
+  const { user } = useAuth();
   const {
     runStream,
     handleRunStream,
@@ -103,7 +105,7 @@ export default function ArchitectureAgentChat({
     setPendingHumanReply(trimmed);
 
     const call = hasOutput
-      ? handleReviseStream({ revision_comment: trimmed, revised_by: "human_user" })
+      ? handleReviseStream({ revision_comment: trimmed, revised_by: user?.name || user?.email || "human_user" })
       : handleRunStream({ use_enhanced_srs_if_available: true, architecture_notes: null, human_comment: trimmed });
 
     call.finally(() => setPendingHumanReply(null));

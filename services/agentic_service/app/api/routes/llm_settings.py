@@ -10,8 +10,9 @@ This is important before implementing agents because all agents
 will call the same LLM provider service.
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from app.api.deps import get_current_user
 import httpx
 
 from app.schemas.llm_schema import (
@@ -31,7 +32,7 @@ router = APIRouter(prefix="/settings/llm", tags=["LLM Settings"])
 
 
 @router.get("", response_model=LLMSettings)
-def get_llm_settings():
+def get_llm_settings(current_user: dict = Depends(get_current_user)):
     """
     Return current LLM settings.
 
@@ -41,7 +42,7 @@ def get_llm_settings():
 
 
 @router.put("", response_model=LLMSettings)
-def update_llm_settings(request: LLMSettingsUpdateRequest):
+def update_llm_settings(request: LLMSettingsUpdateRequest, current_user: dict = Depends(get_current_user)):
     """
     Update LLM settings.
 
@@ -69,7 +70,7 @@ def update_llm_settings(request: LLMSettingsUpdateRequest):
 
 
 @router.get("/models", response_model=OllamaModelsResponse)
-async def list_ollama_models():
+async def list_ollama_models(current_user: dict = Depends(get_current_user)):
     """
     List the models currently available on the configured Ollama server (proxies its
     GET /api/tags) -- powers the chat model-picker so it can offer a real, current list instead
@@ -88,7 +89,7 @@ async def list_ollama_models():
 
 
 @router.get("/anthropic/models", response_model=AnthropicModelsResponse)
-async def list_anthropic_models():
+async def list_anthropic_models(current_user: dict = Depends(get_current_user)):
     """
     List the real, current model IDs available on the configured Anthropic account (proxies its
     own GET /v1/models) -- the Claude-side counterpart to /models above, powering the same chat
@@ -102,7 +103,7 @@ async def list_anthropic_models():
 
 
 @router.get("/ollama/status", response_model=OllamaStatusResponse)
-async def get_ollama_status():
+async def get_ollama_status(current_user: dict = Depends(get_current_user)):
     """
     Live status of the configured Ollama server -- reachability, locally available models, and
     which models are actually loaded into memory right now (with their VRAM residency), as
@@ -114,7 +115,7 @@ async def get_ollama_status():
 
 
 @router.get("/agents", response_model=list[AgentLLMSettingsResponse])
-def list_agent_llm_settings():
+def list_agent_llm_settings(current_user: dict = Depends(get_current_user)):
     """
     Return every configurable agent's effective LLM settings (global default, or a per-agent
     override where one has been set) -- lets the UI show/configure each agent independently,
@@ -124,7 +125,7 @@ def list_agent_llm_settings():
 
 
 @router.put("/agents/{agent_name}", response_model=AgentLLMSettingsResponse)
-def update_agent_llm_settings(agent_name: str, request: AgentLLMOverrideUpdateRequest):
+def update_agent_llm_settings(agent_name: str, request: AgentLLMOverrideUpdateRequest, current_user: dict = Depends(get_current_user)):
     """
     Set (merge into) one agent's LLM override. Only fields provided are changed.
     """
@@ -135,7 +136,7 @@ def update_agent_llm_settings(agent_name: str, request: AgentLLMOverrideUpdateRe
 
 
 @router.delete("/agents/{agent_name}", response_model=AgentLLMSettingsResponse)
-def clear_agent_llm_settings(agent_name: str):
+def clear_agent_llm_settings(agent_name: str, current_user: dict = Depends(get_current_user)):
     """
     Remove an agent's override entirely, reverting it to the global default.
     """
@@ -146,7 +147,7 @@ def clear_agent_llm_settings(agent_name: str):
 
 
 @router.post("/test", response_model=LLMGenerateResponse)
-async def test_llm_provider(request: LLMGenerateRequest):
+async def test_llm_provider(request: LLMGenerateRequest, current_user: dict = Depends(get_current_user)):
     """
     Test the currently selected LLM provider.
 
@@ -176,7 +177,7 @@ async def test_llm_provider(request: LLMGenerateRequest):
 
 
 @router.post("/agents/{agent_name}/test", response_model=LLMGenerateResponse)
-async def test_agent_llm_provider(agent_name: str, request: LLMGenerateRequest):
+async def test_agent_llm_provider(agent_name: str, request: LLMGenerateRequest, current_user: dict = Depends(get_current_user)):
     """
     Test one agent's effective LLM settings (its override if it has one, otherwise the global
     default) -- distinct from /test, which always tests the global default regardless of any

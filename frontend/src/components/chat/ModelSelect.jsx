@@ -29,7 +29,7 @@ function splitCompositeModelValue(value) {
   return { provider: value.slice(0, separatorIndex), model: value.slice(separatorIndex + 1) };
 }
 
-export default function ModelSelect({ agentStage }) {
+export default function ModelSelect({ agentStage, fillWidth }) {
   const agentName = `${agentStage}_agent`;
 
   const { data: ollamaModels, isLoading: ollamaLoading, error: ollamaError } = useOllamaModels();
@@ -45,7 +45,9 @@ export default function ModelSelect({ agentStage }) {
   if (ollamaError && anthropicError) {
     return (
       <span
-        className="text-xs text-gray-400 dark:text-gray-500 italic px-2 truncate max-w-[140px]"
+        className={`text-xs text-gray-400 dark:text-gray-500 italic px-2 truncate min-w-0 block ${
+          fillWidth ? "w-full" : "max-w-[140px]"
+        }`}
         title="Could not load model lists from Ollama or Anthropic"
       >
         {currentSetting?.model || "model unavailable"}
@@ -69,13 +71,14 @@ export default function ModelSelect({ agentStage }) {
   }
 
   return (
-    <div className="relative">
+    <div className={`relative ${fillWidth ? "min-w-0" : ""}`}>
       <PillDropdown
         value={currentValue}
         options={options}
         onChange={handleChange}
         disabled={ollamaLoading || anthropicLoading || updateOverride.isPending}
         title={`Sets ${agentName}'s provider/model from now on (not just this one message)`}
+        fillWidth={fillWidth}
       />
       {/* Real, confirmed bug fixed here: a rejected override (e.g. an agent not yet in
           OVERRIDABLE_AGENTS) used to fail completely silently -- the pill's own selection would

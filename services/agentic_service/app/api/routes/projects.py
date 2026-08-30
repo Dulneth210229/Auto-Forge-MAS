@@ -16,10 +16,11 @@ import stat
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
 from git import Repo
 from pydantic import ValidationError
 
+from app.api.deps import get_current_user
 from app.core.config import settings
 from app.schemas.project_schema import ProjectCreateRequest, ProjectResponse, ProjectUpdateRequest
 from app.services.in_memory_store import store
@@ -44,10 +45,53 @@ def _remove_readonly(func, path, _exc_info):
 router = APIRouter(prefix="/projects", tags=["Projects"])
 
 
-@router.post("", response_model=ProjectResponse)
-def create_project(request: ProjectCreateRequest):
+def _normalize_project_document(project: dict) -> dict:
     """
-    Create a new project.
+    Fill sensible defaults for any field ProjectResponse requires but a real, pre-existing
+    project document is missing. A real, confirmed gap found live: many projects in the shared
+    database were never fully populated (missing project_type/target_stack/created_by/
+    created_at/updated_at), and list_projects' own pre-existing validation-skip behavior was
+    silently hiding every one of them -- 42 of 45 real migrated projects, in one observed case.
+    Filling defaults here (instead of loosening ProjectResponse's own required fields) keeps the
+    schema strict for anything created going forward while still surfacing legacy data instead
+    of silently dropping it.
+    """
+    now = datetime.utcnow()
+    return {
+        "project_type": "General",
+        "target_stack": "Next.js",
+        "created_by": "human_user",
+        "created_at": now,
+        "updated_at": now,
+        **project,
+    }
+
+
+def _get_owned_project(project_id: str, current_user: dict):
+    """
+    Look up a project and verify the signed-in user owns it -- 404 (not 403) when it doesn't
+    belong to them, so a user can't distinguish "doesn't exist" from "exists but isn't mine" by
+    probing IDs.
+
+    A project with no user_id at all (pre-migration legacy data -- see
+    scripts/migrate_existing_projects_to_user.py) is treated as accessible to any signed-in
+    user rather than locked out entirely, so existing projects don't vanish for everyone the
+    moment auth ships and before that script has run. This never grants access to a project
+    that DOES have a real owner who isn't the caller.
+    """
+    project = store.projects.get(project_id)
+    owner_id = project.get("user_id") if project else None
+
+    if not project or (owner_id is not None and owner_id != current_user["user_id"]):
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    return project
+
+
+@router.post("", response_model=ProjectResponse)
+def create_project(request: ProjectCreateRequest, current_user: dict = Depends(get_current_user)):
+    """
+    Create a new project, owned by the signed-in user.
 
     This is the first step before creating features.
     """
@@ -60,6 +104,7 @@ def create_project(request: ProjectCreateRequest):
         "project_type": request.project_type,
         "target_stack": request.target_stack,
         "created_by": request.created_by,
+        "user_id": current_user["user_id"],
         "created_at": now,
         "updated_at": now,
     }
@@ -70,9 +115,12 @@ def create_project(request: ProjectCreateRequest):
 
 
 @router.get("", response_model=list[ProjectResponse])
-def list_projects():
+def list_projects(current_user: dict = Depends(get_current_user)):
     """
-    Return all created projects.
+    Return the signed-in user's own projects, plus any ownerless legacy project (see
+    _get_owned_project's own docstring -- pre-migration data, not yet stamped with a real
+    user_id) so nothing silently disappears before scripts/migrate_existing_projects_to_user.py
+    has run.
 
     Skips (and logs a warning for) any individual record that fails to validate -- a
     malformed/legacy project document should not break this list for every other, valid
@@ -80,9 +128,10 @@ def list_projects():
     """
     results = []
 
-    for project in store.projects.values():
+    query = {"$or": [{"user_id": current_user["user_id"]}, {"user_id": {"$exists": False}}, {"user_id": None}]}
+    for project in store.projects.collection.find(query):
         try:
-            results.append(ProjectResponse(**project))
+            results.append(ProjectResponse(**_normalize_project_document(project)))
         except ValidationError as error:
             logger.warning("Skipping unparseable project %s: %s", project.get("project_id"), error)
 
@@ -90,27 +139,22 @@ def list_projects():
 
 
 @router.get("/{project_id}", response_model=ProjectResponse)
-def get_project(project_id: str):
+def get_project(project_id: str, current_user: dict = Depends(get_current_user)):
     """
-    Return one project by ID.
+    Return one project by ID -- only if it belongs to the signed-in user.
     """
-    project = store.projects.get(project_id)
+    project = _get_owned_project(project_id, current_user)
 
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-
-    return ProjectResponse(**project)
+    return ProjectResponse(**_normalize_project_document(project))
 
 
 @router.put("/{project_id}", response_model=ProjectResponse)
-def update_project(project_id: str, request: ProjectUpdateRequest):
+def update_project(project_id: str, request: ProjectUpdateRequest, current_user: dict = Depends(get_current_user)):
     """
-    Edit an existing project's details. Only the fields provided are changed.
+    Edit an existing project's details -- only if it belongs to the signed-in user. Only the
+    fields provided are changed.
     """
-    project = store.projects.get(project_id)
-
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    project = _get_owned_project(project_id, current_user)
 
     if request.project_name is not None:
         project["project_name"] = request.project_name
@@ -123,24 +167,22 @@ def update_project(project_id: str, request: ProjectUpdateRequest):
 
     project["updated_at"] = datetime.utcnow()
 
-    return ProjectResponse(**project)
+    return ProjectResponse(**_normalize_project_document(project))
 
 
 @router.delete("/{project_id}", status_code=204)
-def delete_project(project_id: str):
+def delete_project(project_id: str, current_user: dict = Depends(get_current_user)):
     """
-    Permanently delete a project: its features, artifacts, approvals, stage events,
-    requirement conversations, and knowledge documents (including their vector chunks and raw
-    files), plus the on-disk workspace repo and outputs directory.
+    Permanently delete a project (only if it belongs to the signed-in user): its features,
+    artifacts, approvals, stage events, requirement conversations, and knowledge documents
+    (including their vector chunks and raw files), plus the on-disk workspace repo and outputs
+    directory.
 
     On-disk cleanup is best-effort -- every Mongo record is removed regardless of whether the
     directory cleanup succeeds, since a UI-visible dangling/undeletable project is a worse
     failure than some leftover disk usage from a locked file.
     """
-    project = store.projects.get(project_id)
-
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    project = _get_owned_project(project_id, current_user)
 
     # Compute the slug/repo path BEFORE any deletion -- workspace_service derives it by looking
     # the project back up in Mongo, which would fail once the project record itself is gone.
@@ -187,15 +229,12 @@ def delete_project(project_id: str):
 
 
 @router.get("/{project_id}/code/download")
-def download_project_code(project_id: str):
+def download_project_code(project_id: str, current_user: dict = Depends(get_current_user)):
     """
     Download the project's cumulative generated app (main branch) as a zip -- every feature
-    merged into main so far, combined.
+    merged into main so far, combined. Only if the project belongs to the signed-in user.
     """
-    project = store.projects.get(project_id)
-
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    project = _get_owned_project(project_id, current_user)
 
     try:
         content = workspace_service.export_zip(project_id, "main")

@@ -8,7 +8,12 @@ import {
 } from "../../lib/artifactTypeMeta";
 import { STAGE_LABELS, CONSOLIDATED_APPROVAL_STAGES } from "../../lib/pipelineStages";
 import { getEffectiveActiveArtifact } from "../../lib/activeArtifactSelection";
-import { artifactDownloadUrl, artifactDownloadPdfUrl, featureCodeDownloadUrl } from "../../api/client";
+import {
+  artifactDownloadUrl,
+  artifactDownloadPdfUrl,
+  featureCodeDownloadUrl,
+  featureCodeWithQaReportDownloadUrl,
+} from "../../api/client";
 import { declutterJsonForDisplay } from "../../lib/streamingJsonDisplay";
 import { looksLikeMongoUri } from "../../lib/mongoUri";
 import ArtifactContentView from "../artifacts/ArtifactContentView";
@@ -474,6 +479,11 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
   // re-trigger a second, conflicting Coder Agent run once one is already building.
   const approveContinuation = APPROVE_CONTINUATION_BY_STAGE[stage];
   const [confirmingArtifactId, setConfirmingArtifactId] = useState(null);
+  // Direct user request: a domain-only alternate path -- reject this Enhanced SRS version and
+  // start Architecture Agent using the feature's original SRS instead, for a human who doesn't
+  // want Domain Agent's proposed enrichment. A separate id/dialog from confirmingArtifactId above
+  // since this is a different action (reject, not approve) with different consequences to state.
+  const [skippingEnhancementArtifactId, setSkippingEnhancementArtifactId] = useState(null);
   // Security is a parallel special case, not another APPROVE_CONTINUATION_BY_STAGE entry -- every
   // other entry's shape is "approve -> auto-run the next agent," but approving a security report
   // needs to ask the human what to do next (proceed anyway, or send it to the Coder Agent to fix)
@@ -536,6 +546,33 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
         runSecurity.mutate({});
       }
     }
+  }
+
+  function requestSkipEnhancementConfirmation(artifactId) {
+    setSkippingEnhancementArtifactId(artifactId);
+  }
+
+  // Domain-only alternate to handleConfirmedApprove above: instead of approving the Enhanced SRS,
+  // rejects it (so the Domain stage shows a real, resolved decision rather than "Action required"
+  // forever) and starts Architecture Agent with use_enhanced_srs_if_available: false, which -- per
+  // ArchitectureAgent.run()/run_stream()'s own real logic -- never even looks up an approved
+  // Enhanced SRS, so it naturally falls back to the feature's already-approved plain SRS with no
+  // special-casing needed. Confirmed rejecting an artifact has no side effects on sibling versions
+  // (only approval's own exclusivity-revert touches siblings), so no other Enhanced SRS version is
+  // affected by this.
+  async function handleConfirmedSkipEnhancement() {
+    try {
+      await srsApproval.mutateAsync({ artifactId: skippingEnhancementArtifactId, status: "rejected" });
+    } catch {
+      // Keep the dialog open -- srsApproval.error is rendered inside it, same as handleConfirmedApprove.
+      return;
+    }
+
+    setSkippingEnhancementArtifactId(null);
+    selectAgent("architecture");
+    // Not awaited -- same reasoning as handleConfirmedApprove's own autoRun calls: the run's state
+    // already lives in the always-mounted ArchitectureAgentFlowContext.
+    handleRunArchitectureStream({ use_enhanced_srs_if_available: false, architecture_notes: null, human_comment: null });
   }
 
   // Security's own approve handler -- no confirmation dialog first (unlike every other gated
@@ -907,12 +944,20 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
                 <div className="flex items-center justify-between flex-wrap gap-2">
                   <VersionSelect versions={versions} selectedVersion={selectedVersion} onChange={setSelectedVersion} />
                   {selectedQaArtifact && (
-                    <a
-                      href={artifactDownloadPdfUrl(selectedQaArtifact.artifact_id)}
-                      className="text-sm text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 font-semibold"
-                    >
-                      Download QA Report
-                    </a>
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <a
+                        href={artifactDownloadPdfUrl(selectedQaArtifact.artifact_id)}
+                        className="text-sm text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 font-semibold"
+                      >
+                        Download QA Report
+                      </a>
+                      <a
+                        href={featureCodeWithQaReportDownloadUrl(featureId)}
+                        className="text-sm bg-accent-600 hover:bg-accent-700 text-white font-semibold px-3 py-1.5 rounded-md"
+                      >
+                        Download Project + QA Report (.zip)
+                      </a>
+                    </div>
                   )}
                 </div>
               )}
@@ -983,6 +1028,39 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
                   className="text-sm bg-green-600 hover:bg-green-700 text-white font-semibold px-3 py-1.5 rounded-md"
                 >
                   Approve & Move to Security
+                </button>
+              )}
+              {/* Direct user request: a quick Approve button right next to the version dropdown,
+                  so approving doesn't require scrolling past the whole rendered document first --
+                  mirrors the Coder stage's own "Approve & Move to Security" button above, reusing
+                  the exact same requestApproveConfirmation/handleConfirmedApprove flow. Purely
+                  additive: GatingArtifactApprovalPanel further down (Reject/Request Revision/
+                  Revoke/Delete, plus its own Approve) is untouched. */}
+              {CONSOLIDATED_APPROVAL_STAGES.includes(stage) && selectedVersionArtifact.approval_status === "pending" && (
+                <button
+                  type="button"
+                  onClick={() => requestApproveConfirmation(selectedVersionArtifact.artifact_id)}
+                  disabled={approveLocked}
+                  title={
+                    approveLocked
+                      ? "Another version is already approved -- reject it first to approve a different one"
+                      : undefined
+                  }
+                  className="text-sm bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white font-semibold px-3 py-1.5 rounded-md"
+                >
+                  Approve
+                </button>
+              )}
+              {/* Direct user request: a domain-only alternate to Approve -- reject this Enhanced
+                  SRS version and start Architecture Agent with the feature's original SRS instead,
+                  for a human who doesn't want Domain Agent's proposed enrichment. */}
+              {stage === "domain" && selectedVersionArtifact.approval_status === "pending" && (
+                <button
+                  type="button"
+                  onClick={() => requestSkipEnhancementConfirmation(selectedVersionArtifact.artifact_id)}
+                  className="text-sm bg-white dark:bg-white/10 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-white/20 text-gray-700 dark:text-gray-200 font-semibold px-3 py-1.5 rounded-md"
+                >
+                  Use Raw SRS Instead
                 </button>
               )}
               {stage === "coder" && (
@@ -1088,6 +1166,22 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
           )}
         </ConfirmDialog>
       )}
+
+      <ConfirmDialog
+        open={Boolean(skippingEnhancementArtifactId)}
+        onClose={() => {
+          if (!srsApproval.isPending) setSkippingEnhancementArtifactId(null);
+        }}
+        onConfirm={handleConfirmedSkipEnhancement}
+        title="Skip this enhancement and continue with the raw SRS?"
+        message="This marks this Enhanced SRS version as rejected and starts Architecture Agent using the feature's original SRS instead -- Domain Agent's proposed additions won't be included in the design."
+        confirmLabel="Use Raw SRS & Continue"
+        confirmingLabel="Working..."
+        tone="primary"
+        confirming={srsApproval.isPending}
+        error={srsApproval.error}
+        errorFallback="Failed to skip the enhancement."
+      />
 
       <SecurityDecisionDialog
         artifactId={securityDecisionArtifactId}
