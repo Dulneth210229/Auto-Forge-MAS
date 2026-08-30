@@ -18,7 +18,7 @@ At this foundation step, we only verify the API structure.
 import json
 import traceback
 
-from fastapi import APIRouter, HTTPException, Body, File, Form, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
 from app.api.deps import get_current_user
@@ -41,6 +41,8 @@ from app.agents.domain_agent.agent import domain_agent
 from app.agents.architecture_agent.agent import architecture_agent
 from app.agents.uiux_agent.agent import uiux_agent
 from app.agents.coder_agent.agent import coder_agent
+from app.agents.security_agent.agent import security_agent
+from app.agents.qa_agent.agent import qa_agent
 from app.agents.coder_agent.schemas import CoderAgentEnvSaveResult
 from app.core.enums import AgentName, ArtifactType, ArtifactFormat
 from app.schemas.agent_schema import AgentRunRequest, AgentRunResponse
