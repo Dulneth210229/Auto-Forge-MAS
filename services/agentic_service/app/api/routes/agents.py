@@ -85,7 +85,12 @@ from app.schemas.architecture_schema import (
 )
 from app.schemas.uiux_schema import UIUXAgentReviseRequest, UIUXAgentRunRequest
 from app.schemas.coder_schema import CoderAgentRunRequest, CoderAgentReviseRequest
-from app.schemas.security_schema import SecurityAgentRunRequest
+from app.schemas.security_schema import (
+    SecurityAgentRunRequest,
+    SecurityChatHistoryResponse,
+    SecurityChatMessageRequest,
+    SecurityChatTurn,
+)
 from app.schemas.qa_schema import QAAgentRunRequest, QAChatHistoryResponse, QAChatMessageRequest, QAChatTurn
 from app.services.in_memory_store import store
 from app.services.plantuml_service import plantuml_service

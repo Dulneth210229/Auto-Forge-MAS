@@ -9,6 +9,8 @@ report can show both halves for every test. See agent.py's own module docstring 
 generation and execution produce these.
 """
 
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 TEST_CATEGORIES = ("unit", "integration", "regression")
@@ -16,6 +18,54 @@ TEST_CATEGORIES = ("unit", "integration", "regression")
 
 class QAAgentInput(BaseModel):
     feature_id: str
+
+
+class QASummary(BaseModel):
+    total_tests: int = 0
+    passed: int = 0
+    failed: int = 0
+    skipped: int = 0
+    pass_rate: float = 0.0
+    status: str = "GENERATED"
+
+
+class QAMetrics(BaseModel):
+    generated_test_files: int = 0
+    generation_time_seconds: float = 0.0
+    execution_time_seconds: float = 0.0
+    total_duration_seconds: float = 0.0
+
+
+class QAFinding(BaseModel):
+    title: str
+    description: str
+    severity: str
+    recommendation: str
+    confidence: float = 0.0
+    file: str | None = None
+    line: int | None = None
+
+
+class GeneratedTestFile(BaseModel):
+    source_file: str = ""
+    status: str = "GENERATED"
+    error: str | None = None
+
+
+class ExecutionResult(BaseModel):
+    total_tests: int = 0
+    passed: int = 0
+    failed: int = 0
+    skipped: int = 0
+    duration_seconds: float = 0.0
+
+
+class QAReport(BaseModel):
+    feature_id: str = ""
+    generated_at: datetime = Field(default_factory=datetime.now)
+    summary: QASummary = Field(default_factory=QASummary)
+    findings: list[QAFinding] = Field(default_factory=list)
+    metrics: QAMetrics = Field(default_factory=QAMetrics)
 
 
 class QaTestCase(BaseModel):
@@ -73,8 +123,6 @@ class QaRootCauseEntry(BaseModel):
 
 class QaRootCauseAnalysisResult(BaseModel):
     root_causes: list[QaRootCauseEntry] = Field(default_factory=list)
-
-    summary: QASummary
 
 class QAAgentOutput(BaseModel):
     qa_report_json: dict = {}

@@ -143,6 +143,9 @@ class QAAgent:
             run_result = {"results": [], "passed": 0, "failed": 0, "skipped": 0, "exit_code": None, "raw_stderr": ""}
 
         merged_test_cases = self._merge_results(all_test_cases, run_result["results"])
+        merged_test_cases = await self._apply_root_cause_analysis(
+            merged_test_cases, unit_targets, integration_targets
+        )
         tests_by_category = self._count_by_category(merged_test_cases)
 
         report = {
@@ -227,6 +230,36 @@ class QAAgent:
                                            "it may have failed to load/parse; see stderr below.")),
             })
         return merged
+
+    async def _apply_root_cause_analysis(
+        self,
+        merged_test_cases: list[dict],
+        unit_targets: list[dict],
+        integration_targets: list[dict],
+    ) -> list[dict]:
+        failures = [test_case for test_case in merged_test_cases if test_case["status"] == "failed"]
+        if not failures:
+            return merged_test_cases
+
+        source_by_target = {
+            target["rel"]: target["source"]
+            for target in unit_targets
+            if target.get("rel") and target.get("source")
+        }
+        for target in integration_targets:
+            if target.get("route_rel") and target.get("route_source"):
+                source_by_target[target["route_rel"]] = target["route_source"]
+            for related_file in target.get("related_files", []):
+                if related_file.get("rel") and related_file.get("source"):
+                    source_by_target[related_file["rel"]] = related_file["source"]
+
+        analysis = await generator.analyze_failures(failures, source_by_target)
+        for test_case in failures:
+            result = analysis.get((test_case["test_file"], test_case["name"]))
+            if result:
+                test_case["root_cause"] = result["root_cause"]
+                test_case["recommendation"] = result["recommendation"]
+        return merged_test_cases
 
     def _count_by_category(self, merged_test_cases: list[dict]) -> dict:
         counts = {cat: {"total": 0, "passed": 0, "failed": 0, "skipped": 0} for cat in CATEGORIES}
