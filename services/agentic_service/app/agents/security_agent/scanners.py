@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
@@ -204,7 +205,10 @@ def scan_dangerous_patterns(repo_path: Path) -> list[dict[str, Any]]:
     AST-based scan (real TypeScript-compiler parse, not text matching) for a
     curated rule set of dangerous JS/TS patterns. Returns Finding dicts.
     """
-    script_path = Path("/tmp/_ast_scan.js")
+    # Path("/tmp/...") is Unix-only -- there is no /tmp on Windows, so this failed with
+    # "No such file or directory" for any teammate not on Linux/macOS. tempfile.gettempdir()
+    # resolves to the correct OS-appropriate temp directory on every platform.
+    script_path = Path(tempfile.gettempdir()) / "_ast_scan.js"
     script_path.write_text(AST_SCAN_JS, encoding="utf-8")
 
     findings: list[dict[str, Any]] = []
