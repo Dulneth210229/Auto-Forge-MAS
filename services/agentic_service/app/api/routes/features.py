@@ -321,3 +321,32 @@ def download_feature_code_with_qa_report(feature_id: str, current_user: dict = D
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.get("/features/{feature_id}/uiux-images/{version}/download")
+def download_uiux_images(feature_id: str, version: int, current_user: dict = Depends(get_current_user)):
+    """
+    Download every UI/UX preview screenshot generated for ONE version of this feature, bundled
+    together as a single zip -- direct user request: "download all the generated images at once
+    per version." Only if the feature belongs to the signed-in user.
+    """
+    feature = _get_owned_feature(feature_id, current_user)
+
+    artifacts = artifact_service.list_feature_artifacts(feature_id)
+    screenshot_ids = [
+        artifact.artifact_id
+        for artifact in artifacts
+        if artifact.artifact_type == ArtifactType.UI_PREVIEW_SCREENSHOT and artifact.version == version
+    ]
+
+    if not screenshot_ids:
+        raise HTTPException(status_code=404, detail=f"No UI/UX preview images found for version {version}.")
+
+    content = artifact_service.export_artifacts_zip(screenshot_ids)
+
+    filename = f"{slugify(feature['feature_name'])}-uiux-images-v{version}.zip"
+    return Response(
+        content=content,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

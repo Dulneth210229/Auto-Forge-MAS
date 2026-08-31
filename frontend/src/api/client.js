@@ -63,6 +63,10 @@ export function featureCodeWithQaReportDownloadUrl(featureId) {
   return withToken(`${API_BASE_URL}/features/${featureId}/code-with-qa-report/download`);
 }
 
+export function featureUiuxImagesDownloadUrl(featureId, version) {
+  return withToken(`${API_BASE_URL}/features/${featureId}/uiux-images/${version}/download`);
+}
+
 export function projectCodeDownloadUrl(projectId) {
   return withToken(`${API_BASE_URL}/projects/${projectId}/code/download`);
 }

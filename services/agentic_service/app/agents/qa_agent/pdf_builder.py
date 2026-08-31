@@ -19,11 +19,16 @@ from app.agents.qa_agent.schemas import TEST_CATEGORIES
 from app.agents.requirement_agent.pdf_builder import _esc, _meta_table, _plain_list, _section
 
 _CATEGORY_HEADING = {"unit": "Unit", "integration": "Integration", "regression": "Regression"}
-_STATUS_BADGE_BACKGROUND = {"passed": "#16a34a", "failed": "#dc2626", "skipped": "#6b7280"}
+# Every test case resolves to "passed" or "failed" only -- never "skipped" (direct user
+# requirement, see qa_agent/agent.py's own module docstring). An unrecognized status string
+# (should never happen once the backend never emits one) deliberately does NOT fall back to a
+# quiet gray -- it renders in the same red as "failed" so a future regression is loud in the
+# exported PDF, not a silent reappearance of the status this fix removed.
+_STATUS_BADGE_BACKGROUND = {"passed": "#16a34a", "failed": "#dc2626"}
 
 
 def _status_badge(status: str) -> str:
-    background = _STATUS_BADGE_BACKGROUND.get(status, "#6b7280")
+    background = _STATUS_BADGE_BACKGROUND.get(status, "#dc2626")
     return f'<span class="badge" style="background:{background};">{_esc(status.upper())}</span>'
 
 
@@ -39,7 +44,7 @@ def _test_case_card(test_case: dict[str, Any]) -> str:
 
     parts = [
         '<div class="card">',
-        f'<div class="card-title">{_esc(test_case.get("name", ""))} {_status_badge(test_case.get("status", "skipped"))}</div>',
+        f'<div class="card-title">{_esc(test_case.get("name", ""))} {_status_badge(test_case.get("status", "failed"))}</div>',
         f'<p style="font-size:9.5px;color:#6b7280;">Targets: {_esc(target)}</p>',
         f"<p><strong>Inputs:</strong> {_esc(inputs)}</p>",
         f"<p><strong>Expected behavior:</strong> {_esc(expected_behavior)}</p>",
@@ -89,16 +94,17 @@ def build_qa_report_html(qa_report_json: dict[str, Any]) -> str:
         ("Tests Generated", qa_report_json.get("tests_generated", len(test_cases))),
         ("Passed", qa_report_json.get("tests_passed", 0)),
         ("Failed", qa_report_json.get("tests_failed", 0)),
-        ("Skipped", qa_report_json.get("tests_skipped", 0)),
         ("Generated At", qa_report_json.get("generated_at", "N/A")),
     ]
+    if qa_report_json.get("environment_failure"):
+        meta_rows.append(("Environment Failure", qa_report_json["environment_failure"].get("reason", "N/A")))
     for category in TEST_CATEGORIES:
-        counts = tests_by_category.get(category) or {"total": 0, "passed": 0, "failed": 0, "skipped": 0}
+        counts = tests_by_category.get(category) or {"total": 0, "passed": 0, "failed": 0}
         heading = _CATEGORY_HEADING.get(category, category.title())
         meta_rows.append((
             f"{heading} Tests",
             f"{counts.get('total', 0)} total -- {counts.get('passed', 0)} passed, "
-            f"{counts.get('failed', 0)} failed, {counts.get('skipped', 0)} skipped",
+            f"{counts.get('failed', 0)} failed",
         ))
 
     sections = [

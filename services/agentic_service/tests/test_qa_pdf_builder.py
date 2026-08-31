@@ -14,12 +14,11 @@ REPORT_FIXTURE = {
     "framework_used": "jest",
     "tests_generated": 3,
     "tests_passed": 1,
-    "tests_failed": 1,
-    "tests_skipped": 1,
+    "tests_failed": 2,
     "tests_by_category": {
-        "unit": {"total": 2, "passed": 1, "failed": 1, "skipped": 0},
-        "integration": {"total": 1, "passed": 0, "failed": 0, "skipped": 1},
-        "regression": {"total": 0, "passed": 0, "failed": 0, "skipped": 0},
+        "unit": {"total": 2, "passed": 1, "failed": 1},
+        "integration": {"total": 1, "passed": 0, "failed": 1},
+        "regression": {"total": 0, "passed": 0, "failed": 0},
     },
     "test_cases": [
         {
@@ -39,7 +38,7 @@ REPORT_FIXTURE = {
         {
             "name": "POST /api/items creates an item", "category": "integration", "target_file": "app/api/items/route.ts",
             "target_function": "POST", "inputs": "", "expected_behavior": "",
-            "test_file": "items.integration.test.ts", "method": "llm", "status": "skipped",
+            "test_file": "items.integration.test.ts", "method": "llm", "status": "failed",
             "duration_ms": None, "failure_message": None, "root_cause": None, "recommendation": None,
         },
     ],
@@ -71,7 +70,7 @@ def test_every_real_test_case_field_renders():
     assert "a valid item id" in html
     assert "PASSED" in html
     assert "FAILED" in html
-    assert "SKIPPED" in html
+    assert "SKIPPED" not in html
 
 
 def test_failure_message_root_cause_and_recommendation_render_for_the_failed_case():
@@ -85,7 +84,8 @@ def test_failure_message_root_cause_and_recommendation_render_for_the_failed_cas
 def test_null_fields_render_a_fallback_not_none_or_a_crash():
     html = build_qa_report_html(REPORT_FIXTURE)
 
-    # The skipped test case has no inputs/expected_behavior -- must fall back, never show "None".
+    # The third (failed, unmatched) test case has no inputs/expected_behavior -- must fall back,
+    # never show "None".
     assert "None" not in html.split("Test Cases")[1].split("Out of Scope")[0]
 
 
@@ -99,7 +99,7 @@ def test_out_of_scope_modules_render():
 def test_per_category_pass_fail_counts_render_from_tests_by_category():
     html = build_qa_report_html(REPORT_FIXTURE)
 
-    assert "2 total -- 1 passed, 1 failed, 0 skipped" in html
+    assert "2 total -- 1 passed, 1 failed" in html
 
 
 def test_raw_stderr_only_renders_when_non_empty():

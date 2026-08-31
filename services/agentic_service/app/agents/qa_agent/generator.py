@@ -71,6 +71,38 @@ ARRAY_LITERAL_PATTERN = re.compile(r"export\s+const\s+([A-Za-z0-9_]+)\s*=\s*\[")
 GUARDED_ASYNC_NULL_PATTERN = re.compile(
     r"export\s+async\s+function\s+([A-Za-z0-9_]+).*?return\s+null", re.DOTALL
 )
+HTTP_METHOD_EXPORT_PATTERN = re.compile(
+    r"export\s+(?:async\s+)?function\s+(GET|POST|PUT|PATCH|DELETE)\b|"
+    r"export\s+const\s+(GET|POST|PUT|PATCH|DELETE)\s*="
+)
+
+# Every test case must resolve to "passed" or "failed" -- never "skipped" (direct user
+# requirement). Two of these constructs (.skip/.todo) produce a native Jest "pending"/"todo"
+# status that would otherwise map to "skipped" in executor.py's own parsing; the other three
+# (.each/.concurrent) can make ONE planned test_cases entry expand into (or collapse from)
+# multiple real Jest results, silently mispairing agent.py::_merge_results' positional-fallback
+# matching downstream. Forbidden outright by _JEST_CONVENTIONS; this is the deterministic
+# backstop for that rule -- a generation attempt using any of these is treated as a failure and
+# retried (see _generate_with_retries), never allowed to reach Jest.
+_FORBIDDEN_JEST_CONSTRUCTS = [
+    (re.compile(r"\btest\.skip\s*\("), "test.skip(...)"),
+    (re.compile(r"\bit\.skip\s*\("), "it.skip(...)"),
+    (re.compile(r"\bdescribe\.skip\s*\("), "describe.skip(...)"),
+    (re.compile(r"\bit\.todo\s*\("), "it.todo(...)"),
+    (re.compile(r"\btest\.todo\s*\("), "test.todo(...)"),
+    (re.compile(r"\btest\.each\s*\("), "test.each(...)"),
+    (re.compile(r"\bit\.each\s*\("), "it.each(...)"),
+    (re.compile(r"\bdescribe\.each\s*\("), "describe.each(...)"),
+    (re.compile(r"\btest\.concurrent\s*\("), "test.concurrent(...)"),
+]
+
+MAX_GENERATION_ATTEMPTS = 3
+
+
+def scan_for_forbidden_jest_constructs(test_code: str) -> list[str]:
+    """Returns the labels of every forbidden construct found in `test_code` (empty if clean) --
+    see _FORBIDDEN_JEST_CONSTRUCTS' own comment for why each one is forbidden."""
+    return [label for pattern, label in _FORBIDDEN_JEST_CONSTRUCTS if pattern.search(test_code)]
 
 
 async def _invoke_llm(system_prompt: str, user_content: str) -> QaLLMGenerationResult | None:
@@ -91,6 +123,51 @@ async def _invoke_llm(system_prompt: str, user_content: str) -> QaLLMGenerationR
     except Exception as error:  # noqa: BLE001 -- generation must never fail the whole QA run
         logger.warning("QA Agent LLM generation call failed/unparseable, falling back: %s", error)
         return None
+
+
+async def _generate_with_retries(
+    system_prompt: str, user_content: str, max_attempts: int = MAX_GENERATION_ATTEMPTS
+) -> QaLLMGenerationResult | None:
+    """Bounded retry loop mirroring coder_agent/agent.py's _plan_with_retries SHAPE (a bounded
+    attempts loop, the previous failure fed back into the next attempt's own prompt as concrete
+    feedback) -- adapted for QA generation's much simpler, stateless, single-call shape (no
+    workspace mutation, no exploration tooling needed, so this is cheaper to build correctly than
+    Coder Agent's own version). Never raises -- returns None only after every attempt has failed,
+    the same contract _invoke_llm alone always had; the caller's own deterministic fallback
+    (if any) takes over from there.
+    """
+    validation_feedback: str | None = None
+
+    for attempt in range(1, max_attempts + 1):
+        attempt_user_content = user_content
+        if validation_feedback:
+            attempt_user_content = (
+                f"{user_content}\n\nYour previous attempt was rejected: {validation_feedback} "
+                "Fix this specific issue and try again."
+            )
+
+        result = await _invoke_llm(system_prompt, attempt_user_content)
+        if result is None:
+            validation_feedback = "the response was empty, malformed, or the model was unreachable."
+            continue
+
+        violations = scan_for_forbidden_jest_constructs(result.test_code)
+        if violations:
+            logger.warning(
+                "QA Agent generation attempt %d/%d used forbidden Jest construct(s): %s",
+                attempt, max_attempts, violations,
+            )
+            validation_feedback = (
+                f"the generated test code used a forbidden construct: {', '.join(violations)}. "
+                "Never use test.skip/it.skip/describe.skip/it.todo/test.todo/test.each/"
+                "describe.each/test.concurrent -- either write a real test with appropriate "
+                "mocks, or omit that test_cases entry entirely."
+            )
+            continue
+
+        return result
+
+    return None
 
 
 def _deterministic_unit_fallback(target: dict[str, Any]) -> QaLLMGenerationResult | None:
@@ -144,12 +221,102 @@ def _deterministic_unit_fallback(target: dict[str, Any]) -> QaLLMGenerationResul
     return QaLLMGenerationResult(test_cases=test_cases, test_code=test_code)
 
 
+# Thrown-error message substrings that indicate a genuine, unhandled crash in the handler's own
+# code -- as opposed to a deliberate rejection (a thrown NextResponse/Response is never caught
+# here at all, since it isn't a JS Error) or an artifact of the fallback caller's own minimal,
+# unauthenticated, bodyless synthetic request. Deliberately narrow: the fallback's job is only to
+# prove the handler is callable and doesn't crash on its own broken code, never to claim anything
+# about business-logic correctness.
+_REAL_CRASH_SIGNATURES = ["is not a function", "cannot read propert", "undefined is not", "cannot destructure"]
+
+
+def _deterministic_integration_fallback(target: dict[str, Any]) -> QaLLMGenerationResult | None:
+    """Used only when both the retry loop AND the LLM itself have failed to produce a usable
+    integration test for this route. Deliberately does NOT assert on the response status code --
+    a broad "any 2xx-5xx status" assertion would trivially pass against almost anything, including
+    a correctly-implemented validation rejection, making the assertion meaningless. Instead: call
+    the handler with a minimal synthetic Request inside a try/catch, and assert only that it
+    either (a) returned a real Response/NextResponse object (any status), or (b) if it threw, the
+    thrown error is NOT one of _REAL_CRASH_SIGNATURES -- i.e. "this handler is at minimum callable
+    and doesn't crash on its own broken code," never a claim about business-logic correctness.
+    A second `{ params: {} }` argument is always passed so a parameterized route destructuring
+    `{ params }` doesn't crash on a missing second argument that this fallback's own minimal
+    caller simply has no way to know the real shape of.
+    """
+    methods = sorted({m1 or m2 for m1, m2 in HTTP_METHOD_EXPORT_PATTERN.findall(target["route_source"])})
+    if not methods:
+        return None
+
+    rel_from_generated_tests = "../" + target["route_rel"].removesuffix(".ts")
+    import_line = f'import {{ {", ".join(methods)} }} from "{rel_from_generated_tests}";'
+
+    test_cases: list[QaTestCase] = []
+    bodies: list[str] = []
+
+    for method in methods:
+        test_name = f"{method} {target['route_rel']} is callable and does not crash on its own broken code"
+        test_cases.append(QaTestCase(
+            name=test_name, category="integration", target_file=target["route_rel"], target_function=method,
+            inputs="a minimal synthetic Request with an empty JSON body",
+            expected_behavior=(
+                "returns a real Response object, or throws only a deliberate, recognizable "
+                "rejection -- never an unhandled crash"
+            ),
+            method="deterministic-fallback",
+        ))
+        body_line = '\n    body: "{}",' if method in {"POST", "PUT", "PATCH"} else ""
+        bodies.append(f"""test("{test_name}", async () => {{
+  const request = new Request("http://localhost/api/test", {{
+    method: "{method}",
+    headers: {{ "Content-Type": "application/json" }},{body_line}
+  }});
+  const CRASH_SIGNATURES = {_REAL_CRASH_SIGNATURES!r}.map((s) => new RegExp(s, "i"));
+  try {{
+    const response = await {method}(request, {{ params: {{}} }});
+    expect(response).toBeInstanceOf(Response);
+  }} catch (error) {{
+    const message = error instanceof Error ? error.message : String(error);
+    const looksLikeARealCrash = CRASH_SIGNATURES.some((pattern) => pattern.test(message));
+    expect(looksLikeARealCrash).toBe(false);
+  }}
+}});""")
+
+    test_code = f'{import_line}\n\n{"\n\n".join(bodies)}\n'
+    return QaLLMGenerationResult(test_cases=test_cases, test_code=test_code)
+
+
+def _deterministic_regression_fallback(
+    acceptance_criteria: list[dict[str, Any]], route_target: dict[str, Any] | None
+) -> QaLLMGenerationResult | None:
+    """Used only when LLM-driven regression generation fails entirely. Cannot meaningfully assert
+    each acceptance criterion's own specific behavior (that needs real understanding of what the
+    criterion actually says) -- so this deliberately reuses
+    _deterministic_integration_fallback's own callable-and-doesn't-crash smoke check against the
+    feature's associated route, naming the acceptance criteria it stands in for so a human
+    reviewer knows this is a fallback, not a real per-criterion check."""
+    if route_target is None:
+        return None
+    fallback = _deterministic_integration_fallback(route_target)
+    if fallback is None:
+        return None
+
+    criteria_ids = ", ".join(c.get("id", "?") for c in acceptance_criteria) or "this feature's acceptance criteria"
+    for tc in fallback.test_cases:
+        tc.category = "regression"
+        tc.expected_behavior = (
+            f"a minimal smoke check standing in for {criteria_ids} (LLM-driven regression "
+            "generation was unavailable) -- confirms the route is callable, not that each "
+            "criterion's specific behavior holds"
+        )
+    return fallback
+
+
 async def generate_unit_tests(target: dict[str, Any]) -> QaLLMGenerationResult | None:
     user_content = (
         f"File: {target['rel']}\nExports: {', '.join(target['exports'])}\n\n"
         f"Source:\n```typescript\n{target['source']}\n```"
     )
-    result = await _invoke_llm(QA_UNIT_TEST_PROMPT, user_content)
+    result = await _generate_with_retries(QA_UNIT_TEST_PROMPT, user_content)
     if result is not None:
         return result
     return _deterministic_unit_fallback(target)
@@ -163,7 +330,10 @@ async def generate_integration_tests(target: dict[str, Any]) -> QaLLMGenerationR
         f"Route Handler: {target['route_rel']}\n"
         f"```typescript\n{target['route_source']}\n```\n\n{related_blocks}"
     )
-    return await _invoke_llm(QA_INTEGRATION_TEST_PROMPT, user_content)
+    result = await _generate_with_retries(QA_INTEGRATION_TEST_PROMPT, user_content)
+    if result is not None:
+        return result
+    return _deterministic_integration_fallback(target)
 
 
 async def generate_regression_tests(
@@ -184,7 +354,10 @@ async def generate_regression_tests(
         )
 
     user_content = f"Acceptance criteria:\n{criteria_text}{context}"
-    return await _invoke_llm(QA_REGRESSION_TEST_PROMPT, user_content)
+    result = await _generate_with_retries(QA_REGRESSION_TEST_PROMPT, user_content)
+    if result is not None:
+        return result
+    return _deterministic_regression_fallback(acceptance_criteria, route_target)
 
 
 async def analyze_failures(

@@ -133,6 +133,20 @@ plausible-looking feature into a broken one that a human has to catch by hand):
   `NextResponse.json({ error: ... }, { status: 400 })` with a clear message if
   not. Do not pass unvalidated request input straight into a database query or a
   password/crypto function.
+- When a route's validation is more than a single flat "is this field present" check (format
+  validation, cross-field rules, a business rule), extract it into a pure function in
+  `lib/validation/<feature>.ts` (e.g. `validateItemInput(body): { valid: boolean, errors:
+  string[] }`), imported and called by the route handler -- do NOT write the validation logic
+  inline in that case. A route that only needs a flat required-field presence check may keep
+  validating inline; do not add this indirection for a trivial case. This makes real validation
+  logic testable on its own, in isolation, without needing a real HTTP request or database
+  connection.
+- When a request body or response has a non-trivial shape (more than a couple of primitive
+  fields), declare it as a named TypeScript interface in `lib/types/<Entity>.ts` alongside that
+  entity's own type -- e.g. `ItemRequestBody`/`ItemResponse` next to `Item` -- and import it in
+  both the route handler and the frontend service layer that calls it, instead of an inline
+  object-literal type in each place separately. Keeps the request/response contract in one real,
+  reusable place instead of duplicated (and potentially drifting) inline shapes.
 - Never give a Mongoose schema a `required: true` (or `required: true, unique:
   true`) field that the create/edit form does not, and cannot, actually set --
   a confirmed real bug: a custom `id` field the form never collected, silently

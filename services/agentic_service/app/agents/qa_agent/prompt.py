@@ -43,6 +43,36 @@ escaping at all.
 
 TEST_CODE_MARKER = "---TEST_CODE---"
 
+# Coder Agent's own generated-code conventions, stated directly instead of leaving every
+# generation call to re-derive them from scratch by reading a single raw source snippet (a real,
+# confirmed reliability gap: CODER_AGENT_SYSTEM_PROMPT's own hard rules were never surfaced to QA
+# Agent's prompts at all before this). Included in all 3 generation prompts below.
+GENERATED_CODE_CONVENTIONS = """
+Generated-code conventions you can rely on without having to infer them from the source alone
+(every generated Next.js/TypeScript feature in this project follows these):
+- A Route Handler's real logic lives inline inside its exported GET/POST/PUT/PATCH/DELETE
+  function -- but non-trivial input validation is extracted into a pure, DB-less, HTTP-less
+  function in `lib/validation/<feature>.ts` (e.g. `validateItemInput(body)`), imported and called
+  by the handler. When such a function exists for the file you're testing, prefer writing real
+  unit tests directly against it -- it is meaningfully more testable in isolation than the route
+  handler that calls it.
+- Request/response body shapes, when non-trivial, are declared as named TypeScript interfaces in
+  `lib/types/<Entity>.ts` (e.g. `ItemRequestBody`, `ItemResponse`) alongside the entity's own
+  type -- check there first for the real expected payload shape instead of guessing from route
+  code alone.
+- `connectToDatabase()` (`lib/mongodb.ts`) returns `null`, never throws, when no real database
+  connection is configured -- this is the NORMAL state for a fresh preview, not an error
+  condition. A GET route branches on this and returns realistic seed data from
+  `lib/seedData.ts`; a write route (POST/PUT/DELETE) branches on this and returns a real
+  `NextResponse.json({ error: "Database not connected." }, { status: 503 })` -- never a fake
+  success. Do not treat either branch as a bug to report -- it is deliberate, correct code.
+- Every Mongoose model file uses the guard `export default mongoose.models.X ||
+  mongoose.model("X", schema)` to prevent `OverwriteModelError` -- this is boilerplate, not
+  custom logic worth testing on its own.
+- Error responses use `NextResponse.json({ error: "..." }, { status: N })` -- a 400 for a
+  validation failure, a 503 for no database connection, a 500 for an unexpected error.
+"""
+
 _JEST_CONVENTIONS = f"""
 Testing conventions (violating these produces a file that cannot actually run):
 - Real Jest syntax only: `test("name", () => {{...}})` or `it("name", () => {{...}})`, `expect(...)`.
@@ -60,6 +90,12 @@ Testing conventions (violating these produces a file that cannot actually run):
   infrastructure this environment does not have. If a real dependency is unavoidable and cannot
   be mocked meaningfully, do not include that test case at all rather than writing one that will
   always fail for reasons unrelated to the code's own correctness.
+- NEVER use `test.skip`, `it.skip`, `describe.skip`, `it.todo`, `test.todo`, `test.each`,
+  `it.each`, `describe.each`, or `test.concurrent` -- there is no third option beyond a real,
+  runnable test or omitting that test_cases entry entirely. Every test case must resolve to a
+  real pass or fail; `.skip`/`.todo` produce neither, and `.each`/`.concurrent` can make one
+  planned test_cases entry expand into (or collapse from) multiple real results, which breaks the
+  matching this system relies on to report results accurately.
 - Do not modify application code -- only produce test code.
 
 Critical output-format rule: return EXACTLY two parts, nothing else. Part 1 is a plain JSON
@@ -78,6 +114,7 @@ You are given the real source of ONE generated file and its real exported names.
 tests: each test exercises exactly one exported function/value from THIS file, in isolation,
 with no dependency on any other file's real behavior.
 
+{GENERATED_CODE_CONVENTIONS}
 {_JEST_CONVENTIONS}
 """
 
@@ -94,6 +131,7 @@ it returns (status code and/or body shape). Do not test the model/lib helper fil
 here -- that is what the unit-test pass already covers; this pass is specifically about the
 pieces working together.
 
+{GENERATED_CODE_CONVENTIONS}
 {_JEST_CONVENTIONS}
 """
 
@@ -109,6 +147,7 @@ given -- these tests exist to catch a future change that breaks something alread
 so each test_cases entry's "expected_behavior" should closely paraphrase the acceptance criterion
 it covers.
 
+{GENERATED_CODE_CONVENTIONS}
 {_JEST_CONVENTIONS}
 """
 
