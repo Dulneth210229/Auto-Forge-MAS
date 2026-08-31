@@ -3,7 +3,13 @@ Unit tests for env_uri.py -- MongoDB URI detection/extraction from a human's
 free-text chat message. Pure functions, no LLM/Docker/git.
 """
 
-from app.agents.coder_agent.env_uri import extract_mongodb_uri, is_uri_only, mask_mongodb_uri, strip_uri_from_comment
+from app.agents.coder_agent.env_uri import (
+    extract_mongodb_uri,
+    is_machine_generated_revision,
+    is_uri_only,
+    mask_mongodb_uri,
+    strip_uri_from_comment,
+)
 
 
 def test_extract_returns_none_for_no_uri():
@@ -87,3 +93,24 @@ def test_mask_redacts_plain_mongodb_uri_credentials():
 def test_mask_leaves_a_credential_free_uri_unchanged():
     uri = "mongodb://localhost:27017/mydb"
     assert mask_mongodb_uri(uri) == uri
+
+
+def test_extract_strips_a_trailing_backtick_from_a_quoted_code_span():
+    # Real, confirmed bug: a security finding's root_cause text quoted the offending source line
+    # inside a markdown inline-code span, e.g. `const X = "mongodb+srv://.../db";` -- the greedy
+    # \S+ match swallowed the closing `";` up through the backtick, and the old
+    # _TRAILING_PUNCTUATION set didn't include a backtick, so it survived uncleaned.
+    text = 'Root cause: `const FALLBACK_MONGODB_URI = "mongodb+srv://user:pass@cluster0.example.mongodb.net/db";`'
+    assert extract_mongodb_uri(text) == "mongodb+srv://user:pass@cluster0.example.mongodb.net/db"
+
+
+def test_is_machine_generated_revision_true_for_known_sources():
+    assert is_machine_generated_revision("security_agent_report") is True
+    assert is_machine_generated_revision("qa_agent_report") is True
+
+
+def test_is_machine_generated_revision_false_for_a_real_human():
+    assert is_machine_generated_revision("human_user") is False
+    assert is_machine_generated_revision("Dulneth Santhuka") is False
+    assert is_machine_generated_revision(None) is False
+    assert is_machine_generated_revision("") is False

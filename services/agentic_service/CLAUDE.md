@@ -8534,6 +8534,99 @@ milestone — that file is scratch, **this file is the durable one**.
       "Domain Agent approved, Architecture Agent never run," ready for the user to re-trigger
       Architecture Agent fresh from Domain Agent's approval, per their own explicit request.
 
+99. **Fixed the real `.env.local`-corruption bug for real, plus made "the Coder Agent actually
+    uses the real MongoDB URI" a genuinely verified guarantee, plus a per-agent-chat AI
+    disclaimer.** Direct user request, three parts, after a prior diagnosis turn: the Coder Agent
+    must use the provided MongoDB URI to establish the database connection for real, instead of
+    silently falling back to fake data; and every agent's chat window needs a small "AI can make
+    mistakes" notice. Investigated via 3 parallel Explore agents (URI-detection scope + a
+    schema field already meant to fix this; the generated code's real DB-connection wiring and
+    what verification does/doesn't check; the frontend chat-component structure) plus a
+    Plan-agent design-review pass.
+    - **Part A -- the actual corruption fix**: root cause (already diagnosed in the prior turn):
+      `env_uri.py`'s `extract_mongodb_uri` runs unconditionally on every `revision_comment`
+      reaching `CoderAgent.revise()`/`revise_stream()`, including one machine-built by the "Fix
+      Vulnerabilities" flow that quotes a security finding's evidence text verbatim -- for a real
+      CWE-798 finding, that text contained the Coder Agent's own LLM-invented fake
+      `FALLBACK_MONGODB_URI` credential, which got matched and silently overwrote a human's real,
+      correctly-provided `.env.local` value. **The fix, confirmed to need zero schema changes**:
+      `CoderAgentReviseRequest.revised_by` already exists and was already correctly set to
+      `"security_agent_report"`/`"qa_agent_report"` by all 3 real frontend trigger points
+      (`SecurityDecisionDialog.jsx`, `ResultTab.jsx`'s `handleConfirmedFixVulnerabilities`,
+      `QaReportView.jsx`'s `handleSendToCoder`) -- it was simply never consulted by the
+      URI-detection logic. New `env_uri.py::is_machine_generated_revision(revised_by)` (checked
+      against a small `MACHINE_GENERATED_REVISION_SOURCES` set) gates the `write_env_local` call
+      in `agent.py`'s `revise()`/`revise_stream()` ONLY (`run()`/`run_stream()` are never
+      reachable from this flow, since it requires an existing Coder Agent output to already
+      exist) -- when the comment is machine-generated, it's left completely untouched (no write,
+      no strip), since the quoted URI is necessary vulnerability-description context the planner
+      needs to see in full, not a real secret. Also fixed a secondary regex quirk found while
+      diagnosing: `_TRAILING_PUNCTUATION` didn't include a backtick, so a URI captured from
+      inside a markdown code span (ending in `` ";` ``) kept the trailing backtick uncleaned.
+    - **Part B -- closing the deeper "never actually verified" gap**: confirmed by reading
+      `verify.py`/`db_fallback_checker.py`/`functional_checker.py`/`sandbox_service.py` directly
+      that `lib/mongodb.ts`'s scaffold was already correct (real `mongoose.connect
+      (process.env.MONGODB_URI)` when set, no fake behavior baked in), and that the sandbox
+      bind-mounts the real workspace directory -- meaning a correctly-saved `.env.local` genuinely
+      reaches `next build`/`next start` during `verify()` (Next.js reads `.env.local` from disk,
+      not from injected OS env vars). The real gap: `functional_checker.check_crud_functionality`
+      already does exactly the right thing to catch "always serves fake data" (POSTs a payload
+      with a distinctive marker, GETs, checks the marker reappears) but was wired as purely
+      informational in `verify.py` -- a route that always returns static seed data regardless of
+      connection state passed verification cleanly. Fixed by conditionally, narrowly hard-gating
+      it: `functional_checker.check_crud_functionality` now tags each failure with an explicit
+      `"reason"` (`"not_persisted"` vs `"post_rejected"`, instead of output-text parsing) so
+      `verify.py`'s `_build_crud_functional_step` can hard-gate ONLY the `"not_persisted"` case
+      AND only when `workspace_service.read_env_local(project_id).get("MONGODB_URI")` shows a
+      real URI is configured -- a non-2xx `"post_rejected"` response stays informational even
+      then (a real, correct validation rule rejecting this check's own heuristically-guessed
+      payload is a plausible non-bug outcome, not evidence of fake data; this narrowing was a
+      direct Plan-agent design-review refinement over the original "hard-gate any failure" draft).
+      When no real URI is configured, behavior is completely unchanged (informational only) --
+      seed data is the correct, designed behavior there. New prompt rule (right after the
+      existing "never touch `lib/mongodb.ts`" bullet in `CODER_AGENT_SYSTEM_PROMPT`, inherited
+      automatically by `BATCH_CODE_GENERATOR_SYSTEM_PROMPT` via the existing `"Tool usage:"`
+      string-split): `lib/mongodb.ts` is the ONLY connection mechanism in the project -- never
+      invent a second hardcoded connection-string constant anywhere, even as a placeholder. New
+      standalone module `hardcoded_secret_checker.py` (a new file, not folded into
+      `db_fallback_checker.py` -- "is the null-guard fallback well-formed" and "is there a leaked/
+      invented credential" are different concerns, mirroring the existing precedent of
+      `security_finding_coverage_checker.py` being its own file): `scan_for_hardcoded_mongodb_uri`
+      scans every planned, non-deleted file (any type, excluding `.env*` by basename -- confirmed
+      via the design review that `.env.example` is the ONE legitimate scaffold file with a real
+      placeholder `mongodb://` literal; every other scaffold file, including `lib/mongodb.ts`
+      itself, has none) for a literal `mongodb(?:\+srv)?://` substring -- an unconditional hard
+      gate in `verify.py` (not tied to whether a real URI is configured, since a hardcoded
+      credential in source is always wrong). This directly targets and would have caught the
+      exact root-cause pattern that produced the original Security Agent finding in the first
+      place, closing the loop that started this whole investigation.
+    - **Part C -- AI disclaimer**: confirmed all 7 real per-stage chat components
+      (`RequirementConversationChat.jsx`, `DomainAgentChat.jsx`, `ArchitectureAgentChat.jsx`,
+      `UiuxAgentChat.jsx`, `CoderAgentChat.jsx`, `SecurityAgentChat.jsx`, `QaAgentChat.jsx`)
+      render the same shared `ChatComposerBox.jsx` -- a real, confirmed single choke point (per
+      that component's own docstring: "there is only one place this markup exists, so it can't
+      drift"). Added one `<p className="text-[11px] text-gray-500 dark:text-gray-400 text-center
+      select-none">AI can make mistakes. Check important information.</p>` as the last element
+      inside the composer's rounded card -- one file, one change, automatically covers every
+      stage including `RequirementConversationChat.jsx`'s two separate call sites (pre-SRS/
+      post-SRS). `select-none` (a genuinely new pattern for this codebase, confirmed via the
+      design review no existing precedent uses it) makes it non-selectable/non-copyable, per the
+      user's own explicit "must not be able to copy that" requirement.
+    - Tests: `tests/test_coder_env_uri.py` (+3: the backtick-trailing fix, `is_machine_generated_
+      revision` true for both known sources and false for a real human/None/empty),
+      `tests/test_coder_agent_revise.py` (+1: end-to-end through the real `revise()` method with
+      the exact real historical finding text -- confirms `write_env_local` is never called and the
+      full finding text, fake URI included, still reaches the planner untouched),
+      `tests/test_coder_functional_checker.py` (updated: both existing failure tests now assert
+      the new `reason` field), new `tests/test_coder_hardcoded_secret_checker.py` (6: the real
+      confirmed `FALLBACK_MONGODB_URI` shape caught, the real scaffold `lib/mongodb.ts` and a
+      clean route never flagged, `.env.example`'s legitimate placeholder excluded, deleted/
+      unplanned files never scanned), new `tests/test_coder_verify_mongodb_gates.py` (8: the
+      conditional crud-gate's every branch -- no URI/not_persisted/post_rejected/passed/no-
+      results/default-false -- plus the hardcoded-secret step's pass/fail wrapping). Full backend
+      suite (excluding the pre-existing Docker-dependent files) run clean, zero regressions.
+      `npm run build` clean.
+
 ## Where to look
 
 - Full build spec (read this first, in order, before any new milestone): `instructions .md`

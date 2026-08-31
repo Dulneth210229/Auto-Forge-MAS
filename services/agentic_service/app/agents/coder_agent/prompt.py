@@ -62,6 +62,13 @@ up at runtime, not at compile time -- these are not optional style preferences):
   click (this keeps every page's reachability provable by a static checker).
 - Never touch `app/layout.tsx`, `next.config.mjs`, `tsconfig.json`, or
   `lib/mongodb.ts` -- they are already complete and feature-agnostic.
+  `lib/mongodb.ts` (via its `connectToDatabase()` export) is the ONLY database connection
+  mechanism in this entire project -- never invent a second one. Never write your own
+  connection-string constant anywhere (a route file, a new lib file, anywhere), even as an
+  "example" or "fallback" placeholder -- e.g. never write something like
+  `const FALLBACK_MONGODB_URI = "mongodb+srv://...";`. This is a real, confirmed anti-pattern:
+  doing this is always a hardcoded-credential security vulnerability, regardless of whether the
+  value is fake, and it is checked for directly.
 - Never set `typescript.ignoreBuildErrors` or `eslint.ignoreDuringBuilds` in
   `next.config.mjs` to work around a real type/lint error -- fix the actual error
   instead. This is checked deterministically and will fail verification.

@@ -57,12 +57,22 @@ matter what was actually built).
 While render_checker's own live server is up (the one and only window during verify() where a
 real, reachable server exists at all -- see that module's own docstring), functional_checker.
 check_crud_functionality reuses it for a real POST-then-GET exercise against a planned create
-endpoint, synthesizing a payload from the create form's own state shape. Deliberately
-informational-only, never a hard gate (see that module's own docstring for the honest reasons a
-heuristic payload synthesizer isn't yet trusted to block a run) -- its real value is independent,
-broad "does the endpoint even work" coverage; the reported bug's own exact class (a required field
-no form can ever supply) is caught reliably and deterministically by the separate,
-hard-gated schema/form field coverage check above instead.
+endpoint, synthesizing a payload from the create form's own state shape. Informational by
+default (see that module's own docstring for the honest reasons a heuristic payload synthesizer
+isn't yet trusted as a general-purpose hard gate) -- EXCEPT: when a real MongoDB URI is
+configured for this project (a real, confirmed incident), a "not_persisted" result (the write was
+accepted, 2xx, but its own distinctive value never reappeared on a GET) becomes a hard gate --
+unambiguous evidence a route isn't genuinely using the real database, as opposed to a
+"post_rejected" non-2xx result, which stays informational since a real validation rule can
+legitimately reject this check's own guessed payload. See _build_crud_functional_step.
+
+A sibling, unconditional hard gate closes the other half of the same real incident:
+hardcoded_secret_checker.scan_for_hardcoded_mongodb_uri catches a MongoDB connection string
+hardcoded directly in generated source -- the exact real root cause that produced a Security
+Agent CWE-798 finding, whose own quoted evidence text later triggered a separate bug in
+env_uri.py's URI-auto-detection (see that module's own comment). lib/mongodb.ts's scaffold is the
+only legitimate connection mechanism; a second, invented connection-string constant is always
+wrong regardless of whether a real URI is configured.
 
 One last check closes the gap neither static check above can: a page can
 compile, exist under app/, AND be linked, while still crashing at runtime
@@ -96,6 +106,7 @@ from app.agents.coder_agent.db_fallback_checker import (
     scan_for_db_fallback_quality,
 )
 from app.agents.coder_agent.functional_checker import check_crud_functionality
+from app.agents.coder_agent.hardcoded_secret_checker import scan_for_hardcoded_mongodb_uri
 from app.agents.coder_agent.nav_checker import check_page_reachability
 from app.agents.coder_agent.ui_expectations_checker import scan_ui_expectations_coverage
 from app.agents.coder_agent.render_checker import RenderCheckError, check_runtime_render
@@ -248,6 +259,10 @@ class CoderVerifier:
         steps.append(db_null_guard_step)
         passed = passed and db_null_guard_step["status"] != "failed"
 
+        hardcoded_secret_step = self._build_hardcoded_secret_step(workspace_root, code_plan_json)
+        steps.append(hardcoded_secret_step)
+        passed = passed and hardcoded_secret_step["status"] != "failed"
+
         schema_form_coverage_step = self._build_schema_form_coverage_step(workspace_root, code_plan_json)
         steps.append(schema_form_coverage_step)
         passed = passed and schema_form_coverage_step["status"] != "failed"
@@ -257,12 +272,20 @@ class CoderVerifier:
         steps.append(page_reachability_step)
         passed = passed and page_reachability_step["status"] != "failed"
 
+        # A real MongoDB URI, once correctly saved (see env_uri.py's own machine-generated-comment
+        # guard), makes "did this route actually use it" something worth hard-gating on -- see
+        # _build_crud_functional_step's own comment for exactly which failure shape qualifies.
+        # When no real URI is configured, serving seed data is the correct, designed behavior
+        # (prompt.py's own "Database availability fallback" rule), so this stays purely
+        # informational, unchanged from before.
+        real_uri_configured = bool(workspace_service.read_env_local(project_id).get("MONGODB_URI"))
+
         if build_step["status"] == "passed":
             reachable_routes = [
                 item["route"] for item in page_reachability_results if item["status"] == "reachable"
             ]
             home_page_step, feature_page_step, crud_check_step = self._build_runtime_render_steps(
-                project_id, reachable_routes, workspace_root, code_plan_json
+                project_id, reachable_routes, workspace_root, code_plan_json, real_uri_configured
             )
         else:
             skip_output = "Skipped because the app did not build successfully."
@@ -275,6 +298,9 @@ class CoderVerifier:
         passed = passed and home_page_step["status"] != "failed"
 
         steps.append(crud_check_step)
+        # A no-op when crud_check_step["status"] can never be "failed" (real URI not configured,
+        # or the build/preview server never came up) -- see _build_crud_functional_step.
+        passed = passed and crud_check_step["status"] != "failed"
 
         steps.append(self._build_placeholder_stub_step(workspace_root, touched_paths))
         steps.append(self._build_db_fallback_quality_step(workspace_root, touched_paths))
@@ -366,6 +392,33 @@ class CoderVerifier:
             "output": "These Route Handlers call connectToDatabase() but have no branch guarding "
             "against a null (no-database-configured) result -- this crashes instead of serving "
             "seed data:\n" + "\n".join(lines),
+        }
+
+    def _build_hardcoded_secret_step(self, workspace_root, code_plan_json: dict[str, Any]) -> dict[str, str]:
+        """
+        Unconditional hard gate (not tied to whether a real URI is configured, unlike the CRUD
+        functional check above) -- a hardcoded MongoDB connection string in generated source is
+        always wrong, regardless of what the user has or hasn't configured. See
+        hardcoded_secret_checker.py's own module docstring for the real, confirmed incident this
+        closes: the Coder Agent's own LLM inventing a fake FALLBACK_MONGODB_URI constant instead
+        of using lib/mongodb.ts's existing process.env.MONGODB_URI read.
+        """
+        findings = scan_for_hardcoded_mongodb_uri(workspace_root, code_plan_json)
+
+        if not findings:
+            return {
+                "name": "hardcoded MongoDB URI scan",
+                "status": "passed",
+                "output": "No hardcoded MongoDB connection string found outside .env* files.",
+            }
+
+        lines = [f"- {item['file']}:{item['line']} -- {item['snippet']}" for item in findings]
+        return {
+            "name": "hardcoded MongoDB URI scan",
+            "status": "failed",
+            "output": "A MongoDB connection string is hardcoded directly in source -- the only "
+            "connection mechanism must be lib/mongodb.ts's existing process.env.MONGODB_URI read. "
+            "Remove this and use connectToDatabase() instead:\n" + "\n".join(lines),
         }
 
     def _build_schema_form_coverage_step(self, workspace_root, code_plan_json: dict[str, Any]) -> dict[str, str]:
@@ -550,7 +603,12 @@ class CoderVerifier:
         }
 
     def _build_runtime_render_steps(
-        self, project_id: str, reachable_routes: list[str], workspace_root, code_plan_json: dict[str, Any]
+        self,
+        project_id: str,
+        reachable_routes: list[str],
+        workspace_root,
+        code_plan_json: dict[str, Any],
+        real_uri_configured: bool = False,
     ) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
         def on_server_ready(base_url: str) -> dict[str, Any]:
             return {"results": check_crud_functionality(workspace_root, code_plan_json, base_url)}
@@ -602,11 +660,27 @@ class CoderVerifier:
                 "output": summary + "\n".join(lines),
             }
 
-        crud_check_step = self._build_crud_functional_step(result.get("crud_check"))
+        crud_check_step = self._build_crud_functional_step(result.get("crud_check"), real_uri_configured)
 
         return home_page_step, feature_page_step, crud_check_step
 
-    def _build_crud_functional_step(self, crud_check: dict[str, Any] | None) -> dict[str, str]:
+    def _build_crud_functional_step(
+        self, crud_check: dict[str, Any] | None, real_uri_configured: bool = False
+    ) -> dict[str, str]:
+        """
+        Informational by default -- see functional_checker.py's own module docstring for why a
+        heuristic payload synthesizer isn't yet trusted as a hard gate in general (a real,
+        legitimate validation rejection of a guessed payload is a plausible non-bug outcome).
+
+        EXCEPT: when a real MongoDB URI is configured for this project (real_uri_configured),
+        a "not_persisted" result -- POST succeeded (2xx, so the backend accepted the payload as
+        valid) but the write's own distinctive value never reappeared on a follow-up GET -- is
+        real, unambiguous evidence the route isn't genuinely using the real database (the exact,
+        confirmed real bug class this hard gate exists to catch: a route that always serves fake
+        seed data regardless of a correctly-configured connection). A "post_rejected" result (a
+        non-2xx response) never hard-gates, even with a real URI configured, since that can be a
+        real, correct validation rule rejecting this check's own guessed payload.
+        """
         if not crud_check or not crud_check.get("results"):
             return {
                 "name": "CRUD functional smoke test",
@@ -615,24 +689,31 @@ class CoderVerifier:
             }
 
         results = crud_check["results"]
-        # Informational by design -- see functional_checker.py's own module docstring for why a
-        # heuristic payload synthesizer isn't yet trusted as a hard gate; the exact bug class this
-        # check exists to help with is caught reliably by the separate, hard-gated
-        # schema/form field coverage step instead.
         lines = [
             f"- {item.get('endpoint') or '(n/a)'}: {item['status']} -- {item['output']}"
             for item in results
         ]
         failed = [item for item in results if item["status"] == "failed"]
-        summary = (
-            f"{len(failed)} of {len(results)} synthesized CRUD check(s) failed "
-            "(does not fail verification, review before approving):\n"
-            if failed
-            else "\n"
-        )
+        not_persisted = [item for item in failed if item.get("reason") == "not_persisted"]
+        hard_gate_failed = bool(real_uri_configured and not_persisted)
+
+        if hard_gate_failed:
+            summary = (
+                f"{len(not_persisted)} of {len(results)} synthesized CRUD check(s) show a real "
+                "MongoDB URI is configured for this project, but the write never actually "
+                "persisted -- this route is not using the real database:\n"
+            )
+        elif failed:
+            summary = (
+                f"{len(failed)} of {len(results)} synthesized CRUD check(s) failed "
+                "(does not fail verification, review before approving):\n"
+            )
+        else:
+            summary = "\n"
+
         return {
             "name": "CRUD functional smoke test",
-            "status": "info",
+            "status": "failed" if hard_gate_failed else "info",
             "output": summary + "\n".join(lines),
         }
 

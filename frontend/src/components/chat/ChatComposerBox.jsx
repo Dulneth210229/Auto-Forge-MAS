@@ -161,6 +161,13 @@ export default function ChatComposerBox({
           onStop={onStop}
         />
       </div>
+      {/* A passive notice, not content -- select-none keeps it out of a drag-select/copy, since
+          it's never meant to be quoted or copied like a real message. Rendered here (inside the
+          one shared composer every agent's chat renders, per this component's own docstring)
+          so every stage gets it automatically with this one change. */}
+      <p className="text-[11px] text-gray-500 dark:text-gray-400 text-center select-none">
+        AI can make mistakes. Check important information.
+      </p>
     </div>
   );
 }

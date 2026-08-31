@@ -226,6 +226,7 @@ def test_check_crud_functionality_fails_on_non_2xx_post(tmp_path):
         results = check_crud_functionality(tmp_path, plan, "http://localhost:12345")
 
     assert results[0]["status"] == "failed"
+    assert results[0]["reason"] == "post_rejected"
     assert "Failed to create item" in results[0]["output"]
 
 
@@ -244,4 +245,5 @@ def test_check_crud_functionality_fails_when_created_item_never_shows_up_on_read
         results = check_crud_functionality(tmp_path, plan, "http://localhost:12345")
 
     assert results[0]["status"] == "failed"
+    assert results[0]["reason"] == "not_persisted"
     assert "never appeared" in results[0]["output"]

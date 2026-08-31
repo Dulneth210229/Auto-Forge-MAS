@@ -1,6 +1,6 @@
 # Security Report -- Deep Scan Stream Test / Deep Scan Stream Test Feature
 
-Generated: 2026-08-30T15:36:47.149442+00:00
+Generated: 2026-08-30T19:47:02.500660+00:00
 Scan type: **AI model deep scan**
 Gate decision: **FAIL**
 Total findings: 1 (1 critical, 0 moderate, 0 warning)
