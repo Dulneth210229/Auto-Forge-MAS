@@ -1097,7 +1097,9 @@ export default function ResultTab({ featureId, stage, allArtifacts }) {
                 artifact={selectedVersionArtifact}
                 domainImprovementsArtifact={domainImprovements}
               />
-              {stage === "architecture" && <ArchitectureDiagramsGallery allArtifacts={allArtifacts} />}
+              {stage === "architecture" && (
+                <ArchitectureDiagramsGallery allArtifacts={allArtifacts} version={selectedVersionArtifact.version} />
+              )}
               {domainImprovements && (
                 <div className="mt-5 pt-5 border-t border-gray-100 dark:border-gray-800">
                   <ArtifactContentView artifact={domainImprovements} />

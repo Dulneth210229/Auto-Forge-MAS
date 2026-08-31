@@ -10,10 +10,6 @@ const DIAGRAM_TYPES = [
   ["class_diagram", "Class Diagram"],
 ];
 
-function latestByVersion(versions) {
-  return versions.length ? versions.reduce((best, a) => (a.version > best.version ? a : best), versions[0]) : null;
-}
-
 // Diagrams are separate artifacts from architecture_plan JSON (not embedded in it) -- previously
 // they were rendered stacked at the very end of the plan document, requiring a long scroll to
 // find them. A tab switcher shows one at a time (matching how a reviewer actually looks at
@@ -26,14 +22,25 @@ function latestByVersion(versions) {
 // their ONLY viewing surface, which is also why a "Download PUML source" link was added here:
 // removing diagrams from the generic artifact list would otherwise have made the raw .puml source
 // unreachable.
-export default function ArchitectureDiagramsGallery({ allArtifacts }) {
+//
+// `version` is the Architecture Plan version currently selected in ResultTab.jsx's own version
+// dropdown -- a real, reported bug had this component always show the LATEST diagrams regardless
+// of which plan version the human was actually looking at, because it picked each diagram type's
+// artifact via latestByVersion(...) with no awareness of the selection at all. Diagrams are always
+// saved at the SAME version number as the Architecture Plan that produced them (one run/revision,
+// one shared version across the plan + its 3 diagrams -- see architecture_agent's own
+// _save_architecture_artifacts), so filtering to an EXACT version match here is what actually keeps
+// the gallery in sync with the document above it, not another "closest" heuristic.
+export default function ArchitectureDiagramsGallery({ allArtifacts, version }) {
   const available = DIAGRAM_TYPES.map(([type, label]) => {
-    const pngVersions = allArtifacts.filter((a) => a.artifact_type === type && a.artifact_format === "png");
-    const latest = latestByVersion(pngVersions);
-    if (!latest) return null;
-    const pumlVersions = allArtifacts.filter((a) => a.artifact_type === type && a.artifact_format === "text");
-    const pumlArtifact = latestByVersion(pumlVersions);
-    return { type, label, artifact: latest, pumlArtifact };
+    const pngAtVersion = allArtifacts.find(
+      (a) => a.artifact_type === type && a.artifact_format === "png" && a.version === version
+    );
+    if (!pngAtVersion) return null;
+    const pumlAtVersion = allArtifacts.find(
+      (a) => a.artifact_type === type && a.artifact_format === "text" && a.version === version
+    );
+    return { type, label, artifact: pngAtVersion, pumlArtifact: pumlAtVersion ?? null };
   }).filter(Boolean);
 
   const [activeType, setActiveType] = useState(available[0]?.type ?? null);
