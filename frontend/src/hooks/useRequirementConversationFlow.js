@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
+import { useAuth } from "../contexts/AuthContext";
 import {
   useReplyToRequirementConversationWithDocument,
   useRequirementConversation,
@@ -18,6 +19,7 @@ import {
 // JSX, so the chat window's actual markup lives in exactly one place (ChatPanel + ChatComposerBox
 // + RequirementConversationParts).
 export function useRequirementConversationFlow(featureId) {
+  const { user } = useAuth();
   const [streamedText, setStreamedText] = useState("");
   const [streamStarted, setStreamStarted] = useState(false);
   const [replyStreamedText, setReplyStreamedText] = useState("");
@@ -119,7 +121,7 @@ export function useRequirementConversationFlow(featureId) {
       confirmAbortRef.current = controller;
       return confirmRequirementConversationStream(
         featureId,
-        payload,
+        { confirmed_by: user?.name || user?.email, ...payload },
         (event) => {
           if (event.type === "token") {
             setStreamStarted(true);

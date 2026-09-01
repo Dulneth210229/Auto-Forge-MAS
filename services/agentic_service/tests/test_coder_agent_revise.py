@@ -912,3 +912,61 @@ async def test_revise_with_uri_and_other_instructions_does_not_short_circuit(age
     assert "loading spinner" in captured_human_comment["value"]
     # ...and the normal revise() flow ran to completion (a real CoderAgentOutput, not a short-circuit).
     assert output.code_plan_json == EXISTING_PLAN
+
+
+@pytest.mark.asyncio
+async def test_revise_never_saves_a_uri_from_a_machine_generated_revision_comment(agent, feature_with_prior_run):
+    # Real, confirmed bug this closes: a Security Agent finding's own root_cause text quoted the
+    # exact offending source line containing a fake, LLM-invented MongoDB URI -- extract_mongodb_uri
+    # matched it and silently overwrote the human's real .env.local value. revised_by="security_agent_report"
+    # (already set correctly by the real frontend trigger, SecurityDecisionDialog.jsx/ResultTab.jsx)
+    # is what this fix uses to recognize the comment isn't genuinely human-typed.
+    feature_id = feature_with_prior_run["feature_id"]
+    fake_uri = "mongodb+srv://finodil_admin:Sup3rSecretPass!@cluster0.abcde.mongodb.net/finodil"
+    revision_comment = (
+        "Fix the following security findings reported by the Security Agent:\n\n"
+        "[CRITICAL] lib/mongodb.ts:6 -- MongoDB connection string with an embedded, hardcoded "
+        "credential (CWE-798)\n"
+        f'  Root cause: The hardcoded MongoDB URI with credentials: `const FALLBACK_MONGODB_URI = "{fake_uri}";`'
+    )
+    request = CoderAgentReviseRequest(revision_comment=revision_comment, revised_by="security_agent_report")
+
+    # Mock BOTH real planning paths (this comment names a real file, "lib/mongodb.ts:6," so it
+    # may route through either the fast well-specified-file path or full exploration -- which one
+    # is irrelevant to what this test verifies) and capture whichever actually gets called.
+    captured_human_comment = {}
+
+    async def _fake_generate(**kwargs):
+        captured_human_comment["value"] = kwargs.get("human_comment")
+        return EXISTING_PLAN, "raw"
+
+    async def _fake_generate_via_exploration(**kwargs):
+        captured_human_comment["value"] = kwargs.get("human_comment")
+        return EXISTING_PLAN, "raw"
+
+    with (
+        patch.object(agent.planner, "generate", new=_fake_generate),
+        patch.object(agent.planner, "generate_via_exploration", new=_fake_generate_via_exploration),
+        patch.object(agent.plan_validator, "validate", return_value=None),
+        patch("app.agents.coder_agent.agent.workspace_service") as mock_workspace,
+        patch("app.agents.coder_agent.agent.preview_service") as mock_preview,
+        patch.object(
+            agent, "_code_with_retries", new=AsyncMock(return_value=({"passed": True, "steps": []}, 1))
+        ),
+        patch.object(agent, "_save_artifacts", return_value=["artifact_new"]),
+    ):
+        mock_workspace.diff_against_main.return_value = {
+            "added": [], "modified": [], "deleted": [], "diff_text": ""
+        }
+        mock_workspace.read_env_local.return_value = {}
+
+        output = await agent.revise(feature_id, request)
+
+    # The fake URI must NEVER be written to .env.local.
+    mock_workspace.write_env_local.assert_not_called()
+    mock_preview.restart_if_running.assert_not_called()
+    # The full finding text -- fake URI included -- must reach the planner untouched: it's
+    # necessary vulnerability-description context, not a real secret to strip.
+    assert fake_uri in captured_human_comment["value"]
+    assert "CWE-798" in captured_human_comment["value"]
+    assert output.code_plan_json == EXISTING_PLAN

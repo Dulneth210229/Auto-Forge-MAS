@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useAuth } from "../../contexts/AuthContext";
 import { useDomainAgentFlowContext } from "../workspace/DomainAgentFlowContext";
 import { useKnowledgeDocuments } from "../../hooks/useKnowledgeDocuments";
 import { listGatingArtifactVersions } from "../../lib/deriveStageStatus";
@@ -63,6 +64,7 @@ export default function DomainAgentChat({
   onViewArtifact,
   isLoadingTimeline,
 }) {
+  const { user } = useAuth();
   const {
     runStream,
     handleRunStream,
@@ -131,7 +133,7 @@ export default function DomainAgentChat({
     const call = hasOutput
       ? handleReviseStream({
           revision_comment: trimmed,
-          revised_by: "human_user",
+          revised_by: user?.name || user?.email || "human_user",
           referenced_document_ids: documentIds,
         })
       : handleRunStream({ human_comment: trimmed, referenced_document_ids: documentIds });
@@ -186,7 +188,7 @@ export default function DomainAgentChat({
           <div className="flex justify-end">
             <div className="max-w-[85%] bg-accent-600 dark:bg-accent-500 text-white rounded-lg rounded-tr-sm px-3 py-2 text-sm">
               <p className="text-xs text-accent-200 dark:text-accent-100/80 mb-0.5">You</p>
-              <p className="whitespace-pre-wrap">
+              <p className="whitespace-pre-wrap break-words">
                 {pendingHumanReply || (
                   <span className="italic text-accent-200 dark:text-accent-100/80">(no comment provided)</span>
                 )}

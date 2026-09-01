@@ -53,9 +53,11 @@ class ArchitectureUseCasePlantUMLBuilder:
         for actor in actors:
             actor_id = self._safe_alias(actor.get("id", actor.get("name", "ACT")))
             actor_name = self._safe_label(actor.get("name", actor_id))
-            # <<system>> marks a non-human/external-system actor (agilemodeling.com's own rule);
-            # a real, human user role gets no stereotype suffix at all.
-            stereotype_suffix = " <<system>>" if str(actor.get("stereotype", "")).strip().lower() == "system" else ""
+            # <<external system>> marks a non-human/external-system actor (agilemodeling.com's
+            # own "use a stereotype to indicate a non-human actor" rule, rendered with an
+            # explicit, unambiguous label rather than the bare word "system" -- a real reviewer
+            # flagged the bare tag as unclear); a real, human user role gets no stereotype suffix.
+            stereotype_suffix = " <<external system>>" if str(actor.get("stereotype", "")).strip().lower() == "system" else ""
             lines.append(f'actor "{actor_name}" as {actor_id}{stereotype_suffix}')
 
         lines.append("")

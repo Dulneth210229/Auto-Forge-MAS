@@ -76,7 +76,7 @@ export default function ChatComposerBox({
   }
 
   return (
-    <div className="relative rounded-2xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-white/5 p-2.5 flex flex-col gap-2">
+    <div className="relative rounded-2xl border border-gray-300 dark:border-gray-700 bg-gray-100 dark:bg-white/5 p-2.5 flex flex-col gap-2">
       {children}
 
       {attachedFile && (
@@ -133,17 +133,26 @@ export default function ChatComposerBox({
               </button>
             </>
           )}
-          <div className="flex flex-col gap-1 min-w-0">
+          {/* flex-auto (grow AND shrink, basis on the pill's own natural content width -- NOT
+              flex-1's forced equal-halves basis-0%) so these two pills size to their own content
+              at comfortable widths (e.g. "qwen2.5-coder:14b" shows in full whenever there's
+              genuinely room for it) but still actually shrink once the row runs out of space --
+              previously they only had an upper bound (PillDropdown's own max-w-[160px]), never
+              anything letting them shrink below their intrinsic content width, so at narrow
+              (laptop) column widths the row overflowed past the composer's own card border.
+              fillWidth (below) is what lets the pill itself actually shrink to match instead of
+              just this wrapper. */}
+          <div className="flex flex-col gap-1 min-w-0 flex-auto">
             <span className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wide px-1">
               Agent
             </span>
-            <AgentSelect value={selectedAgent} onChange={onSelectAgent} isRunning={isAgentRunning} />
+            <AgentSelect value={selectedAgent} onChange={onSelectAgent} isRunning={isAgentRunning} fillWidth />
           </div>
-          <div className="flex flex-col gap-1 min-w-0">
+          <div className="flex flex-col gap-1 min-w-0 flex-auto">
             <span className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wide px-1">
               Model
             </span>
-            <ModelSelect agentStage={selectedAgent} />
+            <ModelSelect agentStage={selectedAgent} fillWidth />
           </div>
         </div>
         <SendButton
@@ -152,6 +161,13 @@ export default function ChatComposerBox({
           onStop={onStop}
         />
       </div>
+      {/* A passive notice, not content -- select-none keeps it out of a drag-select/copy, since
+          it's never meant to be quoted or copied like a real message. Rendered here (inside the
+          one shared composer every agent's chat renders, per this component's own docstring)
+          so every stage gets it automatically with this one change. */}
+      <p className="text-[11px] text-gray-500 dark:text-gray-400 text-center select-none">
+        AI can make mistakes. Check important information.
+      </p>
     </div>
   );
 }

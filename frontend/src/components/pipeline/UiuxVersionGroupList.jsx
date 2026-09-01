@@ -3,6 +3,7 @@ import StatusBadge from "../common/StatusBadge";
 import ImageViewer from "../artifacts/ImageViewer";
 import ApprovalPanel from "./ApprovalPanel";
 import { screenshotPageLabel } from "../../lib/artifactTypeMeta";
+import { featureUiuxImagesDownloadUrl } from "../../api/client";
 
 // Direct user correction: the backend already treats every page generated together as ONE
 // version (see artifact_service.save_binary_artifact's version_override fix + approval_service's
@@ -63,7 +64,17 @@ export default function UiuxVersionGroupList({ artifacts, featureId, onView, onA
                 {group.items.length} page{group.items.length === 1 ? "" : "s"}
               </span>
             </span>
-            <StatusBadge status={group.status} />
+            <div className="flex items-center gap-3">
+              {/* Direct user request: download every generated image for this version at once,
+                  instead of saving each page's screenshot one by one. */}
+              <a
+                href={featureUiuxImagesDownloadUrl(featureId, group.version)}
+                className="text-xs font-semibold text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300"
+              >
+                Download images (.zip)
+              </a>
+              <StatusBadge status={group.status} />
+            </div>
           </div>
 
           <div className="p-3 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">

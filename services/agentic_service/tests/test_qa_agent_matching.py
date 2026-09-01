@@ -29,12 +29,12 @@ def test_merge_results_matches_by_test_file_and_name():
     assert merged[0]["duration_ms"] == 5
 
 
-def test_merge_results_unmatched_case_is_marked_skipped_with_explicit_note():
+def test_merge_results_unmatched_case_is_marked_failed_with_explicit_note():
     test_cases = [_tc("a test that never ran", "broken.unit.test.ts")]
 
     merged = qa_agent._merge_results(test_cases, [])
 
-    assert merged[0]["status"] == "skipped"
+    assert merged[0]["status"] == "failed"
     assert "did not produce a matching result" in merged[0]["failure_message"]
 
 
@@ -47,7 +47,37 @@ def test_merge_results_does_not_cross_match_same_name_different_file():
 
     merged = qa_agent._merge_results(test_cases, results)
 
-    assert merged[0]["status"] == "skipped"
+    assert merged[0]["status"] == "failed"
+
+
+def test_merge_results_falls_back_to_positional_match_within_same_file_on_name_drift():
+    test_cases = [_tc("adds two numbers correctly", "math.unit.test.ts")]
+    results = [
+        {"name": "should add two numbers", "test_file": "math.unit.test.ts", "status": "passed",
+         "duration_ms": 3, "failure_message": None},
+    ]
+
+    merged = qa_agent._merge_results(test_cases, results)
+
+    assert merged[0]["status"] == "passed"
+    assert merged[0]["duration_ms"] == 3
+
+
+def test_merge_results_leaves_genuine_execution_gap_as_failed():
+    test_cases = [
+        _tc("case one", "math.unit.test.ts"),
+        _tc("case two", "math.unit.test.ts"),
+    ]
+    results = [
+        {"name": "case one", "test_file": "math.unit.test.ts", "status": "passed",
+         "duration_ms": 2, "failure_message": None},
+    ]
+
+    merged = qa_agent._merge_results(test_cases, results)
+
+    assert merged[0]["status"] == "passed"
+    assert merged[1]["status"] == "failed"
+    assert "did not produce a matching result" in merged[1]["failure_message"]
 
 
 def test_merge_results_preserves_planning_metadata_alongside_real_result():
@@ -79,14 +109,14 @@ def test_count_by_category_totals_and_per_status_counts():
         {"category": "unit", "status": "passed"},
         {"category": "unit", "status": "failed"},
         {"category": "integration", "status": "passed"},
-        {"category": "regression", "status": "skipped"},
+        {"category": "regression", "status": "failed"},
     ]
 
     counts = qa_agent._count_by_category(merged)
 
-    assert counts["unit"] == {"total": 2, "passed": 1, "failed": 1, "skipped": 0}
-    assert counts["integration"] == {"total": 1, "passed": 1, "failed": 0, "skipped": 0}
-    assert counts["regression"] == {"total": 1, "passed": 0, "failed": 0, "skipped": 1}
+    assert counts["unit"] == {"total": 2, "passed": 1, "failed": 1}
+    assert counts["integration"] == {"total": 1, "passed": 1, "failed": 0}
+    assert counts["regression"] == {"total": 1, "passed": 0, "failed": 1}
 
 
 def test_count_by_category_always_includes_all_three_categories_even_when_empty():
@@ -105,7 +135,6 @@ def _sample_report(test_cases=None, out_of_scope=None, raw_stderr=""):
         "tests_generated": len(test_cases or []),
         "tests_passed": sum(1 for tc in (test_cases or []) if tc["status"] == "passed"),
         "tests_failed": sum(1 for tc in (test_cases or []) if tc["status"] == "failed"),
-        "tests_skipped": sum(1 for tc in (test_cases or []) if tc["status"] == "skipped"),
         "tests_by_category": qa_agent._count_by_category(test_cases or []),
         "test_cases": test_cases or [],
         "out_of_scope_modules": out_of_scope or [],

@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useAuth } from "../../contexts/AuthContext";
 import { useUiuxAgentFlowContext } from "../workspace/UiuxAgentFlowContext";
 import { listGatingArtifactVersions } from "../../lib/deriveStageStatus";
 import { SUGGESTION_CHIPS } from "../../lib/suggestionChips";
@@ -63,6 +64,7 @@ export default function UiuxAgentChat({
   onViewArtifact,
   isLoadingTimeline,
 }) {
+  const { user } = useAuth();
   const {
     runStream,
     handleRunStream,
@@ -137,7 +139,7 @@ export default function UiuxAgentChat({
     const call = hasOutput
       ? handleReviseStream({
           revision_comment: trimmed,
-          revised_by: "human_user",
+          revised_by: user?.name || user?.email || "human_user",
           target_page_ids: hasMultiplePages && targetPageIds.size > 0 ? [...targetPageIds] : null,
         })
       : handleRunStream({ use_enhanced_srs_if_available: true, human_comment: trimmed });
@@ -196,7 +198,7 @@ export default function UiuxAgentChat({
           <div className="flex justify-end">
             <div className="max-w-[85%] bg-accent-600 dark:bg-accent-500 text-white rounded-lg rounded-tr-sm px-3 py-2 text-sm">
               <p className="text-xs text-accent-200 dark:text-accent-100/80 mb-0.5">You</p>
-              <p className="whitespace-pre-wrap">
+              <p className="whitespace-pre-wrap break-words">
                 {pendingHumanReply || (
                   <span className="italic text-accent-200 dark:text-accent-100/80">(no comment provided)</span>
                 )}

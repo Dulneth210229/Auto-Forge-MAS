@@ -93,7 +93,7 @@ export default function ChatBubble({ item, allArtifacts, onViewArtifact, onEditS
             <p className="text-xs text-accent-200 dark:text-accent-100/80 mb-0.5">
               {ASK_EVENT_LABELS[item.eventType] || "Revision requested"} &middot; {stageTag}
             </p>
-            <p className="whitespace-pre-wrap">{item.comment || <span className="italic text-accent-200 dark:text-accent-100/80">(no comment provided)</span>}</p>
+            <p className="whitespace-pre-wrap break-words">{item.comment || <span className="italic text-accent-200 dark:text-accent-100/80">(no comment provided)</span>}</p>
           </div>
           <div className="flex items-center gap-2">
             {onEditSubmit && item.comment && (
@@ -126,7 +126,7 @@ export default function ChatBubble({ item, allArtifacts, onViewArtifact, onEditS
     return (
       <div className="flex justify-start group">
         <div className="max-w-[85%] flex flex-col items-start gap-1">
-          <div className="bg-gray-100 dark:bg-white/10 text-gray-800 dark:text-gray-200 rounded-lg rounded-tl-sm px-3 py-2 text-sm">
+          <div className="bg-gray-200 dark:bg-white/10 text-gray-800 dark:text-gray-200 rounded-lg rounded-tl-sm px-3 py-2 text-sm">
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-0.5">{stageTag} Agent</p>
             <p>
               {messageText}
@@ -143,7 +143,7 @@ export default function ChatBubble({ item, allArtifacts, onViewArtifact, onEditS
               )}
             </p>
             {item.summary && (
-              <p className="mt-1 text-gray-600 dark:text-gray-300 whitespace-pre-wrap">
+              <p className="mt-1 text-gray-600 dark:text-gray-300 whitespace-pre-wrap break-words">
                 {item.summary}
               </p>
             )}
@@ -156,7 +156,7 @@ export default function ChatBubble({ item, allArtifacts, onViewArtifact, onEditS
 
   return (
     <div className="flex justify-center">
-      <p className="text-xs text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-gray-700 rounded-full px-3 py-1">
+      <p className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-white/5 border border-gray-300 dark:border-gray-700 rounded-full px-3 py-1">
         {stageTag}: {STATUS_LABELS[item.status] || item.status}
         {item.comment ? ` -- "${item.comment}"` : ""}
       </p>

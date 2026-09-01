@@ -248,11 +248,116 @@ async def test_generate_regression_tests_returns_none_when_no_acceptance_criteri
     assert result is None
 
 
+def test_scan_for_forbidden_jest_constructs_detects_each_construct():
+    assert generator.scan_for_forbidden_jest_constructs('test.skip("x", () => {});') == ["test.skip(...)"]
+    assert generator.scan_for_forbidden_jest_constructs('it.todo("x");') == ["it.todo(...)"]
+    assert generator.scan_for_forbidden_jest_constructs('test.each([1, 2])("x", () => {});') == ["test.each(...)"]
+
+
+def test_scan_for_forbidden_jest_constructs_returns_empty_for_clean_code():
+    assert generator.scan_for_forbidden_jest_constructs('test("x", () => { expect(1).toBe(1); });') == []
+
+
 @pytest.mark.asyncio
-async def test_generate_integration_tests_returns_none_on_llm_failure_no_fallback():
+async def test_generate_with_retries_succeeds_on_a_later_attempt_after_an_empty_response():
+    provider = MagicMock()
+    ok_raw = _two_part_response('{"test_cases": [{"name": "a test"}]}', 'test("a test", () => {});')
+    provider.invoke_agent = AsyncMock(side_effect=["not json at all", ok_raw])
+    with patch("app.services.llm_provider_service.llm_provider_service.get_provider", return_value=provider):
+        result = await generator._generate_with_retries("system", "user", max_attempts=3)
+
+    assert result is not None
+    assert result.test_cases[0].name == "a test"
+    assert provider.invoke_agent.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_generate_with_retries_retries_when_forbidden_construct_is_used():
+    provider = MagicMock()
+    forbidden_raw = _two_part_response('{"test_cases": [{"name": "a"}]}', 'test.skip("a", () => {});')
+    ok_raw = _two_part_response('{"test_cases": [{"name": "a"}]}', 'test("a", () => {});')
+    provider.invoke_agent = AsyncMock(side_effect=[forbidden_raw, ok_raw])
+    with patch("app.services.llm_provider_service.llm_provider_service.get_provider", return_value=provider):
+        result = await generator._generate_with_retries("system", "user", max_attempts=3)
+
+    assert result is not None
+    assert "test.skip" not in result.test_code
+    assert provider.invoke_agent.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_generate_with_retries_returns_none_after_exhausting_every_attempt():
+    provider = MagicMock()
+    provider.invoke_agent = AsyncMock(side_effect=TimeoutError())
+    with patch("app.services.llm_provider_service.llm_provider_service.get_provider", return_value=provider):
+        result = await generator._generate_with_retries("system", "user", max_attempts=2)
+
+    assert result is None
+    assert provider.invoke_agent.await_count == 2
+
+
+def test_deterministic_integration_fallback_asserts_response_instanceof_response_never_status_code():
+    target = {
+        "route_rel": "app/api/items/route.ts",
+        "route_source": "export async function GET() { return Response.json([]); }\n"
+                         "export async function POST(request) { return Response.json({}); }",
+    }
+
+    result = generator._deterministic_integration_fallback(target)
+
+    assert result is not None
+    assert {tc.target_function for tc in result.test_cases} == {"GET", "POST"}
+    assert "expect(response).toBeInstanceOf(Response)" in result.test_code
+    assert 'body: "{}"' in result.test_code  # POST gets a body
+
+
+def test_deterministic_integration_fallback_returns_none_when_no_http_methods_exported():
+    target = {"route_rel": "lib/helpers.ts", "route_source": "export function notAMethod() {}"}
+
+    assert generator._deterministic_integration_fallback(target) is None
+
+
+def test_deterministic_regression_fallback_names_the_acceptance_criteria_it_stands_in_for():
+    route_target = {
+        "route_rel": "app/api/items/route.ts",
+        "route_source": "export async function GET() { return Response.json([]); }",
+    }
+    acceptance_criteria = [{"id": "AC-001", "description": "Items list loads."}]
+
+    result = generator._deterministic_regression_fallback(acceptance_criteria, route_target)
+
+    assert result is not None
+    tc = result.test_cases[0]
+    assert tc.category == "regression"
+    assert "AC-001" in tc.expected_behavior
+
+
+def test_deterministic_regression_fallback_returns_none_without_a_route_target():
+    assert generator._deterministic_regression_fallback([{"id": "AC-001"}], None) is None
+
+
+@pytest.mark.asyncio
+async def test_generate_integration_tests_falls_back_to_deterministic_smoke_test_on_llm_failure():
     target = {
         "route_rel": "app/api/items/route.ts",
         "route_source": "export async function GET() { return Response.json([]); }",
+        "related_files": [],
+    }
+    provider = MagicMock()
+    provider.invoke_agent = AsyncMock(side_effect=TimeoutError())
+    with patch("app.services.llm_provider_service.llm_provider_service.get_provider", return_value=provider):
+        result = await generator.generate_integration_tests(target)
+
+    assert result is not None
+    assert result.test_cases[0].method == "deterministic-fallback"
+    assert result.test_cases[0].category == "integration"
+
+
+@pytest.mark.asyncio
+async def test_generate_integration_tests_returns_none_when_llm_fails_and_no_http_methods_exported():
+    target = {
+        "route_rel": "lib/helpers.ts",
+        "route_source": "export function notAnHttpMethod() { return true; }",
         "related_files": [],
     }
     provider = MagicMock()

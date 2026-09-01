@@ -189,8 +189,8 @@ class ArchitectureUseCaseModeler:
         """
         Build actors from SRS roles and SDS context.
 
-        Each candidate carries a stereotype ("human" | "system", per the agilemodeling.com
-        rule "use <<system>> to indicate a non-human/system actor") and an optional
+        Each candidate carries a stereotype ("human" | "system" -- the internal field value;
+        renders as the clearer <<external system>> tag, see usecase_builder.py) and an optional
         `generalizes` (parent actor name, for a real "Admin is-a User"-style actor
         generalization -- resolved to a real relationship in _build_relationships). The LLM's
         own `specification["actors"]` entries (dicts, may carry an explicit stereotype/
@@ -212,13 +212,13 @@ class ArchitectureUseCaseModeler:
                 if str(candidate.get("stereotype", "")).strip().lower() == "system":
                     stereotype = "system"
                 generalizes = str(candidate.get("generalizes", "")).strip()
-            actor_records.append({"name": self._title_case(name), "stereotype": stereotype, "generalizes": generalizes})
+            actor_records.append({"name": self._clean_actor_name(name), "stereotype": stereotype, "generalizes": generalizes})
 
         for candidate in self._as_list(srs_json.get("user_roles")):
             name = self._extract_name(candidate)
             if not name or self._is_technical_actor(name):
                 continue
-            actor_records.append({"name": self._title_case(name), "stereotype": "human", "generalizes": ""})
+            actor_records.append({"name": self._clean_actor_name(name), "stereotype": "human", "generalizes": ""})
 
         context_view = self._get_design_view(sds_json, "context_view")
 
@@ -226,13 +226,13 @@ class ArchitectureUseCaseModeler:
             name = self._extract_name(candidate)
             if not name or self._is_technical_actor(name):
                 continue
-            actor_records.append({"name": self._title_case(name), "stereotype": "human", "generalizes": ""})
+            actor_records.append({"name": self._clean_actor_name(name), "stereotype": "human", "generalizes": ""})
 
         for candidate in self._as_list(context_view.get("external_systems")):
             name = self._extract_name(candidate)
             if not name or self._is_technical_actor(name):
                 continue
-            actor_records.append({"name": self._title_case(name), "stereotype": "system", "generalizes": ""})
+            actor_records.append({"name": self._clean_actor_name(name), "stereotype": "system", "generalizes": ""})
 
         seen_names_lower: set[str] = set()
         deduped: list[dict[str, str]] = []
@@ -330,15 +330,34 @@ class ArchitectureUseCaseModeler:
                 self._all_requirement_ids(srs_json),
             ))
 
-        # A feature-level diagram has exactly one main goal -- if the LLM
-        # produced more than one "main" entry, keep the first and fold the
-        # rest in as included behaviours rather than discarding them.
+        # A feature-level diagram normally has exactly one main goal, but if
+        # the LLM produced more than one "main" entry, only collapse the
+        # ones that are actually the SAME goal sloppily double-marked
+        # (overlapping or empty related_requirements) -- a second main entry
+        # whose related_requirements are genuinely DISJOINT from every
+        # already-kept main is a real, confirmed case of two independent
+        # top-level capabilities (e.g. "Add Item" and "List Items") and is
+        # kept as an independent sibling instead. Forcing it into
+        # "included" would make _build_relationships draw a false
+        # <<include>> edge claiming one always happens as part of the
+        # other -- exactly the "not the clearest way to represent" class of
+        # modeling problem this whole pass exists to avoid.
         if len(main) > 1:
-            demoted = main[1:]
-            for use_case in demoted:
-                use_case["category"] = "included"
-            included = demoted + included
-            main = main[:1]
+            kept_main: list[dict[str, Any]] = [main[0]]
+            for candidate in main[1:]:
+                candidate_related = set(candidate.get("related_requirements", []))
+                collides_with_kept = any(
+                    not candidate_related
+                    or not set(kept.get("related_requirements", []))
+                    or candidate_related & set(kept.get("related_requirements", []))
+                    for kept in kept_main
+                )
+                if collides_with_kept:
+                    candidate["category"] = "included"
+                    included.insert(0, candidate)
+                else:
+                    kept_main.append(candidate)
+            main = kept_main
 
         return main, included, extension
 
@@ -485,6 +504,13 @@ class ArchitectureUseCaseModeler:
         record's own `generalizes` field (previously a structurally dead code path -- the
         renderer/validator already supported "generalization" as a relationship type, but nothing
         upstream ever produced one).
+
+        When there is more than one main use case (two genuinely independent top-level
+        capabilities -- see _build_use_cases_from_specification's own relaxed demotion logic), an
+        included/extension use case's include/extend edge connects to whichever main use case it
+        shares the most related_requirements overlap with (via _closest_main_use_case), not
+        blindly to the first main -- falling back to the first main only when an item shares no
+        requirement id with any of them.
         """
 
         if not main_use_cases:
@@ -533,7 +559,7 @@ class ArchitectureUseCaseModeler:
 
         for included in included_use_cases:
             relationships.append({
-                "from": base_uc_id,
+                "from": self._closest_main_use_case(included, main_use_cases) or base_uc_id,
                 "to": included["id"],
                 "type": "include",
                 "label": "",
@@ -543,7 +569,7 @@ class ArchitectureUseCaseModeler:
         for extension in extension_use_cases:
             relationships.append({
                 "from": extension["id"],
-                "to": base_uc_id,
+                "to": self._closest_main_use_case(extension, main_use_cases) or base_uc_id,
                 "type": "extend",
                 "label": "",
                 "related_requirements": extension.get("related_requirements", []),
@@ -578,6 +604,37 @@ class ArchitectureUseCaseModeler:
                 })
 
         return relationships
+
+    def _closest_main_use_case(
+        self,
+        use_case: dict[str, Any],
+        main_use_cases: list[dict[str, Any]],
+    ) -> str | None:
+        """
+        Which main use case's id an included/extension use case's include/extend edge should
+        point at, when there is more than one main use case. Picks the main use case with the
+        largest related_requirements overlap (a real, cheap signal of which top-level capability
+        this item actually supports); returns None (caller falls back to the first main) when the
+        item shares no requirement id with any main use case at all. With exactly one main use
+        case (the overwhelmingly common case), this always resolves to that one main's id.
+        """
+
+        if len(main_use_cases) <= 1:
+            return main_use_cases[0]["id"] if main_use_cases else None
+
+        item_related = set(str(r) for r in use_case.get("related_requirements", []) if r)
+        if not item_related:
+            return main_use_cases[0]["id"]
+
+        best_id = None
+        best_overlap = 0
+        for main_use_case in main_use_cases:
+            overlap = len(item_related & set(main_use_case.get("related_requirements", [])))
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_id = main_use_case["id"]
+
+        return best_id or main_use_cases[0]["id"]
 
     def _build_analysis(
         self,
@@ -757,6 +814,30 @@ class ArchitectureUseCaseModeler:
         cleaned = " ".join(words[:5])
         return self._title_case(cleaned)
 
+    def _clean_actor_name(self, name: str) -> str:
+        """
+        Cleanup for an ACTOR name -- deliberately simpler than
+        _clean_use_case_name above, since an actor is a noun phrase (a role
+        or system), not an action, so there's no leading-verb convention to
+        preserve. Strips trailing sentence punctuation (a real, confirmed bug:
+        an LLM-authored actor name that reads as a full sentence, e.g. "An
+        Image Hosting Solution To Store Uploaded Images."), strips leading
+        filler words, and caps at 4 words to keep it a real name rather than
+        a description.
+        """
+
+        cleaned = str(name).strip()
+        cleaned = re.sub(r"[.!?]+$", "", cleaned).strip()
+        cleaned = re.sub(r"[^a-zA-Z0-9 ]+", " ", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        words = [word for word in cleaned.split() if word.lower() not in self.NAME_FILLER_WORDS]
+
+        if not words:
+            return "User"
+
+        cleaned = " ".join(words[:4])
+        return self._title_case(cleaned)
+
     # ------------------------------------------------------------------
     # Deduplication and IDs
     # ------------------------------------------------------------------
@@ -773,6 +854,27 @@ class ArchitectureUseCaseModeler:
     # Jaccard overlap threshold (on stemmed name tokens) above which two use
     # cases are treated as naming the same real behaviour.
     NAME_SIMILARITY_THRESHOLD = 0.6
+
+    # Short, curated CRUD-shaped verb set for the two GENUINELY-DIFFERENT-
+    # capability checks below (the merge guard here, and
+    # usecase_validator.py's own _validate_no_conjoined_capabilities --
+    # kept as a separate copy per this codebase's convention of not sharing
+    # files between these deterministic agent modules). Deliberately short:
+    # a broader list (search/filter/export/approve/etc.) is more likely to
+    # legitimately co-occur in one real use case name (e.g. "Export Filtered
+    # Report") and would false-positive.
+    DISTINCT_CAPABILITY_VERBS = {
+        "add": "add", "create": "add",
+        "list": "list", "view": "list", "browse": "list",
+        "update": "update", "edit": "update",
+        "delete": "delete", "remove": "delete",
+    }
+
+    def _leading_capability_verb(self, name: str) -> str | None:
+        words = re.findall(r"[a-zA-Z0-9]+", str(name).lower())
+        if not words:
+            return None
+        return self.DISTINCT_CAPABILITY_VERBS.get(words[0])
 
     def _merge_near_duplicates(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """
@@ -837,21 +939,43 @@ class ArchitectureUseCaseModeler:
         return list(merged.values())
 
     def _dedupe_by_shared_requirements(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """
+        Merge two entries citing the exact same related_requirements set --
+        EXCEPT when their names each start with a DIFFERENT curated
+        distinct-capability verb (see DISTINCT_CAPABILITY_VERBS), which is a
+        real, confirmed sign they're two genuinely different capabilities
+        (e.g. "Add Item" and "List Items") that just happen to share one
+        broadly-worded SRS requirement id -- not the same behaviour. This
+        guard is narrow on purpose: two entries sharing requirements with NO
+        curated-verb mismatch (e.g. both start with "Initiate," the real
+        password-reset/recovery-flow duplicate this pass exists to catch)
+        still merge exactly as before.
+        """
         result: list[dict[str, Any]] = []
+        result_verbs: list[str | None] = []
         seen: list[tuple[frozenset, int]] = []
 
         for item in items:
             related = frozenset(str(r) for r in item.get("related_requirements", []) if r)
+            item_verb = self._leading_capability_verb(item.get("name", ""))
 
             match_index = None
             if related:
-                match_index = next((index for existing, index in seen if existing == related), None)
+                for existing, index in seen:
+                    if existing != related:
+                        continue
+                    existing_verb = result_verbs[index]
+                    if item_verb and existing_verb and item_verb != existing_verb:
+                        continue
+                    match_index = index
+                    break
 
             if match_index is not None:
                 result[match_index] = self._merge_two_use_cases(result[match_index], item)
                 continue
 
             result.append(dict(item))
+            result_verbs.append(item_verb)
             if related:
                 seen.append((related, len(result) - 1))
 

@@ -73,13 +73,21 @@ export default function DiffViewer({ content }) {
       {diffText && (
         // diff2html's own bundled CSS renders a light-themed table regardless of app theme --
         // wrapped in a light card so it stays legible rather than half-blending into a dark page.
-        // `relative` is load-bearing (see this file's own docstring above), not decorative --
+        // `text-gray-900` is load-bearing, not decorative -- this div otherwise sets no color of
+        // its own and inherits the app's dark-mode ancestor text color (near-white), which only
+        // diff2html's own explicitly-colored elements (e.g. `.d2h-file-name` links) escape --
+        // everything else (the "Files changed (N)"/"hide"/"show" file-list chrome, plain
+        // whitespace/text nodes) rendered white text on this div's own white background,
+        // confirmed via a real computed-style check: `color: rgb(255,255,255)` on a
+        // `background-color: rgb(255,255,255)` box. Forcing a dark text color here, independent
+        // of theme, is what actually makes "always render light" (the comment below) true.
+        // `relative` is load-bearing too (see this file's own docstring above), not decorative --
         // without it, diff2html's absolutely-positioned line-number gutter cells escape this box
         // entirely. `max-h-[70vh] overflow-y-auto` (alongside the pre-existing overflow-x-auto)
         // keeps a large diff scrolling locally instead of dominating the whole Result tab.
         <div
           ref={containerRef}
-          className={`mt-4 text-xs bg-white rounded-lg p-2 relative max-h-[70vh] overflow-y-auto overflow-x-auto ${
+          className={`mt-4 text-xs bg-white text-gray-900 rounded-lg p-2 relative max-h-[70vh] overflow-y-auto overflow-x-auto ${
             renderFailed ? "hidden" : ""
           }`}
         />

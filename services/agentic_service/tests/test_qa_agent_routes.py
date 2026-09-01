@@ -50,9 +50,8 @@ def test_run_returns_agent_run_response_shape(feature_id):
         tests_generated=3,
         tests_passed=2,
         tests_failed=1,
-        tests_skipped=0,
         artifact_ids=["artifact_json", "artifact_md"],
-        message="2 passed, 1 failed, 0 skipped.",
+        message="2 passed, 1 failed.",
     )
 
     with patch("app.api.routes.agents.qa_agent.run", new=AsyncMock(return_value=fake_output)):
@@ -68,7 +67,7 @@ def test_run_returns_agent_run_response_shape(feature_id):
 
 
 def test_run_accepts_optional_human_comment(feature_id):
-    fake_output = QAAgentOutput(status="completed", artifact_ids=[], message="0 passed, 0 failed, 0 skipped.")
+    fake_output = QAAgentOutput(status="completed", artifact_ids=[], message="0 passed, 0 failed.")
 
     with patch("app.api.routes.agents.qa_agent.run", new=AsyncMock(return_value=fake_output)):
         response = client.post(

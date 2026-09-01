@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useCreateProject } from "../../hooks/useProjects";
+import { useAuth } from "../../contexts/AuthContext";
 import ErrorBanner from "../common/ErrorBanner";
 
 export default function CreateProjectForm({ onCreated, onCancel }) {
@@ -7,6 +8,7 @@ export default function CreateProjectForm({ onCreated, onCancel }) {
   const [projectType, setProjectType] = useState("E-commerce");
   const [targetStack, setTargetStack] = useState("Next.js");
   const createProject = useCreateProject();
+  const { user } = useAuth();
 
   async function handleSubmit(event) {
     event.preventDefault();
@@ -15,7 +17,7 @@ export default function CreateProjectForm({ onCreated, onCancel }) {
       project_name: projectName.trim(),
       project_type: projectType.trim(),
       target_stack: targetStack.trim() || "Next.js",
-      created_by: "human_user",
+      created_by: user?.name || user?.email || "human_user",
     });
 
     onCreated?.(project);

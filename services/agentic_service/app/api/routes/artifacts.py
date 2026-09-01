@@ -10,8 +10,9 @@ These APIs allow users or frontend to:
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
 
+from app.api.deps import get_current_user
 from app.agents.architecture_agent.pdf_builder import build_architecture_plan_html
 from app.agents.domain_agent.pdf_builder import build_enhanced_srs_html
 from app.agents.requirement_agent.pdf_builder import build_srs_html
@@ -43,40 +44,66 @@ _PDF_BUILDERS = {
 router = APIRouter(tags=["Artifacts"])
 
 
-@router.get("/features/{feature_id}/artifacts", response_model=list[ArtifactResponse])
-def list_feature_artifacts(feature_id: str):
+def _check_feature_owned(feature_id: str, current_user: dict) -> None:
     """
-    Return all artifacts generated for a feature.
+    Verify the signed-in user owns feature_id's parent project -- mirrors features.py's
+    _get_owned_project/_get_owned_feature reasoning exactly (404 either way; an ownerless
+    pre-migration project is accessible to any signed-in user). Only raises; callers that
+    already fetched the artifact/feature reuse that object themselves.
     """
     feature = store.features.get(feature_id)
 
     if not feature:
-        raise HTTPException(status_code=404, detail="Feature not found")
+        raise HTTPException(status_code=404, detail="Artifact not found")
 
-    return artifact_service.list_feature_artifacts(feature_id)
+    project = store.projects.get(feature["project_id"])
+    owner_id = project.get("user_id") if project else None
+
+    if not project or (owner_id is not None and owner_id != current_user["user_id"]):
+        raise HTTPException(status_code=404, detail="Artifact not found")
 
 
-@router.get("/artifacts/{artifact_id}", response_model=ArtifactResponse)
-def get_artifact(artifact_id: str):
-    """
-    Return artifact metadata by artifact ID.
-    """
+def _get_owned_artifact(artifact_id: str, current_user: dict):
     artifact = artifact_service.get_artifact(artifact_id)
 
     if not artifact:
         raise HTTPException(status_code=404, detail="Artifact not found")
 
+    _check_feature_owned(artifact.feature_id, current_user)
+
     return artifact
 
 
+@router.get("/features/{feature_id}/artifacts", response_model=list[ArtifactResponse])
+def list_feature_artifacts(feature_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    Return all artifacts generated for a feature -- only if it belongs to the signed-in user.
+    """
+    _check_feature_owned(feature_id, current_user)
+
+    return artifact_service.list_feature_artifacts(feature_id)
+
+
+@router.get("/artifacts/{artifact_id}", response_model=ArtifactResponse)
+def get_artifact(artifact_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    Return artifact metadata by artifact ID -- only if it belongs to the signed-in user.
+    """
+    return _get_owned_artifact(artifact_id, current_user)
+
+
 @router.put("/artifacts/{artifact_id}/skipped-findings", response_model=ArtifactResponse)
-def update_skipped_finding(artifact_id: str, request: SkippedFindingUpdateRequest):
+def update_skipped_finding(
+    artifact_id: str, request: SkippedFindingUpdateRequest, current_user: dict = Depends(get_current_user)
+):
     """
     Mark (or unmark) one security finding as skipped -- a human choosing to accept the risk and
     proceed without fixing it. Does not touch the artifact's content_json (see
     artifact_service.set_finding_skipped's own docstring); only its side-channel
-    skipped_finding_ids metadata field.
+    skipped_finding_ids metadata field. Only if the artifact belongs to the signed-in user.
     """
+    _get_owned_artifact(artifact_id, current_user)
+
     artifact = artifact_service.set_finding_skipped(
         artifact_id=artifact_id, finding_id=request.finding_id, skipped=request.skipped
     )
@@ -88,13 +115,13 @@ def update_skipped_finding(artifact_id: str, request: SkippedFindingUpdateReques
 
 
 @router.delete("/artifacts/{artifact_id}", status_code=204)
-def delete_artifact(artifact_id: str):
+def delete_artifact(artifact_id: str, current_user: dict = Depends(get_current_user)):
     """
     Permanently delete one unapproved artifact version (e.g. a rejected/pending SRS revision a
     human wants to clear out of the version list). Refuses (400) to delete an approved artifact.
+    Only if the artifact belongs to the signed-in user.
     """
-    if not artifact_service.get_artifact(artifact_id):
-        raise HTTPException(status_code=404, detail="Artifact not found")
+    _get_owned_artifact(artifact_id, current_user)
 
     try:
         artifact_service.delete_artifact(artifact_id)
@@ -104,9 +131,10 @@ def delete_artifact(artifact_id: str):
 
 
 @router.get("/artifacts/{artifact_id}/content")
-def get_artifact_content(artifact_id: str):
+def get_artifact_content(artifact_id: str, current_user: dict = Depends(get_current_user)):
     """
-    Return an artifact's actual file content -- not just metadata.
+    Return an artifact's actual file content -- not just metadata. Only if it belongs to the
+    signed-in user.
 
     PNG artifacts are served as raw binary (image/png) so the frontend can use
     the URL directly in an <img src>. Everything else (markdown/json/text/code)
@@ -114,10 +142,7 @@ def get_artifact_content(artifact_id: str):
     best-effort parsed content_json when the format is "json" (never raises on
     a parse failure -- content_json is simply null in that case).
     """
-    artifact = artifact_service.get_artifact(artifact_id)
-
-    if not artifact:
-        raise HTTPException(status_code=404, detail="Artifact not found")
+    artifact = _get_owned_artifact(artifact_id, current_user)
 
     # Real, live-found bug: read_artifact_content/read_artifact_binary raise a raw
     # FileNotFoundError when the referenced file is missing on disk (e.g. a shared Mongo Atlas
@@ -162,16 +187,14 @@ def get_artifact_content(artifact_id: str):
 
 
 @router.get("/artifacts/{artifact_id}/download")
-def download_artifact(artifact_id: str):
+def download_artifact(artifact_id: str, current_user: dict = Depends(get_current_user)):
     """
     Download an artifact's raw file, exactly as generated -- sibling of /content (which wraps
     the same bytes in a JSON envelope for in-app viewing). This one sets Content-Disposition so
-    a browser saves it as a real file instead of rendering/parsing it.
+    a browser saves it as a real file instead of rendering/parsing it. Only if it belongs to
+    the signed-in user.
     """
-    artifact = artifact_service.get_artifact(artifact_id)
-
-    if not artifact:
-        raise HTTPException(status_code=404, detail="Artifact not found")
+    artifact = _get_owned_artifact(artifact_id, current_user)
 
     filename = Path(artifact.file_path).name
     media_type = _DOWNLOAD_MEDIA_TYPES.get(artifact.artifact_format, "text/plain")
@@ -199,18 +222,16 @@ def download_artifact(artifact_id: str):
 
 
 @router.get("/artifacts/{artifact_id}/download-pdf")
-def download_artifact_pdf(artifact_id: str):
+def download_artifact_pdf(artifact_id: str, current_user: dict = Depends(get_current_user)):
     """
     Download an artifact as a real, formatted PDF instead of its raw JSON file --
     a sibling of /download, scoped to the document-shaped artifact types
     registered in _PDF_BUILDERS (SRS, Enhanced SRS, Architecture Plan, Security
     Report, QA Report) that each have a dedicated pdf_builder HTML template.
-    Every other artifact type's /download behavior is unchanged.
+    Every other artifact type's /download behavior is unchanged. Only if the artifact belongs
+    to the signed-in user.
     """
-    artifact = artifact_service.get_artifact(artifact_id)
-
-    if not artifact:
-        raise HTTPException(status_code=404, detail="Artifact not found")
+    artifact = _get_owned_artifact(artifact_id, current_user)
 
     builder = _PDF_BUILDERS.get(artifact.artifact_type)
     if builder is None:

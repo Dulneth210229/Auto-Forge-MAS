@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useAuth } from "../../contexts/AuthContext";
 import { useRequirementConversationFlowContext } from "../workspace/RequirementConversationFlowContext";
 import { AgentTurnBubble, HumanBubble, LiveReactionBubble, QualityGateBanner } from "../pipeline/RequirementConversationParts";
 import RequirementRunForm from "../pipeline/RequirementRunForm";
@@ -52,6 +53,7 @@ export default function RequirementConversationChat({
   onViewArtifact,
   isLoadingTimeline,
 }) {
+  const { user } = useAuth();
   const {
     conversation,
     isLoading,
@@ -61,7 +63,6 @@ export default function RequirementConversationChat({
     stopReplyStream,
     replyStreamedText,
     replyStreamStarted,
-    respondWithDocument,
     editTurnStream,
     handleEditTurnStream,
     stopEditTurnStream,
@@ -82,7 +83,6 @@ export default function RequirementConversationChat({
 
   // Pre-SRS composer state.
   const [replyText, setReplyText] = useState("");
-  const [attachedFile, setAttachedFile] = useState(null);
   const [showManualForm, setShowManualForm] = useState(false);
   // The reply is optimistically shown as a real chat bubble the instant it's sent -- the actual
   // turn (with the agent's reaction+questions) only lands in conversation.turn_history once the
@@ -104,24 +104,15 @@ export default function RequirementConversationChat({
     handleEditTurnStream({ turnIndex, reply: newReply }).finally(() => setEditingContext(null));
   }
 
-  const isReplying = respondStream.isPending || respondWithDocument.isPending;
+  const isReplying = respondStream.isPending;
 
   function handleReplySubmit(event) {
     event.preventDefault();
-    if (isReplying) return;
+    if (isReplying || !conversation) return;
     const trimmed = replyText.trim();
-    if (!trimmed && !attachedFile) return;
+    if (!trimmed) return;
 
     setReplyText("");
-    setAttachedFile(null);
-
-    if (attachedFile) {
-      // Scrapes the SRS details straight out of the attached text/PDF/DOCX file (a requirements
-      // brief the human already has written up), same as typing them in by hand. Not streamed --
-      // there's no meaningful "live" moment while the file is being parsed server-side.
-      respondWithDocument.mutate({ file: attachedFile, reply: trimmed });
-      return;
-    }
 
     // Live, token-by-token reply (ChatGPT/Claude-style) -- the agent's reaction+questions "type"
     // in as they're generated instead of appearing all at once after a blocking wait.
@@ -147,7 +138,7 @@ export default function RequirementConversationChat({
     if (!trimmed) return;
 
     setPendingRevisionReply(trimmed);
-    handleReviseStream({ revision_comment: trimmed, revised_by: "human_user" }).finally(() =>
+    handleReviseStream({ revision_comment: trimmed, revised_by: user?.name || user?.email || "human_user" }).finally(() =>
       setPendingRevisionReply(null)
     );
   }
@@ -174,7 +165,14 @@ export default function RequirementConversationChat({
   // dropping that one term here -- the composer now stays mounted and merely disables itself + offers
   // a Stop control during generation, exactly mirroring how the reply-stream phase (isReplying) has
   // always behaved.
-  const canShowPreSrsComposer = !hasOutput && conversation && !isConfirmed && !showManualForm;
+  //
+  // Direct user request: the composer must be visible ALONGSIDE the "Start Conversation" button
+  // too, not appear only once a conversation already exists -- previously gated on `conversation`
+  // being truthy, which meant nothing but the button rendered at all beforehand. Now mounted the
+  // whole time this stage is in its pre-SRS phase (including the initial loading/not-yet-started
+  // state); ChatComposerBox's own `disabled` prop (set below) is what actually keeps it inert
+  // until start.mutate() succeeds and `conversation` exists.
+  const canShowPreSrsComposer = !hasOutput && !isConfirmed && !showManualForm;
   const revisionReactionText = extractStreamingJsonStringField(revisionStreamedText, "revision_summary");
 
   return (
@@ -189,17 +187,9 @@ export default function RequirementConversationChat({
             <h3 className="text-sm font-bold text-gray-900 dark:text-gray-100">Talk to the Requirement Agent</h3>
             <p className="text-xs text-gray-400 dark:text-gray-500 -mt-2">
               Start from your rough description -- the agent will ask what's missing, prioritizing
-              what matters most for a correct architecture and design.
+              what matters most for a correct architecture and design. Click "Start Conversation"
+              below to begin.
             </p>
-            <ErrorBanner error={start.error} fallback="Failed to start the conversation." />
-            <button
-              onClick={() => start.mutate()}
-              disabled={start.isPending}
-              className="self-start bg-accent-600 hover:bg-accent-700 disabled:opacity-50 text-white text-sm font-semibold py-2 px-4 rounded-md"
-            >
-              {start.isPending ? "Starting..." : "Start Conversation"}
-            </button>
-            {start.isPending && <LoadingSpinner label="Reading the feature description..." />}
           </div>
         ) : showManualForm && !hasOutput ? (
           <RequirementRunForm featureId={featureId} feature={feature} />
@@ -286,7 +276,6 @@ export default function RequirementConversationChat({
             ) : !hasOutput ? (
               <>
                 <ErrorBanner error={respondStream.error} fallback="Failed to send your reply." />
-                <ErrorBanner error={respondWithDocument.error} fallback="Failed to process the attached document." />
                 <ErrorBanner error={confirmStream.error} fallback="Failed to generate the SRS." />
                 <QualityGateBanner
                   qualityGate={conversation.quality_gate}
@@ -324,7 +313,7 @@ export default function RequirementConversationChat({
                   <div className="flex justify-end">
                     <div className="max-w-[85%] bg-accent-600 dark:bg-accent-500 text-white rounded-lg rounded-tr-sm px-3 py-2 text-sm">
                       <p className="text-xs text-accent-200 dark:text-accent-100/80 mb-0.5">You</p>
-                      <p className="whitespace-pre-wrap">{pendingRevisionReply}</p>
+                      <p className="whitespace-pre-wrap break-words">{pendingRevisionReply}</p>
                     </div>
                   </div>
                 )}
@@ -380,17 +369,37 @@ export default function RequirementConversationChat({
         </div>
       )}
 
+      {/* Direct user request: the "Start Conversation" button must sit right next to the chat
+          input, not up in the (mostly empty, pre-conversation) scroll area far above it -- and
+          the composer itself must stay the same shared ChatComposerBox every other agent's chat
+          uses, just disabled until the conversation actually exists. */}
+      {!isLoading && !conversation && (
+        <div className="flex-shrink-0 pb-2">
+          <ErrorBanner error={start.error} fallback="Failed to start the conversation." />
+          <button
+            onClick={() => start.mutate()}
+            disabled={start.isPending}
+            className="w-full bg-accent-600 hover:bg-accent-700 disabled:opacity-50 text-white text-sm font-semibold py-2 px-4 rounded-md"
+          >
+            {start.isPending ? "Starting..." : "Start Conversation"}
+          </button>
+          {start.isPending && <LoadingSpinner label="Reading the feature description..." />}
+        </div>
+      )}
+
       {canShowPreSrsComposer && (
         <form onSubmit={handleReplySubmit} className="flex-shrink-0">
           <ChatComposerBox
             value={replyText}
             onChange={(event) => setReplyText(event.target.value)}
             placeholder={
-              isGenerating
-                ? "Generating the final SRS -- please wait..."
-                : "Answer the question(s) above, attach a document, or add anything else..."
+              !conversation
+                ? 'Click "Start Conversation" above to begin...'
+                : isGenerating
+                  ? "Generating the final SRS -- please wait..."
+                  : "Answer the question(s) above, or add anything else..."
             }
-            disabled={isReplying || editTurnStream.isPending || isGenerating}
+            disabled={!conversation || isReplying || editTurnStream.isPending || isGenerating}
             pending={isReplying || isGenerating}
             onStop={
               respondStream.isPending
@@ -402,10 +411,6 @@ export default function RequirementConversationChat({
             selectedAgent={selectedAgent}
             onSelectAgent={selectAgent}
             isAgentRunning={isAgentRunning}
-            allowFileAttach
-            attachedFile={attachedFile}
-            onAttachFile={setAttachedFile}
-            onRemoveAttachedFile={() => setAttachedFile(null)}
           />
         </form>
       )}

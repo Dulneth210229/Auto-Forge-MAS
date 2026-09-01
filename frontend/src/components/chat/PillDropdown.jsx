@@ -28,6 +28,16 @@ export default function PillDropdown({
   // "down" is for a trigger near the TOP of its panel instead (e.g. a Result tab's version
   // picker) -- only the popup's own positioning classes change, everything else is identical.
   direction = "up",
+  // Direct, real bug fix: the composer's Agent/Model pills only ever had an upper bound
+  // (triggerClassName's max-w-*), never anything letting them actually SHRINK when the row runs
+  // out of room -- at narrow (laptop-width) columns the trigger kept its full intrinsic content
+  // width and visibly overflowed past the composer's own card border. `fillWidth` makes both the
+  // root wrapper and the trigger button real, shrinkable flex participants (w-full + min-w-0) so
+  // the row's normal flex-shrink behavior can squeeze this pill down to its max-w-* cap AND
+  // below it once space is genuinely tight, letting the label's own `truncate` take over instead
+  // of overflowing. Defaults to false so VersionSelect (which wants intrinsic/max-content sizing,
+  // not full-width stretch) is completely unaffected.
+  fillWidth = false,
 }) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef(null);
@@ -55,16 +65,16 @@ export default function PillDropdown({
   const selected = options.find((option) => option.value === value);
 
   return (
-    <div ref={containerRef} className="relative inline-flex">
+    <div ref={containerRef} className={`relative inline-flex ${fillWidth ? "w-full min-w-0" : ""}`}>
       <button
         type="button"
         disabled={disabled}
         title={title}
         onClick={() => setOpen((current) => !current)}
-        className={`inline-flex items-center gap-1.5 text-xs font-medium rounded-full bg-gray-100 dark:bg-white/10 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed pl-3 pr-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-accent-500 cursor-pointer ${triggerClassName}`}
+        className={`inline-flex items-center gap-1.5 text-xs font-medium rounded-full bg-white dark:bg-white/10 border border-gray-300 dark:border-transparent text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed pl-3 pr-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-accent-500 cursor-pointer ${fillWidth ? "w-full min-w-0" : ""} ${triggerClassName}`}
       >
         {leading}
-        <span className="truncate">{selected?.label ?? emptyLabel}</span>
+        <span className="truncate min-w-0">{selected?.label ?? emptyLabel}</span>
         <svg
           viewBox="0 0 20 20"
           fill="currentColor"

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useAuth } from "../../contexts/AuthContext";
 import { useArchitectureAgentFlowContext } from "../workspace/ArchitectureAgentFlowContext";
 import { listGatingArtifactVersions } from "../../lib/deriveStageStatus";
 import { SUGGESTION_CHIPS } from "../../lib/suggestionChips";
@@ -54,6 +55,7 @@ export default function ArchitectureAgentChat({
   onViewArtifact,
   isLoadingTimeline,
 }) {
+  const { user } = useAuth();
   const {
     runStream,
     handleRunStream,
@@ -71,6 +73,7 @@ export default function ArchitectureAgentChat({
     revisionPhase,
     revisionPhaseStartedAt,
     revisionStreamError,
+    plainRunMutation,
   } = useArchitectureAgentFlowContext();
 
   const [comment, setComment] = useState("");
@@ -91,19 +94,27 @@ export default function ArchitectureAgentChat({
   const activePhase = hasOutput ? revisionPhase : runPhase;
   const activePhaseStartedAt = hasOutput ? revisionPhaseStartedAt : runPhaseStartedAt;
 
+  // True whenever ANY real Architecture Agent request is in flight for this feature -- the
+  // streaming run/revise (activeStream) OR the "deep exploration mode" form's plain, non-
+  // streaming run (plainRunMutation, only ever relevant pre-hasOutput). Gating every trigger
+  // surface on this combined flag, not just activeStream.isPending, is what actually prevents the
+  // double-fire bug this file's plainRunMutation comment describes -- activeStream.isPending alone
+  // was blind to the form's own separate request.
+  const anyRunPending = activeStream.isPending || (!hasOutput && plainRunMutation.isPending);
+
   // Shared by the composer's Send and a chat bubble's inline "Save & Send" -- both ultimately
   // fire the same stream (run vs. revise) with whatever text the human settled on. The human's
   // message appears in the chat feed immediately via pendingHumanReply -- the real "ask" bubble
   // only lands once the invalidated events query refetches (see useArchitectureAgentFlow.js's own
   // comment on why that refetch MUST be awaited).
   function submitArchitectureMessage(text) {
-    if (activeStream.isPending) return;
+    if (anyRunPending) return;
     const trimmed = text.trim();
 
     setPendingHumanReply(trimmed);
 
     const call = hasOutput
-      ? handleReviseStream({ revision_comment: trimmed, revised_by: "human_user" })
+      ? handleReviseStream({ revision_comment: trimmed, revised_by: user?.name || user?.email || "human_user" })
       : handleRunStream({ use_enhanced_srs_if_available: true, architecture_notes: null, human_comment: trimmed });
 
     call.finally(() => setPendingHumanReply(null));
@@ -111,7 +122,7 @@ export default function ArchitectureAgentChat({
 
   function handleSubmit(event) {
     event.preventDefault();
-    if (activeStream.isPending) return;
+    if (anyRunPending) return;
     const trimmed = comment.trim();
     if (!trimmed) return;
 
@@ -125,12 +136,12 @@ export default function ArchitectureAgentChat({
   // navigates here directly (or wants to re-run without typing a note) -- since the composer
   // otherwise requires non-empty text to submit.
   function handleStartWithoutNotes() {
-    if (activeStream.isPending) return;
+    if (anyRunPending) return;
     submitArchitectureMessage("");
   }
 
   const reactionText = extractStreamingJsonStringField(streamedText, "architecture_rationale");
-  const isAgentRunning = runningStage === "architecture" || activeStream.isPending;
+  const isAgentRunning = runningStage === "architecture" || anyRunPending;
   // Real ticking timer, not a static render-time-only label -- same fix as CoderAgentChat's
   // identical pattern, for the same reason (a long, token-free phase otherwise reads as stuck).
   const elapsedLabel = useElapsedLabel(activePhaseStartedAt);
@@ -161,7 +172,7 @@ export default function ArchitectureAgentChat({
           <div className="flex justify-end">
             <div className="max-w-[85%] bg-accent-600 dark:bg-accent-500 text-white rounded-lg rounded-tr-sm px-3 py-2 text-sm">
               <p className="text-xs text-accent-200 dark:text-accent-100/80 mb-0.5">You</p>
-              <p className="whitespace-pre-wrap">
+              <p className="whitespace-pre-wrap break-words">
                 {pendingHumanReply || (
                   <span className="italic text-accent-200 dark:text-accent-100/80">(no comment provided)</span>
                 )}
@@ -205,27 +216,35 @@ export default function ArchitectureAgentChat({
       </div>
 
       <div className="flex-shrink-0 pt-1">
-        {!hasOutput && !activeStream.isPending && (
+        {!hasOutput && (
           <div className="mb-2 flex flex-col gap-1.5">
-            <button
-              type="button"
-              onClick={handleStartWithoutNotes}
-              className="self-start text-xs font-semibold bg-white dark:bg-white/10 hover:bg-accent-100 dark:hover:bg-white/20 text-accent-700 dark:text-accent-300 border border-accent-300 dark:border-accent-500/40 rounded-full px-3 py-1"
-            >
-              Start Architecture Agent now
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowExplorationForm((v) => !v)}
-              className="self-start text-xs text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 font-semibold underline"
-            >
-              {showExplorationForm
-                ? "Use the quick chat box instead"
-                : "Use deep exploration mode -- slower, reads previous features' approved plans first"}
-            </button>
+            {/* Hidden once ANY run is in flight (streaming or the form's own plain request) --
+                stops a human from firing a second, real request while one is already running.
+                The form itself (below) deliberately stays visible even while pending, so its own
+                in-progress state ("Generating Architecture Plan...") is still shown, not hidden. */}
+            {!anyRunPending && (
+              <>
+                <button
+                  type="button"
+                  onClick={handleStartWithoutNotes}
+                  className="self-start text-xs font-semibold bg-white dark:bg-white/10 hover:bg-accent-100 dark:hover:bg-white/20 text-accent-700 dark:text-accent-300 border border-accent-300 dark:border-accent-500/40 rounded-full px-3 py-1"
+                >
+                  Start Architecture Agent now
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowExplorationForm((v) => !v)}
+                  className="self-start text-xs text-accent-600 dark:text-accent-400 hover:text-accent-800 dark:hover:text-accent-300 font-semibold underline"
+                >
+                  {showExplorationForm
+                    ? "Use the quick chat box instead"
+                    : "Use deep exploration mode -- slower, reads previous features' approved plans first"}
+                </button>
+              </>
+            )}
             {showExplorationForm && (
               <div className="mt-2">
-                <ArchitectureRunForm featureId={featureId} />
+                <ArchitectureRunForm />
               </div>
             )}
           </div>
@@ -252,7 +271,7 @@ export default function ArchitectureAgentChat({
               value={comment}
               onChange={(event) => setComment(event.target.value)}
               disabled={false}
-              pending={activeStream.isPending}
+              pending={anyRunPending}
               onStop={stopActiveStream}
               selectedAgent={selectedAgent}
               onSelectAgent={selectAgent}

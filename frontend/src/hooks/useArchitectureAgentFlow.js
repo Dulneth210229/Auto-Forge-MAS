@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
-import { reviseArchitectureStream, runArchitectureStream } from "../api/agents";
+import { reviseArchitectureStream, runArchitecture, runArchitectureStream } from "../api/agents";
 
 // Architecture Agent's live, token-by-token run/revise (ChatGPT/Claude-style) -- mirrors
 // useDomainAgentFlow.js exactly (same NDJSON-over-fetch mechanism, same AbortController-per-call
@@ -118,6 +118,35 @@ export function useArchitectureAgentFlow(featureId) {
     reviseAbortRef.current?.abort();
   }
 
+  // The non-streaming "deep exploration mode" path (ArchitectureRunForm), a real, separate
+  // backend call (POST /architecture/run, the full agentic tool-calling exploration tier) from
+  // the streaming runStream above (POST /architecture/run/stream, which deliberately skips that
+  // tier for speed -- see ArchitectureAgent.run_stream's own docstring). Kept here, not
+  // instantiated inside ArchitectureRunForm itself, for the exact reason UI/UX Agent's own
+  // duplicate-mutation-instance bug was fixed (see UiuxAgentFlowContext.jsx): two independent
+  // useMutation() instances for the same real action can't see each other's pending state, which
+  // is precisely what let a human fire both this plain run AND the streaming run for one feature's
+  // very first Architecture Agent run, producing two artifact versions with identical content.
+  // Sharing one instance here means every trigger surface (this form, the chat's own quick-action
+  // button/composer, and ResultTab's approve-and-auto-continue) can all check the SAME isPending.
+  const plainRunAbortRef = useRef(null);
+  const plainRunMutation = useMutation({
+    mutationFn: (payload) => {
+      const controller = new AbortController();
+      plainRunAbortRef.current = controller;
+      return runArchitecture(featureId, payload, controller.signal);
+    },
+    onSuccess: invalidateAfterCompletion,
+  });
+
+  function handlePlainRun(payload) {
+    return plainRunMutation.mutateAsync(payload);
+  }
+
+  function stopPlainRun() {
+    plainRunAbortRef.current?.abort();
+  }
+
   return {
     runStream,
     handleRunStream,
@@ -135,5 +164,8 @@ export function useArchitectureAgentFlow(featureId) {
     revisionPhase,
     revisionPhaseStartedAt,
     revisionStreamError,
+    plainRunMutation,
+    handlePlainRun,
+    stopPlainRun,
   };
 }

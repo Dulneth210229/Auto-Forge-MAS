@@ -12,7 +12,7 @@ def _jest_output(test_results):
     return {"testResults": test_results}
 
 
-def test_parses_passed_failed_and_skipped_statuses():
+def test_parses_passed_and_failed_statuses_never_skipped():
     jest_output = _jest_output([
         {
             "name": "/repo/generated_tests/Item.unit.test.ts",
@@ -28,10 +28,12 @@ def test_parses_passed_failed_and_skipped_statuses():
     result = _parse_jest_output(jest_output, exit_code=1)
 
     assert result["passed"] == 1
-    assert result["failed"] == 1
-    assert result["skipped"] == 1
+    assert result["failed"] == 2
+    assert "skipped" not in result
     assert result["exit_code"] == 1
     assert len(result["results"]) == 3
+    assert result["results"][2]["status"] == "failed"
+    assert "pending" in result["results"][2]["failure_message"]
 
 
 def test_test_file_is_normalized_to_basename_only():
@@ -83,7 +85,7 @@ def test_passing_result_has_no_failure_message():
     assert result["results"][0]["failure_message"] is None
 
 
-def test_unknown_status_is_treated_as_skipped():
+def test_unknown_status_is_treated_as_failed_not_skipped():
     jest_output = _jest_output([
         {
             "name": "/repo/generated_tests/Item.unit.test.ts",
@@ -95,8 +97,9 @@ def test_unknown_status_is_treated_as_skipped():
 
     result = _parse_jest_output(jest_output, exit_code=0)
 
-    assert result["skipped"] == 1
-    assert result["results"][0]["status"] == "skipped"
+    assert result["failed"] == 1
+    assert result["results"][0]["status"] == "failed"
+    assert "'todo'" in result["results"][0]["failure_message"]
 
 
 def test_multiple_test_files_are_all_included():
@@ -121,7 +124,7 @@ def test_empty_test_results_returns_zero_counts():
     result = _parse_jest_output({"testResults": []}, exit_code=0)
 
     assert result == {
-        "results": [], "passed": 0, "failed": 0, "skipped": 0, "exit_code": 0, "raw_stderr": "",
+        "results": [], "passed": 0, "failed": 0, "exit_code": 0, "raw_stderr": "",
     }
 
 

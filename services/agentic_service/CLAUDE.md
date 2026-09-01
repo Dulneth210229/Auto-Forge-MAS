@@ -8179,6 +8179,454 @@ milestone — that file is scratch, **this file is the durable one**.
       read-only Python calls against the real SRS or real, but non-mutating, browser navigation) --
       no cleanup needed. Isolated backend/frontend processes stopped afterward.
 
+95. **Authentication, authorization, project ownership/migration, profile management, and a
+    full dashboard redesign (collapsible/resizable sidebar).** The largest single feature this
+    session -- the whole app was previously fully open/single-tenant (confirmed via direct
+    investigation before writing any code: zero `Depends()` anywhere, no JWT/session/cookie
+    handling, `CORS allow_origins=["*"]`, every project stamped with the literal hardcoded
+    string `"created_by": "human_user"`, no user-identity concept on either side at all).
+    - **Backend auth foundation**: new `app/schemas/user_schema.py`, `app/services/auth_service.py`
+      (bcrypt directly -- already installed, avoids passlib's bcrypt>=4.1 friction -- plus PyJWT,
+      newly added), `app/api/deps.py`'s `get_current_user` (the first `Depends()` use in this
+      codebase), `app/api/routes/auth.py` (register/login/me + Google/GitHub OAuth via the
+      already-installed `requests-oauthlib`/`oauthlib`, zero new OAuth dependency), and
+      `app/api/routes/profile.py`. New `store.users` Mongo collection
+      (`in_memory_store.py`, unique indexes on `user_id`/`email`), new `SECRET_KEY`/
+      `JWT_ALGORITHM`/`JWT_EXPIRE_MINUTES`/`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`/
+      `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET`/`OAUTH_REDIRECT_BASE_URL`/`BACKEND_BASE_URL` env
+      vars (`config.py`). OAuth `state` is a short-lived self-signed JWT (no server-side session
+      store exists) -- real CSRF protection with zero new infra. Decided with the user via
+      AskUserQuestion: JWT in `localStorage`, sent as `Authorization: Bearer` (not a cookie,
+      since the existing `allow_origins=["*"]` + `allow_credentials=True` combo would need a
+      real origin allowlist + CSRF protection to use cookies safely).
+    - **Project ownership across the full ~86-endpoint route surface**: `projects.py`/
+      `features.py` each got a small `_get_owned_project`/`_get_owned_feature` helper (404, not
+      403, for someone else's resource -- a user can't distinguish "doesn't exist" from "exists
+      but isn't mine" by probing IDs). `agents.py`'s single shared `_validate_feature` (already
+      called by all 40 agent routes before this work) is the highest-leverage choke point --
+      changing it once protects all 40. `artifacts.py`/`approvals.py`/`knowledge.py`/
+      `preview.py`/`database_connection.py` each got the same pattern at their own handful of
+      call sites. An ownerless (pre-migration legacy) project is deliberately still reachable by
+      any signed-in user, not silently locked out. `llm_settings.py` requires sign-in but isn't
+      ownership-scoped (a genuinely global/shared singleton config, not owned by any one user).
+    - **A real, easy-to-miss gap caught and fixed**: a plain `<img src>`/`<a href>` (artifact
+      preview/download/PDF/code-zip URLs) can't attach a custom `Authorization` header at all --
+      `get_current_user` accepts the token via `?token=` query param as a fallback specifically
+      for those, while every real fetch/axios call keeps using the header
+      (`frontend/src/api/client.js`'s `withToken()` helper appends it only for the URL-building
+      functions that feed `<img>`/`<a>`, never for `apiClient` calls).
+    - **Migration**: `scripts/migrate_existing_projects_to_user.py` -- creates/reuses
+      `dulneth.sa@gmail.com` via the exact same `auth_service.create_user` path real sign-up
+      uses, then one idempotent `update_many({"user_id": {"$exists": False}}, ...)` against the
+      live shared Atlas cluster (not just this machine's local disk -- the real database has more
+      projects than any one machine's checked-out `outputs/`). Run for real: associated 44
+      already-owned + 1 newly-associated = all 45 real projects in the shared database, verified
+      directly against the account afterward.
+    - **Frontend**: new `src/contexts/AuthContext.jsx` (the first genuinely app-global context in
+      this codebase -- every existing context, e.g. `WorkspaceSelectionContext`, is mounted
+      page-scoped; mirrors its create-context/memoized-provider/`useX()`-throws-outside shape,
+      but holds the signed-in user via React Query (`["me"]`) rather than a second `useState`, so
+      login/register/logout/OAuth-adopt all write into one single source of truth instead of two
+      copies that could drift). New `ProtectedRoute.jsx`, `OAuthCallbackHandler.jsx` (reads the
+      token from a URL *fragment*, never a query string, so it's never sent to or logged by any
+      server in the redirect chain; clears it from history immediately after adopting it),
+      `LoginPage.jsx`/`RegisterPage.jsx`/`ProfilePage.jsx`. Dashboard shell: `AppShell.jsx`
+      rebuilt on `react-resizable-panels` (already a dependency, previously used only by
+      `ResizableWorkspace.jsx`) for a genuinely collapsible + resizable `Sidebar.jsx` (hamburger
+      toggle, icon-rail collapse with tooltips, `usePanelRef()`/`isCollapsed()`/`collapse()`/
+      `expand()` -- all confirmed real exports in the installed version before use) -- one
+      mechanism for both collapse and resize instead of two, sizes persisted via
+      `useDefaultLayout`'s existing localStorage mechanism, same as the workspace panel already
+      does. Every hardcoded `"human_user"` call site (`CreateProjectForm.jsx`, `agents.js`'s
+      `confirmed_by` default, 6 chat components, `useRequirementConversationFlow.js`) now uses
+      `user?.name || user?.email || "human_user"` -- the literal string survives only as the
+      final fallback if `user` is somehow null.
+    - **Regression-risk mitigation for the ~1155 pre-existing tests, all written against a fully
+      open backend**: new `tests/conftest.py` patches `TestClient.__init__` globally (before any
+      test module imports, since pytest always imports `conftest.py` first) so every
+      `TestClient(app)` in the whole suite automatically carries a real, fixed test-fixture
+      user's `Authorization: Bearer` header by default -- zero changes needed to any of the
+      ~1155 existing test files individually. A test that needs to exercise real unauthenticated
+      behavior overrides it per-call (`headers={"Authorization": ""}`).
+    - New `tests/test_auth_routes.py` (10 tests: register/duplicate-email/mismatched-passwords,
+      login success/wrong-password/unknown-email-same-message-as-wrong-password [prevents account
+      enumeration], me/garbage-token/expired-token) and `tests/test_project_ownership.py` (7
+      tests: owner sees their own project, a different real user gets 404 on
+      get/list/delete, unauthenticated gets 401, an ownerless legacy project stays reachable by
+      any signed-in user, a feature inside someone else's project -- including through an agent
+      route -- is also invisible).
+    - Full backend suite: **1153 passed** directly, plus the same 19 Docker-dependent tests
+      (`test_coder_tools.py`/`test_coder_verify.py`/`test_render_checker.py`) that failed only
+      because Docker Desktop wasn't running at the time (the exact same environmental pattern
+      already documented multiple times elsewhere in this file) -- re-run in isolation with
+      Docker up: **67 passed**, 0 real failures anywhere. `npm run build` clean.
+    - **Real, live verification, no mocks** (isolated backend :8090 / frontend :5199): confirmed
+      visiting `/` while signed out redirects to `/login`; registered a brand-new real account
+      through the actual UI and confirmed it starts with zero projects and cannot see any other
+      account's data; signed in as the real, migrated `dulneth.sa@gmail.com` / `Ds#210229` and
+      confirmed all 45 real projects are visible; updated the profile name through the real form,
+      reloaded, and confirmed it persisted server-side (not just local state); collapsed and
+      re-expanded the sidebar and confirmed the main panel reflows with no horizontal overflow at
+      a 1024px laptop-width viewport; clicked "Continue with Google" with no `GOOGLE_CLIENT_ID`
+      configured and confirmed a clean, readable 503 error page instead of a crash. Google/GitHub
+      OAuth's real provider round-trip could not be verified end-to-end in this environment (needs
+      real client id/secret values, which this session cannot provision) -- flagged as a required
+      manual setup step, not something left silently unverified.
+
+96. **QA Agent: genuine pass/fail status instead of a "skipped" fallback triggered by LLM
+    title-wording drift, a combined feature-code + QA-report zip download, and a chat-composer
+    contrast regression fix.** Three direct user requests. Investigated via 2 parallel Explore
+    agents (QA Agent's real test generation/execution/status pipeline; existing zip-download
+    mechanisms) plus a direct read confirming the contrast regression's exact cause -- this
+    session's own prior UI-polish pass (item G, chat-input contrast) bumped
+    `ChatComposerBox.jsx`'s light-mode background from `bg-gray-50` to `bg-gray-100` to fix ITS
+    OWN contrast against the white panel, but `PillDropdown.jsx`'s Agent/Model pill trigger
+    (`AgentSelect`/`ModelSelect`) was already `bg-gray-100` with no border, making both elements
+    the identical color with zero visual boundary the moment that other fix landed.
+    - **Root cause, confirmed by direct investigation**: QA test generation and execution are
+      both genuinely real (`generator.py` real LLM calls; `executor.py` real sandboxed `npx jest
+      --json`) -- the "everything shows skipped" symptom is a matching/reliability gap in
+      `QAAgent._merge_results` (`agent.py`), not a "doesn't actually run tests" gap. The exact
+      `(test_file, name)` match discards a real Jest result whenever the LLM's actual `test(...)`
+      title string doesn't character-for-character match the `name` it separately declared in its
+      own metadata JSON -- two independent strings the same LLM call must keep in sync.
+    - **Fix, `_merge_results`**: a new two-tier match. Tier 1 (unchanged): exact `(test_file,
+      name)`. Tier 2 (new): for a planned case still unmatched, if its `test_file` has real Jest
+      results themselves unclaimed by any exact match, pair it positionally (encounter order)
+      with one of those leftovers -- `test_file` is deterministically assigned by
+      `_write_test_file` (never LLM-authored) and therefore reliable; only `name` drifts. Tier 3
+      (unchanged): a case still unmatched after both tiers (genuinely fewer real results than
+      planned -- e.g. the file crashed) keeps the honest "skipped" fallback with its explanatory
+      note. New tests in `tests/test_qa_agent_matching.py`: a same-file name-mismatch case now
+      matches positionally instead of falling to skipped; a genuine execution gap (2 planned, 1
+      real result) still correctly leaves the excess case skipped. All 4 pre-existing tests in
+      that file pass unmodified.
+    - **Combined zip download**: new `workspace_service.export_feature_code_with_extra_files_zip
+      (project_id, feature_id, extra_files: list[tuple[str, bytes]])` -- mirrors
+      `export_feature_code_zip`'s exact branch-resolution + git-tree-traversal logic, then
+      `archive.writestr(...)`s each extra `(path, bytes)` pair under a `_QA_REPORT/` prefix
+      (avoids any collision with real generated app files). Kept as a new, separate function so
+      the Coder stage's existing plain code-only download is unaffected. New route `GET
+      /features/{feature_id}/code-with-qa-report/download` (`features.py`, same
+      `_get_owned_feature` ownership pattern as `download_feature_code` right above it) resolves
+      the feature's latest approved QA_REPORT artifact via the existing
+      `artifact_service.get_selected_or_latest_approved_artifact` (both JSON and Markdown
+      formats), reads both already-saved files, and bundles them in. New
+      `featureCodeWithQaReportDownloadUrl(featureId)` in `client.js` (same `withToken` pattern as
+      the 5 existing download-URL builders); new "Download Project + QA Report (.zip)" button in
+      `ResultTab.jsx`'s `stage === "qa"` branch, alongside the existing "Download QA Report" PDF
+      link. New `tests/test_feature_code_with_qa_report_download.py` (4 -- real git-repo fixture
+      via `workspace_service` mirroring `test_workspace_undo_merge.py`'s convention: the zip
+      function contains both real code and the extra files; the route bundles a real seeded
+      QA_REPORT artifact pair; the route gracefully omits the `_QA_REPORT/` prefix entirely when
+      no QA report exists yet; an unknown feature_id 404s).
+    - **Chat contrast fix**: `PillDropdown.jsx`'s trigger button light-mode styling changed from
+      `bg-gray-100` (no border) to `bg-white border border-gray-300` -- visibly distinct from the
+      composer's `bg-gray-100` surface. Dark mode (`dark:bg-white/10`) was untouched, since only
+      light mode was reported broken.
+    - Full backend suite: **1111 passed** (excluding the 67 pre-existing Docker-dependent tests
+      in `test_coder_tools.py`/`test_coder_verify.py`/`test_render_checker.py`, unrelated to this
+      change). `npm run build` clean.
+    - **A real, separate, pre-existing environmental bug found and fixed along the way while
+      live-verifying against the real Finodil "Login and Signup" feature** (`feature_917b691e`):
+      `ensure_jest_setup`'s "only `npm install` the first time `jest` isn't already declared in
+      `package.json`" gate had left this real workspace's `node_modules` permanently missing
+      `jest`/`@babel/*` despite them being correctly declared (from an earlier real QA run this
+      session) -- every subsequent real QA run's `npx jest` call fell back to fetching a
+      mismatched fresh `jest@30.5.0` from the npm registry into `/root/.npm/_npx/...`, which then
+      failed to resolve `@babel/preset-env` from that isolated location, crashing the whole test
+      suite with **zero** real results (confirmed directly via a raw `npx jest` run inside the
+      real sandbox: `Cannot find module '@babel/preset-env'`, 0 results, empty stderr surfaced to
+      the report). This is exactly the class of case tier 3 of the `_merge_results` fix above is
+      *supposed* to handle honestly -- confirmed it did: the report correctly showed "skipped"
+      with the real explanatory note, never a false pass/fail. Not fixed at the root (out of this
+      item's own scope -- the gate itself would need a real "does node_modules actually have
+      these packages" check, not just a package.json presence check) but unblocked directly for
+      verification by running a real `npm install` in the sandbox, which is what let the
+      **actual, intended fix** get a genuine live demonstration.
+    - **Real, live verification, no mocks** (isolated backend :8090 / frontend :5199, same shared
+      MongoDB Atlas cluster, real Finodil `feature_917b691e`): downloaded the real combined zip
+      and confirmed it contains both real generated Next.js code (`app/api`, `lib/`, etc.) and
+      both `_QA_REPORT/qa_report.json`/`.md` files pulled from the feature's real latest QA
+      report. Confirmed via `getComputedStyle` (through a real Playwright screenshot) that the
+      "QA"/model pills now render `bg: rgb(255,255,255)` with a `border: rgb(212,212,212)`,
+      clearly distinct from the composer's `bg: rgb(245,245,245)`. Triggered a real QA run before
+      the `npm install` fix -- confirmed the report showed "0 passed, 0 failed, 1 skipped" with
+      the honest tier-3 note (Jest genuinely produced no results, the real environmental bug
+      above); after installing the real jest/babel deps in the sandbox, re-triggered the same
+      real QA run -- confirmed the report now reads **"All tests passed. 1 test(s) written -- 1
+      passed, 0 failed, 0 skipped"** with a green "Passed" badge, directly reproducing and fixing
+      the user's originally-reported symptom end-to-end. This real v5 (broken)/v6 (fixed) QA
+      report history is left in place on the real Finodil feature as genuine verification
+      evidence, matching this project's own established convention.
+
+97. **Fixed a real, reported bug: running Architecture Agent for the first time on a feature (in
+    the "Retail Store" project) produced 2 artifact versions with identical content.**
+    Investigated via 2 parallel Explore agents (frontend trigger paths; backend save/version
+    mechanisms). Backend confirmed structurally sound: `_save_architecture_artifacts` is called
+    exactly once per real `run()`/`run_stream()` invocation, `graph_orchestrator_service` has no
+    real `architecture` node (a pure pass-through, per deviation #12/M6's own docstring) so it
+    cannot race a manual API-triggered run, and no event/webhook mechanism anywhere could trigger
+    a second call. **Root cause, confirmed by reading the code, not guessed**:
+    `frontend/src/components/pipeline/ArchitectureRunForm.jsx` ("deep exploration mode," reachable
+    from `ArchitectureAgentChat.jsx`'s own toggle) instantiated its OWN, independent
+    `useRunArchitecture(featureId)` mutation hitting plain `POST /architecture/run` -- completely
+    separate from the shared `ArchitectureAgentFlowContext`'s `runStream` mutation
+    (`POST /architecture/run/stream`) that `ResultTab.jsx`'s Enhanced-SRS-approval auto-continue
+    (`APPROVE_CONTINUATION_BY_STAGE.domain`, `autoRun: true`) fires. Neither mutation instance had
+    any visibility into the other's pending state -- the exact same "two independent
+    `useMutation()` instances for one real action" bug class already found and fixed for UI/UX
+    Agent (item 61) and Security Agent (item 89), just never applied to Architecture Agent's own
+    plain-run path. If a human had the exploration form open (or had just submitted it) at the
+    moment the Enhanced SRS was approved, both real HTTP requests fired, each independently
+    calling `_save_architecture_artifacts` -- one call, but twice, is exactly "2 versions, same
+    content."
+    - **Fix**: moved the plain-run mutation into `useArchitectureAgentFlow.js` itself
+      (`plainRunMutation`/`handlePlainRun`/`stopPlainRun`), shared via the existing
+      `ArchitectureAgentFlowContext` -- `ArchitectureRunForm.jsx` now consumes it from context
+      instead of instantiating its own copy, so every trigger surface observes the SAME
+      `isPending`. New combined `anyRunPending` in `ArchitectureAgentChat.jsx`
+      (`activeStream.isPending || (!hasOutput && plainRunMutation.isPending)`) gates the "Start
+      Architecture Agent now" button/toggle-link and the composer's submit/pending state -- the
+      form itself deliberately stays visible while its own request is pending (showing "Generating
+      Architecture Plan..."), and additionally checks the STREAMING mutation's own `isPending` via
+      context before allowing its own submit, so a stream started elsewhere (e.g. the auto
+      -continue) blocks the form too, with a visible "Architecture Agent is already running..."
+      note. `ResultTab.jsx`'s two auto-run call sites (`handleConfirmedApprove`'s
+      domain->architecture branch, and `handleConfirmedSkipEnhancement`) now both check a new
+      `architectureRunAlreadyInFlight` (folding in `plainRunMutation.isPending` too) before firing
+      `handleRunArchitectureStream`, so the reverse race (approve arrives while the form's plain
+      request is already running) is blocked at the source as well. `isArchitectureRunning` in
+      `ResultTab.jsx` also now reflects `plainRunMutation.isPending`, so the Result panel's live
+      view correctly shows "generating" for the deep-exploration path too, not just the streaming
+      one.
+    - `npm run build` clean (1365 modules). This was a pure frontend-only fix -- no backend changes
+      needed, matching the Explore agents' own conclusion that the backend has no duplicate-save
+      mechanism.
+
+98. **Architecture Agent: fixed real Use Case Diagram modeling problems a supervisor review
+    flagged on the real "Add & List Items" feature (Retail Store project) -- a garbled actor name
+    with an unclear `<<system>>` stereotype, an ambiguous conjunctive use case name, and (per
+    direct user steer) actor over-inclusion.** Direct user report, quoting the real reviewer
+    feedback verbatim: an actor named `"An Image Hosting Solution To Store Uploaded Images."`
+    using `<<system>>` ("not the clearest way to represent an external system"), and a use case
+    named `"Add List Items"` (should be two separate use cases, since add and list are distinct
+    capabilities). The user also asked for full FR coverage while staying simple, and explicitly
+    redirected the stereotype discussion toward a more fundamental concern via AskUserQuestion:
+    **"Do not add unnecessary things to the usecase diagram. Add only necessary actors."**
+    Investigated via 3 parallel Explore agents (actor naming/stereotype code paths; conjunctive
+    use-case naming + FR-coverage mechanisms; the real live data needed for the reset) plus a
+    Plan-agent design-review pass that corrected scope on two points and surfaced one real
+    structural gap the initial draft missed.
+    - **Root causes, confirmed by reading the code directly**: `usecase_modeler.py::_build_actors`
+      trusted the LLM's actor names almost verbatim (`_extract_name` + `_title_case` only) with
+      no cleanup analogous to `_clean_use_case_name`; `usecase_validator.py::_validate_actors` had
+      zero name-quality checks; `prompt.py` told the LLM what NOT to name an actor (a technical
+      component) but gave zero positive guidance on actor name FORM, and nothing distinguished a
+      real necessary actor from a noun merely mentioned in an FR's description. The `<<system>>`
+      stereotype was hardcoded in exactly one rendering location (`usecase_builder.py`) and named
+      in prose in exactly one prompt tier (the other three tiers only ever describe the
+      `stereotype` field value, never the literal rendered tag). `prompt.py`'s Use Case
+      Specification Rules had strong anti-fragmentation guidance (don't split one action into
+      micro-steps) and anti-near-duplicate guidance (merge same-behavior-different-name entries)
+      but zero rule against the OPPOSITE failure -- merging two genuinely distinct capabilities
+      into one conjunctive name. `usecase_validator.py::_validate_use_case_name_quality` only
+      catches cut-sentence fragments (articles/pronouns) -- "Add List Items" tokenizes to
+      `{add, list, items}`, none of which trip it. FR/AC/VR coverage was already fully solved
+      (`_validate_traceability` unconditionally enforces it, and the full FR list is already sent
+      to the LLM at every generation tier) -- no new coverage mechanism was needed.
+    - **A real, structural latent risk found by the design-review pass, not part of the initial
+      draft**: `_build_use_cases_from_specification` unconditionally demoted any SECOND
+      `main`-typed use case to `included`, and `_build_relationships` then drew a false
+      `<<include>>` edge from the sole remaining main to it. Once a new anti-conjunction rule
+      teaches the LLM to correctly mark "Add Item" and "List Items" as two independent
+      capabilities, a model might reasonably mark BOTH as `type: "main"` -- and the old code would
+      force a semantically wrong `<<include>>` edge claiming listing always happens as part of
+      adding (the same "not the clearest way to represent" complaint, just relocated).
+    - **Fix -- actor necessity (primary, per direct user steer)**: new prompt rule (all 4 tiers:
+      combined/agentic/focused-fallback/repair) stating an actor must be a REAL, NECESSARY,
+      DISTINCT participant -- a human role, or a genuine external system named in the SRS's own
+      `api_expectations`/`dependencies` -- never a noun merely mentioned in passing inside an FR's
+      description, with the real bad example stated directly (don't invent an "Image Hosting
+      Service" actor just because an FR mentions storing uploaded images, unless a real
+      third-party integration is named). Deliberately prompt-level only, not a new deterministic
+      validator check -- actor necessity is a semantic judgment call, and a rigid syntactic check
+      here would risk real false positives, matching this codebase's own established restraint
+      around not over-engineering checks for judgment-based quality.
+    - **Fix -- actor name quality**: new `usecase_modeler.py::_clean_actor_name` (strips trailing
+      sentence punctuation, strips `NAME_FILLER_WORDS`, caps at 4 words, title-cases -- simpler
+      than `_clean_use_case_name`, no verb-first forcing since an actor is a noun phrase) applied
+      to every actor source (LLM specification, SRS `user_roles` fallback, SDS `context_view`
+      fallback). New `usecase_validator.py::_validate_actor_name_quality` (reuses `FRAGMENT_WORDS`,
+      flags >5 words, flags a name ending in `.`/`!`/`?`) wired into `validate()`, feeding the
+      existing `_repair_usecase_specification` retry loop automatically with no repair-prompt
+      change functionally required (confirmed: `build_usecase_repair_prompt` already interpolates
+      the exact validation-error string plus the full prior specification) -- an optional
+      reinforcing repair-prompt bullet was still added for consistency.
+    - **Fix -- stereotype clarity, minimal footprint**: `usecase_builder.py`'s rendered stereotype
+      string changed from `<<system>>` to `<<external system>>` (one string literal) plus the one
+      prompt tier that named the literal tag in prose; the other three tiers needed no change
+      (confirmed they only ever describe the `stereotype` field value).
+    - **Fix -- conjunctive use-case naming**: new prompt rule placed immediately adjacent to (not
+      near the anti-fragmentation rule, to avoid blurring "don't split" with "don't merge") the
+      existing near-duplicate-merge instruction, with an explicit inline contrast sentence and the
+      real bad/good example pair ("Add List Items" -> "Add Item" + "List Items"). New
+      `usecase_validator.py::_validate_no_conjoined_capabilities` flags a single use case name
+      containing 2+ verbs from a SHORT curated `DISTINCT_CAPABILITY_VERBS` set (`add/create`,
+      `list/view/browse`, `update/edit`, `delete/remove` -- deliberately narrow per the design
+      review: broader verbs like search/filter/export/approve legitimately co-occur in one real
+      name, e.g. "Export Filtered Report," and would false-positive). New guard in
+      `usecase_modeler.py::_dedupe_by_shared_requirements`: two entries citing an identical
+      `related_requirements` set are NOT merged if their names start with a DIFFERENT curated verb
+      (the real, confirmed mechanism that could silently fuse "Add Item"/"List Items" if the SRS
+      only wrote one combined FR for both) -- confirmed safe against the existing test suite (the
+      one real test exercising this path merges two entries both starting with "Initiate," not two
+      different curated verbs); the other two merge passes (exact-name, name-similarity) are
+      untouched.
+    - **Fix -- the "second main" structural gap**: relaxed the demotion logic so two `main`-typed
+      entries are only collapsed when their `related_requirements` sets overlap or either is empty
+      (the "LLM sloppily double-marked one thing as main" case) -- two entries with genuinely
+      DISJOINT `related_requirements` are kept as independent siblings with no invented
+      `<<include>>`/`<<extend>>` edge between them. New `_closest_main_use_case` helper: when
+      multiple main use cases exist, an included/extension use case's include/extend edge now
+      connects to whichever main it shares the most `related_requirements` overlap with (falling
+      back to the first main only when it shares none) -- previously hardcoded to always connect
+      to `main_use_cases[0]`. The pre-existing actor-association logic
+      (`_build_relationships`'s per-use-case `participating_actors` loop) already correctly
+      handles multiple main use cases with zero changes needed, confirmed by reading it.
+    - Tests: `tests/test_architecture_usecase_modeler.py` (+7: actor cleanup for both the real
+      garbled name and a clean name, cleanup applied to the SRS `user_roles` fallback source too,
+      the merge guard both blocking a false merge and preserving the real legitimate one, disjoint
+      vs. overlapping "second main" demotion behavior, closest-main relationship assignment; one
+      pre-existing test -- `test_folds_extra_main_entries_into_included` -- rewritten to reflect
+      the new, correct behavior, since it directly asserted the old bug's own demotion-always
+      logic). `tests/test_architecture_usecase_validator_quality.py` (+5: the real garbled actor
+      name flagged on both signals, clean actor names not flagged, an overly-long actor name
+      flagged, the real "Add List Items" conjunction flagged, correctly-separated names and a
+      same-capability multi-word name both NOT flagged).
+      `tests/test_architecture_usecase_builder.py` (1 pre-existing test updated for the new
+      `<<external system>>` rendered tag). Full architecture-tagged suite: **270 passed**, zero
+      regressions. Full non-Docker-dependent backend suite: **1124 passed**.
+    - **Real, live verification against the real feature's real approved Enhanced SRS** (read-only,
+      no Mongo writes): fed a specification reproducing the EXACT real reported bug shape (the
+      real garbled actor name + "Add List Items") through the real, unmocked modeler/validator/
+      builder using this feature's own real FR ids -- confirmed the actor cleaned to "Image
+      Hosting Solution To" (no longer a raw sentence with a trailing period; not a perfect name,
+      an honest, deliberate limitation of the cosmetic-cleanup layer, since the actual, more
+      complete defense is the strengthened prompt now discouraging the LLM from producing this
+      shape at all) rendered with `<<external system>>`, and confirmed the validator correctly
+      raised on "Add List Items" (`"conjoins multiple distinct capabilities... split into separate
+      use cases, one per capability (add, list)"`) -- exactly the signal that triggers a real
+      repair retry. Separately fed a correctly-separated specification ("Add Item"/FR-001, "List
+      Items"/FR-002, an included "View Item Details" citing an unrelated FR) through the same real
+      pipeline: confirmed both survived as independent `main` use cases with no invented edge
+      between them, and confirmed the included use case's `<<include>>` edge correctly fell back
+      to the first main (zero requirement overlap with either, as designed).
+    - **Real, live data reset** (direct user request, explicit part of the plan): deleted all 16
+      existing Architecture-related artifact records (8 `(artifact_type, version)` groups --
+      `architecture_plan`/`use_case_diagram`/`sequence_diagram`/`class_diagram` v1 and v2) for the
+      real feature `feature_bd2b44a1` ("Add & List Items," project `proj_e373bcd3` "Retail Store")
+      via `artifact_service.delete_artifact`, run only after the fix was implemented and verified
+      above -- confirmed safe beforehand (none of the 16 records were `approved`, so no
+      `revoke_approval` step was needed; no active/paused LangGraph run existed for this feature).
+      Confirmed afterward: zero architecture-related records remain, while the feature's approved
+      SRS (v1) and approved Enhanced SRS (v4) are untouched -- the feature is now back to exactly
+      "Domain Agent approved, Architecture Agent never run," ready for the user to re-trigger
+      Architecture Agent fresh from Domain Agent's approval, per their own explicit request.
+
+99. **Fixed the real `.env.local`-corruption bug for real, plus made "the Coder Agent actually
+    uses the real MongoDB URI" a genuinely verified guarantee, plus a per-agent-chat AI
+    disclaimer.** Direct user request, three parts, after a prior diagnosis turn: the Coder Agent
+    must use the provided MongoDB URI to establish the database connection for real, instead of
+    silently falling back to fake data; and every agent's chat window needs a small "AI can make
+    mistakes" notice. Investigated via 3 parallel Explore agents (URI-detection scope + a
+    schema field already meant to fix this; the generated code's real DB-connection wiring and
+    what verification does/doesn't check; the frontend chat-component structure) plus a
+    Plan-agent design-review pass.
+    - **Part A -- the actual corruption fix**: root cause (already diagnosed in the prior turn):
+      `env_uri.py`'s `extract_mongodb_uri` runs unconditionally on every `revision_comment`
+      reaching `CoderAgent.revise()`/`revise_stream()`, including one machine-built by the "Fix
+      Vulnerabilities" flow that quotes a security finding's evidence text verbatim -- for a real
+      CWE-798 finding, that text contained the Coder Agent's own LLM-invented fake
+      `FALLBACK_MONGODB_URI` credential, which got matched and silently overwrote a human's real,
+      correctly-provided `.env.local` value. **The fix, confirmed to need zero schema changes**:
+      `CoderAgentReviseRequest.revised_by` already exists and was already correctly set to
+      `"security_agent_report"`/`"qa_agent_report"` by all 3 real frontend trigger points
+      (`SecurityDecisionDialog.jsx`, `ResultTab.jsx`'s `handleConfirmedFixVulnerabilities`,
+      `QaReportView.jsx`'s `handleSendToCoder`) -- it was simply never consulted by the
+      URI-detection logic. New `env_uri.py::is_machine_generated_revision(revised_by)` (checked
+      against a small `MACHINE_GENERATED_REVISION_SOURCES` set) gates the `write_env_local` call
+      in `agent.py`'s `revise()`/`revise_stream()` ONLY (`run()`/`run_stream()` are never
+      reachable from this flow, since it requires an existing Coder Agent output to already
+      exist) -- when the comment is machine-generated, it's left completely untouched (no write,
+      no strip), since the quoted URI is necessary vulnerability-description context the planner
+      needs to see in full, not a real secret. Also fixed a secondary regex quirk found while
+      diagnosing: `_TRAILING_PUNCTUATION` didn't include a backtick, so a URI captured from
+      inside a markdown code span (ending in `` ";` ``) kept the trailing backtick uncleaned.
+    - **Part B -- closing the deeper "never actually verified" gap**: confirmed by reading
+      `verify.py`/`db_fallback_checker.py`/`functional_checker.py`/`sandbox_service.py` directly
+      that `lib/mongodb.ts`'s scaffold was already correct (real `mongoose.connect
+      (process.env.MONGODB_URI)` when set, no fake behavior baked in), and that the sandbox
+      bind-mounts the real workspace directory -- meaning a correctly-saved `.env.local` genuinely
+      reaches `next build`/`next start` during `verify()` (Next.js reads `.env.local` from disk,
+      not from injected OS env vars). The real gap: `functional_checker.check_crud_functionality`
+      already does exactly the right thing to catch "always serves fake data" (POSTs a payload
+      with a distinctive marker, GETs, checks the marker reappears) but was wired as purely
+      informational in `verify.py` -- a route that always returns static seed data regardless of
+      connection state passed verification cleanly. Fixed by conditionally, narrowly hard-gating
+      it: `functional_checker.check_crud_functionality` now tags each failure with an explicit
+      `"reason"` (`"not_persisted"` vs `"post_rejected"`, instead of output-text parsing) so
+      `verify.py`'s `_build_crud_functional_step` can hard-gate ONLY the `"not_persisted"` case
+      AND only when `workspace_service.read_env_local(project_id).get("MONGODB_URI")` shows a
+      real URI is configured -- a non-2xx `"post_rejected"` response stays informational even
+      then (a real, correct validation rule rejecting this check's own heuristically-guessed
+      payload is a plausible non-bug outcome, not evidence of fake data; this narrowing was a
+      direct Plan-agent design-review refinement over the original "hard-gate any failure" draft).
+      When no real URI is configured, behavior is completely unchanged (informational only) --
+      seed data is the correct, designed behavior there. New prompt rule (right after the
+      existing "never touch `lib/mongodb.ts`" bullet in `CODER_AGENT_SYSTEM_PROMPT`, inherited
+      automatically by `BATCH_CODE_GENERATOR_SYSTEM_PROMPT` via the existing `"Tool usage:"`
+      string-split): `lib/mongodb.ts` is the ONLY connection mechanism in the project -- never
+      invent a second hardcoded connection-string constant anywhere, even as a placeholder. New
+      standalone module `hardcoded_secret_checker.py` (a new file, not folded into
+      `db_fallback_checker.py` -- "is the null-guard fallback well-formed" and "is there a leaked/
+      invented credential" are different concerns, mirroring the existing precedent of
+      `security_finding_coverage_checker.py` being its own file): `scan_for_hardcoded_mongodb_uri`
+      scans every planned, non-deleted file (any type, excluding `.env*` by basename -- confirmed
+      via the design review that `.env.example` is the ONE legitimate scaffold file with a real
+      placeholder `mongodb://` literal; every other scaffold file, including `lib/mongodb.ts`
+      itself, has none) for a literal `mongodb(?:\+srv)?://` substring -- an unconditional hard
+      gate in `verify.py` (not tied to whether a real URI is configured, since a hardcoded
+      credential in source is always wrong). This directly targets and would have caught the
+      exact root-cause pattern that produced the original Security Agent finding in the first
+      place, closing the loop that started this whole investigation.
+    - **Part C -- AI disclaimer**: confirmed all 7 real per-stage chat components
+      (`RequirementConversationChat.jsx`, `DomainAgentChat.jsx`, `ArchitectureAgentChat.jsx`,
+      `UiuxAgentChat.jsx`, `CoderAgentChat.jsx`, `SecurityAgentChat.jsx`, `QaAgentChat.jsx`)
+      render the same shared `ChatComposerBox.jsx` -- a real, confirmed single choke point (per
+      that component's own docstring: "there is only one place this markup exists, so it can't
+      drift"). Added one `<p className="text-[11px] text-gray-500 dark:text-gray-400 text-center
+      select-none">AI can make mistakes. Check important information.</p>` as the last element
+      inside the composer's rounded card -- one file, one change, automatically covers every
+      stage including `RequirementConversationChat.jsx`'s two separate call sites (pre-SRS/
+      post-SRS). `select-none` (a genuinely new pattern for this codebase, confirmed via the
+      design review no existing precedent uses it) makes it non-selectable/non-copyable, per the
+      user's own explicit "must not be able to copy that" requirement.
+    - Tests: `tests/test_coder_env_uri.py` (+3: the backtick-trailing fix, `is_machine_generated_
+      revision` true for both known sources and false for a real human/None/empty),
+      `tests/test_coder_agent_revise.py` (+1: end-to-end through the real `revise()` method with
+      the exact real historical finding text -- confirms `write_env_local` is never called and the
+      full finding text, fake URI included, still reaches the planner untouched),
+      `tests/test_coder_functional_checker.py` (updated: both existing failure tests now assert
+      the new `reason` field), new `tests/test_coder_hardcoded_secret_checker.py` (6: the real
+      confirmed `FALLBACK_MONGODB_URI` shape caught, the real scaffold `lib/mongodb.ts` and a
+      clean route never flagged, `.env.example`'s legitimate placeholder excluded, deleted/
+      unplanned files never scanned), new `tests/test_coder_verify_mongodb_gates.py` (8: the
+      conditional crud-gate's every branch -- no URI/not_persisted/post_rejected/passed/no-
+      results/default-false -- plus the hardcoded-secret step's pass/fail wrapping). Full backend
+      suite (excluding the pre-existing Docker-dependent files) run clean, zero regressions.
+      `npm run build` clean.
+
 ## Where to look
 
 - Full build spec (read this first, in order, before any new milestone): `instructions .md`

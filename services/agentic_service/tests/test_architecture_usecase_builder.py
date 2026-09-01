@@ -35,7 +35,7 @@ class TestActorStereotypeRendering:
 
         output = builder.build(usecase_json)
 
-        assert 'actor "Payment Gateway" as ACT_001 <<system>>' in output
+        assert 'actor "Payment Gateway" as ACT_001 <<external system>>' in output
 
     def test_human_actor_gets_no_stereotype_suffix(self):
         builder = ArchitectureUseCasePlantUMLBuilder()

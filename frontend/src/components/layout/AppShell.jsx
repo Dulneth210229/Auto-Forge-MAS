@@ -1,6 +1,7 @@
 import { Link, Outlet, useLocation } from "react-router-dom";
 import clsx from "clsx";
 import ThemeSwitcher from "./ThemeSwitcher";
+import UserMenu from "./UserMenu";
 
 const NAV_ITEMS = [
   { to: "/", label: "Projects" },
@@ -35,6 +36,7 @@ export default function AppShell() {
               ))}
             </nav>
             <ThemeSwitcher />
+            <UserMenu />
           </div>
         </div>
       </header>

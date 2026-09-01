@@ -175,13 +175,52 @@ class TestLlmSpecificationPath:
         assert len(main) == 1
         assert main[0]["name"] == "Filter Results"
 
-    def test_folds_extra_main_entries_into_included(self):
+    def test_keeps_two_main_entries_with_disjoint_related_requirements_as_independent_siblings(self):
+        # Real, confirmed bug this fixes: two main-typed entries for GENUINELY DIFFERENT
+        # capabilities (disjoint related_requirements -- e.g. "Add Item"/"List Items", each citing
+        # its own FR) used to always get folded into one main + one <<include>> child, inventing a
+        # false "listing happens as part of adding" relationship. Disjoint related_requirements is
+        # the real, confirmed signal these are two independent top-level goals, not one goal
+        # double-marked -- both must survive as their own main use case.
+        modeler = ArchitectureUseCaseModeler()
+        srs_json = {
+            "feature_name": "Item Management",
+            "functional_requirements": [
+                {"id": "FR-001", "description": "x"},
+                {"id": "FR-002", "description": "y"},
+            ],
+        }
+        specification = {
+            "use_cases": [
+                {"name": "Add Item", "type": "main", "related_requirements": ["FR-001"]},
+                {"name": "List Items", "type": "main", "related_requirements": ["FR-002"]},
+            ],
+        }
+
+        _, usecase_json = modeler.build(srs_json=srs_json, sds_json={"design_views": {}}, usecase_specification_json=specification)
+
+        main = [uc for uc in usecase_json["use_cases"] if uc["category"] == "main"]
+        included = [uc for uc in usecase_json["use_cases"] if uc["category"] == "included"]
+        assert _names(main) == ["Add Item", "List Items"]
+        assert included == []
+        # No invented include/extend edge between the two independent main use cases.
+        relationships = usecase_json["relationships"]
+        main_ids = {uc["id"] for uc in main}
+        assert not any(
+            r["type"] in ("include", "extend") and r["from"] in main_ids and r["to"] in main_ids
+            for r in relationships
+        )
+
+    def test_folds_extra_main_entries_with_overlapping_related_requirements_into_included(self):
+        # The other half of the same fix: two main-typed entries that overlap (or one/both have
+        # EMPTY related_requirements) are still the "LLM sloppily double-marked one thing as main"
+        # case -- these still collapse to one main + one included child, exactly as before.
         modeler = ArchitectureUseCaseModeler()
         srs_json = {"feature_name": "Search", "functional_requirements": [{"id": "FR-001", "description": "x"}]}
         specification = {
             "use_cases": [
                 {"name": "Search Tasks", "type": "main", "related_requirements": ["FR-001"]},
-                {"name": "Export Results", "type": "main", "related_requirements": ["FR-002"]},
+                {"name": "Export Results", "type": "main", "related_requirements": ["FR-001"]},
             ],
         }
 
@@ -476,3 +515,135 @@ class TestFallbackPath:
         main = [uc for uc in usecase_json["use_cases"] if uc["category"] == "main"][0]
         for req_id in ["FR-001", "FR-003", "AC-004", "VR-001", "VR-002"]:
             assert req_id in main["related_requirements"]
+
+
+class TestActorNameCleanup:
+    """
+    _clean_actor_name -- the real, confirmed bug this closes: an LLM-authored actor name that
+    reads as a full sentence ("An Image Hosting Solution To Store Uploaded Images.") passed
+    through unchanged before this fix (only _title_case was ever applied to actor names).
+    """
+
+    def test_strips_trailing_sentence_punctuation_and_caps_at_four_words(self):
+        modeler = ArchitectureUseCaseModeler()
+        srs_json = {"feature_name": "Add & List Items", "functional_requirements": [{"id": "FR-001", "description": "x"}]}
+        specification = {
+            "actors": [{"name": "An Image Hosting Solution To Store Uploaded Images.", "stereotype": "system"}],
+        }
+
+        _, usecase_json = modeler.build(srs_json=srs_json, sds_json={"design_views": {}}, usecase_specification_json=specification)
+
+        actor_names = _names(usecase_json["actors"])
+        assert "An Image Hosting Solution To Store Uploaded Images." not in actor_names
+        # Filler word "an" stripped, capped at 4 remaining words, no trailing period.
+        assert actor_names == ["Image Hosting Solution To"]
+        assert not actor_names[0].endswith(".")
+
+    def test_leaves_a_clean_short_actor_name_unchanged(self):
+        modeler = ArchitectureUseCaseModeler()
+        srs_json = {"feature_name": "Checkout", "functional_requirements": [{"id": "FR-001", "description": "x"}]}
+        specification = {"actors": [{"name": "Payment Gateway", "stereotype": "system"}]}
+
+        _, usecase_json = modeler.build(srs_json=srs_json, sds_json={"design_views": {}}, usecase_specification_json=specification)
+
+        assert [a["name"] for a in usecase_json["actors"]] == ["Payment Gateway"]
+
+    def test_cleanup_applies_to_srs_user_roles_fallback_source_too(self):
+        modeler = ArchitectureUseCaseModeler()
+        srs_json = {
+            "feature_name": "Checkout",
+            "functional_requirements": [{"id": "FR-001", "description": "x"}],
+            "user_roles": ["The Customer Who Is Checking Out."],
+        }
+
+        _, usecase_json = modeler.build(srs_json=srs_json, sds_json={"design_views": {}}, usecase_specification_json={})
+
+        actor_names = [a["name"] for a in usecase_json["actors"]]
+        assert "The Customer Who Is Checking Out." not in actor_names
+        assert actor_names[0].split() and len(actor_names[0].split()) <= 4
+
+
+class TestDistinctCapabilityMergeGuard:
+    """
+    _dedupe_by_shared_requirements' new verb-mismatch guard -- the real, confirmed mechanism that
+    could silently fuse two genuinely different capabilities (e.g. "Add Item"/"List Items") into
+    one entry if the SRS/LLM cited an identical related_requirements set for both.
+    """
+
+    def test_does_not_merge_different_capability_verbs_sharing_one_requirement_id(self):
+        # Named "Manage Items" as the main use case (a decoy, distinct from the merge guard being
+        # tested) so the two "included" entries below aren't auto-promoted to fill an empty main
+        # slot -- isolating _dedupe_by_shared_requirements' own behavior specifically.
+        modeler = ArchitectureUseCaseModeler()
+        srs_json = {
+            "feature_name": "Item Management",
+            "functional_requirements": [{"id": "FR-001", "description": "Add and list items"}],
+        }
+        specification = {
+            "use_cases": [
+                {"name": "Manage Items", "type": "main", "related_requirements": ["FR-001"]},
+                {"name": "Add Item", "type": "included", "related_requirements": ["FR-001"]},
+                {"name": "List Items", "type": "included", "related_requirements": ["FR-001"]},
+            ],
+        }
+
+        _, usecase_json = modeler.build(srs_json=srs_json, sds_json={"design_views": {}}, usecase_specification_json=specification)
+
+        included = [uc for uc in usecase_json["use_cases"] if uc["category"] == "included"]
+        assert sorted(_names(included)) == ["Add Item", "List Items"]
+
+    def test_still_merges_same_capability_names_sharing_one_requirement_id(self):
+        # The existing, still-required behavior this guard must not break: two entries starting
+        # with the SAME (or no curated) verb, sharing one requirement id, are still merged. A
+        # decoy main use case keeps the two "included" entries from being auto-promoted to fill an
+        # empty main slot, isolating the merge behavior itself.
+        modeler = ArchitectureUseCaseModeler()
+        srs_json = {
+            "feature_name": "Password Recovery",
+            "functional_requirements": [{"id": "FR-001", "description": "Recover account access"}],
+        }
+        specification = {
+            "use_cases": [
+                {"name": "Recover Account Access", "type": "main", "related_requirements": ["FR-001"]},
+                {"name": "Initiate Password Reset", "type": "included", "related_requirements": ["FR-001"]},
+                {"name": "Initiate Recovery Flow", "type": "included", "related_requirements": ["FR-001"]},
+            ],
+        }
+
+        _, usecase_json = modeler.build(srs_json=srs_json, sds_json={"design_views": {}}, usecase_specification_json=specification)
+
+        included = [uc for uc in usecase_json["use_cases"] if uc["category"] == "included"]
+        assert len(included) == 1
+
+
+class TestClosestMainUseCaseAssignment:
+    """
+    _closest_main_use_case -- with multiple independent main use cases (per the relaxed demotion
+    logic above), an included/extension use case's include/extend edge must point at whichever
+    main it actually shares related_requirements with, not always the first main.
+    """
+
+    def test_included_use_case_connects_to_the_main_it_shares_requirements_with(self):
+        modeler = ArchitectureUseCaseModeler()
+        srs_json = {
+            "feature_name": "Item Management",
+            "functional_requirements": [
+                {"id": "FR-001", "description": "Add item"},
+                {"id": "FR-002", "description": "List items"},
+            ],
+        }
+        specification = {
+            "use_cases": [
+                {"name": "Add Item", "type": "main", "related_requirements": ["FR-001"]},
+                {"name": "List Items", "type": "main", "related_requirements": ["FR-002"]},
+                {"name": "Filter Item List", "type": "included", "related_requirements": ["FR-002"]},
+            ],
+        }
+
+        _, usecase_json = modeler.build(srs_json=srs_json, sds_json={"design_views": {}}, usecase_specification_json=specification)
+
+        by_name = {uc["name"]: uc for uc in usecase_json["use_cases"]}
+        include_edges = _relationships_by_type(usecase_json, "include")
+        assert len(include_edges) == 1
+        assert include_edges[0]["from"] == by_name["List Items"]["id"]
+        assert include_edges[0]["to"] == by_name["Filter Item List"]["id"]
