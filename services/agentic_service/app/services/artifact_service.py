@@ -24,6 +24,8 @@ That is why save_text_artifact() and save_json_artifact()
 support version_override.
 """
 
+import io
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -675,5 +677,34 @@ class ArtifactService:
 
         with open(artifact["file_path"], "rb") as file:
             return file.read()
+
+    def export_artifacts_zip(self, artifact_ids: list[str]) -> bytes:
+        """
+        Bundle several already-saved artifacts' raw file content into one in-memory zip, each
+        entry named after its own real on-disk filename (already descriptive -- e.g. a UI/UX
+        preview screenshot's own `{feature_slug}_{page_slug}_v{version}.png`). Used by the "download
+        all generated images for this version as a zip" feature (direct user request) -- generic
+        over any artifact_id list, not screenshot-specific, so it's reusable for a similar
+        "download several artifacts at once" need elsewhere later.
+
+        Skips (rather than raises for) any artifact_id that's unknown or whose file is missing on
+        disk -- mirrors read_artifact_binary's own real-file error mode, but a caller bundling
+        many files together shouldn't fail the whole zip over one gone missing.
+        """
+        buffer = io.BytesIO()
+
+        with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for artifact_id in artifact_ids:
+                artifact = store.artifacts.get(artifact_id)
+                if not artifact:
+                    continue
+                try:
+                    with open(artifact["file_path"], "rb") as file:
+                        content = file.read()
+                except (FileNotFoundError, OSError):
+                    continue
+                archive.writestr(Path(artifact["file_path"]).name, content)
+
+        return buffer.getvalue()
 
 artifact_service = ArtifactService()

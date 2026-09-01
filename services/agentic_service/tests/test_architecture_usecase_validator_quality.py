@@ -150,3 +150,70 @@ class TestFragmentationDetection:
             assert False, "expected UseCaseValidationError for same-requirement-id duplicates"
         except UseCaseValidationError as error:
             assert "cite the exact same requirements" in str(error)
+
+
+class TestActorNameQuality:
+    """
+    _validate_actor_name_quality -- the real, confirmed bug: an actor named
+    "An Image Hosting Solution To Store Uploaded Images." (a garbled sentence, not a role/system
+    name) passed through unvalidated before this fix.
+    """
+
+    def test_real_garbled_sentence_actor_name_is_flagged(self):
+        validator = UseCaseQualityValidator()
+        errors = validator._validate_actor_name_quality({
+            "actors": [{"id": "ACT-001", "name": "An Image Hosting Solution To Store Uploaded Images.", "stereotype": "system"}],
+        })
+        assert any("sentence punctuation" in e for e in errors)
+        assert any("cut sentence fragment" in e for e in errors)
+
+    def test_clean_short_actor_names_are_not_flagged(self):
+        validator = UseCaseQualityValidator()
+        errors = validator._validate_actor_name_quality({
+            "actors": [
+                {"id": "ACT-001", "name": "Customer", "stereotype": "human"},
+                {"id": "ACT-002", "name": "Payment Gateway", "stereotype": "system"},
+            ],
+        })
+        assert errors == []
+
+    def test_overly_long_actor_name_is_flagged_even_without_fragment_words(self):
+        validator = UseCaseQualityValidator()
+        errors = validator._validate_actor_name_quality({
+            "actors": [{"id": "ACT-001", "name": "Customer Support Escalation Ticket Routing System", "stereotype": "system"}],
+        })
+        assert any("reads like a description" in e for e in errors)
+
+
+class TestConjoinedCapabilityDetection:
+    """
+    _validate_no_conjoined_capabilities -- the real, confirmed bug: a use case named
+    "Add List Items" for a feature that both adds and lists items, which should be two separate
+    use cases.
+    """
+
+    def test_real_conjoined_capability_name_is_flagged(self):
+        validator = UseCaseQualityValidator()
+        errors = validator._validate_no_conjoined_capabilities({
+            "use_cases": [{"id": "UC-001", "name": "Add List Items", "category": "main", "related_requirements": ["FR-001"]}],
+        })
+        assert any("conjoins multiple distinct capabilities" in e for e in errors)
+
+    def test_separated_use_cases_are_not_flagged(self):
+        validator = UseCaseQualityValidator()
+        errors = validator._validate_no_conjoined_capabilities({
+            "use_cases": [
+                {"id": "UC-001", "name": "Add Item", "category": "main", "related_requirements": ["FR-001"]},
+                {"id": "UC-002", "name": "List Items", "category": "main", "related_requirements": ["FR-002"]},
+            ],
+        })
+        assert errors == []
+
+    def test_a_single_capability_name_with_multiple_words_is_not_flagged(self):
+        # "List" and "View" both map to the same curated capability ("list") -- a name using both
+        # words is still describing ONE capability, not two, and must not be flagged.
+        validator = UseCaseQualityValidator()
+        errors = validator._validate_no_conjoined_capabilities({
+            "use_cases": [{"id": "UC-001", "name": "View And List Items", "category": "main", "related_requirements": ["FR-001"]}],
+        })
+        assert errors == []

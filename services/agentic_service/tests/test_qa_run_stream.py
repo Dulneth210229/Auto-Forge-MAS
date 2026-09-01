@@ -42,7 +42,7 @@ def qa_run_stream_mocks(tmp_path):
     run_result = {
         "results": [{"name": "getItem works", "test_file": "item.unit.test.ts", "status": "failed",
                       "duration_ms": 5, "failure_message": "boom"}],
-        "passed": 0, "failed": 1, "skipped": 0, "exit_code": 1, "raw_stderr": "",
+        "passed": 0, "failed": 1, "exit_code": 1, "raw_stderr": "",
     }
 
     saved_json = SimpleNamespace(artifact_id="artifact_json_1", version=1)

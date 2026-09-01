@@ -54,9 +54,17 @@ def _build_markdown_report(report: dict) -> str:
         f"(unit {report['tests_by_category']['unit']['total']}, "
         f"integration {report['tests_by_category']['integration']['total']}, "
         f"regression {report['tests_by_category']['regression']['total']})",
-        f"Result: {report['tests_passed']} passed, {report['tests_failed']} failed, "
-        f"{report['tests_skipped']} skipped",
+        f"Result: {report['tests_passed']} passed, {report['tests_failed']} failed",
         "",
+    ]
+    if report.get("environment_failure"):
+        lines += [
+            "> **The test run itself could not execute** -- this is an infrastructure problem, "
+            "not necessarily a defect in the generated code:",
+            f"> {report['environment_failure']['reason']}",
+            "",
+        ]
+    lines += [
         "## Test cases",
         "",
     ]
@@ -140,13 +148,162 @@ class QAAgent:
         if all_test_cases:
             run_result = executor.run_tests(repo_path, project["project_id"])
         else:
+            run_result = {"results": [], "passed": 0, "failed": 0, "exit_code": None, "raw_stderr": ""}
+
+        return await self._finalize_report(
+            feature_id, feature, project, all_test_cases, run_result, unit_targets, integration_targets, out_of_scope,
+        )
+
+    async def run_stream(self, feature_id: str) -> AsyncGenerator[dict[str, Any], None]:
+        """
+        Streaming sibling of run() -- direct user request, mirrors Architecture Agent's own
+        run/run_stream split (a parallel, narrower method sharing only the deterministic tail, not
+        a thin wrapper around run()). Generation is SEQUENTIAL, unlike Security Agent's read-only
+        concurrent deep-scan batches -- each pass writes a real file to disk and they all share one
+        `ensure_jest_setup()` before execution, so concurrent writes here would be a real, new
+        correctness risk Security's pure-read scanning never had. Progress is therefore reported
+        per-target as generation genuinely proceeds, not via concurrent batch events.
+        """
+        feature = store.features.get(feature_id)
+        project = store.projects.get(feature["project_id"])
+
+        repo_path = workspace_service.get_repo_path(project["project_id"])
+        if not repo_path.exists():
+            yield {"type": "error", "message": f"No workspace found at {repo_path} yet."}
+            return
+
+        yield {"type": "phase", "phase": "discovery", "label": "Scanning the codebase for testable files..."}
+
+        unit_targets = discovery.discover_unit_test_targets(repo_path)
+        integration_targets = discovery.discover_integration_test_targets(repo_path)
+        out_of_scope = discovery.discover_out_of_scope_modules(repo_path)
+        acceptance_criteria = self._load_approved_acceptance_criteria(feature_id)
+
+        generated_dir = repo_path / GENERATED_TESTS_DIRNAME
+        generated_dir.mkdir(exist_ok=True)
+        for stale in generated_dir.glob("*.test.ts"):
+            stale.unlink()
+
+        all_test_cases: list[QaTestCase] = []
+        total_targets = len(unit_targets) + len(integration_targets) + (1 if acceptance_criteria else 0)
+        completed = 0
+
+        for target in unit_targets:
+            completed += 1
+            yield {
+                "type": "generation_progress", "category": "unit", "target": target["rel"],
+                "index": completed, "total": total_targets,
+                "label": f"Writing unit tests for {target['rel']} ({completed}/{total_targets})...",
+            }
+            result = await generator.generate_unit_tests(target)
+            if result is None:
+                continue
+            filename = self._write_test_file(generated_dir, Path(target["rel"]).stem, "unit", result.test_code)
+            for tc in result.test_cases:
+                tc.test_file = filename
+                all_test_cases.append(tc)
+
+        for target in integration_targets:
+            completed += 1
+            yield {
+                "type": "generation_progress", "category": "integration", "target": target["route_rel"],
+                "index": completed, "total": total_targets,
+                "label": f"Writing integration tests for {target['route_rel']} ({completed}/{total_targets})...",
+            }
+            result = await generator.generate_integration_tests(target)
+            if result is None:
+                continue
+            filename = self._write_test_file(
+                generated_dir, Path(target["route_rel"]).parent.name, "integration", result.test_code
+            )
+            for tc in result.test_cases:
+                tc.test_file = filename
+                tc.category = "integration"
+                all_test_cases.append(tc)
+
+        if acceptance_criteria:
+            completed += 1
+            yield {
+                "type": "generation_progress", "category": "regression", "target": feature["feature_name"],
+                "index": completed, "total": total_targets,
+                "label": f"Writing regression tests from acceptance criteria ({completed}/{total_targets})...",
+            }
+            regression_result = await generator.generate_regression_tests(
+                acceptance_criteria, integration_targets[0] if integration_targets else None
+            )
+            if regression_result is not None:
+                filename = self._write_test_file(
+                    generated_dir, feature["feature_name"], "regression", regression_result.test_code
+                )
+                for tc in regression_result.test_cases:
+                    tc.test_file = filename
+                    tc.category = "regression"
+                    all_test_cases.append(tc)
+
+        if all_test_cases:
+            yield {"type": "phase", "phase": "execution", "label": "Running the generated tests..."}
+            run_result = executor.run_tests(repo_path, project["project_id"])
+        else:
             run_result = {"results": [], "passed": 0, "failed": 0, "skipped": 0, "exit_code": None, "raw_stderr": ""}
 
-        merged_test_cases = self._merge_results(all_test_cases, run_result["results"])
-        merged_test_cases = await self._apply_root_cause_analysis(
-            merged_test_cases, unit_targets, integration_targets
+        if run_result["failed"] > 0:
+            yield {"type": "phase", "phase": "root_cause", "label": "Analyzing failures..."}
+
+        yield {"type": "phase", "phase": "saving", "label": "Saving the QA report..."}
+        output = await self._finalize_report(
+            feature_id, feature, project, all_test_cases, run_result, unit_targets, integration_targets, out_of_scope,
         )
+
+        yield {
+            "type": "done",
+            "artifact_ids": output.artifact_ids,
+            "message": output.message,
+            "tests_generated": output.tests_generated,
+            "tests_passed": output.tests_passed,
+            "tests_failed": output.tests_failed,
+        }
+
+    async def _finalize_report(
+        self, feature_id: str, feature: dict, project: dict, all_test_cases: list[QaTestCase],
+        run_result: dict, unit_targets: list[dict], integration_targets: list[dict], out_of_scope: list[str],
+    ) -> QAAgentOutput:
+        """Shared tail for run()/run_stream(): merge real results, synthesize root causes for any
+        failures, build and save the report (JSON + Markdown), same for both entry points."""
+        merged_test_cases = self._merge_results(all_test_cases, run_result["results"])
+
+        # A real, whole-environment failure (Jest itself never produced ANY results, despite
+        # tests genuinely having been planned -- e.g. the sandbox was unreachable, or a broken
+        # node_modules install) is a distinct, honest signal from "these specific tests have real
+        # defects." Every individual test case above still resolves to "failed" (never "skipped"
+        # -- direct user requirement), but reclassifying every one of them as an independent
+        # defect would (a) read as "N real bugs" when it's actually one infrastructure problem,
+        # and (b) -- a real risk a Plan-agent design review caught -- silently trigger
+        # _apply_root_cause_analysis's real LLM call to fabricate plausible-sounding root causes
+        # for tests that never ran at all. Both are avoided by surfacing this as its own field and
+        # skipping root-cause analysis entirely when it's set.
+        environment_failure = None
+        if all_test_cases and not run_result["results"]:
+            environment_failure = {
+                "reason": run_result.get("raw_stderr")
+                or "The test runner produced no results and no error output.",
+            }
+
+        if environment_failure is None:
+            merged_test_cases = await self._apply_root_cause_analysis(
+                merged_test_cases, unit_targets, integration_targets
+            )
         tests_by_category = self._count_by_category(merged_test_cases)
+
+        # Real, confirmed inconsistency found during live verification: run_result's own
+        # passed/failed/skipped counts are Jest's raw reported totals, which stay 0/0/0 whenever
+        # Jest never actually produced a result for a test case (e.g. the sandbox was unavailable)
+        # -- while _merge_results/_count_by_category correctly fall each unmatched case back to
+        # "skipped" locally. Deriving the top-level counts from the SAME merged_test_cases the
+        # per-category breakdown already uses keeps both numbers honest and in agreement, instead
+        # of a banner claiming "0 skipped" right above a category heading that says otherwise.
+        tests_passed = sum(bucket["passed"] for bucket in tests_by_category.values())
+        tests_failed = sum(bucket["failed"] for bucket in tests_by_category.values())
+        tests_skipped = sum(bucket["skipped"] for bucket in tests_by_category.values())
 
         report = {
             "project_name": project["project_name"],
@@ -154,13 +311,14 @@ class QAAgent:
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "framework_used": "jest",
             "tests_generated": len(all_test_cases),
-            "tests_passed": run_result["passed"],
-            "tests_failed": run_result["failed"],
-            "tests_skipped": run_result["skipped"],
+            "tests_passed": tests_passed,
+            "tests_failed": tests_failed,
+            "tests_skipped": tests_skipped,
             "tests_by_category": tests_by_category,
             "test_cases": merged_test_cases,
             "out_of_scope_modules": out_of_scope,
             "raw_stderr": run_result["raw_stderr"],
+            "environment_failure": environment_failure,
         }
         markdown = _build_markdown_report(report)
 
@@ -181,7 +339,7 @@ class QAAgent:
 
         logger.info(
             "QA Agent finished for feature_id=%s: %d generated, %d passed, %d failed, %d skipped",
-            feature_id, len(all_test_cases), run_result["passed"], run_result["failed"], run_result["skipped"],
+            feature_id, len(all_test_cases), tests_passed, tests_failed, tests_skipped,
         )
 
         return QAAgentOutput(
@@ -189,12 +347,11 @@ class QAAgent:
             status="completed",
             framework_used="jest",
             tests_generated=len(all_test_cases),
-            tests_passed=run_result["passed"],
-            tests_failed=run_result["failed"],
-            tests_skipped=run_result["skipped"],
+            tests_passed=tests_passed,
+            tests_failed=tests_failed,
+            tests_skipped=tests_skipped,
             artifact_ids=[json_artifact.artifact_id, md_artifact.artifact_id],
-            message=f"{run_result['passed']} passed, {run_result['failed']} failed, "
-                    f"{run_result['skipped']} skipped.",
+            message=f"{tests_passed} passed, {tests_failed} failed, {tests_skipped} skipped.",
         )
 
     def _write_test_file(self, generated_dir: Path, stem: str, category: str, test_code: str) -> str:
@@ -218,11 +375,17 @@ class QAAgent:
         name is the only unreliable half of the match key, since it depends on the LLM writing
         the identical string twice (once in its metadata JSON, once as the real Jest test title).
         This compensates for minor title-wording drift without ever inventing a result that
-        doesn't exist.
+        doesn't exist. (A Plan-agent design review confirmed this two-tier design should stay
+        exactly as-is, not be replaced with pure positional matching -- Tier 1 is what correctly
+        disambiguates two same-file results when only ONE test's name actually drifted; reducing
+        how often Tier 2 is even needed is handled instead by generator.py's forbidden-construct
+        scan, which keeps test.each/describe.each/test.concurrent -- the real cardinality-mismatch
+        risk -- out of generated code entirely.)
 
         A planned case still unmatched after both tiers (genuinely fewer real results than
-        planned in that file -- e.g. the file crashed partway through) is still reported, marked
-        "skipped" with an explicit note, rather than silently disappearing.
+        planned in that file -- e.g. the file crashed partway through) is reported as "failed"
+        (never "skipped" -- direct user requirement: every test case resolves to passed or failed
+        only), with an explicit note explaining it never produced a matching result.
         """
         results_by_key = {(r["test_file"], r["name"]): r for r in results}
 
@@ -253,7 +416,7 @@ class QAAgent:
                 "expected_behavior": tc.expected_behavior,
                 "test_file": tc.test_file,
                 "method": tc.method,
-                "status": match["status"] if match else "skipped",
+                "status": match["status"] if match else "failed",
                 "duration_ms": match.get("duration_ms") if match else None,
                 "failure_message": (match.get("failure_message") if match
                                      else ("This test file did not produce a matching result -- "
@@ -292,9 +455,9 @@ class QAAgent:
         return merged_test_cases
 
     def _count_by_category(self, merged_test_cases: list[dict]) -> dict:
-        counts = {cat: {"total": 0, "passed": 0, "failed": 0, "skipped": 0} for cat in CATEGORIES}
+        counts = {cat: {"total": 0, "passed": 0, "failed": 0} for cat in CATEGORIES}
         for tc in merged_test_cases:
-            bucket = counts.setdefault(tc["category"], {"total": 0, "passed": 0, "failed": 0, "skipped": 0})
+            bucket = counts.setdefault(tc["category"], {"total": 0, "passed": 0, "failed": 0})
             bucket["total"] += 1
             bucket[tc["status"]] = bucket.get(tc["status"], 0) + 1
         return counts
@@ -343,9 +506,12 @@ class QAAgent:
     def _summarize_report_for_chat(self, report: dict) -> str:
         lines = [
             f"QA report for {report['feature_name']} (generated {report['generated_at']}): "
-            f"{report['tests_passed']} passed, {report['tests_failed']} failed, "
-            f"{report['tests_skipped']} skipped.",
+            f"{report['tests_passed']} passed, {report['tests_failed']} failed.",
         ]
+        if report.get("environment_failure"):
+            lines.append(
+                f"Note: the test run itself could not execute -- {report['environment_failure']['reason']}"
+            )
         for tc in report.get("test_cases", []):
             loc = f"{tc['target_file']}::{tc['target_function']}" if tc.get("target_function") else tc["target_file"]
             line = f"- [{tc['status'].upper()}] ({tc['category']}) {tc['name']} -- targets {loc}"

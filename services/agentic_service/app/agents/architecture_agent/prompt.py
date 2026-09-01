@@ -118,14 +118,27 @@ Use Case Specification Rules:
   and the set of use cases FIRST from functional_requirements. Acceptance Criteria and Validation
   Rules refine and validate those use cases' behavior for traceability; they do not on their own
   justify a new actor, use case, or relationship.
-- actors: list real external user roles or real external systems only. Each actor entry is
-  {"name", "type": "primary | secondary", "stereotype": "human | system", "generalizes": ""}.
-  Set stereotype "system" for a real non-human/external system actor (a third-party payment
-  gateway, an email provider, a scheduled job trigger) -- it renders as the standard <<system>>
-  stereotype. Set "generalizes" to a parent actor's name ONLY when this actor genuinely "is like"
-  a broader one with the SAME goals plus something extra (e.g. "Admin" generalizes "User" when an
-  Admin can do everything a User can, plus more) -- leave it empty otherwise; do not invent an
-  actor hierarchy that doesn't reflect real role structure.
+- actors: include an actor ONLY if it is a real, necessary, DISTINCT participant that directly
+  interacts with a use case -- a human role, or a genuine external system this feature integrates
+  with (named in the SRS's own api_expectations/dependencies, or an explicit third-party
+  integration point). Do NOT invent an actor for a noun merely mentioned inside an FR's
+  description -- e.g. an FR that says uploaded images are stored somewhere does NOT by itself
+  justify an "Image Hosting Service" actor unless the SRS/architecture explicitly names a real
+  third-party image-hosting integration as a dependency; storing to the app's own database/bucket
+  is an internal implementation detail, not a distinct actor. When genuinely unsure whether
+  something is a real actor, leave it out -- fewer, necessary actors are better than a cluttered
+  diagram.
+  Each actor entry is {"name", "type": "primary | secondary", "stereotype": "human | system",
+  "generalizes": ""}. An actor's name must be a concise 1-4 word noun phrase naming the real role
+  or system -- e.g. "Customer", "Admin", "Payment Gateway" -- never a sentence or description (a
+  real, confirmed bad example: an actor named "An Image Hosting Solution To Store Uploaded
+  Images." should instead have been named "Image Hosting Service", if it was even a necessary
+  actor at all). Set stereotype "system" for a real non-human/external system actor (a
+  third-party payment gateway, an email provider, a scheduled job trigger) -- it renders as the
+  <<external system>> stereotype. Set "generalizes" to a parent actor's name ONLY when this actor
+  genuinely "is like" a broader one with the SAME goals plus something extra (e.g. "Admin"
+  generalizes "User" when an Admin can do everything a User can, plus more) -- leave it empty
+  otherwise; do not invent an actor hierarchy that doesn't reflect real role structure.
 - Do not use Database, API, Controller, MongoDB, React, Node, JWT Library, Server, Backend, Frontend, UI Page, or Form as actors.
 - use_cases: exactly ONE entry with type "main" -- the single cohesive user-facing goal of this
   feature (never the feature name restated verbatim, e.g. not just "Task Search" for a Task Search
@@ -173,6 +186,16 @@ Use Case Specification Rules:
   the same real behaviour under different names (e.g. "Initiate Password Reset" and "Recover
   Account Access" are the same thing) -- merge them into one entry with the union of their
   related_requirements instead of keeping both.
+- This is the OPPOSITE problem from the one above: do not use that same "merge" instinct on two
+  GENUINELY DIFFERENT capabilities. If the functional requirements describe two or more distinct
+  top-level capabilities (e.g. creating a record AND listing/viewing records, or updating a record
+  AND deleting one), each becomes its own SEPARATE use case with its own name and its own
+  description -- never combine 2+ distinct-capability verbs (add/create, list/view, update/edit,
+  delete/remove) into one conjunctive name. A real, confirmed bad example: "Add List Items" for a
+  feature that both adds and lists items -- this must be two use cases, "Add Item" and "List
+  Items", each citing only its own related requirement ids (unless the SRS itself only wrote one
+  combined requirement for both, in which case both use cases may cite that same id, but must
+  still have distinct names and descriptions).
 - Every SRS functional requirement, acceptance criterion, AND validation rule must be covered by
   at least one use case's related_requirements -- this is required for completeness (checked
   deterministically for all three), but covering it does NOT mean inventing a separate use case
@@ -1042,14 +1065,23 @@ Use Case Specification Rules:
   read_functional_requirements. Acceptance criteria and validation rules
   refine and validate those use cases' behavior for traceability; they do
   not on their own justify a new actor, use case, or relationship.
-- actors: real external user roles or real external systems only -- never
-  Database/API/Controller/MongoDB/React/Node/JWT Library/Server/Backend/
-  Frontend/UI Page/Form. Each actor needs a stereotype ("human" for a real
+- actors: include an actor ONLY if it is a real, necessary, DISTINCT
+  participant -- a human role, or a genuine external system this feature
+  integrates with (per the SRS's own dependencies/api_expectations) -- never
+  invent one for a noun merely mentioned in an FR's description (e.g. an FR
+  mentioning stored uploaded images does NOT by itself justify an "Image
+  Hosting Service" actor unless a real third-party integration is named;
+  internal storage is not a distinct actor). When unsure, leave it out --
+  never Database/API/Controller/MongoDB/React/Node/JWT Library/Server/
+  Backend/Frontend/UI Page/Form either. An actor's name must be a concise
+  1-4 word noun phrase (e.g. "Customer", "Payment Gateway"), never a
+  sentence -- a real, confirmed bad example: "An Image Hosting Solution To
+  Store Uploaded Images." Each actor needs a stereotype ("human" for a real
   person/role, "system" for a real non-human/external system this feature
   integrates with -- a payment gateway, an email provider, a scheduled job
-  trigger). Set "generalizes" to a parent actor's name ONLY when this actor
-  genuinely "is like" a broader one (same goals, plus something extra) --
-  leave it empty otherwise.
+  trigger; renders as <<external system>>). Set "generalizes" to a parent
+  actor's name ONLY when this actor genuinely "is like" a broader one (same
+  goals, plus something extra) -- leave it empty otherwise.
 - use_cases: exactly ONE entry with type "main" -- the real cohesive
   user-facing goal of this feature (never the feature name restated
   verbatim). Every name (main, included, extension) BEGINS WITH a strong,
@@ -1078,6 +1110,12 @@ Use Case Specification Rules:
   checked deterministically.
 - Before submitting, scan your own use_cases for near-duplicates (the same
   real behaviour under different names) and merge them.
+- The opposite problem: do not merge two GENUINELY DIFFERENT capabilities
+  (e.g. adding a record and listing records) into one conjunctive name --
+  each distinct capability (add/create, list/view, update/edit,
+  delete/remove) gets its own separate use case with its own name. A
+  confirmed real bad example: "Add List Items" should be two use cases,
+  "Add Item" and "List Items".
 - Call validate_usecase_draft before submitting. If it reports errors, fix
   them and validate again. Submit only once validation passes or you are
   confident the remaining issue is a false positive.
@@ -1307,12 +1345,26 @@ Rules:
   functional requirements below. Acceptance criteria and validation rules
   refine and validate those use cases' behavior for traceability; they do
   not on their own justify a new actor, use case, or relationship.
-- actors: real external user roles/systems only. Each needs a stereotype
-  ("human" or "system" -- "system" only for a real non-human/external
-  system) and an optional "generalizes" (a parent actor's name, only for a
-  genuine "is like, plus more" relationship).
+- actors: include an actor ONLY if it is a real, necessary, distinct
+  participant -- a human role or a genuine external system this feature
+  integrates with -- never one invented for a noun merely mentioned in an
+  FR's description (e.g. don't invent an "Image Hosting Service" actor just
+  because images get stored somewhere, unless a real third-party
+  integration is named). When unsure, leave it out. Each actor's name must
+  be a concise 1-4 word noun phrase (e.g. "Customer", "Payment Gateway"),
+  never a sentence -- and needs a stereotype ("human" or "system" --
+  "system" only for a real non-human/external system, rendering as
+  <<external system>>) and an optional "generalizes" (a parent actor's
+  name, only for a genuine "is like, plus more" relationship).
 - use_cases: exactly ONE "main" entry (the real feature goal, never the
-  feature name restated). Every name BEGINS WITH a strong action verb.
+  feature name restated). Every name BEGINS WITH a strong action verb. Watch
+  for near-duplicates (the same real behaviour under different names --
+  merge them) AND the opposite problem: two GENUINELY DIFFERENT capabilities
+  (e.g. adding a record and listing records) must NOT be combined into one
+  conjunctive name -- each distinct capability (add/create, list/view,
+  update/edit, delete/remove) gets its own separate use case. A confirmed
+  real bad example: "Add List Items" should be two use cases, "Add Item"
+  and "List Items".
 - participating_actors: for EVERY use case, the real actor name(s) that
   genuinely appear in THAT use case's own logic -- not the whole actor list
   by default.
@@ -1404,14 +1456,25 @@ Rules:
   the context below -- accurate, not guessed (all three kinds are checked,
   not just FR).
 - Merge any two entries that describe the same real behaviour under
-  different names.
+  different names. Do NOT apply that same merge instinct to two GENUINELY
+  DIFFERENT capabilities (e.g. adding a record and listing records) -- keep
+  those as separate entries with distinct names; a confirmed real bad
+  example is "Add List Items," which must be split into "Add Item" and
+  "List Items."
 - Every use_cases entry needs participating_actors: the real actor name(s)
   (matching the actors list) that genuinely appear in THAT use case's own
   logic -- not the whole actor list by default.
-- Set an actor's stereotype to "system" only for a real non-human/external
-  system actor; leave "generalizes" empty on both actors and use cases
-  unless a real, significantly-different-business-logic variant
-  relationship genuinely applies.
+- Only include an actor if it is a real, necessary, distinct participant --
+  never one invented for a noun merely mentioned in passing (e.g. don't
+  invent an "Image Hosting Service" actor just because images get stored
+  somewhere, unless a real third-party integration is named). Every
+  actor's name must be a concise 1-4 word noun phrase (e.g. "Customer",
+  "Payment Gateway"), never a sentence or description -- a confirmed real
+  bad example is "An Image Hosting Solution To Store Uploaded Images."
+  Set an actor's stereotype to "system" only for a real non-human/external
+  system actor (renders as <<external system>>); leave "generalizes" empty
+  on both actors and use cases unless a real, significantly-different-
+  business-logic variant relationship genuinely applies.
 - Return only valid JSON. No markdown fences, no explanation outside JSON.
 """
 

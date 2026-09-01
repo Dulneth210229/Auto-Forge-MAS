@@ -8360,6 +8360,273 @@ milestone — that file is scratch, **this file is the durable one**.
       report history is left in place on the real Finodil feature as genuine verification
       evidence, matching this project's own established convention.
 
+97. **Fixed a real, reported bug: running Architecture Agent for the first time on a feature (in
+    the "Retail Store" project) produced 2 artifact versions with identical content.**
+    Investigated via 2 parallel Explore agents (frontend trigger paths; backend save/version
+    mechanisms). Backend confirmed structurally sound: `_save_architecture_artifacts` is called
+    exactly once per real `run()`/`run_stream()` invocation, `graph_orchestrator_service` has no
+    real `architecture` node (a pure pass-through, per deviation #12/M6's own docstring) so it
+    cannot race a manual API-triggered run, and no event/webhook mechanism anywhere could trigger
+    a second call. **Root cause, confirmed by reading the code, not guessed**:
+    `frontend/src/components/pipeline/ArchitectureRunForm.jsx` ("deep exploration mode," reachable
+    from `ArchitectureAgentChat.jsx`'s own toggle) instantiated its OWN, independent
+    `useRunArchitecture(featureId)` mutation hitting plain `POST /architecture/run` -- completely
+    separate from the shared `ArchitectureAgentFlowContext`'s `runStream` mutation
+    (`POST /architecture/run/stream`) that `ResultTab.jsx`'s Enhanced-SRS-approval auto-continue
+    (`APPROVE_CONTINUATION_BY_STAGE.domain`, `autoRun: true`) fires. Neither mutation instance had
+    any visibility into the other's pending state -- the exact same "two independent
+    `useMutation()` instances for one real action" bug class already found and fixed for UI/UX
+    Agent (item 61) and Security Agent (item 89), just never applied to Architecture Agent's own
+    plain-run path. If a human had the exploration form open (or had just submitted it) at the
+    moment the Enhanced SRS was approved, both real HTTP requests fired, each independently
+    calling `_save_architecture_artifacts` -- one call, but twice, is exactly "2 versions, same
+    content."
+    - **Fix**: moved the plain-run mutation into `useArchitectureAgentFlow.js` itself
+      (`plainRunMutation`/`handlePlainRun`/`stopPlainRun`), shared via the existing
+      `ArchitectureAgentFlowContext` -- `ArchitectureRunForm.jsx` now consumes it from context
+      instead of instantiating its own copy, so every trigger surface observes the SAME
+      `isPending`. New combined `anyRunPending` in `ArchitectureAgentChat.jsx`
+      (`activeStream.isPending || (!hasOutput && plainRunMutation.isPending)`) gates the "Start
+      Architecture Agent now" button/toggle-link and the composer's submit/pending state -- the
+      form itself deliberately stays visible while its own request is pending (showing "Generating
+      Architecture Plan..."), and additionally checks the STREAMING mutation's own `isPending` via
+      context before allowing its own submit, so a stream started elsewhere (e.g. the auto
+      -continue) blocks the form too, with a visible "Architecture Agent is already running..."
+      note. `ResultTab.jsx`'s two auto-run call sites (`handleConfirmedApprove`'s
+      domain->architecture branch, and `handleConfirmedSkipEnhancement`) now both check a new
+      `architectureRunAlreadyInFlight` (folding in `plainRunMutation.isPending` too) before firing
+      `handleRunArchitectureStream`, so the reverse race (approve arrives while the form's plain
+      request is already running) is blocked at the source as well. `isArchitectureRunning` in
+      `ResultTab.jsx` also now reflects `plainRunMutation.isPending`, so the Result panel's live
+      view correctly shows "generating" for the deep-exploration path too, not just the streaming
+      one.
+    - `npm run build` clean (1365 modules). This was a pure frontend-only fix -- no backend changes
+      needed, matching the Explore agents' own conclusion that the backend has no duplicate-save
+      mechanism.
+
+98. **Architecture Agent: fixed real Use Case Diagram modeling problems a supervisor review
+    flagged on the real "Add & List Items" feature (Retail Store project) -- a garbled actor name
+    with an unclear `<<system>>` stereotype, an ambiguous conjunctive use case name, and (per
+    direct user steer) actor over-inclusion.** Direct user report, quoting the real reviewer
+    feedback verbatim: an actor named `"An Image Hosting Solution To Store Uploaded Images."`
+    using `<<system>>` ("not the clearest way to represent an external system"), and a use case
+    named `"Add List Items"` (should be two separate use cases, since add and list are distinct
+    capabilities). The user also asked for full FR coverage while staying simple, and explicitly
+    redirected the stereotype discussion toward a more fundamental concern via AskUserQuestion:
+    **"Do not add unnecessary things to the usecase diagram. Add only necessary actors."**
+    Investigated via 3 parallel Explore agents (actor naming/stereotype code paths; conjunctive
+    use-case naming + FR-coverage mechanisms; the real live data needed for the reset) plus a
+    Plan-agent design-review pass that corrected scope on two points and surfaced one real
+    structural gap the initial draft missed.
+    - **Root causes, confirmed by reading the code directly**: `usecase_modeler.py::_build_actors`
+      trusted the LLM's actor names almost verbatim (`_extract_name` + `_title_case` only) with
+      no cleanup analogous to `_clean_use_case_name`; `usecase_validator.py::_validate_actors` had
+      zero name-quality checks; `prompt.py` told the LLM what NOT to name an actor (a technical
+      component) but gave zero positive guidance on actor name FORM, and nothing distinguished a
+      real necessary actor from a noun merely mentioned in an FR's description. The `<<system>>`
+      stereotype was hardcoded in exactly one rendering location (`usecase_builder.py`) and named
+      in prose in exactly one prompt tier (the other three tiers only ever describe the
+      `stereotype` field value, never the literal rendered tag). `prompt.py`'s Use Case
+      Specification Rules had strong anti-fragmentation guidance (don't split one action into
+      micro-steps) and anti-near-duplicate guidance (merge same-behavior-different-name entries)
+      but zero rule against the OPPOSITE failure -- merging two genuinely distinct capabilities
+      into one conjunctive name. `usecase_validator.py::_validate_use_case_name_quality` only
+      catches cut-sentence fragments (articles/pronouns) -- "Add List Items" tokenizes to
+      `{add, list, items}`, none of which trip it. FR/AC/VR coverage was already fully solved
+      (`_validate_traceability` unconditionally enforces it, and the full FR list is already sent
+      to the LLM at every generation tier) -- no new coverage mechanism was needed.
+    - **A real, structural latent risk found by the design-review pass, not part of the initial
+      draft**: `_build_use_cases_from_specification` unconditionally demoted any SECOND
+      `main`-typed use case to `included`, and `_build_relationships` then drew a false
+      `<<include>>` edge from the sole remaining main to it. Once a new anti-conjunction rule
+      teaches the LLM to correctly mark "Add Item" and "List Items" as two independent
+      capabilities, a model might reasonably mark BOTH as `type: "main"` -- and the old code would
+      force a semantically wrong `<<include>>` edge claiming listing always happens as part of
+      adding (the same "not the clearest way to represent" complaint, just relocated).
+    - **Fix -- actor necessity (primary, per direct user steer)**: new prompt rule (all 4 tiers:
+      combined/agentic/focused-fallback/repair) stating an actor must be a REAL, NECESSARY,
+      DISTINCT participant -- a human role, or a genuine external system named in the SRS's own
+      `api_expectations`/`dependencies` -- never a noun merely mentioned in passing inside an FR's
+      description, with the real bad example stated directly (don't invent an "Image Hosting
+      Service" actor just because an FR mentions storing uploaded images, unless a real
+      third-party integration is named). Deliberately prompt-level only, not a new deterministic
+      validator check -- actor necessity is a semantic judgment call, and a rigid syntactic check
+      here would risk real false positives, matching this codebase's own established restraint
+      around not over-engineering checks for judgment-based quality.
+    - **Fix -- actor name quality**: new `usecase_modeler.py::_clean_actor_name` (strips trailing
+      sentence punctuation, strips `NAME_FILLER_WORDS`, caps at 4 words, title-cases -- simpler
+      than `_clean_use_case_name`, no verb-first forcing since an actor is a noun phrase) applied
+      to every actor source (LLM specification, SRS `user_roles` fallback, SDS `context_view`
+      fallback). New `usecase_validator.py::_validate_actor_name_quality` (reuses `FRAGMENT_WORDS`,
+      flags >5 words, flags a name ending in `.`/`!`/`?`) wired into `validate()`, feeding the
+      existing `_repair_usecase_specification` retry loop automatically with no repair-prompt
+      change functionally required (confirmed: `build_usecase_repair_prompt` already interpolates
+      the exact validation-error string plus the full prior specification) -- an optional
+      reinforcing repair-prompt bullet was still added for consistency.
+    - **Fix -- stereotype clarity, minimal footprint**: `usecase_builder.py`'s rendered stereotype
+      string changed from `<<system>>` to `<<external system>>` (one string literal) plus the one
+      prompt tier that named the literal tag in prose; the other three tiers needed no change
+      (confirmed they only ever describe the `stereotype` field value).
+    - **Fix -- conjunctive use-case naming**: new prompt rule placed immediately adjacent to (not
+      near the anti-fragmentation rule, to avoid blurring "don't split" with "don't merge") the
+      existing near-duplicate-merge instruction, with an explicit inline contrast sentence and the
+      real bad/good example pair ("Add List Items" -> "Add Item" + "List Items"). New
+      `usecase_validator.py::_validate_no_conjoined_capabilities` flags a single use case name
+      containing 2+ verbs from a SHORT curated `DISTINCT_CAPABILITY_VERBS` set (`add/create`,
+      `list/view/browse`, `update/edit`, `delete/remove` -- deliberately narrow per the design
+      review: broader verbs like search/filter/export/approve legitimately co-occur in one real
+      name, e.g. "Export Filtered Report," and would false-positive). New guard in
+      `usecase_modeler.py::_dedupe_by_shared_requirements`: two entries citing an identical
+      `related_requirements` set are NOT merged if their names start with a DIFFERENT curated verb
+      (the real, confirmed mechanism that could silently fuse "Add Item"/"List Items" if the SRS
+      only wrote one combined FR for both) -- confirmed safe against the existing test suite (the
+      one real test exercising this path merges two entries both starting with "Initiate," not two
+      different curated verbs); the other two merge passes (exact-name, name-similarity) are
+      untouched.
+    - **Fix -- the "second main" structural gap**: relaxed the demotion logic so two `main`-typed
+      entries are only collapsed when their `related_requirements` sets overlap or either is empty
+      (the "LLM sloppily double-marked one thing as main" case) -- two entries with genuinely
+      DISJOINT `related_requirements` are kept as independent siblings with no invented
+      `<<include>>`/`<<extend>>` edge between them. New `_closest_main_use_case` helper: when
+      multiple main use cases exist, an included/extension use case's include/extend edge now
+      connects to whichever main it shares the most `related_requirements` overlap with (falling
+      back to the first main only when it shares none) -- previously hardcoded to always connect
+      to `main_use_cases[0]`. The pre-existing actor-association logic
+      (`_build_relationships`'s per-use-case `participating_actors` loop) already correctly
+      handles multiple main use cases with zero changes needed, confirmed by reading it.
+    - Tests: `tests/test_architecture_usecase_modeler.py` (+7: actor cleanup for both the real
+      garbled name and a clean name, cleanup applied to the SRS `user_roles` fallback source too,
+      the merge guard both blocking a false merge and preserving the real legitimate one, disjoint
+      vs. overlapping "second main" demotion behavior, closest-main relationship assignment; one
+      pre-existing test -- `test_folds_extra_main_entries_into_included` -- rewritten to reflect
+      the new, correct behavior, since it directly asserted the old bug's own demotion-always
+      logic). `tests/test_architecture_usecase_validator_quality.py` (+5: the real garbled actor
+      name flagged on both signals, clean actor names not flagged, an overly-long actor name
+      flagged, the real "Add List Items" conjunction flagged, correctly-separated names and a
+      same-capability multi-word name both NOT flagged).
+      `tests/test_architecture_usecase_builder.py` (1 pre-existing test updated for the new
+      `<<external system>>` rendered tag). Full architecture-tagged suite: **270 passed**, zero
+      regressions. Full non-Docker-dependent backend suite: **1124 passed**.
+    - **Real, live verification against the real feature's real approved Enhanced SRS** (read-only,
+      no Mongo writes): fed a specification reproducing the EXACT real reported bug shape (the
+      real garbled actor name + "Add List Items") through the real, unmocked modeler/validator/
+      builder using this feature's own real FR ids -- confirmed the actor cleaned to "Image
+      Hosting Solution To" (no longer a raw sentence with a trailing period; not a perfect name,
+      an honest, deliberate limitation of the cosmetic-cleanup layer, since the actual, more
+      complete defense is the strengthened prompt now discouraging the LLM from producing this
+      shape at all) rendered with `<<external system>>`, and confirmed the validator correctly
+      raised on "Add List Items" (`"conjoins multiple distinct capabilities... split into separate
+      use cases, one per capability (add, list)"`) -- exactly the signal that triggers a real
+      repair retry. Separately fed a correctly-separated specification ("Add Item"/FR-001, "List
+      Items"/FR-002, an included "View Item Details" citing an unrelated FR) through the same real
+      pipeline: confirmed both survived as independent `main` use cases with no invented edge
+      between them, and confirmed the included use case's `<<include>>` edge correctly fell back
+      to the first main (zero requirement overlap with either, as designed).
+    - **Real, live data reset** (direct user request, explicit part of the plan): deleted all 16
+      existing Architecture-related artifact records (8 `(artifact_type, version)` groups --
+      `architecture_plan`/`use_case_diagram`/`sequence_diagram`/`class_diagram` v1 and v2) for the
+      real feature `feature_bd2b44a1` ("Add & List Items," project `proj_e373bcd3` "Retail Store")
+      via `artifact_service.delete_artifact`, run only after the fix was implemented and verified
+      above -- confirmed safe beforehand (none of the 16 records were `approved`, so no
+      `revoke_approval` step was needed; no active/paused LangGraph run existed for this feature).
+      Confirmed afterward: zero architecture-related records remain, while the feature's approved
+      SRS (v1) and approved Enhanced SRS (v4) are untouched -- the feature is now back to exactly
+      "Domain Agent approved, Architecture Agent never run," ready for the user to re-trigger
+      Architecture Agent fresh from Domain Agent's approval, per their own explicit request.
+
+99. **Fixed the real `.env.local`-corruption bug for real, plus made "the Coder Agent actually
+    uses the real MongoDB URI" a genuinely verified guarantee, plus a per-agent-chat AI
+    disclaimer.** Direct user request, three parts, after a prior diagnosis turn: the Coder Agent
+    must use the provided MongoDB URI to establish the database connection for real, instead of
+    silently falling back to fake data; and every agent's chat window needs a small "AI can make
+    mistakes" notice. Investigated via 3 parallel Explore agents (URI-detection scope + a
+    schema field already meant to fix this; the generated code's real DB-connection wiring and
+    what verification does/doesn't check; the frontend chat-component structure) plus a
+    Plan-agent design-review pass.
+    - **Part A -- the actual corruption fix**: root cause (already diagnosed in the prior turn):
+      `env_uri.py`'s `extract_mongodb_uri` runs unconditionally on every `revision_comment`
+      reaching `CoderAgent.revise()`/`revise_stream()`, including one machine-built by the "Fix
+      Vulnerabilities" flow that quotes a security finding's evidence text verbatim -- for a real
+      CWE-798 finding, that text contained the Coder Agent's own LLM-invented fake
+      `FALLBACK_MONGODB_URI` credential, which got matched and silently overwrote a human's real,
+      correctly-provided `.env.local` value. **The fix, confirmed to need zero schema changes**:
+      `CoderAgentReviseRequest.revised_by` already exists and was already correctly set to
+      `"security_agent_report"`/`"qa_agent_report"` by all 3 real frontend trigger points
+      (`SecurityDecisionDialog.jsx`, `ResultTab.jsx`'s `handleConfirmedFixVulnerabilities`,
+      `QaReportView.jsx`'s `handleSendToCoder`) -- it was simply never consulted by the
+      URI-detection logic. New `env_uri.py::is_machine_generated_revision(revised_by)` (checked
+      against a small `MACHINE_GENERATED_REVISION_SOURCES` set) gates the `write_env_local` call
+      in `agent.py`'s `revise()`/`revise_stream()` ONLY (`run()`/`run_stream()` are never
+      reachable from this flow, since it requires an existing Coder Agent output to already
+      exist) -- when the comment is machine-generated, it's left completely untouched (no write,
+      no strip), since the quoted URI is necessary vulnerability-description context the planner
+      needs to see in full, not a real secret. Also fixed a secondary regex quirk found while
+      diagnosing: `_TRAILING_PUNCTUATION` didn't include a backtick, so a URI captured from
+      inside a markdown code span (ending in `` ";` ``) kept the trailing backtick uncleaned.
+    - **Part B -- closing the deeper "never actually verified" gap**: confirmed by reading
+      `verify.py`/`db_fallback_checker.py`/`functional_checker.py`/`sandbox_service.py` directly
+      that `lib/mongodb.ts`'s scaffold was already correct (real `mongoose.connect
+      (process.env.MONGODB_URI)` when set, no fake behavior baked in), and that the sandbox
+      bind-mounts the real workspace directory -- meaning a correctly-saved `.env.local` genuinely
+      reaches `next build`/`next start` during `verify()` (Next.js reads `.env.local` from disk,
+      not from injected OS env vars). The real gap: `functional_checker.check_crud_functionality`
+      already does exactly the right thing to catch "always serves fake data" (POSTs a payload
+      with a distinctive marker, GETs, checks the marker reappears) but was wired as purely
+      informational in `verify.py` -- a route that always returns static seed data regardless of
+      connection state passed verification cleanly. Fixed by conditionally, narrowly hard-gating
+      it: `functional_checker.check_crud_functionality` now tags each failure with an explicit
+      `"reason"` (`"not_persisted"` vs `"post_rejected"`, instead of output-text parsing) so
+      `verify.py`'s `_build_crud_functional_step` can hard-gate ONLY the `"not_persisted"` case
+      AND only when `workspace_service.read_env_local(project_id).get("MONGODB_URI")` shows a
+      real URI is configured -- a non-2xx `"post_rejected"` response stays informational even
+      then (a real, correct validation rule rejecting this check's own heuristically-guessed
+      payload is a plausible non-bug outcome, not evidence of fake data; this narrowing was a
+      direct Plan-agent design-review refinement over the original "hard-gate any failure" draft).
+      When no real URI is configured, behavior is completely unchanged (informational only) --
+      seed data is the correct, designed behavior there. New prompt rule (right after the
+      existing "never touch `lib/mongodb.ts`" bullet in `CODER_AGENT_SYSTEM_PROMPT`, inherited
+      automatically by `BATCH_CODE_GENERATOR_SYSTEM_PROMPT` via the existing `"Tool usage:"`
+      string-split): `lib/mongodb.ts` is the ONLY connection mechanism in the project -- never
+      invent a second hardcoded connection-string constant anywhere, even as a placeholder. New
+      standalone module `hardcoded_secret_checker.py` (a new file, not folded into
+      `db_fallback_checker.py` -- "is the null-guard fallback well-formed" and "is there a leaked/
+      invented credential" are different concerns, mirroring the existing precedent of
+      `security_finding_coverage_checker.py` being its own file): `scan_for_hardcoded_mongodb_uri`
+      scans every planned, non-deleted file (any type, excluding `.env*` by basename -- confirmed
+      via the design review that `.env.example` is the ONE legitimate scaffold file with a real
+      placeholder `mongodb://` literal; every other scaffold file, including `lib/mongodb.ts`
+      itself, has none) for a literal `mongodb(?:\+srv)?://` substring -- an unconditional hard
+      gate in `verify.py` (not tied to whether a real URI is configured, since a hardcoded
+      credential in source is always wrong). This directly targets and would have caught the
+      exact root-cause pattern that produced the original Security Agent finding in the first
+      place, closing the loop that started this whole investigation.
+    - **Part C -- AI disclaimer**: confirmed all 7 real per-stage chat components
+      (`RequirementConversationChat.jsx`, `DomainAgentChat.jsx`, `ArchitectureAgentChat.jsx`,
+      `UiuxAgentChat.jsx`, `CoderAgentChat.jsx`, `SecurityAgentChat.jsx`, `QaAgentChat.jsx`)
+      render the same shared `ChatComposerBox.jsx` -- a real, confirmed single choke point (per
+      that component's own docstring: "there is only one place this markup exists, so it can't
+      drift"). Added one `<p className="text-[11px] text-gray-500 dark:text-gray-400 text-center
+      select-none">AI can make mistakes. Check important information.</p>` as the last element
+      inside the composer's rounded card -- one file, one change, automatically covers every
+      stage including `RequirementConversationChat.jsx`'s two separate call sites (pre-SRS/
+      post-SRS). `select-none` (a genuinely new pattern for this codebase, confirmed via the
+      design review no existing precedent uses it) makes it non-selectable/non-copyable, per the
+      user's own explicit "must not be able to copy that" requirement.
+    - Tests: `tests/test_coder_env_uri.py` (+3: the backtick-trailing fix, `is_machine_generated_
+      revision` true for both known sources and false for a real human/None/empty),
+      `tests/test_coder_agent_revise.py` (+1: end-to-end through the real `revise()` method with
+      the exact real historical finding text -- confirms `write_env_local` is never called and the
+      full finding text, fake URI included, still reaches the planner untouched),
+      `tests/test_coder_functional_checker.py` (updated: both existing failure tests now assert
+      the new `reason` field), new `tests/test_coder_hardcoded_secret_checker.py` (6: the real
+      confirmed `FALLBACK_MONGODB_URI` shape caught, the real scaffold `lib/mongodb.ts` and a
+      clean route never flagged, `.env.example`'s legitimate placeholder excluded, deleted/
+      unplanned files never scanned), new `tests/test_coder_verify_mongodb_gates.py` (8: the
+      conditional crud-gate's every branch -- no URI/not_persisted/post_rejected/passed/no-
+      results/default-false -- plus the hardcoded-secret step's pass/fail wrapping). Full backend
+      suite (excluding the pre-existing Docker-dependent files) run clean, zero regressions.
+      `npm run build` clean.
+
 ## Where to look
 
 - Full build spec (read this first, in order, before any new milestone): `instructions .md`

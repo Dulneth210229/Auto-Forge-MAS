@@ -93,7 +93,7 @@ export default function ChatBubble({ item, allArtifacts, onViewArtifact, onEditS
             <p className="text-xs text-accent-200 dark:text-accent-100/80 mb-0.5">
               {ASK_EVENT_LABELS[item.eventType] || "Revision requested"} &middot; {stageTag}
             </p>
-            <p className="whitespace-pre-wrap">{item.comment || <span className="italic text-accent-200 dark:text-accent-100/80">(no comment provided)</span>}</p>
+            <p className="whitespace-pre-wrap break-words">{item.comment || <span className="italic text-accent-200 dark:text-accent-100/80">(no comment provided)</span>}</p>
           </div>
           <div className="flex items-center gap-2">
             {onEditSubmit && item.comment && (
@@ -143,7 +143,7 @@ export default function ChatBubble({ item, allArtifacts, onViewArtifact, onEditS
               )}
             </p>
             {item.summary && (
-              <p className="mt-1 text-gray-600 dark:text-gray-300 whitespace-pre-wrap">
+              <p className="mt-1 text-gray-600 dark:text-gray-300 whitespace-pre-wrap break-words">
                 {item.summary}
               </p>
             )}

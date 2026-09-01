@@ -52,11 +52,12 @@ This Architecture Plan covers only the Add & List Items feature and excludes unr
 ### 3.1 Functional Requirements Interpretation
 - id: FR-001, description: Users can add a new item (via a form)., priority: Must Have
 - id: FR-002, description: Users can view the list of all added items., priority: Must Have
+- id: FR-DOM-001, description: Users can view the details of a specific item by clicking on it in the list., origin: domain_agent, domain_citation: {'source_document': 'product_catalog_and_inventory.txt', 'chunk_id': 'product_catalog_and_inventory.txt#0'}, priority: Should Have
 
 ### 3.2 Acceptance Criteria Interpretation
 - id: AC-001, description: Given a user fills in name, price, quantity, and an image, when they submit the form, then a new item is created and appears in the list immediately.
 - id: AC-002, description: Given a user submits the form with a missing required field (name, price, or quantity) or a negative price/quantity, when they submit, then the form shows a clear validation error and does not create the item.
-- id: AC-003, description: Given a user uploads a file that isn't an image or exceeds the size limit, when they submit, then the form shows a clear error and does not create the item.
+- id: AC-003, description: Given a user uploads a file that isn't an image or exceeds the size limit, when they submit, then the form shows a clear error message specifying the issue (e.g., 'File must be in JPEG, PNG, or WebP format and not exceed 5MB.') and does not create the item., modified_by_domain_agent: True, original_description: Given a user uploads a file that isn't an image or exceeds the size limit, when they submit, then the form shows a clear error and does not create the item., domain_citation: {'source_document': 'checkout_and_cart_conventions.txt', 'chunk_id': 'checkout_and_cart_conventions.txt#2'}
 - id: AC-004, description: Given no items have been added yet, when the list is opened, then a clear 'No items added yet' empty state is shown instead of a blank page.
 - id: AC-005, description: Given items exist, when the list is opened, then every item's image, name, description, price, and quantity are displayed correctly.
 
@@ -112,7 +113,7 @@ Integration design should follow the API expectations and dependencies listed in
 
 **State and User Feedback:**
 - Given a user submits the form with a missing required field (name, price, or quantity) or a negative price/quantity, when they submit, then the form shows a clear validation error and does not create the item.
-- Given a user uploads a file that isn't an image or exceeds the size limit, when they submit, then the form shows a clear error and does not create the item.
+- Given a user uploads a file that isn't an image or exceeds the size limit, when they submit, then the form shows a clear error message specifying the issue (e.g., 'File must be in JPEG, PNG, or WebP format and not exceed 5MB.') and does not create the item.
 - Given no items have been added yet, when the list is opened, then a clear 'No items added yet' empty state is shown instead of a blank page.
 - Given items exist, when the list is opened, then every item's image, name, description, price, and quantity are displayed correctly.
 
@@ -121,10 +122,10 @@ Integration design should follow the API expectations and dependencies listed in
 ## 6. Backend Architecture Plan
 
 **Backend Responsibilities:**
-- name: AddListItemsBackendModule, responsibility: Handle backend responsibilities for the Add & List Items feature., derived_from: ['Users can add a new item (via a form).', 'Users can view the list of all added items.', 'Image must be in JPEG, PNG, or WebP format and not exceed 5MB.', 'Name must be a non-empty string.', 'Price must be a positive number.', 'Quantity must be a non-negative integer.']
+- name: AddListItemsBackendModule, responsibility: Handle backend responsibilities for the Add & List Items feature., derived_from: ['Users can add a new item (via a form).', 'Users can view the list of all added items.', 'Users can view the details of a specific item by clicking on it in the list.', 'Image must be in JPEG, PNG, or WebP format and not exceed 5MB.', 'Name must be a non-empty string.', 'Price must be a positive number.', 'Quantity must be a non-negative integer.']
 
 **Controller / Service / Data Responsibilities:**
-- name: AddListItemsService, responsibility: Apply business rules for the Add & List Items feature., related_requirements: ['FR-001', 'FR-002']
+- name: AddListItemsService, responsibility: Apply business rules for the Add & List Items feature., related_requirements: ['FR-001', 'FR-002', 'FR-DOM-001']
 - name: AddListItemsDataModule, responsibility: Manage data access required by the feature., derived_from: ['image: file upload (stored and served back as an image URL)', 'name: string', 'description: text (optional)', 'price: number', 'quantity: number', 'createdAt: date (set automatically when the item is created)']
 
 **Integration Points:**
@@ -219,13 +220,13 @@ Integration design should follow the API expectations and dependencies listed in
   - Request Model: AddListItemsRequest
   - Success Response Model: AddListItemsSuccessResponse
   - Error Response Model: AddListItemsErrorResponse
-  - Related Requirements: FR-001, FR-002
+  - Related Requirements: FR-001, FR-002, FR-DOM-001
 - **GET /api/items**
   - Purpose: Support the Add & List Items feature.
   - Request Model: AddListItemsRequest
   - Success Response Model: AddListItemsSuccessResponse
   - Error Response Model: AddListItemsErrorResponse
-  - Related Requirements: FR-001, FR-002
+  - Related Requirements: FR-001, FR-002, FR-DOM-001
 
 **Request Models:**
 - **AddListItemsRequest**
@@ -235,14 +236,14 @@ Integration design should follow the API expectations and dependencies listed in
     - name: field, type: string, format: description: text (optional), required: True
     - name: field, type: string, format: price: number, required: True
     - name: field, type: string, format: quantity: number, required: True
-  - Related Requirements: FR-001, FR-002
+  - Related Requirements: FR-001, FR-002, FR-DOM-001
 
 **Response Models:**
 - **AddListItemsSuccessResponse**
   - Type: success
   - Fields:
     - name: field, type: string, description: List of items with each item's image, name, description, price, and quantity.
-  - Related Requirements: FR-001, FR-002
+  - Related Requirements: FR-001, FR-002, FR-DOM-001
 - **AddListItemsErrorResponse**
   - Type: error
   - Fields:
@@ -280,7 +281,7 @@ Integration design should follow the API expectations and dependencies listed in
     - Not specified.
   - Indexes / Constraints:
     - Not specified.
-  - Related Requirements: FR-001, FR-002
+  - Related Requirements: FR-DOM-001
 
 **Storage Rules:**
 - image: file upload (stored and served back as an image URL)
@@ -324,7 +325,7 @@ Integration design should follow the API expectations and dependencies listed in
 
 **Business Errors:**
 - source_id: AC-002, condition: Given a user submits the form with a missing required field (name, price, or quantity) or a negative price/quantity, when they submit, then the form shows a clear validation error and does not create the item., handling: Return a clear, user-friendly error and prevent the invalid action.
-- source_id: AC-003, condition: Given a user uploads a file that isn't an image or exceeds the size limit, when they submit, then the form shows a clear error and does not create the item., handling: Return a clear, user-friendly error and prevent the invalid action.
+- source_id: AC-003, condition: Given a user uploads a file that isn't an image or exceeds the size limit, when they submit, then the form shows a clear error message specifying the issue (e.g., 'File must be in JPEG, PNG, or WebP format and not exceed 5MB.') and does not create the item., handling: Return a clear, user-friendly error and prevent the invalid action.
 
 **Authorization Errors:**
 - Not specified.
@@ -343,14 +344,14 @@ Integration design should follow the API expectations and dependencies listed in
 - Not specified.
 
 **Authorization Design:**
-- Not specified.
+- Apply role/access rules required by the SRS.
 
 **Sensitive Data Rules:**
-- Not specified.
+- Sensitive values must not be exposed in responses, logs, or generated artifacts.
 
 **Risk Mitigations:**
-- risk: {'description': 'Large datasets could impact performance if not handled efficiently.'}, mitigation: Apply suitable mitigation based on project security policy., related_requirements: ['FR-001', 'FR-002']
-- risk: {'description': 'Third-party services for image storage or processing might introduce dependencies and potential downtime.'}, mitigation: Apply suitable mitigation based on project security policy., related_requirements: ['FR-001', 'FR-002']
+- risk: {'description': 'Large datasets could impact performance if not handled efficiently.'}, mitigation: Apply suitable mitigation based on project security policy., related_requirements: ['FR-001', 'FR-002', 'FR-DOM-001']
+- risk: {'description': 'Third-party services for image storage or processing might introduce dependencies and potential downtime.'}, mitigation: Apply suitable mitigation based on project security policy., related_requirements: ['FR-001', 'FR-002', 'FR-DOM-001']
 
 ---
 
@@ -383,15 +384,15 @@ Integration design should follow the API expectations and dependencies listed in
 - **TASK-001**: Create or update frontend screen/components for the Add & List Items feature.
   - Layer: frontend
   - Suggested Files: app/add-list-items/page.tsx, components/AddListItemsForm.tsx
-  - Related Requirements: FR-001, FR-002, AC-001, AC-002, AC-003, AC-004, AC-005
+  - Related Requirements: FR-001, FR-002, FR-DOM-001, AC-001, AC-002, AC-003, AC-004, AC-005
 - **TASK-002**: Implement Next.js Route Handler(s) for the Add & List Items API expectations.
   - Layer: backend
   - Suggested Files: app/api/add-list-items/route.ts, models/AddListItems.ts
-  - Related Requirements: FR-001, FR-002, AC-001, AC-002, AC-003, AC-004, AC-005
+  - Related Requirements: FR-001, FR-002, FR-DOM-001, AC-001, AC-002, AC-003, AC-004, AC-005
 - **TASK-003**: Create or update data model/repository required by the Add & List Items feature.
   - Layer: data
   - Suggested Files: backend/models/add_list_items.model.js, backend/repositories/add_list_items.repository.js
-  - Related Requirements: FR-001, FR-002
+  - Related Requirements: FR-001, FR-002, FR-DOM-001
 - **TASK-004**: Implement validation rules before processing feature requests.
   - Layer: validation
   - Suggested Files: backend/validators/add_list_items.validator.js
@@ -403,7 +404,7 @@ Integration design should follow the API expectations and dependencies listed in
 - **TASK-006**: Implement security controls required by the feature, including authentication/authorization or sensitive data handling where applicable.
   - Layer: security
   - Suggested Files: N/A
-  - Related Requirements: FR-001, FR-002, NFR-001, NFR-002, NFR-003
+  - Related Requirements: FR-001, FR-002, FR-DOM-001, NFR-001, NFR-002, NFR-003
 
 ---
 
@@ -413,9 +414,10 @@ Integration design should follow the API expectations and dependencies listed in
 |---|---|---|---|---|
 | FR-001 | FR | Design Views / Detailed Design Decisions | Users can add a new item (via a form). | covered |
 | FR-002 | FR | Design Views / Detailed Design Decisions | Users can view the list of all added items. | covered |
+| FR-DOM-001 | FR | Design Views / Detailed Design Decisions | Users can view the details of a specific item by clicking on it in the list. | covered |
 | AC-001 | AC | Behavior View / Error Handling View | Given a user fills in name, price, quantity, and an image, when they submit the form, then a new item is created and appears in the list immediately. | covered |
 | AC-002 | AC | Behavior View / Error Handling View | Given a user submits the form with a missing required field (name, price, or quantity) or a negative price/quantity, when they submit, then the form shows a clear validation error and does not create the item. | covered |
-| AC-003 | AC | Behavior View / Error Handling View | Given a user uploads a file that isn't an image or exceeds the size limit, when they submit, then the form shows a clear error and does not create the item. | covered |
+| AC-003 | AC | Behavior View / Error Handling View | Given a user uploads a file that isn't an image or exceeds the size limit, when they submit, then the form shows a clear error message specifying the issue (e.g., 'File must be in JPEG, PNG, or WebP format and not exceed 5MB.') and does not create the item. | covered |
 | AC-004 | AC | Behavior View / Error Handling View | Given no items have been added yet, when the list is opened, then a clear 'No items added yet' empty state is shown instead of a blank page. | covered |
 | AC-005 | AC | Behavior View / Error Handling View | Given items exist, when the list is opened, then every item's image, name, description, price, and quantity are displayed correctly. | covered |
 | VR-001 | VR | Interface View / Data View / Error Handling View | Image must be in JPEG, PNG, or WebP format and not exceed 5MB. | covered |
@@ -427,6 +429,10 @@ Integration design should follow the API expectations and dependencies listed in
 | NFR-003 | NFR | Quality Attributes View | Adding an item (including the image upload) should complete within a few seconds under normal conditions. | covered |
 | CONSTRAINT-001 | Constraint | Design Considerations / Architecture Overview | The application uses the Next.js framework. | covered |
 | CONSTRAINT-002 | Constraint | Design Considerations / Architecture Overview | The system should handle image uploads efficiently. | covered |
+| CONSTRAINT-003 | Constraint | Design Considerations / Architecture Overview | The system must support multiple currencies for price storage and display, with explicit currency codes. | covered |
+| CONSTRAINT-004 | Constraint | Design Considerations / Architecture Overview | The system must support guest checkout, capturing a valid email address and shipping address even if the user does not create an account. | covered |
+| CONSTRAINT-005 | Constraint | Design Considerations / Architecture Overview | The system must comply with GDPR (General Data Protection Regulation) regarding user data storage and processing, including obtaining explicit consent for data collection and providing users with the ability to access, modify, or delete their personal data. | covered |
+| CONSTRAINT-006 | Constraint | Design Considerations / Architecture Overview | The system must comply with GDPR (General Data Protection Regulation) regarding user data storage and processing, including obtaining explicit consent for data collection and providing users with the ability to access, modify, or delete their personal data. | covered |
 | RISK-001 | Risk | Design Considerations / Security and Authorization View | Large datasets could impact performance if not handled efficiently. | covered |
 | RISK-002 | Risk | Design Considerations / Security and Authorization View | Third-party services for image storage or processing might introduce dependencies and potential downtime. | covered |
 | DEPENDENCY-001 | Dependency | Design Context / Logical View | A backend service capable of handling file uploads and storing item data. | covered |
@@ -454,6 +460,10 @@ Integration design should follow the API expectations and dependencies listed in
 ### 16.2 Constraints
 - The application uses the Next.js framework.
 - The system should handle image uploads efficiently.
+- The system must support multiple currencies for price storage and display, with explicit currency codes.
+- The system must support guest checkout, capturing a valid email address and shipping address even if the user does not create an account.
+- The system must comply with GDPR (General Data Protection Regulation) regarding user data storage and processing, including obtaining explicit consent for data collection and providing users with the ability to access, modify, or delete their personal data.
+- The system must comply with GDPR (General Data Protection Regulation) regarding user data storage and processing, including obtaining explicit consent for data collection and providing users with the ability to access, modify, or delete their personal data.
 
 ### 16.3 Risks
 - description: Large datasets could impact performance if not handled efficiently.
@@ -468,3 +478,7 @@ Integration design should follow the API expectations and dependencies listed in
 ## 17. Human Approval Note
 
 This Architecture Plan must be reviewed and approved before the UI/UX Agent or Coder Agent starts.
+
+Automatic checks found a few issues to look at before approving:
+
+Use case name conjoins multiple distinct capabilities into one entry: 'Add List Items' -- split into separate use cases, one per capability (add, list).

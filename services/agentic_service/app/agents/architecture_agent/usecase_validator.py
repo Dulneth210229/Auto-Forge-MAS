@@ -69,6 +69,19 @@ class UseCaseQualityValidator:
     # Password"/"Validate Credentials" over-fragmentation anti-pattern.
     INTERNAL_STEP_VERBS = {"validate", "verify", "check", "confirm"}
 
+    # Short, curated CRUD-shaped verb set for _validate_no_conjoined_capabilities below (kept as
+    # a separate copy from usecase_modeler.py's own DISTINCT_CAPABILITY_VERBS, per this
+    # codebase's convention of not sharing files between these deterministic agent modules).
+    # Deliberately short -- a broader list (search/filter/export/approve/etc.) is more likely to
+    # legitimately co-occur in one real use case name (e.g. "Export Filtered Report") and would
+    # false-positive.
+    DISTINCT_CAPABILITY_VERBS = {
+        "add": "add", "create": "add",
+        "list": "list", "view": "list", "browse": "list",
+        "update": "update", "edit": "update",
+        "delete": "delete", "remove": "delete",
+    }
+
     STOPWORDS = {
         "the", "a", "an", "and", "or", "to", "via", "by", "for", "of",
         "in", "on", "with", "only", "is", "are", "be", "this", "that",
@@ -93,9 +106,11 @@ class UseCaseQualityValidator:
 
         errors.extend(self._validate_basic_structure(usecase_json))
         errors.extend(self._validate_actors(usecase_json))
+        errors.extend(self._validate_actor_name_quality(usecase_json))
         errors.extend(self._validate_use_cases(usecase_json))
         errors.extend(self._validate_use_case_name_quality(usecase_json))
         errors.extend(self._validate_use_case_fragmentation(usecase_json))
+        errors.extend(self._validate_no_conjoined_capabilities(usecase_json))
         errors.extend(self._validate_relationships(usecase_json))
         errors.extend(self._validate_traceability(srs_json, usecase_analysis_json, usecase_json))
         errors.extend(self._validate_out_of_scope(srs_json, usecase_json))
@@ -156,6 +171,47 @@ class UseCaseQualityValidator:
 
             if self._contains_any(normalized_name, self.TECHNICAL_ACTOR_TERMS):
                 errors.append(f"Technical component used as actor: {actor_name}")
+
+        return errors
+
+    def _validate_actor_name_quality(self, usecase_json: dict[str, Any]) -> list[str]:
+        """
+        Reject an actor name that reads as a sentence/description rather than a real role or
+        system name -- confirmed real example: "An Image Hosting Solution To Store Uploaded
+        Images." Mirrors _validate_use_case_name_quality's FRAGMENT_WORDS check (reused, not
+        duplicated), plus two actor-specific signals: an actor name is expected to be a short
+        (<=5 word) noun phrase per the schema's own "1-4 word noun phrase" framing, and a name
+        ending in sentence punctuation is a cheap, zero-false-positive sign of a cut/pasted
+        sentence rather than a name.
+        """
+        errors: list[str] = []
+
+        for actor in usecase_json.get("actors", []):
+            if not isinstance(actor, dict):
+                continue
+
+            name = str(actor.get("name", "")).strip()
+            if not name:
+                continue
+
+            if name.rstrip()[-1:] in (".", "!", "?"):
+                errors.append(
+                    f"Actor name ends with sentence punctuation, not a name: '{name}'"
+                )
+
+            words = [word.lower() for word in re.findall(r"[a-zA-Z0-9']+", name)]
+            fragment_hits = sorted({word for word in words if word in self.FRAGMENT_WORDS})
+
+            if fragment_hits:
+                errors.append(
+                    f"Actor name looks like a cut sentence fragment, not a role/system name: "
+                    f"'{name}' (contains: {', '.join(fragment_hits)})"
+                )
+
+            if len(words) > 5:
+                errors.append(
+                    f"Actor name reads like a description, not a name (too many words): '{name}'"
+                )
 
         return errors
 
@@ -290,6 +346,39 @@ class UseCaseQualityValidator:
                         f"Use cases {names} cite the exact same requirements {sorted(related)} -- "
                         "likely duplicate entries for the same real behaviour; merge them."
                     )
+
+        return errors
+
+    def _validate_no_conjoined_capabilities(self, usecase_json: dict[str, Any]) -> list[str]:
+        """
+        Catch the OPPOSITE failure from _validate_use_case_fragmentation above: one use case name
+        conjoining 2+ genuinely distinct top-level capabilities instead of being split into
+        separate use cases -- confirmed real example: "Add List Items" for a feature that both
+        adds and lists items. Flags a single name containing 2+ DIFFERENT verbs from the short
+        curated DISTINCT_CAPABILITY_VERBS set (see that constant's own comment for why it's kept
+        short).
+        """
+        errors: list[str] = []
+
+        for use_case in usecase_json.get("use_cases", []):
+            if not isinstance(use_case, dict):
+                continue
+
+            name = str(use_case.get("name", "")).strip()
+            if not name:
+                continue
+
+            words = [word.lower() for word in re.findall(r"[a-zA-Z0-9']+", name)]
+            capabilities_hit = {
+                self.DISTINCT_CAPABILITY_VERBS[word] for word in words if word in self.DISTINCT_CAPABILITY_VERBS
+            }
+
+            if len(capabilities_hit) >= 2:
+                errors.append(
+                    f"Use case name conjoins multiple distinct capabilities into one entry: "
+                    f"'{name}' -- split into separate use cases, one per capability "
+                    f"({', '.join(sorted(capabilities_hit))})."
+                )
 
         return errors
 

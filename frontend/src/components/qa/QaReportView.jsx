@@ -109,8 +109,8 @@ export default function QaReportView({ artifact }) {
   for (const category of CATEGORIES) {
     byCategory[category] = testCases.filter((tc) => tc.category === category);
   }
-  // Real per-category pass/fail/skipped counts from the backend's own tests_by_category --
-  // not recomputed client-side, so this always matches exactly what the report actually says.
+  // Real per-category pass/fail counts from the backend's own tests_by_category -- not
+  // recomputed client-side, so this always matches exactly what the report actually says.
   const categoryCounts = report.tests_by_category || {};
 
   const bannerStyle = hasFailures
@@ -138,8 +138,7 @@ export default function QaReportView({ artifact }) {
             {hasFailures ? "Some tests are failing -- review before proceeding." : "All tests passed."}
           </p>
           <p className="text-xs opacity-80 mt-0.5">
-            {report.tests_generated} test(s) written -- {report.tests_passed} passed, {report.tests_failed} failed,{" "}
-            {report.tests_skipped} skipped
+            {report.tests_generated} test(s) written -- {report.tests_passed} passed, {report.tests_failed} failed
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -174,6 +173,13 @@ export default function QaReportView({ artifact }) {
         fallback="Failed to run the QA scan."
       />
 
+      {report.environment_failure && (
+        <div className="rounded-lg border px-4 py-3 bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/30 text-amber-800 dark:text-amber-300">
+          <p className="text-sm font-bold">The test run itself could not execute</p>
+          <p className="text-xs opacity-80 mt-0.5">{report.environment_failure.reason}</p>
+        </div>
+      )}
+
       {testCases.length === 0 ? (
         <p className="text-sm text-gray-400 dark:text-gray-500 italic">No test cases were generated.</p>
       ) : (
@@ -188,7 +194,7 @@ export default function QaReportView({ artifact }) {
                 {counts && (
                   <span className="normal-case font-normal text-gray-400 dark:text-gray-500">
                     {" -- "}
-                    {counts.passed} passed, {counts.failed} failed, {counts.skipped} skipped
+                    {counts.passed} passed, {counts.failed} failed
                   </span>
                 )}
               </h4>

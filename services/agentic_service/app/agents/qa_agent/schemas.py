@@ -98,13 +98,16 @@ class QaTestCaseResult(BaseModel):
 
     name: str
     test_file: str = ""
-    status: str = "skipped"  # "passed" | "failed" | "skipped"
+    status: str = "failed"  # "passed" | "failed" -- every test case resolves to one of these two
+    # only, never "skipped" (direct user requirement) -- see qa_agent/agent.py's own
+    # _finalize_report for how a genuine "couldn't run at all" case is surfaced honestly as a
+    # distinct environment_failure signal instead of a third per-test-case status.
     duration_ms: int | None = None
     failure_message: str | None = None
     # LLM-synthesized explanation of a failure (see agent.py's _analyze_failures) -- distinct from
     # failure_message (Jest's own raw assertion/stack-trace text): root_cause explains WHY it
     # actually failed, recommendation says what to change. Both stay None (never block the report)
-    # if the analysis call is unreachable/fails, or for a passed/skipped test.
+    # if the analysis call is unreachable/fails, or for a passed test.
     root_cause: str | None = None
     recommendation: str | None = None
 
@@ -131,6 +134,5 @@ class QAAgentOutput(BaseModel):
     tests_generated: int = 0
     tests_passed: int = 0
     tests_failed: int = 0
-    tests_skipped: int = 0
     artifact_ids: list[str] = []
     message: str = ""

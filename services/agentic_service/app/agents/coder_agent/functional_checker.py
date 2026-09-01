@@ -203,7 +203,7 @@ def check_crud_functionality(
 
         if status_code is None or not (200 <= status_code < 300):
             results.append({
-                "endpoint": endpoint, "status": "failed",
+                "endpoint": endpoint, "status": "failed", "reason": "post_rejected",
                 "output": f"POST {endpoint} with a synthesized payload {payload!r} returned "
                 f"HTTP {status_code}: {post_result['body'][:500]}",
             })
@@ -213,8 +213,15 @@ def check_crud_functionality(
         marker_present = _MARKER_VALUE in (get_result["body"] or "")
 
         if not marker_present:
+            # Distinguished from "post_rejected" above via an explicit "reason" field (not
+            # output-text parsing) specifically so verify.py can hard-gate on THIS failure shape
+            # alone when a real MongoDB URI is configured -- a 2xx response already means the
+            # backend accepted the payload as valid, so the write's own value never reappearing is
+            # real, unambiguous evidence of a route that isn't genuinely persisting to (or reading
+            # from) the real database, as opposed to "post_rejected," which a real, correct
+            # validation rule can legitimately trigger against a heuristically-guessed payload.
             results.append({
-                "endpoint": endpoint, "status": "failed",
+                "endpoint": endpoint, "status": "failed", "reason": "not_persisted",
                 "output": f"POST {endpoint} returned HTTP {status_code}, but the created item's "
                 f"distinctive value ({_MARKER_VALUE!r}) never appeared on a follow-up GET -- "
                 "the write may not have actually persisted.",

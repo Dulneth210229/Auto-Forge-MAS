@@ -123,7 +123,7 @@ export function HumanBubble({ text, onEdit, isEditPending }) {
       <div className="max-w-[85%] flex flex-col items-end gap-1">
         <div className="bg-accent-600 dark:bg-accent-500 text-white rounded-lg rounded-tr-sm px-3 py-2 text-sm">
           <p className="text-xs text-accent-200 dark:text-accent-100/80 mb-0.5">You</p>
-          <p className="whitespace-pre-wrap">{text}</p>
+          <p className="whitespace-pre-wrap break-words">{text}</p>
         </div>
         <div className="flex items-center gap-2">
           {onEdit && (
@@ -164,7 +164,7 @@ export function AgentTurnBubble({ turn }) {
         {/* The agent's own dynamically-generated reaction to the human's last reply -- e.g.
             calling out that a reply was irrelevant or didn't answer the question, instead of the
             questions below just appearing as if nothing was wrong with it. */}
-        {hasReaction && <p className="whitespace-pre-wrap">{turn.agent_reaction}</p>}
+        {hasReaction && <p className="whitespace-pre-wrap break-words">{turn.agent_reaction}</p>}
 
         {hasQuestions && (
           <ul className="space-y-2">
@@ -338,7 +338,7 @@ export function LiveGenerationView({
       {hasStarted && (
         <pre
           ref={previewRef}
-          className="text-sm text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-md p-4 max-h-[65vh] overflow-y-auto whitespace-pre-wrap font-sans"
+          className="text-sm text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-md p-4 max-h-[65vh] overflow-y-auto whitespace-pre-wrap break-words font-sans"
         >
           {displayText}
           {!isFinalizing && (
@@ -369,7 +369,7 @@ export function LiveReactionBubble({ reactionText, hasStarted, agentLabel = "Req
             <span className="text-sm text-gray-500 dark:text-gray-400">Thinking...</span>
           </div>
         ) : (
-          <p className="whitespace-pre-wrap">
+          <p className="whitespace-pre-wrap break-words">
             {reactionText}
             <span className="inline-block w-1.5 h-3.5 bg-accent-600 align-text-bottom animate-pulse ml-0.5" />
           </p>

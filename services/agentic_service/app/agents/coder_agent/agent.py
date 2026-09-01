@@ -46,7 +46,12 @@ from app.agents.coder_agent.diff_builder import (
     build_requirement_code_map,
     build_setup_instructions_markdown,
 )
-from app.agents.coder_agent.env_uri import extract_mongodb_uri, is_uri_only, strip_uri_from_comment
+from app.agents.coder_agent.env_uri import (
+    extract_mongodb_uri,
+    is_machine_generated_revision,
+    is_uri_only,
+    strip_uri_from_comment,
+)
 from app.agents.coder_agent.plan_validator import CodePlanValidationError, code_plan_validator
 from app.agents.coder_agent.planner import CodePlanGenerationError, code_planner
 from app.agents.coder_agent.revision_file_tokens import (
@@ -412,7 +417,7 @@ class CoderAgent:
         # calls stop_preview_if_running right before touching the workspace).
         revision_comment_for_planning = request.revision_comment
         uri = extract_mongodb_uri(request.revision_comment)
-        if uri:
+        if uri and not is_machine_generated_revision(request.revised_by):
             workspace_service.write_env_local(project["project_id"], {"MONGODB_URI": uri})
             if is_uri_only(request.revision_comment, uri):
                 restarted = preview_service.restart_if_running(feature_id)
@@ -430,6 +435,9 @@ class CoderAgent:
                 )
                 return CoderAgentEnvSaveResult(saved=True, preview_restarted=restarted, message=message)
             revision_comment_for_planning = strip_uri_from_comment(request.revision_comment, uri)
+        # else: a machine-generated comment (a Security/QA finding quoting source code that
+        # happens to contain a URI-shaped substring) is left completely untouched -- no write, no
+        # strip -- see env_uri.py's own MACHINE_GENERATED_REVISION_SOURCES comment for why.
 
         srs_artifact = self._find_latest_approved_artifact(
             feature_id=feature_id,
@@ -891,7 +899,7 @@ class CoderAgent:
         # returned CoderAgentEnvSaveResult.
         revision_comment_for_planning = request.revision_comment
         uri = extract_mongodb_uri(request.revision_comment)
-        if uri:
+        if uri and not is_machine_generated_revision(request.revised_by):
             workspace_service.write_env_local(project["project_id"], {"MONGODB_URI": uri})
             if is_uri_only(request.revision_comment, uri):
                 restarted = preview_service.restart_if_running(feature_id)
@@ -916,6 +924,8 @@ class CoderAgent:
                 }
                 return
             revision_comment_for_planning = strip_uri_from_comment(request.revision_comment, uri)
+        # else: a machine-generated comment is left completely untouched -- see revise()'s own
+        # identical comment above for the full reasoning.
 
         srs_artifact = self._find_latest_approved_artifact(
             feature_id=feature_id,

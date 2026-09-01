@@ -22,7 +22,23 @@ from __future__ import annotations
 import re
 
 MONGODB_URI_PATTERN = re.compile(r"mongodb(?:\+srv)?://\S+", re.IGNORECASE)
-_TRAILING_PUNCTUATION = ")]}>.,;:!?'\""
+_TRAILING_PUNCTUATION = ")]}>.,;:!?'\"`"
+
+# revised_by values the frontend already stamps on a machine-built revision_comment (e.g. the
+# "Fix Vulnerabilities" flow quoting a Security/QA finding's own root-cause/recommendation text
+# verbatim -- see SecurityDecisionDialog.jsx, ResultTab.jsx's handleConfirmedFixVulnerabilities,
+# QaReportView.jsx's handleSendToCoder, all of which already set this correctly). A finding that
+# describes a hardcoded-credential vulnerability routinely quotes the offending source line,
+# which can itself contain a real mongodb:// URI-shaped substring -- confirmed to have happened
+# for real: a fake, LLM-invented FALLBACK_MONGODB_URI credential quoted in a CWE-798 finding's
+# root_cause text was matched here and silently overwrote a human's real, correctly-provided
+# .env.local value. A comment carrying one of these sentinels is NOT a human typing their real
+# database URI -- it's evidence the planner needs to see in full, not a credential to extract.
+MACHINE_GENERATED_REVISION_SOURCES = {"security_agent_report", "qa_agent_report"}
+
+
+def is_machine_generated_revision(revised_by: str | None) -> bool:
+    return (revised_by or "").strip() in MACHINE_GENERATED_REVISION_SOURCES
 
 
 def extract_mongodb_uri(text: str | None) -> str | None:

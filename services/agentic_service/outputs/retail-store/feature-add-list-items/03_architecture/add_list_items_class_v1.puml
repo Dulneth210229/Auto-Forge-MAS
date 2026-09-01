@@ -5,38 +5,60 @@ skinparam classAttributeIconSize 0
 skinparam shadowing false
 hide empty members
 
-title Add & List Items Feature Classes
+title Add & List Items Class Diagram
 
-class "ItemController" as CLS_CONTROL_001 <<control>> {
-  +addItem(): Void
-  +getItemList(): Void
+class "AddListItemsController" as CLS_CONTROLLER <<control>> {
+  +postApiItems(request): Response
+  +getApiItems(request): Response
 }
 
-class "ItemService" as CLS_SERVICE_001 <<service>> {
-  +addItem(): Void
-  +getItemList(): Void
+class "AddListItemsService" as CLS_SERVICE <<service>> {
+  +usersCanAddANew(input): Result
+  +usersCanViewTheList(input): Result
+  +usersCanViewTheDetails(input): Result
 }
 
-class "ItemImageRepository" as CLS_REPOSITORY_001 <<repository>> {
-  +storeImage(): Void
+class "AddListItemsRequest" as CLS_REQUEST_001 <<dto>> {
+  +field: String
 }
 
-class "ItemRepository" as CLS_REPOSITORY_002 <<repository>> {
-  +createItem(): Void
-  +retrieveItems(): List<Item>
+class "AddListItemsSuccessResponse" as CLS_RESPONSE_001 <<dto>> {
+  +field: String
 }
 
-class "Item" as CLS_ENTITY_001 <<entity>> {
-  +imageURL: String
+class "AddListItemsErrorResponse" as CLS_RESPONSE_002 <<dto>> {
+  +listOfItemsWithEach: String
+}
+
+class "AddListItemsData" as CLS_ENTITY_001 <<entity>> {
+  +image: String
+  +fileUpload: String
+  +storedAndServedBackAsAnIm: String
+  +ageURL: String
   +name: String
+  +string: String
   +description: String
-  +price: Number
-  +quantity: Number
-  +createdAt: Date
+  +text: String
+  +optional: String
+  +price: String
+  +number: String
+  +quantity: String
+  +createdAt: String
+  +date: String
+  +setAutomaticallyWhenTheItem: String
+  +isCreated: String
 }
 
-CLS_CONTROL_001 "1" ..> "1" CLS_SERVICE_001
-CLS_SERVICE_001 "1" ..> "1" CLS_REPOSITORY_001
-CLS_SERVICE_001 "1" ..> "1" CLS_REPOSITORY_002
+class "AddListItemsRepository" as CLS_REPOSITORY <<repository>> {
+  +findRequiredData(): Entity
+  +saveChanges(): void
+}
+
+CLS_CONTROLLER ..> CLS_SERVICE : uses
+CLS_CONTROLLER ..> CLS_REQUEST_001 : accepts
+CLS_CONTROLLER ..> CLS_RESPONSE_001 : returns
+CLS_CONTROLLER ..> CLS_RESPONSE_002 : returns
+CLS_SERVICE ..> CLS_REPOSITORY : uses
+CLS_REPOSITORY "1" --> "0..*" CLS_ENTITY_001 : manages
 
 @enduml
