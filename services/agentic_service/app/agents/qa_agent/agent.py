@@ -76,6 +76,10 @@ def _build_markdown_report(report: dict) -> str:
         lines.append(f"- **[{status}]** ({tc['category']}) {tc['name']} -- targets `{loc}`")
         if tc.get("failure_message"):
             lines.append(f"  - {tc['failure_message'].splitlines()[0]}")
+        if tc.get("root_cause"):
+            lines.append(f"  - Root cause: {tc['root_cause']}")
+        if tc.get("recommendation"):
+            lines.append(f"  - Recommendation: {tc['recommendation']}")
     lines += [
         "",
         "## Out of scope for this pass",
@@ -244,7 +248,7 @@ class QAAgent:
             yield {"type": "phase", "phase": "execution", "label": "Running the generated tests..."}
             run_result = executor.run_tests(repo_path, project["project_id"])
         else:
-            run_result = {"results": [], "passed": 0, "failed": 0, "skipped": 0, "exit_code": None, "raw_stderr": ""}
+            run_result = {"results": [], "passed": 0, "failed": 0, "exit_code": None, "raw_stderr": ""}
 
         if run_result["failed"] > 0:
             yield {"type": "phase", "phase": "root_cause", "label": "Analyzing failures..."}
@@ -295,15 +299,13 @@ class QAAgent:
         tests_by_category = self._count_by_category(merged_test_cases)
 
         # Real, confirmed inconsistency found during live verification: run_result's own
-        # passed/failed/skipped counts are Jest's raw reported totals, which stay 0/0/0 whenever
-        # Jest never actually produced a result for a test case (e.g. the sandbox was unavailable)
-        # -- while _merge_results/_count_by_category correctly fall each unmatched case back to
-        # "skipped" locally. Deriving the top-level counts from the SAME merged_test_cases the
-        # per-category breakdown already uses keeps both numbers honest and in agreement, instead
-        # of a banner claiming "0 skipped" right above a category heading that says otherwise.
+        # passed/failed counts are Jest's raw reported totals, which stay 0/0 whenever Jest never
+        # actually produced a result for a test case (e.g. the sandbox was unavailable) --
+        # while _merge_results/_count_by_category correctly resolve each unmatched case locally.
+        # Deriving the top-level counts from the SAME merged_test_cases the per-category
+        # breakdown already uses keeps both numbers honest and in agreement.
         tests_passed = sum(bucket["passed"] for bucket in tests_by_category.values())
         tests_failed = sum(bucket["failed"] for bucket in tests_by_category.values())
-        tests_skipped = sum(bucket["skipped"] for bucket in tests_by_category.values())
 
         report = {
             "project_name": project["project_name"],
@@ -313,7 +315,6 @@ class QAAgent:
             "tests_generated": len(all_test_cases),
             "tests_passed": tests_passed,
             "tests_failed": tests_failed,
-            "tests_skipped": tests_skipped,
             "tests_by_category": tests_by_category,
             "test_cases": merged_test_cases,
             "out_of_scope_modules": out_of_scope,
@@ -338,8 +339,9 @@ class QAAgent:
         )
 
         logger.info(
-            "QA Agent finished for feature_id=%s: %d generated, %d passed, %d failed, %d skipped",
-            feature_id, len(all_test_cases), tests_passed, tests_failed, tests_skipped,
+            "QA Agent finished for feature_id=%s: %d generated, %d passed, %d failed%s",
+            feature_id, len(all_test_cases), tests_passed, tests_failed,
+            " (environment failure)" if environment_failure else "",
         )
 
         return QAAgentOutput(
@@ -349,9 +351,8 @@ class QAAgent:
             tests_generated=len(all_test_cases),
             tests_passed=tests_passed,
             tests_failed=tests_failed,
-            tests_skipped=tests_skipped,
             artifact_ids=[json_artifact.artifact_id, md_artifact.artifact_id],
-            message=f"{tests_passed} passed, {tests_failed} failed, {tests_skipped} skipped.",
+            message=f"{tests_passed} passed, {tests_failed} failed.",
         )
 
     def _write_test_file(self, generated_dir: Path, stem: str, category: str, test_code: str) -> str:
@@ -421,37 +422,42 @@ class QAAgent:
                 "failure_message": (match.get("failure_message") if match
                                      else ("This test file did not produce a matching result -- "
                                            "it may have failed to load/parse; see stderr below.")),
+                # Filled in by _apply_root_cause_analysis for failed tests only -- stays None for
+                # everything else (never blocks the report if that analysis call fails/is
+                # unreachable, see generator.analyze_failures's own resilience contract).
+                "root_cause": None,
+                "recommendation": None,
             })
         return merged
 
     async def _apply_root_cause_analysis(
-        self,
-        merged_test_cases: list[dict],
-        unit_targets: list[dict],
-        integration_targets: list[dict],
+        self, merged_test_cases: list[dict], unit_targets: list[dict], integration_targets: list[dict]
     ) -> list[dict]:
-        failures = [test_case for test_case in merged_test_cases if test_case["status"] == "failed"]
+        """
+        Direct user request: explain WHY a test actually failed, not just show Jest's raw
+        assertion text. One batched LLM call (generator.analyze_failures) covering every failed
+        test at once -- never one call per failure. Source lookup is built from targets already
+        read during discovery (no re-reading from disk). A no-op (returns merged_test_cases
+        unchanged) when there are no failures or the analysis call fails -- root_cause/
+        recommendation simply stay None, matching this codebase's established "an LLM enrichment
+        step must never block the underlying report" convention.
+        """
+        failures = [tc for tc in merged_test_cases if tc["status"] == "failed"]
         if not failures:
             return merged_test_cases
 
-        source_by_target = {
-            target["rel"]: target["source"]
-            for target in unit_targets
-            if target.get("rel") and target.get("source")
-        }
-        for target in integration_targets:
-            if target.get("route_rel") and target.get("route_source"):
-                source_by_target[target["route_rel"]] = target["route_source"]
-            for related_file in target.get("related_files", []):
-                if related_file.get("rel") and related_file.get("source"):
-                    source_by_target[related_file["rel"]] = related_file["source"]
+        source_by_target_file = {t["rel"]: t["source"] for t in unit_targets}
+        source_by_target_file.update({t["route_rel"]: t["route_source"] for t in integration_targets})
 
-        analysis = await generator.analyze_failures(failures, source_by_target)
-        for test_case in failures:
-            result = analysis.get((test_case["test_file"], test_case["name"]))
-            if result:
-                test_case["root_cause"] = result["root_cause"]
-                test_case["recommendation"] = result["recommendation"]
+        root_causes = await generator.analyze_failures(failures, source_by_target_file)
+        if not root_causes:
+            return merged_test_cases
+
+        for tc in merged_test_cases:
+            entry = root_causes.get((tc["test_file"], tc["name"]))
+            if entry:
+                tc["root_cause"] = entry["root_cause"]
+                tc["recommendation"] = entry["recommendation"]
         return merged_test_cases
 
     def _count_by_category(self, merged_test_cases: list[dict]) -> dict:
@@ -517,6 +523,10 @@ class QAAgent:
             line = f"- [{tc['status'].upper()}] ({tc['category']}) {tc['name']} -- targets {loc}"
             if tc.get("failure_message"):
                 line += f" -- failure: {tc['failure_message'][:300]}"
+            if tc.get("root_cause"):
+                line += f" -- root cause: {tc['root_cause']}"
+            if tc.get("recommendation"):
+                line += f" -- recommendation: {tc['recommendation']}"
             lines.append(line)
         return "\n".join(lines)
 
@@ -525,7 +535,14 @@ class QAAgent:
         return document.get("turns", []) if document else []
 
     def _append_chat_turns(self, feature_id: str, new_turns: list[dict]) -> None:
+        """Assigns a real, stable `turn_index` (1-based) to every turn in `new_turns` -- the same
+        value to BOTH the user turn and its assistant reply in a pair, so a later edit can address
+        "this exchange" by one number. Direct user request: let a human edit a past message --
+        mirrors security_agent.agent.SecurityAgent's own identical addition."""
         existing = self._get_chat_history(feature_id)
+        next_index = max((turn.get("turn_index", 0) for turn in existing), default=0) + 1
+        for turn in new_turns:
+            turn["turn_index"] = next_index
         store.qa_conversations[feature_id] = {"feature_id": feature_id, "turns": existing + new_turns}
 
     async def chat_stream(self, feature_id: str, message: str) -> AsyncGenerator[dict[str, Any], None]:
@@ -538,6 +555,31 @@ class QAAgent:
         Agent's LLM review layer already established, so either provider family works with no
         tool-calling requirement), then persists both the human's message and the full reply to
         store.qa_conversations so a reload doesn't lose the conversation."""
+        async for event in self._chat_stream_core(feature_id, message):
+            yield event
+
+    async def edit_chat_turn_stream(
+        self, feature_id: str, turn_index: int, new_message: str
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """Direct user request: edit a past message and regenerate from that point forward --
+        mirrors security_agent.agent.SecurityAgent.edit_chat_turn_stream exactly. Discards the
+        edited turn (and its reply) and everything after it, then continues as a fresh chat_stream
+        call from the truncated history."""
+        history = self._get_chat_history(feature_id)
+        if not any(turn.get("turn_index") == turn_index for turn in history):
+            yield {"type": "error", "message": f"No turn {turn_index} found to edit."}
+            return
+
+        kept = [turn for turn in history if turn.get("turn_index", 0) < turn_index]
+        store.qa_conversations[feature_id] = {"feature_id": feature_id, "turns": kept}
+
+        async for event in self._chat_stream_core(feature_id, new_message):
+            yield event
+
+    async def _chat_stream_core(self, feature_id: str, message: str) -> AsyncGenerator[dict[str, Any], None]:
+        """Shared by chat_stream/edit_chat_turn_stream -- always re-reads history fresh via
+        _get_chat_history, so a caller that already truncated it (edit_chat_turn_stream) sees the
+        truncated transcript with no other code path needed."""
         from app.services.llm_provider_service import llm_provider_service
 
         report = self._load_latest_qa_report(feature_id)
