@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Domain | AutoForge</title>
+<meta name="description" content="Literature survey, research gap, research problem, objectives, methodology and technologies of the AutoForge research project.">
+<meta name="theme-color" content="#0d0f1c">
+<meta property="og:title" content="Domain | AutoForge">
+<meta property="og:description" content="Literature survey, research gap, research problem, objectives, methodology and technologies of the AutoForge research project.">
+<meta property="og:type" content="website">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/css/styles.css">
+<script>
+  (function () {
+    var t = null;
+    try { t = localStorage.getItem("af-theme"); } catch (e) {}
+    if (!t) t = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    document.documentElement.setAttribute("data-theme", t);
+  })();
+</script>
+</head>
+<body data-page="domain">
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="container site-header__inner">
+    <a class="brand" href="index.html" aria-label="AutoForge home">
+      <img src="assets/img/logo.svg" alt="" width="34" height="34">
+      <span><span class="brand__name">AutoForge</span><span class="brand__tag">R26-SE-033</span></span>
+    </a>
+    <nav class="nav" id="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="index.html">Home</a></li>
+        <li><a href="domain.html" aria-current="page">Domain</a></li>
+        <li><a href="milestones.html">Milestones</a></li>
+        <li><a href="documents.html">Documents</a></li>
+        <li><a href="presentations.html">Presentations</a></li>
+        <li><a href="about.html">About us</a></li>
+        <li><a href="contact.html">Contact us</a></li>
+      </ul>
+    </nav>
+    <div class="header-actions">
+      <button type="button" class="icon-btn search-trigger" data-open-search aria-label="Search the site"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><span class="search-label">Search</span><kbd>/</kbd></button>
+      <button type="button" class="icon-btn" id="theme-toggle" aria-label="Switch theme" aria-pressed="false"><svg class="theme-icon-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="theme-icon-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+      <button type="button" class="icon-btn menu-toggle" id="menu-toggle" aria-label="Open menu" aria-controls="site-nav" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+    </div>
+  </div>
+</header>
+<main id="main">
+<section class="page-hero">
+  <div class="container">
+    <ol class="breadcrumb" aria-label="Breadcrumb">
+      <li><a href="index.html">Home</a></li>
+      <li aria-current="page">Domain</li>
+    </ol>
+    <h1>Research domain</h1>
+    <p>The literature we built on, the gap we found, the problem we set out to solve, our objectives, the methodology we followed and the technologies we used.</p>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container with-toc">
+    <aside class="toc" id="toc" aria-label="On this page">
+      <div class="toc__title">On this page</div>
+      <ol>
+        <li><a href="#literature">Literature survey</a></li>
+        <li><a href="#gap">Research gap</a></li>
+        <li><a href="#problem">Research problem</a></li>
+        <li><a href="#objectives">Research objectives</a></li>
+        <li><a href="#methodology">Methodology</a></li>
+        <li><a href="#technologies">Technologies used</a></li>
+      </ol>
+    </aside>
+
+    <div>
+      <!-- ============================================ LITERATURE -->
+      <section class="doc-section" id="literature">
+        <span class="eyebrow">01 &middot; Literature survey</span>
+        <h2>What others have built</h2>
+        <p class="lead">Work related to AutoForge falls into three groups. A systematic review by Hou et al. [3] reports that most LLM-based systems automate one SDLC phase, instead of coordinating several phases with durable oversight at each stage.</p>
+        <div class="grid grid--3" style="margin-top:28px">
+          <article class="card"><span class="card__kicker">Group 1</span><h3>Role-based multi-agent generators</h3><p><strong>ChatDev</strong> [1] runs a chat-based &ldquo;virtual software company&rdquo; through a waterfall-like process. <strong>MetaGPT</strong> [2] exchanges structured documents, such as an SRS-like specification and a design, between role agents. In both, review happens through agent dialogue or only after a full run.</p></article>
+          <article class="card"><span class="card__kicker">Group 2</span><h3>Coding agents on a given task</h3><p><strong>SWE-agent</strong> [4] and <strong>OpenHands</strong> [5] work on an already specified task, such as a GitHub issue. CodeAct [6], HyperAgent [7] and Agentless [8] refine this. <strong>AgentCoder</strong> [10] uses a programmer, test designer and test executor loop; RepoCoder [11] retrieves code from the same repository.</p></article>
+          <article class="card"><span class="card__kicker">Group 3</span><h3>One SDLC concern at a time</h3><p>He, Treude and Lo [12] name human-agent collaboration and verifiable results as open problems. <strong>HULA</strong> [13] puts a human in the loop inside Jira, where engineers valued planning oversight as much as code oversight. Surveys on testing [14] and security [15] find most systems lack a deterministic verification layer.</p></article>
+        </div>
+
+        <h3 style="margin-top:36px">Comparison with related systems</h3>
+        <div class="table-wrap compare-wrap">
+          <table>
+            <thead><tr><th>System</th><th>Multi-agent</th><th>SDLC coverage</th><th>Human gates</th><th>Artifact trace</th></tr></thead>
+            <tbody>
+              <tr><td>ChatDev [1]</td><td><span class="yes">Yes</span></td><td>Partial</td><td><span class="no">N/R</span></td><td><span class="no">N/R</span></td></tr>
+              <tr><td>MetaGPT [2]</td><td><span class="yes">Yes</span></td><td>Partial</td><td><span class="no">N/R</span></td><td>Partial</td></tr>
+              <tr><td>SWE-agent [4]</td><td>Partial</td><td>Coding only</td><td><span class="no">N/R</span></td><td><span class="no">N/R</span></td></tr>
+              <tr><td>OpenHands [5]</td><td><span class="yes">Yes</span></td><td>Coding</td><td><span class="no">N/R</span></td><td><span class="no">N/R</span></td></tr>
+              <tr><td>AgentCoder [10]</td><td><span class="yes">Yes</span></td><td>Coding + testing</td><td><span class="no">N/R</span></td><td><span class="no">N/R</span></td></tr>
+              <tr class="is-ours"><td>AutoForge (ours)</td><td>Yes</td><td>7-agent pipeline</td><td>Yes</td><td>Versioned IDs</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="muted" style="font-size:.86rem;margin-top:10px">&ldquo;Partial&rdquo; means the work covers only part of the SDLC scope. &ldquo;N/R&rdquo; means not explicitly reported in the reviewed publication.</p>
+      </section>
+
+      <!-- ============================================ GAP -->
+      <section class="doc-section" id="gap">
+        <span class="eyebrow">02 &middot; Research gap</span>
+        <h2>Where existing systems fall short</h2>
+        <p class="lead">In the systems we reviewed, &ldquo;human in the loop&rdquo; mostly means a person reads a final diff, or the output of a completed run, after the fact.</p>
+        <div class="grid grid--3" style="margin-top:28px">
+          <article class="card gap-card"><span class="card__kicker">Gap 1</span><h3>No per-stage human decision</h3><p>We did not find a system that treats every stage output as an independently versioned artifact with its own accept, reject or revise decision. If the process is interrupted, the run is generally lost rather than paused.</p></article>
+          <article class="card gap-card"><span class="card__kicker">Gap 2</span><h3>Specifications from memory</h3><p>ChatDev and MetaGPT build their specification from the model&rsquo;s own knowledge, without retrieving outside domain knowledge [16]. Requirements-engineering reviews [17] call this direction under-explored.</p></article>
+          <article class="card gap-card"><span class="card__kicker">Gap 3</span><h3>Testing, security and traceability together</h3><p>Traceability has been a known problem for decades [18], and most solutions still address one narrow link type [19]. None of the compared systems reported versioned, addressable artifact IDs for each SDLC stage.</p></article>
+        </div>
+      </section>
+
+      <!-- ============================================ PROBLEM -->
+      <section class="doc-section" id="problem">
+        <span class="eyebrow">03 &middot; Research problem</span>
+        <h2>The problem we address</h2>
+        <div class="problem-box" style="margin-top:20px">
+          <blockquote>How can a team of AI agents take an e-commerce feature from requirements to working code so that every intermediate artifact is versioned, approved by a person before the next stage begins, and recoverable after an interruption &mdash; while the security and correctness of the generated code are checked with real evidence?</blockquote>
+        </div>
+        <p style="margin-top:22px">This matters even more in e-commerce, where a wrong early assumption &mdash; for example, how inventory or payment data should be modelled &mdash; is cheap to catch during a specification review and expensive to fix once code exists.</p>
+        <h3 style="margin-top:28px">Research questions</h3>
+        <div class="card" style="padding:8px 22px">
+          <div class="rq"><b>RQ1</b><span>Can the pipeline carry a feature through all seven human-approved stages while producing the required artifacts?</span></div>
+          <div class="rq"><b>RQ2</b><span>How does stage-wise human approval affect quality and revisions?</span></div>
+          <div class="rq"><b>RQ3</b><span>Does the pipeline reliably resume from a persisted checkpoint?</span></div>
+          <div class="rq"><b>RQ4</b><span>Do the Security and QA agents produce genuine, checkable evidence?</span></div>
+          <div class="rq"><b>RQ5</b><span>Does domain retrieval run as a reviewable enrichment stage?</span></div>
+        </div>
+      </section>
+
+      <!-- ============================================ OBJECTIVES -->
+      <section class="doc-section" id="objectives">
+        <span class="eyebrow">04 &middot; Research objectives</span>
+        <h2>What we set out to achieve</h2>
+        <p class="lead"><strong>Main objective:</strong> to design, build and evaluate a checkpointed, human-in-the-loop multi-agent pipeline that develops e-commerce web application features stage by stage.</p>
+        <div class="grid" style="margin-top:24px">
+          <article class="card objective"><span class="objective__id">O1</span><div><h3>Staged, reviewed artifacts</h3><p>A staged pipeline in which every SDLC artifact &mdash; specification, enriched specification, architecture plan and UML, UI metadata and components, code, security report and test report &mdash; is versioned and reviewed by a person before the next stage begins.</p></div></article>
+          <article class="card objective"><span class="objective__id">O2</span><div><h3>Durable, resumable transitions</h3><p>A decision taken well after a stage finishes, even after a backend restart, resumes the pipeline from the exact paused state.</p></div></article>
+          <article class="card objective"><span class="objective__id">O3</span><div><h3>Verified end to end</h3><p>Verify the whole pipeline, including security and testing, against real generated features rather than reporting its design alone.</p></div></article>
+        </div>
+        <h3 style="margin-top:32px">Individual components</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Member</th><th>Component</th><th>Agents</th></tr></thead>
+            <tbody>
+              <tr><td>Santhuka D.N.M.D.</td><td>Requirement generation, domain enrichment and checkpointed orchestration</td><td>Requirement, Domain, Orchestrator</td></tr>
+              <tr><td>Sansala T.G.B.D.</td><td>Architecture planning and UI/UX design generation</td><td>Architecture, UI/UX</td></tr>
+              <tr><td>Dissanayake T.C.</td><td>Code generation with sandboxed verification</td><td>Coder</td></tr>
+              <tr><td>Oberathna R.D.T.D.</td><td>Security analysis and quality assurance</td><td>Security, QA</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ============================================ METHODOLOGY -->
+      <section class="doc-section" id="methodology">
+        <span class="eyebrow">05 &middot; Methodology</span>
+        <h2>How we built and evaluated AutoForge</h2>
+        <p class="lead">This is design-science research in the sense of Hevner et al. [20]: build an artifact, then evaluate it in its target environment. We evaluated AutoForge through a controlled e-commerce case study with features of different complexity, because no shared benchmark yet exists for &ldquo;requirement to merged, human-approved code&rdquo;.</p>
+        <figure class="figure" style="margin:28px 0">
+          <img src="assets/img/system-diagram.webp" alt="AutoForge system diagram showing the seven agents, the human approval after each stage and the feedback loops" width="1400" height="933" loading="lazy">
+          <figcaption>Fig. 1 &mdash; Each agent produces an output, and every stage pauses for human approval before LangGraph checkpoints the artifact.</figcaption>
+        </figure>
+
+        <h3>The seven agents</h3>
+        <ol class="steps">
+          <li><h4>Requirement Agent</h4><p>Generates the first SRS from one schema-constrained model call, then a second, narrower call checks it against a gap-analysis checklist. A revision patches specific fields instead of regenerating the whole document.</p></li>
+          <li><h4>Domain Agent</h4><p>Retrieves the closest matching chunks from a ChromaDB knowledge base and asks the model for a small, citation-grounded enrichment plan. A deterministic step merges the plan into an Enhanced SRS (&ldquo;small plan, deterministic merge&rdquo;).</p></li>
+          <li><h4>Architecture Agent</h4><p>Produces an architecture plan from the approved specification, derives use case, sequence and class diagrams, checks coverage and consistency, and renders the diagrams through PlantUML.</p></li>
+          <li><h4>UI/UX Agent</h4><p>Generates page-level UI metadata and each component behind a quality gate with a limited repair loop, assembles the pages, renders a preview screenshot of each, and updates design tokens only once approved.</p></li>
+          <li><h4>Coder Agent</h4><p>Plans the change against the approved artifacts, implements it on an isolated feature branch with a tool-calling loop, runs a sandboxed install and build, and reports from the real git diff. The branch merges on approval and is discarded on rejection.</p></li>
+          <li><h4>Security Agent</h4><p>Runs an AST pattern scanner, a secret scanner and npm audit, plus an optional AI review. Findings are deduplicated into a gate decision, and the report pauses for a human decision.</p></li>
+          <li><h4>QA Agent</h4><p>Finds testable modules, generates tests with the model (falling back to deterministic templates), runs them in the sandbox and reports pass and fail results for a human to review.</p></li>
+        </ol>
+
+        <h3 style="margin-top:32px">Orchestration</h3>
+        <p>LangGraph runs one checkpointed state-graph thread per feature. At each stage the agent produces its artifact, and <code>interrupt()</code> pauses the graph for a reviewer to approve, reject or request a revision. The checkpoint is saved to MongoDB, so no work is lost even after a backend restart.</p>
+
+        <h3 style="margin-top:32px">Evaluation plan</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Experiment</th><th>What it measures</th></tr></thead>
+            <tbody>
+              <tr><td>Item Listing (CRUD) case study</td><td>Artifacts, versions and human decisions at all seven stages</td></tr>
+              <tr><td>Multi-feature evaluation</td><td>Item Listing, Authentication/Authorization and Shopping Cart: revisions, QA and security results</td></tr>
+              <tr><td>RAG ON vs OFF ablation</td><td>Requirements generated, useful and missing requirements, revisions</td></tr>
+              <tr><td>Controlled vulnerability set</td><td>Security true and false positives, false negatives, precision and recall</td></tr>
+              <tr><td>Expanded QA run</td><td>Unit, regression and integration tests executed, passed and coverage</td></tr>
+              <tr><td>Human gates ON vs OFF</td><td>Success, revisions, QA pass rate, security issues, escaped defects, review effort</td></tr>
+              <tr><td>Checkpoint-recovery trials</td><td>Correct resumption after an interruption at each of the seven stages</td></tr>
+              <tr><td>Execution performance</td><td>Total time, LLM calls, retries and tokens per run</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ============================================ TECHNOLOGIES -->
+      <section class="doc-section" id="technologies">
+        <span class="eyebrow">06 &middot; Technologies used</span>
+        <h2>Our technology stack</h2>
+        <p class="lead">Each agent is its own isolated Python package with an entry point, a prompt, a schema and stage-specific modules such as validators, scanners and Markdown builders.</p>
+        <h3 style="margin:28px 0 14px">Backend and orchestration</h3><div class="grid grid--2"><article class="card tech"><span class="tech__mark" style="background:#3776ab">Py</span><div><h4>Python + FastAPI</h4><p>The backend API that runs every agent and serves the review interface.</p></div></article><article class="card tech"><span class="tech__mark" style="background:#1c3c3c">LG</span><div><h4>LangGraph</h4><p>Runs one checkpointed state graph per feature and pauses each stage with interrupt().</p></div></article><article class="card tech"><span class="tech__mark" style="background:#13aa52">Mo</span><div><h4>MongoDB</h4><p>Stores project data and the LangGraph checkpoints, so pipeline state survives a restart.</p></div></article></div>
+<h3 style="margin:28px 0 14px">AI and retrieval</h3><div class="grid grid--2"><article class="card tech"><span class="tech__mark" style="background:#475569">Ol</span><div><h4>Ollama (qwen3-coder)</h4><p>The default, locally hosted model, reached through a provider abstraction.</p></div></article><article class="card tech"><span class="tech__mark" style="background:#6d28d9">AI</span><div><h4>OpenAI / Anthropic</h4><p>Cloud providers supported by the same abstraction, chosen by configuration.</p></div></article><article class="card tech"><span class="tech__mark" style="background:#ea580c">Ch</span><div><h4>ChromaDB</h4><p>Vector store holding the e-commerce knowledge base used by the Domain Agent.</p></div></article><article class="card tech"><span class="tech__mark" style="background:#0e7490">ST</span><div><h4>all-MiniLM-L6-v2</h4><p>Sentence-embedding model used to index and retrieve knowledge chunks.</p></div></article></div>
+<h3 style="margin:28px 0 14px">Review interface</h3><div class="grid grid--2"><article class="card tech"><span class="tech__mark" style="background:#0284c7">Re</span><div><h4>React 19 + Vite</h4><p>The single-page review app where people approve, reject or revise each stage.</p></div></article><article class="card tech"><span class="tech__mark" style="background:#0891b2">Tw</span><div><h4>Tailwind CSS 4</h4><p>Utility-first styling for the review interface.</p></div></article><article class="card tech"><span class="tech__mark" style="background:#dc2626">TQ</span><div><h4>TanStack Query</h4><p>Fetching, caching and refreshing pipeline and artifact data.</p></div></article></div>
+<h3 style="margin:28px 0 14px">Design and diagrams</h3><div class="grid grid--2"><article class="card tech"><span class="tech__mark" style="background:#b45309">PU</span><div><h4>PlantUML</h4><p>Renders the use case, sequence and class diagrams to PNG.</p></div></article><article class="card tech"><span class="tech__mark" style="background:#2563eb">Pw</span><div><h4>Playwright</h4><p>Headless Chromium that renders a preview screenshot of every generated page.</p></div></article></div>
+<h3 style="margin:28px 0 14px">Verification</h3><div class="grid grid--2"><article class="card tech"><span class="tech__mark" style="background:#1d63ed">Dk</span><div><h4>Docker sandbox</h4><p>Isolated container for installs, builds, dependency audits and test runs.</p></div></article><article class="card tech"><span class="tech__mark" style="background:#f05032">Gt</span><div><h4>Git branches</h4><p>Every Coder Agent change lives on its own branch, merged only on approval.</p></div></article><article class="card tech"><span class="tech__mark" style="background:#3178c6">TS</span><div><h4>TypeScript compiler AST</h4><p>Parses generated code so the security scan matches real code constructs.</p></div></article><article class="card tech"><span class="tech__mark" style="background:#99425b">Jt</span><div><h4>Jest + npm audit</h4><p>Runs generated tests and checks dependencies for known vulnerabilities.</p></div></article></div>
+<h3 style="margin:28px 0 14px">Generated application stack</h3><div class="grid grid--2"><article class="card tech"><span class="tech__mark" style="background:#334155">Nx</span><div><h4>Next.js (App Router)</h4><p>The web framework of the e-commerce applications AutoForge generates.</p></div></article><article class="card tech"><span class="tech__mark" style="background:#3178c6">TS</span><div><h4>TypeScript</h4><p>The language of the generated code.</p></div></article><article class="card tech"><span class="tech__mark" style="background:#880000">Mg</span><div><h4>MongoDB + Mongoose</h4><p>Persistence layer of the generated applications.</p></div></article></div>
+      </section>
+
+      <details class="refs">
+        <summary>References</summary>
+        <ol><li>C. Qian et al., &ldquo;ChatDev: Communicative agents for software development,&rdquo; ACL, 2024.</li><li>S. Hong et al., &ldquo;MetaGPT: Meta programming for a multi-agent collaborative framework,&rdquo; ICLR, 2024.</li><li>X. Hou et al., &ldquo;Large language models for software engineering: A systematic literature review,&rdquo; ACM TOSEM, 2024.</li><li>J. Yang et al., &ldquo;SWE-agent: Agent-computer interfaces enable automated software engineering,&rdquo; NeurIPS, 2024.</li><li>X. Wang et al., &ldquo;OpenHands: An open platform for AI software developers as generalist agents,&rdquo; ICLR, 2025.</li><li>X. Wang et al., &ldquo;Executable code actions elicit better LLM agents,&rdquo; arXiv:2402.01030, 2024.</li><li>H. N. Phan et al., &ldquo;HyperAgent: Generalist software engineering agents to solve coding tasks at scale,&rdquo; arXiv:2409.16299, 2024.</li><li>C. S. Xia et al., &ldquo;Agentless: Demystifying LLM-based software engineering agents,&rdquo; arXiv:2407.01489, 2024.</li><li>C. E. Jimenez et al., &ldquo;SWE-bench: Can language models resolve real-world GitHub issues?&rdquo; ICLR, 2024.</li><li>D. Huang et al., &ldquo;AgentCoder: Multi-agent-based code generation with iterative testing and optimisation,&rdquo; arXiv:2312.13010, 2023.</li><li>F. Zhang et al., &ldquo;RepoCoder: Repository-level code completion through iterative retrieval and generation,&rdquo; EMNLP, 2023.</li><li>J. He, C. Treude and D. Lo, &ldquo;LLM-based multi-agent systems for software engineering: Literature review, vision, and the road ahead,&rdquo; ACM TOSEM, 2025.</li><li>W. Takerngsaksiri et al., &ldquo;Human-in-the-loop software development agents,&rdquo; ICSE-SEIP, 2025.</li><li>J. Wang et al., &ldquo;Software testing with large language models: Survey, landscape, and vision,&rdquo; IEEE TSE, 2024.</li><li>X. Zhu et al., &ldquo;When software security meets large language models: A survey,&rdquo; IEEE/CAA JAS, 2025.</li><li>P. Lewis et al., &ldquo;Retrieval-augmented generation for knowledge-intensive NLP tasks,&rdquo; NeurIPS, 2020.</li><li>A. Hemmat et al., &ldquo;Research directions for using LLM in software requirement engineering: A systematic review,&rdquo; Frontiers in Computer Science, 2025.</li><li>O. C. Gotel and C. Finkelstein, &ldquo;An analysis of the requirements traceability problem,&rdquo; IEEE ICRE, 1994.</li><li>J. Mucha, A. Kaufmann and D. Riehle, &ldquo;A systematic literature review of pre-requirements specification traceability,&rdquo; Requirements Engineering, 2024.</li><li>A. R. Hevner, S. T. March, J. Park and S. Ram, &ldquo;Design science in information systems research,&rdquo; MIS Quarterly, 2004.</li><li>K. Pelluru, &ldquo;LangChain &amp; LangGraph in production: Architectures for multi-agent LLM systems,&rdquo; JDDI, 2025.</li><li>Chroma, &ldquo;Chroma documentation.&rdquo; [Online].</li></ol>
+      </details>
+    </div>
+  </div>
+</section>
+</main>
+<footer class="site-footer">
+  <div class="container">
+    <div class="footer-grid">
+      <div>
+        <div class="footer-brand"><img src="assets/img/logo.svg" alt="" width="32" height="32"><span>AutoForge</span></div>
+        <p style="max-width:44ch">A checkpointed, human-in-the-loop multi-agent pipeline for building e-commerce web applications. Final-year research project R26-SE-033.</p>
+        <p style="margin:0">Sri Lanka Institute of Information Technology<br>Faculty of Computing</p>
+      </div>
+      <div>
+        <h3>Explore</h3>
+        <ul>
+          <li><a href="index.html">Home</a></li>
+          <li><a href="domain.html">Domain</a></li>
+          <li><a href="milestones.html">Milestones</a></li>
+          <li><a href="documents.html">Documents</a></li>
+          <li><a href="presentations.html">Presentations</a></li>
+          <li><a href="about.html">About us</a></li>
+          <li><a href="contact.html">Contact us</a></li>
+        </ul>
+      </div>
+      <div>
+        <h3>Project</h3>
+        <ul>
+          <li><a href="documents.html">All documents</a></li>
+          <li><a href="presentations.html">All presentations</a></li>
+          <li><a href="milestones.html">Assessment timeline</a></li>
+          <li><a href="https://github.com/Dulneth210229/Auto-Forge-MAS" target="_blank" rel="noopener">Source code on GitHub</a></li>
+          <li><a href="https://www.sliit.lk" target="_blank" rel="noopener">SLIIT website</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <span>&copy; <span data-year>2026</span> AutoForge research team, SLIIT. All rights reserved.</span>
+      <span>Group R26-SE-033 &middot; BSc (Hons) in IT, Software Engineering</span>
+    </div>
+  </div>
+</footer>
+
+<button type="button" class="icon-btn to-top" id="to-top" aria-label="Back to top"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
+
+<div class="search" id="search" aria-hidden="true" role="dialog" aria-modal="true" aria-label="Search the site">
+  <div class="search__backdrop" data-close-search></div>
+  <div class="search__panel">
+    <div class="search__input"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><label for="search-input" class="visually-hidden">Search</label><input type="text" id="search-input" placeholder="Search pages, members, documents..." autocomplete="off"><button type="button" class="icon-btn" data-close-search aria-label="Close search" style="border:0"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+    <ul class="search__results" id="search-results"></ul>
+  </div>
+</div>
+
+<script src="assets/js/data.js"></script>
+<script src="assets/js/main.js"></script>
+</body>
+</html>

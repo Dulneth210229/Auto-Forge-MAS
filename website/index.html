@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AutoForge | Checkpointed, Human-in-the-Loop Multi-Agent SDLC Pipeline</title>
+<meta name="description" content="AutoForge is a checkpointed, human-in-the-loop multi-agent pipeline that builds e-commerce web applications through seven AI agents. SLIIT research project R26-SE-033.">
+<meta name="theme-color" content="#0d0f1c">
+<meta property="og:title" content="AutoForge | Checkpointed, Human-in-the-Loop Multi-Agent SDLC Pipeline">
+<meta property="og:description" content="AutoForge is a checkpointed, human-in-the-loop multi-agent pipeline that builds e-commerce web applications through seven AI agents. SLIIT research project R26-SE-033.">
+<meta property="og:type" content="website">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/css/styles.css">
+<script>
+  (function () {
+    var t = null;
+    try { t = localStorage.getItem("af-theme"); } catch (e) {}
+    if (!t) t = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    document.documentElement.setAttribute("data-theme", t);
+  })();
+</script>
+</head>
+<body data-page="index">
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="container site-header__inner">
+    <a class="brand" href="index.html" aria-label="AutoForge home">
+      <img src="assets/img/logo.svg" alt="" width="34" height="34">
+      <span><span class="brand__name">AutoForge</span><span class="brand__tag">R26-SE-033</span></span>
+    </a>
+    <nav class="nav" id="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="index.html" aria-current="page">Home</a></li>
+        <li><a href="domain.html">Domain</a></li>
+        <li><a href="milestones.html">Milestones</a></li>
+        <li><a href="documents.html">Documents</a></li>
+        <li><a href="presentations.html">Presentations</a></li>
+        <li><a href="about.html">About us</a></li>
+        <li><a href="contact.html">Contact us</a></li>
+      </ul>
+    </nav>
+    <div class="header-actions">
+      <button type="button" class="icon-btn search-trigger" data-open-search aria-label="Search the site"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><span class="search-label">Search</span><kbd>/</kbd></button>
+      <button type="button" class="icon-btn" id="theme-toggle" aria-label="Switch theme" aria-pressed="false"><svg class="theme-icon-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="theme-icon-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+      <button type="button" class="icon-btn menu-toggle" id="menu-toggle" aria-label="Open menu" aria-controls="site-nav" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+    </div>
+  </div>
+</header>
+<main id="main">
+
+<section class="hero">
+  <div class="container hero__grid">
+    <div>
+      <span class="eyebrow">Research project &middot; R26-SE-033 &middot; SLIIT</span>
+      <h1>Build software with AI, <span class="accent">one approved step at a time.</span></h1>
+      <p class="lead">AutoForge is a multi-agent system that builds e-commerce web applications through seven specialised AI agents. Every stage produces a versioned artifact, pauses for a person to approve it, and is saved so the work can continue even after a restart.</p>
+      <div class="hero__actions">
+        <a class="btn btn--light" href="domain.html">Explore the research <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
+        <a class="btn btn--outline-light" href="about.html">Meet the team</a>
+      </div>
+      <div class="hero__meta">
+        <span class="chip"><span class="dot"></span>7 specialised agents</span>
+        <span class="chip">Human approval at every stage</span>
+        <span class="chip">Resumes after a restart</span>
+      </div>
+    </div>
+    <div class="pipeline-card" id="pipeline">
+      <div class="pipeline-card__head"><span>feature: item-listing-crud</span><span class="live">pipeline</span></div>
+      <ol class="stages">
+<li><button type="button" class="stage" data-detail="<strong>Requirement Agent</strong> turns a conversation into an SRS, checks it against a gap-analysis checklist, and waits for a person to approve it." aria-pressed="false"><span class="stage__num">01</span><span class="stage__name">Requirement Agent<span class="stage__out">Software Requirements Specification (SRS)</span></span><span class="stage__gate">Human gate</span></button></li>
+<li><button type="button" class="stage" data-detail="<strong>Domain Agent</strong> retrieves e-commerce knowledge from ChromaDB and adds only what it can cite. A deterministic merge keeps every required section." aria-pressed="false"><span class="stage__num">02</span><span class="stage__name">Domain Agent<span class="stage__out">Enhanced SRS with cited additions</span></span><span class="stage__gate">Human gate</span></button></li>
+<li><button type="button" class="stage" data-detail="<strong>Architecture Agent</strong> writes the plan, derives use case, sequence and class diagrams, checks them and renders them with PlantUML." aria-pressed="false"><span class="stage__num">03</span><span class="stage__name">Architecture Agent<span class="stage__out">Architecture plan + UML diagrams</span></span><span class="stage__gate">Human gate</span></button></li>
+<li><button type="button" class="stage" data-detail="<strong>UI/UX Agent</strong> generates each component behind a quality gate and renders a live preview of every page with Playwright." aria-pressed="false"><span class="stage__num">04</span><span class="stage__name">UI/UX Agent<span class="stage__out">Wireframes, components, page previews</span></span><span class="stage__gate">Human gate</span></button></li>
+<li><button type="button" class="stage" data-detail="<strong>Coder Agent</strong> implements the plan on its own branch, verifies it in a Docker sandbox and merges only when a person approves." aria-pressed="false"><span class="stage__num">05</span><span class="stage__name">Coder Agent<span class="stage__out">Code on an isolated git branch</span></span><span class="stage__gate">Human gate</span></button></li>
+<li><button type="button" class="stage" data-detail="<strong>Security Agent</strong> runs an AST pattern scan, a secret scan and npm audit, with an optional AI review, then waits for a decision." aria-pressed="false"><span class="stage__num">06</span><span class="stage__name">Security Agent<span class="stage__out">Security report with severity tiers</span></span><span class="stage__gate">Human gate</span></button></li>
+<li><button type="button" class="stage" data-detail="<strong>QA Agent</strong> generates unit, integration and regression tests, runs them in the sandbox and explains every failure." aria-pressed="false"><span class="stage__num">07</span><span class="stage__name">QA Agent<span class="stage__out">Test report from real test runs</span></span><span class="stage__gate">Human gate</span></button></li>
+      </ol>
+      <p class="pipeline-card__foot" id="pipeline-foot" aria-live="polite"></p>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="abstract">
+  <div class="container split">
+    <div class="reveal">
+      <span class="eyebrow">Abstract</span>
+      <h2>Not just faster code. Code you can trust and trace.</h2>
+      <p>A large language model can already write a single function or page. A full web application is different: it is a chain of decisions about what to build, how to design it, how to implement it, and whether the result is safe and correct. Tools that create a whole application from one prompt skip this chain, so there is no specification to check and no way to tell whether a poor result came from a misunderstood requirement or a coding mistake.</p>
+      <p>AutoForge coordinates seven agents across the software development life cycle (SDLC): requirements, domain enrichment, architecture, UI/UX design, coding, security and quality assurance. The agents are orchestrated as a LangGraph state graph. Each stage pauses for a human decision &mdash; approve, reject or request a revision &mdash; and every transition is checkpointed to MongoDB, so an approval given minutes or days later resumes the pipeline from the exact point where it stopped.</p>
+      <p style="margin:0">We evaluated the system on e-commerce features of different complexity, covering domain retrieval, testing and coverage, security precision and recall, checkpoint recovery, human revision effort and execution performance.</p>
+    </div>
+    <figure class="figure reveal">
+      <img src="assets/img/system-diagram.webp" alt="AutoForge system diagram: seven agents connected in sequence, each followed by a human approval step with feedback loops back to the agent" width="1400" height="933" loading="lazy">
+      <figcaption>Fig. 1 &mdash; AutoForge system diagram</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="section section--alt">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="eyebrow">Why AutoForge</span>
+      <h2>Human control where it matters most</h2>
+      <p>Existing multi-agent tools usually let a person look at the result only after the run finishes. AutoForge puts a person in charge of every stage.</p>
+    </div>
+    <div class="grid grid--3">
+      <article class="card card--hover reveal"><div class="card__icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5z"/><path d="m3 13 9 5 9-5"/></svg></div><h3>Staged and versioned</h3><p>Every SDLC artifact &mdash; SRS, enhanced SRS, architecture and UML, UI design, code, security report and test report &mdash; is saved as its own numbered version.</p></article>
+      <article class="card card--hover reveal"><div class="card__icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg></div><h3>Reviewed by a person</h3><p>The next stage starts only after a reviewer approves. A wrong early assumption is cheap to fix in a specification and expensive once code exists.</p></article>
+      <article class="card card--hover reveal"><div class="card__icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 3v6h6"/></svg></div><h3>Durable and resumable</h3><p>State is checkpointed to MongoDB after every transition, so a server restart does not lose the work. The pipeline resumes from the exact paused stage.</p></article>
+      <article class="card card--hover reveal"><div class="card__icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19V5a2 2 0 0 1 2-2h9l5 5v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M14 3v5h5M8 13h8M8 17h5"/></svg></div><h3>Grounded in the domain</h3><p>The Domain Agent retrieves e-commerce knowledge with ChromaDB and only adds requirements it can cite, instead of relying on the model&rsquo;s memory alone.</p></article>
+      <article class="card card--hover reveal"><div class="card__icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="9" r="2.5"/><path d="M6 8.5v7M18 11.5c0 3-3 4-9.5 4.5"/></svg></div><h3>Safe code changes</h3><p>Code is written on an isolated git branch and verified in a Docker sandbox. It is merged only when a person approves, and discarded if they reject it.</p></article>
+      <article class="card card--hover reveal"><div class="card__icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6l-8-3z"/><path d="m9 12 2 2 4-4"/></svg></div><h3>Checked, not assumed</h3><p>Security scans and real test runs give evidence a reviewer can inspect: findings tied to files and lines, and tests that were actually executed.</p></article>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="results">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="eyebrow">Key results</span>
+      <h2>What the evaluation showed</h2>
+      <p>Results from the team&rsquo;s controlled experiments on e-commerce features (Item Listing, Authentication and Authorization, Shopping Cart), as reported in our research paper.</p>
+    </div>
+    <div class="grid grid--4">
+      <article class="card stat reveal"><div class="stat__value">14<small>vs 8</small></div><div class="stat__label">Useful domain requirements</div><div class="stat__note">With retrieval ON vs OFF. Missing requirements fell from 7 to 2.</div><div class="stat__bar"><span style="width:88%"></span></div></article>
+      <article class="card stat reveal"><div class="stat__value">7<small>/ 7</small></div><div class="stat__label">Checkpoint recoveries</div><div class="stat__note">Interrupted at every stage; each resumed at the correct next stage.</div><div class="stat__bar"><span style="width:100%"></span></div></article>
+      <article class="card stat reveal"><div class="stat__value">87.5<small>%</small></div><div class="stat__label">Security precision</div><div class="stat__note">7 true positives, 1 false positive on a controlled vulnerability set. Recall 77.8%.</div><div class="stat__bar"><span style="width:87.5%"></span></div></article>
+      <article class="card stat reveal"><div class="stat__value">79<small>%</small></div><div class="stat__label">QA coverage</div><div class="stat__note">60 tests executed and 54 passed across unit, regression and integration tests.</div><div class="stat__bar"><span style="width:79%"></span></div></article>
+    </div>
+
+    <div class="grid grid--2" style="margin-top:20px">
+      <article class="card reveal">
+        <span class="card__kicker">Human gates ON vs OFF</span>
+        <h3>Approval improved quality, at a cost in time</h3>
+        <p class="muted" style="font-size:.92rem">Same three features, with and without human approval gates.</p>
+        <div class="compare-bar"><span>QA pass, ON</span><span class="track"><span class="fill" style="width:91%;display:block"></span></span><b>91%</b></div>
+        <div class="compare-bar"><span>QA pass, OFF</span><span class="track"><span class="fill fill--off" style="width:78%;display:block"></span></span><b>78%</b></div>
+        <div class="compare-bar"><span>Escaped, ON</span><span class="track"><span class="fill" style="width:20%;display:block"></span></span><b>1</b></div>
+        <div class="compare-bar"><span>Escaped, OFF</span><span class="track"><span class="fill fill--off" style="width:100%;display:block"></span></span><b>5</b></div>
+        <p style="margin:16px 0 0;font-size:.92rem;color:var(--ink-2)">With gates ON, 3 of 3 pipelines succeeded (2 of 3 without), with 1 security issue instead of 4. The price was about 36 minutes of reviewer time and more revisions (5.0 vs 1.0 on average).</p>
+      </article>
+      <article class="card reveal">
+        <span class="card__kicker">Item Listing (CRUD) case study</span>
+        <h3>Human review was not a formality</h3>
+        <p style="font-size:.95rem;color:var(--ink-2)">The feature passed through all seven human-gated stages. Reviewers requested changes at four of them before approving:</p>
+        <ul class="check-list" style="font-size:.93rem">
+          <li>Requirement: added Admin and Manager user stories</li>
+          <li>Architecture: corrected a diagram actor</li>
+          <li>UI/UX: component-level fixes</li>
+          <li>Coder: removed an unnecessary manual ID (MongoDB generates IDs)</li>
+        </ul>
+        <p style="margin:0;font-size:.92rem;color:var(--ink-2)">The full run took 36.4 minutes with 24 LLM calls.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section class="section section--alt">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="eyebrow">The team</span>
+      <h2>Four members, seven agents</h2>
+      <p>Each member designed, built and evaluated one part of the pipeline. <a href="about.html">Read more about the team</a>.</p>
+    </div>
+    <div class="grid grid--4" id="team-strip"></div>
+  </div>
+</section>
+
+<section class="section--tight">
+  <div class="container">
+    <div class="cta-band reveal">
+      <div>
+        <h2>Read the work behind AutoForge</h2>
+        <p>The proposal, progress presentations, research paper and final reports are collected in one place.</p>
+      </div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap">
+        <a class="btn btn--light" href="documents.html">Documents</a>
+        <a class="btn btn--outline-light" href="presentations.html">Presentations</a>
+      </div>
+    </div>
+  </div>
+</section>
+</main>
+<footer class="site-footer">
+  <div class="container">
+    <div class="footer-grid">
+      <div>
+        <div class="footer-brand"><img src="assets/img/logo.svg" alt="" width="32" height="32"><span>AutoForge</span></div>
+        <p style="max-width:44ch">A checkpointed, human-in-the-loop multi-agent pipeline for building e-commerce web applications. Final-year research project R26-SE-033.</p>
+        <p style="margin:0">Sri Lanka Institute of Information Technology<br>Faculty of Computing</p>
+      </div>
+      <div>
+        <h3>Explore</h3>
+        <ul>
+          <li><a href="index.html">Home</a></li>
+          <li><a href="domain.html">Domain</a></li>
+          <li><a href="milestones.html">Milestones</a></li>
+          <li><a href="documents.html">Documents</a></li>
+          <li><a href="presentations.html">Presentations</a></li>
+          <li><a href="about.html">About us</a></li>
+          <li><a href="contact.html">Contact us</a></li>
+        </ul>
+      </div>
+      <div>
+        <h3>Project</h3>
+        <ul>
+          <li><a href="documents.html">All documents</a></li>
+          <li><a href="presentations.html">All presentations</a></li>
+          <li><a href="milestones.html">Assessment timeline</a></li>
+          <li><a href="https://github.com/Dulneth210229/Auto-Forge-MAS" target="_blank" rel="noopener">Source code on GitHub</a></li>
+          <li><a href="https://www.sliit.lk" target="_blank" rel="noopener">SLIIT website</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <span>&copy; <span data-year>2026</span> AutoForge research team, SLIIT. All rights reserved.</span>
+      <span>Group R26-SE-033 &middot; BSc (Hons) in IT, Software Engineering</span>
+    </div>
+  </div>
+</footer>
+
+<button type="button" class="icon-btn to-top" id="to-top" aria-label="Back to top"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
+
+<div class="search" id="search" aria-hidden="true" role="dialog" aria-modal="true" aria-label="Search the site">
+  <div class="search__backdrop" data-close-search></div>
+  <div class="search__panel">
+    <div class="search__input"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><label for="search-input" class="visually-hidden">Search</label><input type="text" id="search-input" placeholder="Search pages, members, documents..." autocomplete="off"><button type="button" class="icon-btn" data-close-search aria-label="Close search" style="border:0"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+    <ul class="search__results" id="search-results"></ul>
+  </div>
+</div>
+
+<script src="assets/js/data.js"></script>
+<script src="assets/js/main.js"></script>
+</body>
+</html>
