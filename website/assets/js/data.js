@@ -121,7 +121,7 @@ window.SITE = {
       title: "Topic Assessment Form (TAF) / Project Charter",
       description: "The approved research topic, scope, team and supervisor details that started the project.",
       type: "PDF",
-      url: "https://mysliit-my.sharepoint.com/:b:/g/personal/it22098078_my_sliit_lk/IQCu-LD52Q6NT6crRgNzD1nBAS9Up5wpYzZdv5UT2LN83pI?e=7sEVse",
+      url: "assets/docs/taf-topic-assessment-form.pdf",
       embed: "",
       status: "available",
       date: ""
@@ -132,7 +132,7 @@ window.SITE = {
       title: "Project Proposal Document",
       description: "The research problem, objectives, literature survey, methodology and work plan for AutoForge.",
       type: "PPTX",
-      url: "https://mysliit-my.sharepoint.com/:p:/g/personal/it22098078_my_sliit_lk/IQCtM4FxygqkS6IL4ZQNTvusARTUEqbOwEB3n68yQrHaNAA?e=4uRlOz",
+      url: "assets/docs/proposal-presentation.pptx",
       embed: "",
       status: "available",
       date: ""

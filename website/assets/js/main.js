@@ -21,6 +21,7 @@
     mail: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>',
     eye: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
     ext: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6"/><path d="M20 4 10 14"/><path d="M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></svg>',
+    download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>',
     clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
     link: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></svg>'
   };
@@ -176,10 +177,21 @@
 
   /* -------------------------------------------- OneDrive link handling */
   function hasLink(item) { return !!(item && item.url && String(item.url).trim()); }
+  // A document hosted in this site's own assets/docs/ folder (not an external OneDrive/
+  // SharePoint/Google Drive share link) - these are real, downloadable files, so they get a
+  // "Download" action instead of the "Open in OneDrive" label/behavior.
+  function isLocalFile(url) { return !!url && !/^https?:\/\//i.test(url); }
   function embedUrl(item) {
     if (!item) return "";
     if (item.embed) return item.embed;
     if (!hasLink(item)) return "";
+    if (isLocalFile(item.url)) {
+      // A relative path into this site's own assets/docs/ folder - `new URL()` below requires
+      // an absolute URL and throws on a bare relative path, which silently disabled the "View"
+      // preview for every local file. Browsers render a PDF directly in an iframe, so a local
+      // PDF just needs its own path returned; anything else has no in-page preview.
+      return /\.pdf($|\?)/i.test(item.url) ? item.url : "";
+    }
     try {
       var u = new URL(item.url);
       var host = u.hostname.toLowerCase();
@@ -201,9 +213,12 @@
       return '<span class="badge badge--muted">Link coming soon</span>';
     }
     var canView = !!embedUrl(item);
+    var local = isLocalFile(item.url);
     var html = "";
     if (canView) html += '<button type="button" class="btn btn--sm" data-view="' + esc(item.id) + '">' + ICON.eye + "View</button>";
-    html += '<a class="btn btn--sm btn--ghost" href="' + esc(item.url) + '" target="_blank" rel="noopener">' + ICON.ext + "Open in OneDrive</a>";
+    html += local
+      ? '<a class="btn btn--sm btn--ghost" href="' + esc(item.url) + '" download>' + ICON.download + "Download</a>"
+      : '<a class="btn btn--sm btn--ghost" href="' + esc(item.url) + '" target="_blank" rel="noopener">' + ICON.ext + "Open in OneDrive</a>";
     return html;
   }
 
@@ -223,10 +238,15 @@
       lastFocus = document.activeElement;
       title.textContent = item.title;
       openLink.href = item.url;
+      var local = isLocalFile(item.url);
+      if (local) openLink.setAttribute("download", ""); else openLink.removeAttribute("download");
+      var btnText = $(".btn-text", openLink);
+      if (btnText) btnText.textContent = local ? "Download" : "Open in OneDrive";
       var src = embedUrl(item);
+      var fallback = local ? "Use <em>Download</em> instead." : "Use <em>Open in OneDrive</em> instead.";
       frame.innerHTML =
         '<div class="viewer__hint"><div><p><strong>Loading the preview...</strong></p>' +
-        "<p>If it does not appear, the file may not allow embedding. Use <em>Open in OneDrive</em> instead.</p></div></div>" +
+        "<p>If it does not appear, the file may not allow embedding. " + fallback + "</p></div></div>" +
         '<iframe title="' + esc(item.title) + '" src="' + esc(src) + '" allowfullscreen loading="lazy"></iframe>';
       v.classList.add("is-open");
       v.setAttribute("aria-hidden", "false");
