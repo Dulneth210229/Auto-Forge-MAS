@@ -164,8 +164,8 @@ window.SITE = {
       group: "Research Paper",
       title: "Research Paper",
       description: "AutoForge: A Checkpointed, Human-in-the-Loop Multi-Agent SDLC Pipeline.",
-      type: "DOCX",
-      url: "https://mysliit-my.sharepoint.com/:w:/g/personal/it22098078_my_sliit_lk/IQAtush4QjzLT6LJM3UgJATGAazsTg7NwkrGf7pguihZh4I?e=t2iDvn",
+      type: "PDF",
+      url: "assets/docs/autoforge-research-paper.pdf",
       embed: "",
       status: "available",
       date: ""
@@ -176,9 +176,9 @@ window.SITE = {
       title: "Final Report - Common Integrated Report (Main)",
       description: "The integrated report covering the complete seven-agent pipeline and the team's evaluation.",
       type: "PDF",
-      url: "",
+      url: "assets/docs/final-report-common.pdf",
       embed: "",
-      status: "pending",
+      status: "available",
       date: ""
     },
     {
@@ -187,9 +187,9 @@ window.SITE = {
       title: "Final Report - Santhuka D.N.M.D. (IT22098078)",
       description: "Requirement generation, domain enrichment and checkpointed orchestration.",
       type: "PDF",
-      url: "",
+      url: "assets/docs/final-report-santhuka.pdf",
       embed: "",
-      status: "pending",
+      status: "available",
       date: ""
     },
     {
@@ -198,9 +198,9 @@ window.SITE = {
       title: "Final Report - Sansala T.G.B.D. (IT22174826)",
       description: "Architecture planning and UI/UX design generation.",
       type: "PDF",
-      url: "",
+      url: "assets/docs/final-report-sansala.pdf",
       embed: "",
-      status: "pending",
+      status: "available",
       date: ""
     },
     {
@@ -209,9 +209,9 @@ window.SITE = {
       title: "Final Report - Dissanayake T.C. (IT22157232)",
       description: "Code generation with sandboxed verification.",
       type: "PDF",
-      url: "",
+      url: "assets/docs/final-report-dissanayake.pdf",
       embed: "",
-      status: "pending",
+      status: "available",
       date: ""
     },
     {
@@ -220,9 +220,9 @@ window.SITE = {
       title: "Final Report - Oberathna R.D.T.D. (IT22102478)",
       description: "Security analysis and quality assurance.",
       type: "PDF",
-      url: "",
+      url: "assets/docs/final-report-oberathna.pdf",
       embed: "",
-      status: "pending",
+      status: "available",
       date: ""
     }
   ],
@@ -233,7 +233,7 @@ window.SITE = {
       id: "proposal-slides",
       title: "Proposal Presentation",
       description: "The problem, the research gap, the seven-agent idea and the plan for each member's component.",
-      url: "https://mysliit-my.sharepoint.com/:p:/g/personal/it22098078_my_sliit_lk/IQCtM4FxygqkS6IL4ZQNTvusARTUEqbOwEB3n68yQrHaNAA?e=4uRlOz",
+      url: "assets/docs/proposal-presentation.pptx",
       embed: "",
       status: "available",
       date: ""
@@ -242,7 +242,7 @@ window.SITE = {
       id: "pp1-slides",
       title: "Progress Presentation 1",
       description: "Progress on each agent, the first working pipeline stages and the design of the approval gates.",
-      url: "https://mysliit-my.sharepoint.com/:p:/g/personal/it22098078_my_sliit_lk/IQCGzWGqeZ7TT6QE4zEvQ4mYARCb5m9Gk90HG5ns3vxOALY?e=leVnYb",
+      url: "assets/docs/pp1-presentation.pptx",
       embed: "",
       status: "available",
       date: ""
@@ -251,7 +251,7 @@ window.SITE = {
       id: "pp2-slides",
       title: "Progress Presentation 2",
       description: "The integrated seven-agent pipeline, checkpointed orchestration and the first evaluation results.",
-      url: "https://mysliit-my.sharepoint.com/:p:/g/personal/it22098078_my_sliit_lk/IQCUGnjYJXxnRqfKSXeFkRALAcjbJHBdNvXkt6x20DnIfmg?e=BfDIZp",
+      url: "assets/docs/pp2-presentation.pptx",
       embed: "",
       status: "available",
       date: ""
