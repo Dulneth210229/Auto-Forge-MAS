@@ -67,4 +67,4 @@ Then open http://localhost:8000.
 3. Framework preset: **Other**. Leave the build command and output directory empty. Click **Deploy**.
 4. Every push to the repository updates the site.
 
-The whole site is well under the university's 20 MB limit.
+The site itself (HTML/CSS/JS/images) is a few hundred KB; `assets/docs/` carries the real project documents and presentations and is several tens of MB in total, which is fine for Vercel (no size limit applies to static files at this scale) but worth knowing if you ever need to package the site for an email attachment or a submission portal with its own size cap.

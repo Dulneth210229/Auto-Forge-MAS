@@ -108,7 +108,7 @@ window.SITE = {
 
   supervisors: [
     { name: "Nuwan Kodagoda", role: "Supervisor", email: "nuwan.k@sliit.lk", photo: "assets/img/team/supervisor.svg" },
-    { name: "Eishan Weerasinghe", role: "Co-supervisor", email: "eisha.w@sliit.lk", photo: "assets/img/team/cosupervisor.svg" }
+    { name: "Eishan Weerasinghe", role: "Co-supervisor", email: "eishan.w@sliit.lk", photo: "assets/img/team/cosupervisor.svg" }
   ],
 
   /* ---------------------------------------------------------- DOCUMENTS
